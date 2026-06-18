@@ -1,0 +1,10 @@
+# skills/diagnosis
+
+Skills for finding what's wrong and verifying what's right.
+
+| Skill | Purpose |
+|---|---|
+| [diagnose/](diagnose/) | Disciplined diagnosis loop for hard bugs and performance regressions. Reproduce → minimise → hypothesise → instrument → fix → regression-test. |
+| [audit/](audit/) | One-shot audit of a system or component against a checklist of failure modes. |
+| [audit-loop/](audit-loop/) | Audit + iterate-until-clean. Each pass surfaces issues; the loop continues until the audit finds nothing new. |
+| [audit-loop-codebase/](audit-loop-codebase/) | Codebase-wide audit loop. Wider scope than `audit-loop`. |

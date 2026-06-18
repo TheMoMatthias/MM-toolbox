@@ -1,0 +1,18 @@
+# OS junk
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Backup artefacts created by install.ps1 / uninstall.ps1
+.pre-mmtoolbox-backup-*
+*.bak
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local-only overrides (a user can add machine-local rules here without committing)
+local/
+*.local
