@@ -20,7 +20,7 @@ Each hook is registered in `~/.claude/settings.json` (which is NOT in this repo 
         "hooks": [
           {
             "type": "command",
-            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%USERPROFILE%\\.claude\\hooks\\grill-gate.ps1\""
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\.claude\\hooks\\grill-gate.ps1\""
           }
         ]
       }
@@ -31,7 +31,7 @@ Each hook is registered in `~/.claude/settings.json` (which is NOT in this repo 
         "hooks": [
           {
             "type": "command",
-            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%USERPROFILE%\\.claude\\hooks\\verify-loop.ps1\"",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\.claude\\hooks\\verify-loop.ps1\"",
             "asyncRewake": true
           }
         ]
@@ -45,8 +45,25 @@ The Stop hook is inert (exit 0) unless a project has `<repo>/.claude/verify-loop
 
 After `install.ps1` symlinks `~/.claude/hooks` to this repo, settings.json keeps working — paths don't change.
 
+### Why `$env:USERPROFILE` and not `%USERPROFILE%`
+
+Claude Code invokes each hook `command` string through **PowerShell directly on Windows** (not `cmd.exe`). `%USERPROFILE%` is cmd/batch syntax — PowerShell doesn't expand it, it treats the whole thing as a literal path containing percent signs, and the hook fails with `The argument '%USERPROFILE%\.claude\hooks\grill-gate.ps1' to the -File parameter does not exist.` Use PowerShell's own expansion `$env:USERPROFILE` instead. (Alternative: pass a hardcoded absolute path — works on one machine but isn't portable.)
+
+Alternate wiring that avoids the shell-quoting question entirely — pass the path as an arg rather than embedding it in a shell string:
+
+```json
+{
+  "type": "command",
+  "command": "powershell.exe",
+  "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\<you>\\.claude\\hooks\\grill-gate.ps1"]
+}
+```
+
+The `args` form takes a hardcoded absolute path (no variable expansion), so it's less portable but bullet-proof.
+
 ## Notes
 
 - **ASCII-only.** PowerShell .ps1 files in this repo MUST be ASCII (no curly quotes, no `→`, no `≥` — the hook stream chokes on UTF-16 BOMs and the heredocs become unparseable). The grill-gate uses `>=` and `->` for that reason.
 - **Fail-open.** Every hook starts with `$ErrorActionPreference = 'Stop'` and an outer try/catch that exits 0 on any error. A broken hook should never block a prompt.
 - **No interactive prompts.** Hooks run non-interactively. Use `Console::IsInputRedirected` guard to skip when stdin isn't piped.
+- **Windows variable expansion.** Use `$env:USERPROFILE` (PowerShell), never `%USERPROFILE%` (cmd) — Claude Code runs hooks via PowerShell. See the "Why" section above.
