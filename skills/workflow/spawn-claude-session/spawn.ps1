@@ -15,11 +15,16 @@
 #   * Explicit  : pass -Directory "<path>" to CHOOSE the repo (e.g. AlgoTrader).
 #   * Smart auto: omit -Directory and it uses the caller's cwd - normally the right repo.
 #
+# BOTH modes are LOCALLY RESUMABLE. Every interactive session - Remote Control or not -
+# persists its transcript to the project folder for the launch dir, so it reopens via
+# `claude --resume` (pick it) / `claude --continue` from a terminal there. Phone-driven
+# turns of a Remote-Control session sync back into the SAME local transcript, so a local
+# resume continues the FULL conversation. (Confirmed vs the official Remote Control +
+# Sessions docs, 2026-07-08: --no-session-persistence only applies to headless `claude
+# -p`; the earlier "RC may not be resumable" note was WRONG.)
+#
 # -Local (alias -NoRemoteControl) OPTS OUT of Remote Control -> a pure local session
-# with NO phone pairing. Its transcript is written to the project folder for the
-# launch dir, so it is reopenable via `claude --resume` / `claude --continue` from a
-# terminal there. (Resumability of a Remote-Control session is not guaranteed - a
-# lesson from 2026-06-16 - so use -Local when local resume is the priority.)
+# with NO phone pairing (use only when you don't want phone access; resume is identical).
 #
 # Verified surface (claude --help on this machine):
 #   --remote-control [name]   Start an interactive session with Remote Control enabled
@@ -44,8 +49,9 @@ param(
     # Optional model alias (e.g. 'opus', 'sonnet') for the spawned session.
     [string]$Model = "",
 
-    # Opt OUT of Remote Control -> a pure local session (no phone pairing), resumable
-    # locally. Remote Control is ON BY DEFAULT (operator wants phone navigation).
+    # Opt OUT of Remote Control -> a pure local session with NO phone pairing. Remote
+    # Control is ON BY DEFAULT (operator wants phone navigation). NOTE: both modes are
+    # equally locally resumable; -Local only removes the phone/web pairing channel.
     [Alias("NoRemoteControl")]
     [switch]$Local,
 
@@ -142,7 +148,8 @@ if ($useWt) {
 if ($rcOn) {
     Write-Host "Spawned a LOCAL Claude session '$Name' WITH Remote Control in: $resolved"
     Write-Host "Runs on THIS PC (full local control - type in the window) AND drivable from the Claude mobile app / https://claude.ai/code - the new window shows the pairing URL/QR."
-    Write-Host "Pass -Local next time if you want a pure local session with no phone pairing."
+    Write-Host "RESUMABLE: it persists locally like any session (phone turns sync into the same transcript). Reopen later via 'claude --resume' (pick '$Name') or 'claude --continue' from a terminal in this dir. If the phone link drops, run /remote-control inside the session to re-attach."
+    Write-Host "Pass -Local for a pure local session with no phone pairing (resume is identical)."
 } else {
     Write-Host "Spawned a LOCAL-only Claude session in: $resolved (Remote Control disabled via -Local)"
     Write-Host "Reopen it later from a terminal in THIS directory via 'claude --resume' (pick it) or 'claude --continue' (most recent)."
