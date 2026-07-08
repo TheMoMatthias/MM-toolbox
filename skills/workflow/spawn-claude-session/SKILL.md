@@ -1,6 +1,6 @@
 ---
 name: spawn-claude-session
-description: Spawn a brand-new Claude Code session in a separate terminal window. DEFAULT = a LOCAL, RESUMABLE session running on this PC (full functionality — all tools, file/bash access, the project) whose transcript is saved so you can reopen it later via `claude --resume` from a terminal in the same directory. It launches in a directory you CHOOSE (-Directory) or smart-detects the current cwd, so resumability is tied to the repo (AlgoTrader or any other). Remote Control (cloud, phone/web-driven) is a discouraged explicit opt-in only — the operator wants LOCAL resumable sessions, NOT cloud. Use when the user wants to start/launch/open an independent Claude session or another Claude terminal.
+description: Spawn a brand-new Claude Code session in a separate terminal window. DEFAULT = a LOCAL session WITH Remote Control enabled (`claude --remote-control <name>`) — it runs 100% on this PC with full functionality (all tools, file/bash, the project; you type in the local window) AND is drivable from the Claude mobile app / claude.ai so you can navigate it from your phone. It opens in a directory you CHOOSE (-Directory) or the smart-detected cwd. Pass -Local for a pure local session with no phone pairing (guaranteed locally resumable). Use when the user wants to start/launch/open an independent Claude session or another Claude terminal.
 ---
 
 # spawn-claude-session
@@ -8,26 +8,29 @@ description: Spawn a brand-new Claude Code session in a separate terminal window
 Launch a **new, independent Claude Code session** in its own terminal window. This
 does **not** touch the current session — it opens a fresh one.
 
-**Default = a LOCAL, RESUMABLE session** (`claude`). It runs on **this PC** with full
-functionality (all tools, file/bash access, the project — exactly like typing
-`claude` in a terminal) and writes its transcript (`<id>.jsonl`) into the project
-folder for the launch directory. So the chat's "memory" survives: reopen it later
-from **any terminal in the SAME directory** via `claude --resume` (pick it) or
-`claude --continue` (most recent).
+**Default = a LOCAL session WITH Remote Control** (`claude --remote-control <name>`).
+The session runs **100% locally on this PC** with full functionality (all tools,
+file/bash access, the project — you type in the local terminal window normally) AND
+Remote Control adds a phone/web pairing so you can **also navigate/drive it from the
+Claude mobile app / claude.ai**. The compute is local; only the message relay is
+remote. This is the operator's standing preference (2026-07-08): full local control +
+phone navigation.
 
-**Launch location — the design that makes resume work** (operator, 2026-07-08):
-resumability is tied to the directory the session launches in, so it must open in the
-repo you'll resume it from.
+**Launch location** — where it opens (resume/context is tied to this):
 - **Choose it:** pass `-Directory "<path>"` (e.g. the AlgoTrader repo).
 - **Smart auto-detect:** omit `-Directory` and it uses the current conversation's cwd
   — normally already the right repo. Say which directory you used in your reply.
 
-**Remote Control is a DISCOURAGED explicit opt-in** (`-RemoteControl` / `-Rc`). It adds
-`claude --remote-control <name>` to drive the session from the Claude mobile app /
-claude.ai, BUT ⚠️ a **cloud-driven conversation's history lives in the cloud and may
-NOT leave a locally-resumable transcript** (lesson 2026-06-16). **The operator does not
-want cloud sessions** — only pass this on an explicit one-off request for phone control,
-and mention the resume trade-off.
+**`-Local` (alias `-NoRemoteControl`) = opt out of Remote Control** → a pure local
+session with **no phone pairing**, whose transcript is written to the project folder
+for the launch dir and is **guaranteed reopenable** via `claude --resume` /
+`claude --continue` from a terminal there.
+
+⚠️ **Resumability trade-off (honest):** a pure `-Local` session definitely leaves a
+locally-resumable transcript. A Remote-Control session may **not** always be
+resumable from a local terminal (its history can live cloud-side — lesson 2026-06-16).
+So the default gives phone control; use `-Local` when guaranteed local resume matters
+more than phone access for that particular session.
 
 ## What it does
 
@@ -36,58 +39,59 @@ back to a plain PowerShell window if `wt.exe` is unavailable), `cd`s into the ta
 directory, and runs:
 
 ```
-claude                              # DEFAULT: local, resumable
-claude --remote-control "<name>"    # only with -RemoteControl (cloud; discouraged)
+claude --remote-control "<name>"    # DEFAULT: local session + phone/web control
+claude                              # with -Local: pure local, guaranteed resumable
 ```
 
-The window is kept open (`-NoExit`).
+The window is kept open (`-NoExit`) so the Remote Control pairing URL / QR stays readable.
 
 ## How to run it
 
-1. **Determine the target directory** (this skill is parameterized by directory):
-   - If the user gave a path in the invocation args, use it (`-Directory`).
-   - Otherwise default to the **current working directory** and say so. Keeping the
-     new session in the right repo dir is what makes it resumable there.
-2. **Mode:** default to **local + resumable** (just run it). Add `-RemoteControl` ONLY
-   if the user explicitly asks for phone/web control this one time.
+1. **Determine the target directory:** use the path the user gave (`-Directory`), or
+   default to the **current working directory** and say so.
+2. **Mode:** default to **local + Remote Control** (just run it). Add `-Local` only if
+   the user wants a pure local session with no phone pairing / guaranteed local resume.
 3. **Optionally** pick up a session name and/or model alias.
 4. **Run the launcher** via the Bash or PowerShell tool:
 
    ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\mauri\.claude\skills\spawn-claude-session\spawn.ps1" -Directory "<dir>" [-Name "<name>"] [-Model "<alias>"] [-RemoteControl]
+   powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\mauri\.claude\skills\spawn-claude-session\spawn.ps1" -Directory "<dir>" [-Name "<name>"] [-Model "<alias>"] [-Local]
    ```
 
    - Add `-DryRun` to preview the exact command + mode without spawning anything.
    - Add `-Pwsh` to force a plain PowerShell window instead of Windows Terminal.
 
 5. **Report back:**
-   - **Local (default):** the directory, and that it's resumable later via
+   - **Default (local + Remote Control):** the session name + directory, that it runs
+     locally with full control AND the new window shows the pairing URL/QR for phone/web.
+     Mention the resumability trade-off once.
+   - **`-Local`:** the directory, and that it's guaranteed resumable via
      `claude --resume` / `claude --continue` from a terminal there.
-   - **Remote Control (opt-in):** the session name, the directory, that the window
-     shows the pairing URL/QR — and the caveat that it may not be locally resumable.
 
 ## Arguments (spawn.ps1)
 
 | Param            | Meaning                                                                                    |
 |------------------|--------------------------------------------------------------------------------------------|
 | `-Directory`     | Repo/working dir for the new session. CHOOSE it, or omit to smart-detect the caller's cwd. |
-| `-Name`          | Session display name. Auto-derived (`<leaf>-<MMdd-HHmm>`) if omitted.                       |
+| `-Name`          | Session display name (Remote Control name / transcript label). Auto-derived if omitted.    |
 | `-Model`         | Optional model alias (`opus`, `sonnet`, …) for the spawned session.                        |
-| `-RemoteControl` | (alias `-Rc`) DISCOURAGED opt-in: cloud phone/web control; may NOT be locally resumable.    |
+| `-Local`         | (alias `-NoRemoteControl`) OPT OUT of Remote Control → pure local, guaranteed resumable.    |
+| `-RemoteControl` | (alias `-Rc`) No-op affirmation — Remote Control is the DEFAULT now; kept for back-compat.  |
 | `-Pwsh`          | Force a PowerShell window instead of Windows Terminal.                                      |
 | `-DryRun`        | Print the resolved command + mode; launch nothing.                                         |
 
 ## Notes / gotchas
 
-- **Local + resumable is the default and the point.** Same directory + local session →
-  `claude --resume` from a terminal there finds it. Only reach for Remote Control on an
-  explicit phone-control request, knowing it trades away local resumability.
-- **Auth (Remote Control only):** needs a logged-in claude.ai account. If the window
-  prompts for `/login`, that's expected — complete it in that window.
+- **Local + Remote Control is the default.** Full local functionality on the PC PLUS
+  phone/web navigation. Use `-Local` only when a session must be locally resumable.
+- **Auth (Remote Control):** needs a logged-in claude.ai account. If the window prompts
+  for `/login`, complete it in that window; the pairing URL/QR appears after.
 - **Verified CLI surface:** the `claude` flag is `--remote-control <name>`. There is
   **no** `claude remote-control` subcommand and **no** `--rc` flag on the `claude`
   CLI — do not invent them. (`-Rc` is only an alias for *this launcher's*
   `-RemoteControl` parameter, not a `claude` flag.)
+- **Keep spawn.ps1 pure ASCII:** Windows PowerShell 5.1 reads `.ps1` as ANSI, so an
+  em-dash / smart quote corrupts the parse. Use `-`, plain quotes.
 - **Independent session:** the spawned session has its own context window and does not
   inherit the current conversation. Brief it via the opening prompt if needed.
 - **Windows-only launcher:** `spawn.ps1` targets Windows (wt.exe / PowerShell). The

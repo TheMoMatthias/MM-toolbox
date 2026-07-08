@@ -4,24 +4,22 @@
 # (falls back to a plain PowerShell window when wt.exe is absent), starts in the
 # requested directory, and launches `claude`.
 #
-# DEFAULT = a LOCAL, RESUMABLE session (`claude`). It runs on THIS PC with full
-# functionality (all tools, file/bash, the project) and writes its transcript
-# (<id>.jsonl) into the project folder for the launch directory - so the chat's
-# "memory" survives and you can reopen it later from ANY terminal in the SAME
-# directory via `claude --resume` (pick it) / `claude --continue` (most recent).
+# DEFAULT = a LOCAL session WITH REMOTE CONTROL enabled (`claude --remote-control
+# <name>`). The session runs 100% LOCALLY on THIS PC with full functionality (all
+# tools, file/bash access, the project - you type in the local terminal normally);
+# Remote Control ADDS a phone/web pairing so you can ALSO navigate/drive it from the
+# Claude mobile app / claude.ai. The compute is local; only the message relay is
+# remote. Operator preference (2026-07-08): local full control + phone navigation.
 #
-# LAUNCH LOCATION (operator design 2026-07-08): resumability is tied to the launch
-# directory, so the session must open in the repo you'll resume it from.
+# LAUNCH LOCATION: the session opens in the repo you pass (or the caller's cwd).
 #   * Explicit  : pass -Directory "<path>" to CHOOSE the repo (e.g. AlgoTrader).
-#   * Smart auto: omit -Directory and it uses the caller's cwd (the directory the
-#                 current conversation runs in) - normally already the right repo.
-# Resume it later by running `claude --resume` from a terminal in that same dir.
+#   * Smart auto: omit -Directory and it uses the caller's cwd - normally the right repo.
 #
-# -RemoteControl is an EXPLICIT OPT-IN and is NOT recommended by default: it adds
-# `--remote-control <name>` so the session can be driven from the Claude mobile app /
-# claude.ai, BUT a cloud-DRIVEN conversation's history lives in the cloud and may NOT
-# leave a locally-resumable transcript (lesson 2026-06-16). The operator does NOT want
-# cloud sessions - use this only on an explicit, one-off request for phone control.
+# -Local (alias -NoRemoteControl) OPTS OUT of Remote Control -> a pure local session
+# with NO phone pairing. Its transcript is written to the project folder for the
+# launch dir, so it is reopenable via `claude --resume` / `claude --continue` from a
+# terminal there. (Resumability of a Remote-Control session is not guaranteed - a
+# lesson from 2026-06-16 - so use -Local when local resume is the priority.)
 #
 # Verified surface (claude --help on this machine):
 #   --remote-control [name]   Start an interactive session with Remote Control enabled
@@ -34,11 +32,11 @@
 [CmdletBinding()]
 param(
     # Working directory for the new session. CHOOSE the repo explicitly, or omit to
-    # smart-detect the caller's cwd. Resumability is tied to this directory.
+    # smart-detect the caller's cwd.
     [Parameter(Position = 0)]
     [string]$Directory = (Get-Location).Path,
 
-    # Session display name (used for the transcript label / Remote Control name).
+    # Session display name (Remote Control name / transcript label).
     # Auto-derived from the leaf dir + timestamp when omitted.
     [Parameter(Position = 1)]
     [string]$Name = "",
@@ -46,9 +44,13 @@ param(
     # Optional model alias (e.g. 'opus', 'sonnet') for the spawned session.
     [string]$Model = "",
 
-    # EXPLICIT OPT-IN only: enable Remote Control (drive from phone / claude.ai).
-    # NOT the default - a cloud-driven chat may NOT be locally resumable, and the
-    # operator wants resumable LOCAL sessions. Use only on an explicit request.
+    # Opt OUT of Remote Control -> a pure local session (no phone pairing), resumable
+    # locally. Remote Control is ON BY DEFAULT (operator wants phone navigation).
+    [Alias("NoRemoteControl")]
+    [switch]$Local,
+
+    # Back-compat / explicit affirm: Remote Control is the default now, so passing
+    # -RemoteControl just affirms it. Ignored when -Local is also passed.
     [Alias("Rc")]
     [switch]$RemoteControl,
 
@@ -60,6 +62,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Remote Control is ON unless the caller explicitly opts out with -Local.
+$rcOn = -not $Local
 
 # --- Resolve + validate the target directory ---------------------------------
 try {
@@ -84,10 +89,10 @@ $Name = ($Name -replace '\s+', '-').Trim('-')
 if ([string]::IsNullOrWhiteSpace($Name)) { $Name = "claude-$(Get-Date -Format 'MMdd-HHmm')" }
 
 # --- Build the inner `claude` command ----------------------------------------
-# Plain `claude` (default) = a local, resumable session. --remote-control is added
-# ONLY when -RemoteControl is explicitly passed (cloud-driven; may not be resumable).
+# DEFAULT: `claude --remote-control <name>` = local session + phone/web control.
+# -Local drops the flag for a pure local session.
 $claudeTokens = @()
-if ($RemoteControl) {
+if ($rcOn) {
     $claudeTokens += @("--remote-control", $Name)
 }
 if (-not [string]::IsNullOrWhiteSpace($Model)) {
@@ -112,8 +117,8 @@ if ($gc) {
 $useWt = ($wtPath -ne $null) -and (-not $Pwsh)
 
 if ($DryRun) {
-    if ($RemoteControl) { $modeStr = "Remote Control (cloud-driven; may NOT be locally resumable) - opt-in" }
-    else { $modeStr = "LOCAL + resumable (reopen via 'claude --resume' from this directory)" }
+    if ($rcOn) { $modeStr = "LOCAL session + Remote Control (runs on this PC; also drive from phone/claude.ai)" }
+    else { $modeStr = "LOCAL only (no phone pairing; resumable via 'claude --resume' from this directory)" }
     if ($useWt) { $launcherStr = "Windows Terminal (wt.exe)" } else { $launcherStr = "PowerShell window" }
     Write-Host "Directory : $resolved"
     Write-Host "Session   : $Name"
@@ -125,7 +130,8 @@ if ($DryRun) {
 }
 
 if ($useWt) {
-    # New Windows Terminal window; -d sets the starting dir; -NoExit keeps the pane open.
+    # New Windows Terminal window; -d sets the starting dir; -NoExit keeps the pane open
+    # so the Remote Control pairing URL/QR stays readable.
     & $wtPath -w new -d "$resolved" powershell.exe -NoExit -Command $claudeCmd
 } else {
     # Fallback: a plain new PowerShell window.
@@ -133,11 +139,11 @@ if ($useWt) {
     Start-Process powershell.exe -ArgumentList @("-NoExit", "-Command", $inner) | Out-Null
 }
 
-if ($RemoteControl) {
-    Write-Host "Spawned Claude session '$Name' (Remote Control - CLOUD) in: $resolved"
-    Write-Host "Connect from the Claude mobile app or https://claude.ai/code - the new window shows the pairing URL/QR."
-    Write-Host "NOTE: a cloud-driven conversation may NOT be resumable from a local terminal."
+if ($rcOn) {
+    Write-Host "Spawned a LOCAL Claude session '$Name' WITH Remote Control in: $resolved"
+    Write-Host "Runs on THIS PC (full local control - type in the window) AND drivable from the Claude mobile app / https://claude.ai/code - the new window shows the pairing URL/QR."
+    Write-Host "Pass -Local next time if you want a pure local session with no phone pairing."
 } else {
-    Write-Host "Spawned a LOCAL, resumable Claude session in: $resolved"
+    Write-Host "Spawned a LOCAL-only Claude session in: $resolved (Remote Control disabled via -Local)"
     Write-Host "Reopen it later from a terminal in THIS directory via 'claude --resume' (pick it) or 'claude --continue' (most recent)."
 }
