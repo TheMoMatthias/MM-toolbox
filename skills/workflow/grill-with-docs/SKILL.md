@@ -22,47 +22,15 @@ Ask in **batched, selectable `AskUserQuestion` rounds** — up to 4 per call, ea
 - top-tier scope (multi-subsystem refactor, new-from-scratch, deep research with >5 open unknowns): 30–50 questions across ≥8 batched rounds
 - When scope is ambiguous, default to asking MORE.
 
-If a question can be answered by exploring the codebase, explore the codebase instead of asking.
+**Facts vs decisions:** if a *fact* can be found by exploring the codebase, look it up rather than asking. The *decisions*, though, are the user's alone — put each one to them and wait for their answer. "Explore instead of asking" is licence to skip asking for facts; it is never licence to answer a decision on the user's behalf. This matters most when this skill runs unattended inside another flow (e.g. `/wayfinder`, `/improve-codebase-architecture`) rather than directly against a live human — a grilling step that answers its own decisions has broken the human-in-the-loop contract by definition.
 
 </what-to-do>
 
 <supporting-info>
 
-## Domain awareness
+## Building the domain model — run `/domain-modeling`
 
-During codebase exploration, also look for existing documentation:
-
-### File structure
-
-Most repos have a single context:
-
-```
-/
-├── CONTEXT.md
-├── docs/
-│   └── adr/
-│       ├── 0001-event-sourced-orders.md
-│       └── 0002-postgres-for-write-model.md
-└── src/
-```
-
-If a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The map points to where each one lives:
-
-```
-/
-├── CONTEXT-MAP.md
-├── docs/
-│   └── adr/                          ← system-wide decisions
-├── src/
-│   ├── ordering/
-│   │   ├── CONTEXT.md
-│   │   └── docs/adr/                 ← context-specific decisions
-│   └── billing/
-│       ├── CONTEXT.md
-│       └── docs/adr/
-```
-
-Create files lazily — only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
+This skill actively builds and sharpens the project's domain model (`CONTEXT.md`, ADRs in `docs/adr/`) as decisions crystallise during the grill — that discipline (challenging fuzzy terms against the glossary, stress-testing scenarios, cross-referencing the code, updating `CONTEXT.md` inline, when an ADR earns its keep) lives in the `domain-modeling` skill so `improve-codebase-architecture` and other skills can reuse it too. Run `/domain-modeling` **inline, throughout the grill** — not as a separate pass at the end. It also defines the file-structure convention (single `CONTEXT.md` vs a multi-context `CONTEXT-MAP.md`) for repos this skill hasn't seen before.
 
 ## Quality lenses (domain dispatch)
 
@@ -88,47 +56,13 @@ In every round, **AT LEAST ONE question must CHALLENGE** the user's plan with a 
 - "Who's the worst-case caller / failure path here?"
 - "What's the cheapest, ugliest alternative that satisfies 80% of the goal?"
 
-## During the session
+## End-of-grill CONTEXT.md checkpoint
 
-### Challenge against the glossary
+Even though `/domain-modeling` should already be updating `CONTEXT.md` inline throughout (still preferred), the **final round must always include a question of the form**: "I used these novel terms in this grill: X, Y, Z — add to CONTEXT.md?" with selectable options.
 
-When the user uses a term that conflicts with the existing language in `CONTEXT.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y — which is it?"
+This is a backstop against glossary debt accumulating across grills — the failure mode where many novel recurring terms are introduced in a session but none get canonicalized because each individually felt minor. Workflow / process terms (autonomy contract, DONE-WHEN, DEFAULTS, DEFERRED, skip-grill threshold) do **NOT** belong in the project's `CONTEXT.md` — they're meta-process, not codebase glossary. This checkpoint is this skill's own addition on top of `/domain-modeling` — the shared skill has no notion of "end of grill."
 
-### Sharpen fuzzy language
-
-When the user uses vague or overloaded terms, propose a precise canonical term. "You're saying 'account' — do you mean the Customer or the User? Those are different things."
-
-### Discuss concrete scenarios
-
-When domain relationships are being discussed, stress-test them with specific scenarios. Invent scenarios that probe edge cases and force the user to be precise about the boundaries between concepts.
-
-### Cross-reference with code
-
-When the user states how something works, check whether the code agrees. If you find a contradiction, surface it: "Your code cancels entire Orders, but you just said partial cancellation is possible — which is right?"
-
-### Update CONTEXT.md inline
-
-When a term is resolved, update `CONTEXT.md` right there. Don't batch these up — capture them as they happen. Use the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md).
-
-`CONTEXT.md` should be totally devoid of implementation details. Do not treat `CONTEXT.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else.
-
-### End-of-grill CONTEXT.md checkpoint
-
-Even if you've been updating `CONTEXT.md` inline (still preferred), the **final round must always include a question of the form**: "I used these novel terms in this grill: X, Y, Z — add to CONTEXT.md?" with selectable options.
-
-This is a backstop against glossary debt accumulating across grills — the failure mode where many novel recurring terms are introduced in a session but none get canonicalized because each individually felt minor. Workflow / process terms (autonomy contract, DONE-WHEN, DEFAULTS, DEFERRED, skip-grill threshold) do **NOT** belong in the project's `CONTEXT.md` — they're meta-process, not codebase glossary.
-
-### Offer ADRs sparingly
-
-Only offer to create an ADR when all three are true:
-
-1. **Hard to reverse** — the cost of changing your mind later is meaningful
-2. **Surprising without context** — a future reader will wonder "why did they do it this way?"
-3. **The result of a real trade-off** — there were genuine alternatives and you picked one for specific reasons
-
-If any of the three is missing, skip the ADR. Use the format in [ADR-FORMAT.md](./ADR-FORMAT.md).
-
-### Close with the autonomy contract
+## Close with the autonomy contract
 
 End the grill by writing — into the spec / run-file — the three fields that license a long *unattended* run:
 
@@ -138,7 +72,7 @@ End the grill by writing — into the spec / run-file — the three fields that 
 
 Present these alongside the shared-understanding summary and get sign-off. They are what turn "shared understanding" into "permission to run for a long time on its own."
 
-### Delivery format
+## Delivery format
 
 Ask in **batched, selectable `AskUserQuestion` rounds** (up to 4 per call, options + free-text "Other"), firing successive rounds until aligned — *not* one free-text question at a time. This overrides the one-at-a-time default above; the user prefers clicking answers.
 

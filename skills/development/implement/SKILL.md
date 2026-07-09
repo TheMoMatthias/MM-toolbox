@@ -27,6 +27,8 @@ For each change, in dependency order:
 4. **Check for consistency** — ensure imports, naming, and patterns match the rest of the codebase
 5. Mark each change as done before moving to the next
 
+Where the change is new behavior rather than a mechanical edit, drive it with `/tdd` at pre-agreed seams (see the `tdd` skill for what a seam is and why it must be confirmed before any test is written) instead of writing implementation and tests separately.
+
 **Rules:**
 - Follow all CLAUDE.md guidelines (performance-first, no look-ahead bias, Europe/Berlin timezone, centralized paths, etc.)
 - Do NOT add unrelated improvements, docstrings, or refactors beyond what was specified
@@ -43,10 +45,13 @@ After ALL changes are implemented:
 5. **Functional smoke test** — if possible, write and run a minimal test that exercises the new/changed code paths
 6. **Edge cases** — consider and test boundary conditions (empty inputs, None values, zero-length arrays, etc.)
 
-## Phase 4: Report
+## Phase 4: Review & Report
+
+Before considering the work done, run `/code-review` against the diff — its Standards axis (repo conventions plus the Fowler smell baseline) and Spec axis (does the diff faithfully implement what was asked) run as parallel sub-agents so neither pollutes the other. Fix what it flags, or note explicitly why a flagged item was left as-is.
 
 Provide a concise summary:
 - **Changes made**: List each file and what was changed (1 line each)
 - **Tests passed**: What was validated and the results
+- **Code review findings**: What `/code-review` flagged and how each was resolved
 - **Issues found**: Any problems discovered during testing (and whether they were fixed)
 - **Warnings**: Anything that needs manual verification or could not be automatically tested

@@ -6,10 +6,10 @@ Skills are user-invocable workflows that Claude Code can run via the `Skill` too
 
 | Category | Purpose | Skills |
 |---|---|---|
-| [workflow/](workflow/) | The grill-spec-execute discipline + handoffs + session orchestration | `grill-with-docs`, `grill-me`, `handoff`, `spawn-claude-session`, `reevaluate` |
-| [development/](development/) | Building features, tests, PRDs, issues | `implement`, `tdd`, `write-a-skill`, `to-issues`, `to-prd` |
-| [diagnosis/](diagnosis/) | Bug hunting, audits, debugging loops | `diagnose`, `audit`, `audit-loop`, `audit-loop-codebase` |
-| [architecture/](architecture/) | Codebase-wide refactor / shape work | `improve-codebase-architecture` |
+| [workflow/](workflow/) | The grill-spec-execute discipline + handoffs + session orchestration | `grill-with-docs`, `grill-me`, `domain-modeling`, `grilling`, `handoff`, `spawn-claude-session`, `reevaluate`, `writing-great-skills`, `teach` |
+| [development/](development/) | Building features, tests, PRDs, issues | `implement`, `tdd`, `write-a-skill`, `to-issues`, `to-prd`, `prototype`, `research`, `resolving-merge-conflicts`, `triage`, `wayfinder`, `setup-engineering-skills` |
+| [diagnosis/](diagnosis/) | Bug hunting, audits, debugging loops | `diagnose`, `audit`, `audit-loop`, `audit-loop-codebase`, `diagnosing-bugs`, `code-review` |
+| [architecture/](architecture/) | Codebase-wide refactor / shape work | `improve-codebase-architecture`, `codebase-design` |
 | [orchestration/](orchestration/) | Multi-agent coordination | `agent-cluster` |
 
 ## When to add a new skill vs. an agent

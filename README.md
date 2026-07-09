@@ -13,10 +13,10 @@ mm-toolbox/
 ├── hooks/
 │   └── grill-gate.ps1  # UserPromptSubmit hook — injects grill reminder on refactor-class prompts
 ├── skills/
-│   ├── workflow/       # grill-with-docs, grill-me, handoff, spawn-claude-session, reevaluate
-│   ├── development/    # implement, tdd, write-a-skill, to-issues, to-prd
-│   ├── diagnosis/      # diagnose, audit, audit-loop, audit-loop-codebase
-│   ├── architecture/   # improve-codebase-architecture
+│   ├── workflow/       # grill-with-docs, grill-me, domain-modeling, grilling, handoff, spawn-claude-session, reevaluate, writing-great-skills, teach
+│   ├── development/    # implement, tdd, write-a-skill, to-issues, to-prd, prototype, research, resolving-merge-conflicts, triage, wayfinder, setup-engineering-skills
+│   ├── diagnosis/      # diagnose, audit, audit-loop, audit-loop-codebase, diagnosing-bugs, code-review
+│   ├── architecture/   # improve-codebase-architecture, codebase-design
 │   └── orchestration/  # agent-cluster
 ├── agents/
 │   ├── core/           # universal: code-reviewer, function-tester, systems-architect, research-engineer, data-quality-engineer, ml-engineer

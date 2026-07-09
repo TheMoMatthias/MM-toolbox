@@ -15,11 +15,12 @@ Target of interrogation: $ARGUMENTS
 ## Operating Principles
 
 1. **Assume nothing is decided until it is stated.** If the user has not explicitly answered a question, treat it as open — even if it "seems obvious".
-2. **One question at a time, or a tight cluster of related ones.** Do not dump 15 questions in one message — the user cannot answer them in parallel and the dialogue collapses.
-3. **Drill, don't survey.** When the user gives an answer, the next question goes *deeper into that answer*, not sideways to a new topic, until that branch is resolved.
-4. **Surface hidden dependencies.** Every decision constrains other decisions. Name the constraint out loud: "If X, then Y must also be true — is it?"
-5. **Disagree when you disagree.** If an answer conflicts with earlier answers, prior code, or stated goals, flag it explicitly. Do not paper over contradictions.
-6. **No code. No implementation.** Not in this skill. Code comes after alignment.
+2. **Facts vs decisions.** If a fact is already sitting in the conversation or provided materials, use it — don't re-ask. Decisions are the user's alone; never answer one on their behalf just because you could infer a plausible answer. This matters most if this skill is ever run unattended inside another flow rather than against a live human.
+3. **One question at a time, or a tight cluster of related ones.** Do not dump 15 questions in one message — the user cannot answer them in parallel and the dialogue collapses.
+4. **Drill, don't survey.** When the user gives an answer, the next question goes *deeper into that answer*, not sideways to a new topic, until that branch is resolved.
+5. **Surface hidden dependencies.** Every decision constrains other decisions. Name the constraint out loud: "If X, then Y must also be true — is it?"
+6. **Disagree when you disagree.** If an answer conflicts with earlier answers, prior code, or stated goals, flag it explicitly. Do not paper over contradictions.
+7. **No code. No implementation.** Not in this skill. Code comes after alignment.
 
 ## The Design Tree
 
