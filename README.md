@@ -11,7 +11,8 @@ mm-toolbox/
 ├── CLAUDE.md           # global operating convention (loaded on every session, every repo)
 ├── keybindings.json
 ├── hooks/
-│   └── verify-loop.ps1 # Stop hook — opt-in self-healing verify loop (see hooks/README.md)
+│   ├── grill-gate.ps1   # UserPromptSubmit hook — fires every prompt, content-blind reminder of the mandatory grill gate
+│   └── verify-loop.ps1  # Stop hook — opt-in self-healing verify loop (see hooks/README.md)
 ├── skills/
 │   ├── workflow/       # grill-with-docs, grill-me, domain-modeling, grilling, handoff, spawn-claude-session, reevaluate, writing-great-skills, teach
 │   ├── development/    # implement, tdd, write-a-skill, to-issues, to-prd, prototype, research, resolving-merge-conflicts, triage, wayfinder, setup-engineering-skills

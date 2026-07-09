@@ -1,16 +1,19 @@
 # hooks
 
-Stop hook for the Claude Code harness. Fail-open (any error -> exit 0; never blocks the session).
+UserPromptSubmit / Stop hooks for the Claude Code harness. Each hook is fail-open (any error -> exit 0; never blocks the session).
 
 | Hook | Type | Purpose |
 |---|---|---|
+| `grill-gate.ps1` | UserPromptSubmit | Fires on **every** prompt, unconditionally. Injects a short, content-blind reminder to apply the mandatory grill gate (`CLAUDE.md` -> "Mandatory grill gate") -- it never reads the prompt to decide anything, it only guarantees the check gets considered every turn instead of relying on the model remembering under mid-session momentum. The actual scope judgment (trivial / light-touch / non-trivial / major / top-tier) stays entirely with the model each time. Only names `/grill-with-docs` or `/grill-me` if they're actually installed on the machine. |
 | `verify-loop.ps1` | Stop (`asyncRewake`) | Self-healing verify loop. Inert unless armed. Arm by writing `<repo>/.claude/verify-loop.active` (JSON: `{verify_command, attempt:0, max_attempts:5, deadline:<epoch+1800>, status:"active"}`). While armed, every Stop re-runs the verify command and re-wakes the model until it passes; capped at 5 attempts AND 30 minutes. On GREEN it walks the model through a safe commit-and-push (never `git add -A`, Critical-tier gate). Disarm = delete the sentinel. See global `CLAUDE.md` -> "Self-healing verify loop" for the full contract. |
 
-## `grill-gate.ps1` — removed
+## `grill-gate.ps1` history — two very different designs
 
-This repo used to ship a `UserPromptSubmit` hook that pattern-matched prompt text for refactor-class keywords and injected a grill reminder. It was removed: keyword regex couldn't distinguish a task from a question or a discussion (it kept mis-firing — e.g. on "critically evaluate X" whenever X happened to contain a trigger word), and the thing that actually mattered — batched, selectable `AskUserQuestion` rounds — lives in `grill-with-docs`'s own `SKILL.md`, not the hook, so removing the hook doesn't touch that behaviour at all.
+**v1 (removed):** pattern-matched prompt text for refactor-class keywords (structural / systemic / risk / tooling-sync buckets) and only fired when something matched. It kept mis-firing — e.g. on "critically evaluate X" whenever X happened to contain a trigger word like "integrate" — because keyword regex fundamentally cannot distinguish a task from a question or a discussion. That's a *content-classification* problem, and a pre-flight hook that never actually reads the request in context is the wrong tool for it.
 
-Its job now happens in-conversation instead of pre-flight: see global `CLAUDE.md` -> "Mandatory grill gate" for the replacement — a single selectable question, asked before any non-obviously-trivial work, offering proceed / light-touch / full grill with the model's own scope read as context. No hook, no keyword list to maintain, no false positives from surface text.
+**v2 (current):** stopped trying to classify content at all. It fires on every single prompt with the same short, generic reminder regardless of what the prompt says, and leaves the actual "is this trivial / light-touch / non-trivial / major / top-tier" judgment to the model, every time, informed by whatever the model can see of the request. This trades "hook decides" for "hook guarantees the model decides" — it can no longer misclassify anything because it doesn't classify anything; the only thing it does is make sure the check isn't silently skipped once a long session's execute-mode momentum makes it easy to plow through a new non-trivial ask without re-triggering alignment.
+
+Note that the batched, selectable `AskUserQuestion` format this whole thing exists to protect lives in `grill-with-docs`'s own `SKILL.md`, not the hook, in either version — the hook only ever controlled *whether the check gets surfaced*, never *how the questions get asked once it is*.
 
 ## Wiring
 
@@ -19,6 +22,18 @@ Each hook is registered in `~/.claude/settings.json` (which is NOT in this repo 
 ```json
 {
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\<you>\\.claude\\hooks\\grill-gate.ps1"]
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "*",
@@ -36,13 +51,13 @@ Each hook is registered in `~/.claude/settings.json` (which is NOT in this repo 
 }
 ```
 
-The Stop hook is inert (exit 0) unless a project has `<repo>/.claude/verify-loop.active` — so registering it globally is safe.
+The Stop hook is inert (exit 0) unless a project has `<repo>/.claude/verify-loop.active` — so registering it globally is safe. `grill-gate.ps1` always produces output (unless neither `grill-with-docs` nor `grill-me` is installed on the machine) — that's intentional, see above.
 
 After `install.ps1` symlinks `~/.claude/hooks` to this repo, settings.json keeps working — paths don't change, so `args` never goes stale (it must, however, be re-typed per machine with that machine's actual username).
 
 ### Why `args`, not a `%VAR%` / `$env:VAR` shell string
 
-This wiring broke twice, in two different ways, on two different real machines, both trying to reference the home directory inside a single `command` string (back when `grill-gate.ps1` was still wired the same way):
+This wiring broke twice, in two different ways, on two different real machines, both trying to reference the home directory inside a single `command` string:
 
 1. `%USERPROFILE%` (cmd/batch syntax) failed with `The argument '%USERPROFILE%\.claude\hooks\grill-gate.ps1' to the -File parameter does not exist` — whatever invoked the command didn't expand cmd-style `%VAR%` syntax, so PowerShell received it as a literal path containing percent signs.
 2. `$env:USERPROFILE` (PowerShell syntax) — which fixed machine 1 — then failed on machine 2 with `Processing -File ':USERPROFILE\.claude\hooks\grill-gate.ps1' failed`. That mangled path is the signature of a **POSIX shell** (bash/sh), not PowerShell, parsing the string first: `$env` reads as an unset shell variable (-> empty), leaving the literal `:USERPROFILE...` behind.
