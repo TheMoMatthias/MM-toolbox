@@ -9,7 +9,7 @@ UserPromptSubmit / SessionStart / Stop hooks for the Claude Code harness. Each h
 
 ## Wiring
 
-Each hook is registered in `~/.claude/settings.json` (which is NOT in this repo — it's machine-local). Example registration:
+Each hook is registered in `~/.claude/settings.json` (which is NOT in this repo — it's machine-local). **Recommended registration** — pass the path as an `args` entry rather than embedding it in a shell string, so no shell ever gets a chance to parse/mangle it:
 
 ```json
 {
@@ -20,7 +20,8 @@ Each hook is registered in `~/.claude/settings.json` (which is NOT in this repo 
         "hooks": [
           {
             "type": "command",
-            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\.claude\\hooks\\grill-gate.ps1\""
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\<you>\\.claude\\hooks\\grill-gate.ps1"]
           }
         ]
       }
@@ -31,7 +32,8 @@ Each hook is registered in `~/.claude/settings.json` (which is NOT in this repo 
         "hooks": [
           {
             "type": "command",
-            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\.claude\\hooks\\verify-loop.ps1\"",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\<you>\\.claude\\hooks\\verify-loop.ps1"],
             "asyncRewake": true
           }
         ]
@@ -43,27 +45,22 @@ Each hook is registered in `~/.claude/settings.json` (which is NOT in this repo 
 
 The Stop hook is inert (exit 0) unless a project has `<repo>/.claude/verify-loop.active` — so registering it globally is safe.
 
-After `install.ps1` symlinks `~/.claude/hooks` to this repo, settings.json keeps working — paths don't change.
+After `install.ps1` symlinks `~/.claude/hooks` to this repo, settings.json keeps working — paths don't change, so `args` never goes stale (it must, however, be re-typed per machine with that machine's actual username).
 
-### Why `$env:USERPROFILE` and not `%USERPROFILE%`
+### Why `args`, not a `%VAR%` / `$env:VAR` shell string — and why this is on its second rewrite
 
-Claude Code invokes each hook `command` string through **PowerShell directly on Windows** (not `cmd.exe`). `%USERPROFILE%` is cmd/batch syntax — PowerShell doesn't expand it, it treats the whole thing as a literal path containing percent signs, and the hook fails with `The argument '%USERPROFILE%\.claude\hooks\grill-gate.ps1' to the -File parameter does not exist.` Use PowerShell's own expansion `$env:USERPROFILE` instead. (Alternative: pass a hardcoded absolute path — works on one machine but isn't portable.)
+This wiring has broken twice, in two different ways, on two different real machines, both trying to reference the same home directory inside a single `command` string:
 
-Alternate wiring that avoids the shell-quoting question entirely — pass the path as an arg rather than embedding it in a shell string:
+1. `%USERPROFILE%` (cmd/batch syntax) failed with `The argument '%USERPROFILE%\.claude\hooks\grill-gate.ps1' to the -File parameter does not exist` — whatever invoked the command didn't expand cmd-style `%VAR%` syntax, so PowerShell received it as a literal path containing percent signs.
+2. `$env:USERPROFILE` (PowerShell syntax) — which fixed machine 1 — then failed on machine 2 with `Processing -File ':USERPROFILE\.claude\hooks\grill-gate.ps1' failed`. That mangled path is the signature of a **POSIX shell** (bash/sh), not PowerShell, parsing the string first: `$env` reads as an unset shell variable (-> empty), leaving the literal `:USERPROFILE...` behind.
 
-```json
-{
-  "type": "command",
-  "command": "powershell.exe",
-  "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\<you>\\.claude\\hooks\\grill-gate.ps1"]
-}
-```
+The conclusion: **which shell actually parses a hook's `command` string is not guaranteed to be the same across machines/installs**, so no single `%VAR%` or `$env:VAR` syntax is safe to standardize on. The `args` array sidesteps the whole question — each entry is passed as a literal argv token, so nothing tokenizes or expands the path string regardless of what (if anything) sits between Claude Code and the `powershell.exe` process. The only cost is that the absolute path must be **hardcoded per machine** (swap `<you>` for the real username) rather than resolved from an env var — acceptable because `settings.json` is already machine-local and never synced by this repo.
 
-The `args` form takes a hardcoded absolute path (no variable expansion), so it's less portable but bullet-proof.
+If you still want to try a shell-string form for brevity, verify it round-trips on *this specific machine* before trusting it: pipe a test prompt through the hook directly (`'{"prompt":"test"}' | powershell.exe -NoProfile -File <path>`) and separately watch for a `UserPromptSubmit hook error` banner on a real prompt — don't assume a syntax that worked on another machine will work here.
 
 ## Notes
 
 - **ASCII-only.** PowerShell .ps1 files in this repo MUST be ASCII (no curly quotes, no `→`, no `≥` — the hook stream chokes on UTF-16 BOMs and the heredocs become unparseable). The grill-gate uses `>=` and `->` for that reason.
 - **Fail-open.** Every hook starts with `$ErrorActionPreference = 'Stop'` and an outer try/catch that exits 0 on any error. A broken hook should never block a prompt.
 - **No interactive prompts.** Hooks run non-interactively. Use `Console::IsInputRedirected` guard to skip when stdin isn't piped.
-- **Windows variable expansion.** Use `$env:USERPROFILE` (PowerShell), never `%USERPROFILE%` (cmd) — Claude Code runs hooks via PowerShell. See the "Why" section above.
+- **Windows path wiring.** Use the `args`-array form with a hardcoded absolute path, not a `%VAR%` / `$env:VAR` shell string — which shell parses `command` is not guaranteed across machines. See the "Why" section above.
