@@ -17,10 +17,11 @@ Interview me relentlessly about every aspect of this plan until we reach a share
 Ask in **batched, selectable `AskUserQuestion` rounds** — up to 4 per call, each with selectable options + free-text "Other" — firing successive rounds until aligned. **NOT** one free-text question at a time. The user strongly prefers clicking answers.
 
 **Scope-based question count:**
+- light-touch (clears the skip-grill check only narrowly — still 1 subsystem, non-Critical-tier, but the file count or shape pushes it just past trivial — AND the Explore map shows a well-precedented pattern to follow, genuinely low ambiguity): 3–6 questions in a single batched round
 - non-trivial change: 12–18 questions across ≥3 batched rounds
 - major refactor / new subsystem / Critical-tier surface: 25–35 questions across ≥6 batched rounds
 - top-tier scope (multi-subsystem refactor, new-from-scratch, deep research with >5 open unknowns): 30–50 questions across ≥8 batched rounds
-- When scope is ambiguous, default to asking MORE.
+- When scope is ambiguous, default to asking MORE — light-touch requires low ambiguity as well as small size; size alone doesn't qualify for it.
 
 **Facts vs decisions:** if a *fact* can be found by exploring the codebase, look it up rather than asking. The *decisions*, though, are the user's alone — put each one to them and wait for their answer. "Explore instead of asking" is licence to skip asking for facts; it is never licence to answer a decision on the user's behalf. This matters most when this skill runs unattended inside another flow (e.g. `/wayfinder`, `/improve-codebase-architecture`) rather than directly against a live human — a grilling step that answers its own decisions has broken the human-in-the-loop contract by definition.
 
