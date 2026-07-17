@@ -30,7 +30,7 @@ For each change, in dependency order:
 Where the change is new behavior rather than a mechanical edit, drive it with `/tdd` at pre-agreed seams (see the `tdd` skill for what a seam is and why it must be confirmed before any test is written) instead of writing implementation and tests separately.
 
 **Rules:**
-- Follow all CLAUDE.md guidelines (performance-first, no look-ahead bias, Europe/Berlin timezone, centralized paths, etc.)
+- Follow all of the target repo's CLAUDE.md guidelines (its performance, correctness, data-invariant, timezone, and path conventions, etc.)
 - Do NOT add unrelated improvements, docstrings, or refactors beyond what was specified
 - If a suggested change conflicts with existing code or seems incorrect, flag it — do not silently skip it
 

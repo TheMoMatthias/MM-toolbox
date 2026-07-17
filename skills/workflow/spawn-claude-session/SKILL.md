@@ -26,7 +26,7 @@ never affects interactive or Remote-Control sessions. If the phone link drops mi
 run `/remote-control` inside the session to re-attach.)
 
 **Launch location** — where it opens (resume context is tied to this directory):
-- **Choose it:** pass `-Directory "<path>"` (e.g. the AlgoTrader repo).
+- **Choose it:** pass `-Directory "<path>"` (e.g. a specific project repo).
 - **Smart auto-detect:** omit `-Directory` and it uses the current conversation's cwd.
   Say which directory you used in your reply.
 

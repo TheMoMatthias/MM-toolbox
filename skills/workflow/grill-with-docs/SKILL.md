@@ -38,7 +38,7 @@ This skill actively builds and sharpens the project's domain model (`CONTEXT.md`
 After classifying the domain from the prompt + Explore map, every round MUST cover the required lenses. **≥1 question per round per required lens.** If the prompt spans multiple domains, take the union of lenses.
 
 - **DB / data-pipeline / infra / dev-tooling** → scalability + efficiency + production + long-term
-- **Business-logic / signal-design / labeling / transforms / pricing** → production + long-term + look-ahead-risk + downstream-invalidation
+- **Business-logic / domain rules / data transforms / pricing** → production + long-term + temporal-correctness (ordering / look-ahead) + downstream-invalidation
 - **Frontend / UI** → UX + accessibility + maintainability + performance
 - **Auth / security / payments / compliance** → threat-model + compliance + production + long-term
 - **Workflow / config / cross-machine tooling** → portability + maintainability + scalability + sync-drift

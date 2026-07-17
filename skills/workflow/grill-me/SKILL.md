@@ -50,7 +50,7 @@ Goal
 │   ├── How will we know it works?
 │   ├── What is the smallest test that would fail today?
 │   ├── What edge cases are we explicitly accepting / rejecting?
-│   └── What look-ahead / leakage / ordering risks exist?
+│   └── What ordering / concurrency / data-leakage risks exist?
 ├── Risk
 │   ├── What is the blast radius if this is wrong?
 │   ├── What is reversible? What is one-way?
