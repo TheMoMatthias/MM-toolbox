@@ -1,25 +1,37 @@
 ---
 name: audit-loop-codebase
-description: Autonomously run /audit across the entire repository (or a subtree / domain), fix every finding (Critical → High → Medium → Low), verify the fixes, and re-audit until two consecutive scans return zero issues. Use when you want a hands-off, full-codebase cleanup pass — slower and broader than /audit-loop.
+description: Autonomously run a comprehensive audit across an entire repository (or a subtree / domain), fix every finding (Critical → High → Medium → Low), verify the fixes, and re-audit until two consecutive scans return zero issues. Project-agnostic — it grounds in the target repo's own CLAUDE.md, structure, and toolchain. Use when you want a hands-off, full-codebase cleanup pass — slower and broader than /audit-loop.
 disable-model-invocation: true
-argument-hint: [optional: <domain-keyword> | <subdirectory>] [--max-iters N] [--include-low false] [--exclude path,path]
+argument-hint: [optional: <domain-keyword> | <subdirectory> | <glob>] [--max-iters N] [--include-low false] [--exclude path,path]
 effort: max
 ---
 
 # Autonomous Audit + Fix Loop (whole-repository scope)
 
-This skill is the repo-wide twin of `/audit-loop`. Same loop body, broader scope, longer runtime, higher risk surface.
+This skill is the repo-wide twin of `/audit-loop`: same loop body, broader scope, longer runtime, higher risk surface. It is **project-agnostic** — nothing about the target stack is hard-coded. It grounds itself in the *target repository* (its `CLAUDE.md`, layout, language/toolchain, and test runner) and lets those govern critical surfaces, prohibitions, verification commands, and domain lenses.
 
 **Scope defaults to the entire repository:**
-- All tracked files under the project root.
-- Excludes generated artifacts, dependencies, binary blobs, and lockfiles by default (`node_modules/**`, `venv/**`, `__pycache__/**`, `*.parquet`, `*.duckdb`, `*.lock`, `infra/postgres-backups/**`).
+- All tracked files under the project root (`git ls-files`).
+- Excludes generated artifacts, dependencies, binary blobs, and lockfiles by default (`node_modules/**`, virtualenvs, `__pycache__/**`, `dist/**`, `build/**`, `*.lock`, data blobs like `*.parquet`/`*.duckdb`/`*.sqlite`, backup dirs).
 - A subdirectory or domain keyword narrows the sweep but keeps the "full-pass" semantics within that scope.
 
 For audits scoped to in-flight branch work, use `/audit-loop` instead.
 
 ---
 
-## Step 0: Resolve Scope and Loop Parameters
+## Step 0: Ground in the Target Project, then Resolve Scope
+
+### Step 0a — Project grounding (do this first, every run)
+
+Before resolving scope, read the ground truth for *this* repo so every later phase is project-correct:
+
+1. **Conventions:** read the repo's `CLAUDE.md` / `AGENTS.md` / equivalent, including nested ones. Extract: critical-surface / change-risk classification, explicit prohibitions ("never do X"), git/branch rules, test/verify commands, and any data/invariant rules (timezone, precision, backend/portability, schema versioning, framework bans, etc.). **These override every default in this skill.**
+2. **Layout & stack:** detect the primary language(s), package manager, and test runner from the manifest (`pyproject.toml`/`package.json`/`go.mod`/`Cargo.toml`/…) and directory structure. Record the correct **syntax-check**, **import/build-check**, and **test** commands for later phases (e.g. Python → `python -c "import ast; ast.parse(...)"` + `pytest`; TS/JS → `tsc --noEmit` / `node --check` + the project's test script; compiled languages → their compiler; etc.).
+3. **Subsystem map:** derive the repo's real top-level source directories/packages — these become the subsystem buckets that drive per-bucket parallel dispatch in Phase A.
+
+If the repo has no CLAUDE.md, fall back to the generic critical-surface heuristic in Phase C and note that you inferred it.
+
+### Step 0b — Scope resolution
 
 The first non-flag argument selects scope mode. Resolution order:
 
@@ -27,35 +39,26 @@ The first non-flag argument selects scope mode. Resolution order:
 2. **Explicit subdirectory or glob**.
 3. **Default = whole repository**.
 
-### Mode A — Domain keyword
+#### Mode A — Domain keyword (inferred from the repo, not a fixed list)
 
-If the first argument matches a key (or any of its aliases) in the table below, expand it to the listed file set. Multiple keywords may be combined comma-separated (e.g. `/audit-loop-codebase ui,backend`).
+There is **no hard-coded domain table**. Resolve a keyword against *this repo's actual structure* (from Step 0a):
 
-| Keyword (canonical) | Aliases | Expands to |
-|---|---|---|
-| `userinterface` | `ui`, `frontend`, `react`, `web` | `terminal/frontend/**/*.{ts,tsx,js,jsx,css,html}` |
-| `backend` | `api`, `terminal-backend`, `fastapi`, `routers` | `terminal/backend/**/*.py` |
-| `datahub` | `hub`, `daemon`, `providers`, `ingest` | `datahub/**/*.py` |
-| `dataloader` | `data-loader`, `training-pipeline`, `features` | `data_loader/**/*.py` |
-| `trading` | `realtime`, `execution`, `api-trader`, `runner` | `api_trader/**/*.py` |
-| `database` | `db`, `postgres`, `timescale`, `connection` | `db/**/*.{py,sql}` |
-| `infra` | `infrastructure`, `ops`, `docker`, `compose` | `infra/**/*.{ps1,bat,sh,yml,yaml,conf,sql,env*}`, `Dockerfile*`, `docker-compose*.yml` |
-| `ml` | `machine-learning`, `models`, `keras`, `optuna` | `machine_learning/**/*.py` |
-| `backtest` | `backtesting`, `vectorbt` | `backtesting/**/*.py` |
-| `config` | `configuration`, `paths`, `settings` | `config/**/*.{py,ini,yaml,yml,csv}` |
-| `utils` | `utilities`, `helpers`, `logging` | `utils/**/*.py` |
-| `tests` | `test`, `pytest` | `tests/**/*.py` |
-| `tools` | `migration`, `scripts` | `tools/**/*.py` |
+- Normalize the keyword (case-insensitive; hyphens/underscores/spaces interchangeable) and match it against the repo's real top-level directories and packages, plus common conventional aliases:
+  - `ui` / `frontend` / `web` / `client` → the front-end source tree (e.g. `**/*.{ts,tsx,js,jsx,vue,svelte,css,html}` under the detected UI dir).
+  - `backend` / `api` / `server` → the server/app source (routers, handlers, services).
+  - `database` / `db` / `schema` → DB access + migration + schema files.
+  - `infra` / `ops` / `deploy` → Dockerfiles, compose, IaC, CI, shell/PS scripts, server config.
+  - `tests` → the test tree. `config` → configuration. `utils` / `helpers` → shared utilities. `docs` → documentation.
+  - Domain-specific names (a subsystem, service, or package) → the matching directory.
+- Combine multiple keywords comma-separated (e.g. `ui,backend`).
+- Fuzzy match: case-insensitive substring against real top-level directory/package names. Exactly one match → use it; multiple → list candidates and ask; none → treat the argument as a path/glob (Mode B) or report that no such subsystem exists.
+- Expand to the concrete file list via the repo's real paths, then drop generated/binary/vendored files.
 
-Resolution rules:
-- Match canonical key OR any alias, case-insensitive, hyphens/underscores/spaces interchangeable.
-- If no exact alias match, attempt a fuzzy match: case-insensitive substring against canonical keys + top-level directory names. If exactly one match → use it; if multiple → list candidates and ask.
-
-### Mode B — Explicit subdirectory or glob
+#### Mode B — Explicit subdirectory or glob
 
 If the argument starts with `./`, `/`, contains a `/`, or contains a glob metacharacter (`*`, `?`, `[`), treat it as a path/glob and pass it directly to `git ls-files <path>`.
 
-### Mode C — Default (whole repository)
+#### Mode C — Default (whole repository)
 
 If no scope argument is provided, build the file list with `git ls-files`.
 
@@ -63,9 +66,7 @@ If no scope argument is provided, build the file list with `git ls-files`.
 
 Apply default + user-supplied exclusion patterns (`--exclude path,path` adds to the defaults). Drop binary files.
 
-Bucket the resolved files by subsystem (use the directory layout in CLAUDE.md):
-`db/`, `infra/`, `tools/`, `datahub/`, `data_loader/`, `api_trader/`, `terminal/backend/`, `terminal/frontend/`, `config/`, `backtesting/`, `machine_learning/`, `utils/`, `tests/`.
-This bucketing drives Phase A's parallel agent dispatch — each subsystem gets a focused sub-audit so no agent receives an unmanageable file list.
+**Bucket the resolved files by subsystem** using the repo's real top-level layout (from Step 0a) — one bucket per major source directory/package. This bucketing drives Phase A's parallel agent dispatch: each subsystem gets a focused sub-audit so no agent receives an unmanageable file list.
 
 ### Flag parsing (independent of mode)
 
@@ -73,7 +74,7 @@ This bucketing drives Phase A's parallel agent dispatch — each subsystem gets 
 - `--include-low false` → skip Low-priority drainage (default **true**).
 - `--exclude path,path` → additional exclusions on top of the defaults.
 
-State scope back to the user, e.g. `Scope: domain "userinterface" → 87 files in 1 subsystem. Max iterations: 10. Estimated wall time per iteration: ~5 min.`
+State scope back to the user, e.g. `Scope: domain "frontend" → 87 files in 1 subsystem. Max iterations: 10. Estimated wall time per iteration: ~5 min.`
 
 If the resolved scope is empty, stop and report.
 
@@ -94,33 +95,46 @@ Run the body below repeatedly. Each iteration is one full repo-wide audit + fix 
 
 For each iteration `i = 1..max_iters`:
 
-#### Phase A — Audit (parallel, per-subsystem)
+#### Phase A — Audit (parallel, per-subsystem, lenses chosen to fit the code)
 
 For each subsystem bucket from Step 0, dispatch the specialist agents **in parallel** in a single message. Within a subsystem, run all relevant agents at once; across subsystems, batch dispatch is fine but watch the message size.
 
+Roster = a fixed core + domain lenses selected from what each subsystem's code actually is:
+
+**Always include (core), every bucket:**
 | Agent | Lens |
 |---|---|
 | `code-reviewer` | Design, maintainability, API quality, dead code, premature abstraction, test quality. |
-| `quant-trading-architect` | Look-ahead bias, leakage, slippage assumptions, barrier/labeling correctness, order construction. (Only for `data_loader/`, `datahub/`, `api_trader/`, `backtesting/`, `machine_learning/`.) |
-| `data-quality-scientist` | Statistical soundness, NaN propagation, dtype contracts, distribution sanity, transform correctness. (Only for data + ML + feature-engineering subsystems.) |
-| `database-architect` | Schema design, query plans, index coverage, migration safety, hypertable correctness. (Only for `db/`, `tools/`, `infra/`, and any router that issues SQL.) |
-| `security-auditor` | Auth, secrets, SQL injection, SSRF, dependency CVEs, file-upload paths, unsafe deserialization. (All subsystems.) |
-| `function-tester` | Bug hunting via concrete test cases for each modified function: edge cases, boundary inputs, type contracts. |
-| `observability-engineer` | Logging, metrics, alerting, runbook coverage. (Only for `infra/`, `terminal/backend/`, daemons.) |
-| `devops-infra-engineer` | Container, CI, deployment, secret handling, IaC correctness. (Only for `infra/`, `Dockerfile.*`, `docker-compose.yml`.) |
+| `security-auditor` | Auth, secrets, injection, SSRF, unsafe deserialization, dependency CVEs, file/upload/path handling, data-at-rest, PII/logging leaks. |
+| `function-tester` | Bug hunting via concrete test cases for each function: edge cases, boundary inputs, type contracts. |
+
+**Add the domain lenses that match a subsystem's detected stack** (skip those that don't apply):
+| If the subsystem involves… | Add lens |
+|---|---|
+| Data pipelines, ML, statistics, dtype/NaN contracts | `data-quality-scientist` |
+| Model architecture / training / inference | `ml-engineer` |
+| Trading / market / backtest / execution logic | `quant-trading-architect` |
+| SQL, schema, migrations, query performance | `database-architect` |
+| APIs, multi-tenancy, jobs/queues, webhooks, billing | `backend-platform-architect` |
+| UI / UX / layout / accessibility | `ui-design-architect` |
+| Containers, CI/CD, cloud, IaC | `devops-infra-engineer` |
+| Logging, metrics, tracing, SLOs | `observability-engineer` |
+
+Pick the smallest set that covers each bucket's real risk surface; state which lenses you chose per subsystem and why. (If none of the domain lenses fit a bucket, the core trio is sufficient.)
 
 Each agent receives a self-contained brief that includes:
 - The exact subsystem file list it owns.
-- A copy of Steps 2-5 from the original `/audit` skill (Logical Correctness, Domain-Specific Correctness, Completeness, Inefficiencies).
+- The project-grounding notes from Step 0a.
+- The audit checklist (Logical Correctness, Domain-Specific Correctness, Completeness, Inefficiencies — as in the `/audit` skill).
 - The required output format from Phase B below.
 - A one-line note: "Findings only — do not modify any files."
 
 #### Phase B — Synthesize Findings
 
 1. Collect every finding from every agent.
-2. Deduplicate by `(file, line_range, problem_signature)`. Cross-subsystem duplicates are common — merge them.
-3. Categorize by severity using the original `/audit` definitions:
-   - **Critical** — wrong results, data leakage, look-ahead bias, security holes, broken invariants.
+2. Deduplicate by `(file, line_range, problem_signature)`. Cross-subsystem duplicates are common — merge them, keeping both rationales.
+3. Categorize by severity:
+   - **Critical** — wrong results, data leakage, security holes, broken invariants, corruption, silent data loss.
    - **High** — perf bottlenecks (>2× speedup), missing error handling for likely failures, memory issues.
    - **Medium** — code quality, minor inefficiencies, edge cases for unlikely scenarios.
    - **Low** — style, naming, readability.
@@ -133,14 +147,16 @@ Each agent receives a self-contained brief that includes:
    problem:   <1-2 sentences>
    impact:    <what breaks if unfixed>
    fix:       <concrete change, code snippet preferred>
-   tier:      <safe | caution | critical>   # per CLAUDE.md "Change Risk Classification"
+   tier:      <safe | caution | critical>   # per the project's change-risk classification (Phase C)
    ```
 5. Print a short table: counts per severity × per subsystem, plus counts per tier.
 
-#### Phase C — Tier Gate (CLAUDE.md Critical surfaces)
+#### Phase C — Tier Gate (project-defined critical surfaces)
 
-Before applying any fix, scan the finding list for `tier: critical`. CLAUDE.md defines these as:
-> Feature engineering code, transforms, Postgres schema, IPC format, model weights, signal logic, order construction, `db/connection.py`, `infra/postgres.conf`, `infra/pg_hba.conf`.
+Before applying any fix, classify each finding's `tier` using **the target project's own critical-surface / change-risk definition** (from its CLAUDE.md, read in Step 0a). Those rules win.
+
+If the project defines none, infer `tier: critical` for high-blast-radius surfaces by these generic heuristics:
+> Security/auth/crypto code; anything handling money, secrets, or PII; data-write/verification/fail-loud paths; DB schema & migrations; persisted data formats & IPC/serialization contracts; public/published API contracts; model weights or their loading; infra/deploy config that affects production.
 
 If **any** finding is `tier: critical`:
 - **Pause the loop.**
@@ -155,28 +171,27 @@ Do not auto-apply Critical-tier edits under any circumstance.
 For each finding the loop will fix this iteration (Critical → High → Medium → Low order, all included by default):
 
 1. Re-read the target file(s) — never edit from memory.
-2. Grep all callers of any function being modified.
-3. Write or update a focused test that **fails** because of the bug (or asserts the missing behavior). Place it next to existing tests for the module. Skip this step only when the issue is a pure perf/style change with no behavioral delta.
+2. Grep all callers of any function/symbol being modified.
+3. Write or update a focused test that **fails** because of the bug (or asserts the missing behavior), using the project's own test framework/layout. Skip this step only when the issue is a pure perf/style change with no behavioral delta.
 4. Confirm the test fails before the fix.
 
 #### Phase E — Implement
 
 For each finding, in dependency order:
 1. Apply the change with `Edit` (or `Write` for genuinely new files).
-2. Honor every `❌ NEVER` rule in CLAUDE.md (no `bfill`, no `main_spread_*` features, no Optuna over data-pipeline params, no raw `psycopg.connect()`, no new `.md` files unless the user asked, etc.).
+2. **Honor every prohibition in the target repo's CLAUDE.md** (framework/library bans, forbidden patterns, file-creation rules, data/invariant rules, etc.). When the project forbids something, that ban is absolute here.
 3. Do **not** add unrelated improvements, refactors, or docstrings beyond the fix.
 
-#### Phase F — Verify
+#### Phase F — Verify (using the project's own toolchain)
 
-After every fix in this iteration is applied:
-1. Syntax check each modified Python file:
-   `python -c "import ast; ast.parse(open(r'FILE').read())"`
-2. Import check for each modified module.
-3. Run the tests written in Phase D — they must now **pass**.
-4. Run any pre-existing tests that cover the modified code (`pytest <path>` for affected paths).
-5. For frontend changes: `tsc --noEmit` on the touched packages.
-6. Type/contract spot-check: function signatures, return types, call sites still aligned.
-7. If any verification fails: revert the fix for that finding, mark it `regressed`, and surface it in the iteration report.
+After every fix in this iteration is applied, run the checks recorded in Step 0a:
+1. **Syntax check** each modified file with the language-appropriate command.
+2. **Import/build check** for each modified module.
+3. **Run the tests written in Phase D** — they must now **pass**.
+4. **Run pre-existing tests** covering the modified code via the project's runner.
+5. **Type/contract spot-check:** signatures, return types, and call sites still aligned.
+6. If any verification fails: revert the fix for that finding, mark it `regressed`, and surface it in the iteration report.
+7. **Cache/artifact awareness:** if a change alters a compiled/cached signature (native-compiled kernels, generated code, build caches), invalidate the relevant cache before verifying so a stale artifact can't mask the change.
 
 #### Phase G — Iteration Report (inline, no file)
 
@@ -221,7 +236,7 @@ One line per file: `path — N edits, tests added/updated`.
 - Anything the loop could not verify (state explicitly what and how the user can verify it manually).
 
 ### Downstream Effects
-Per CLAUDE.md "Phase 4 Mandatory Reporting": call out anything that requires retraining, schema version bump, daemon restart, or operator action.
+Call out anything that requires follow-up action per the project's conventions — retraining, schema/version bump, service or daemon restart, cache rebuild, dependency reinstall, or operator action.
 
 ### Scope Boundaries
 What was explicitly NOT changed (out-of-scope files, exclusions, deferred refactors).
@@ -230,13 +245,13 @@ What was explicitly NOT changed (out-of-scope files, exclusions, deferred refact
 
 ## Hard Rules for the Loop
 
-- **No `.md`, summary, or documentation files** are created during the loop unless the user explicitly asked.
+- **Honor the target repo's CLAUDE.md above this skill.** Its prohibitions, critical-surface rules, git workflow, and invariant rules (timezone, precision, backend portability, schema versioning, framework bans, etc.) are authoritative wherever they apply.
+- **No documentation/summary files** (`.md` or otherwise) are created during the loop unless the user explicitly asked.
 - **No git commits, pushes, or branch operations.** The loop modifies the working tree only.
-- **No deployments, daemon restarts, or service touches.** The loop is local.
-- **No edits to `infra/` operator scripts, Postgres config, or schema files** without an explicit user go-ahead per Phase C.
+- **No deployments, service/daemon restarts, or production touches.** The loop is local.
+- **No edits to infra/operator/deploy/schema config** without an explicit user go-ahead per Phase C.
 - **No silent skips.** If a finding cannot be fixed, the iteration report must say so and why.
-- **Cache awareness.** If a Numba kernel signature changes, clear `__pycache__` `.nbi`/`.nbc` files for that module before verification.
-- **Backend portability.** Any DB-touching fix must work under both `ALGOTRADER_DB_BACKEND=postgres` and `=duckdb` until DuckDB is formally retired.
-- **Timezone discipline.** Every data-handling fix asserts `str(df.index.tz) == 'Europe/Berlin'` where applicable.
-- **Subsystem batching.** Never give one agent a file list >50 files; bucket by subsystem and dispatch in parallel.
-- **Wall-time discipline.** Each iteration of a full-repo sweep can run 15–30 minutes. If a single iteration exceeds 60 minutes, halt and report so the user can narrow scope.
+- **Restore any global/env/config a fix or test mutates**, so one iteration cannot pollute the next.
+- **Cache invalidation on signature change**, so stale compiled/generated artifacts cannot mask an unverified fix.
+- **Subsystem batching.** Never give one agent an unmanageable file list; bucket by subsystem and dispatch in parallel.
+- **Wall-time discipline.** A full-repo iteration can run 15–30 minutes. If a single iteration exceeds 60 minutes, halt and report so the user can narrow scope.
