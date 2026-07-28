@@ -1,101 +1,139 @@
 ---
 name: spawn-claude-session
-description: Spawn a brand-new Claude Code session in a separate terminal window. DEFAULT = a LOCAL session WITH Remote Control enabled (`claude --remote-control <name>`) — it runs 100% on this PC with full functionality (all tools, file/bash, the project; you type in the local window) AND is drivable from the Claude mobile app / claude.ai so you can navigate it from your phone. It is fully locally RESUMABLE (`claude --resume` / `claude --continue`) — Remote Control does not disable local session persistence. Opens in a directory you CHOOSE (-Directory) or the smart-detected cwd. Pass -Local for a pure local session with no phone pairing. Use when the user wants to start/launch/open an independent Claude session or another Claude terminal.
+description: Spawn a brand-new Claude Code session in a separate terminal window, brief it with a handover file, and leave it BOTH locally resumable (`claude --resume`) and phone-drivable (Remote Control on by default). Critically, it SCRUBS the inherited CLAUDE_CODE_CHILD_SESSION / CLAUDE_CODE_SESSION_ID environment before starting claude - without that scrub a spawned session writes NO transcript and its whole history is lost. Pass -HandoffFile to hand over handover/plan/memory .md files. Opens in a directory you CHOOSE (-Directory) or the smart-detected cwd. Use when the user wants to start/launch/open an independent Claude session, hand work over to a fresh session, or open another Claude terminal.
 ---
 
 # spawn-claude-session
 
-Launch a **new, independent Claude Code session** in its own terminal window. This
-does **not** touch the current session — it opens a fresh one.
+Launch a **new, independent Claude Code session** in its own terminal window, hand it a
+**handover document**, and leave it **resumable** and **phone-drivable**. This does not
+touch the current session.
 
-**Default = a LOCAL session WITH Remote Control** (`claude --remote-control <name>`).
-The session runs **100% locally on this PC** with full functionality (all tools,
-file/bash access, the project — you type in the local terminal window normally) AND
-Remote Control adds a phone/web pairing so you can **also navigate/drive it from the
-Claude mobile app / claude.ai**. The compute is local; only the message relay is
-remote. Operator preference (2026-07-08): full local control + phone navigation.
+## 🔴 The bug this skill exists to prevent
 
-**Fully locally RESUMABLE — no trade-off** (confirmed vs the official Remote Control +
-Sessions docs, 2026-07-08). Remote Control sessions are ordinary interactive sessions:
-they persist their transcript locally at `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`
-and reopen via `claude --resume` (pick by name) / `claude --continue` (most recent) /
-`claude --resume <session-id>` from a terminal in that directory. Turns driven from the
-phone/browser **sync into the SAME local transcript**, so a local resume continues the
-FULL conversation. (`--no-session-persistence` only applies to headless `claude -p`; it
-never affects interactive or Remote-Control sessions. If the phone link drops mid-session,
-run `/remote-control` inside the session to re-attach.)
+**A spawned session inherits its parent's Claude environment, and that silently
+destroys its history.** The spawning session's shell exports:
 
-**Launch location** — where it opens (resume context is tied to this directory):
-- **Choose it:** pass `-Directory "<path>"` (e.g. a specific project repo).
-- **Smart auto-detect:** omit `-Directory` and it uses the current conversation's cwd.
-  Say which directory you used in your reply.
+```
+CLAUDE_CODE_CHILD_SESSION=1
+CLAUDE_CODE_SESSION_ID=<the PARENT session's id>
+CLAUDECODE=1  CLAUDE_CODE_ENTRYPOINT  CLAUDE_PID  CLAUDE_CODE_SSE_PORT
+```
 
-**`-Local` (alias `-NoRemoteControl`) = opt out of Remote Control** → a pure local
-session with **no phone pairing**. Resume is identical (both modes persist locally);
-`-Local` only removes the phone/web channel — use it when you don't want phone access.
+Every child process inherits them — through `wt.exe`, through `powershell.exe`, into
+`claude`. A `claude` that starts with those set is treated as a **child session** and
+**writes no transcript of its own**, so `claude --resume` can never find it and the
+entire conversation dies with the window.
+
+**Measured 2026-07-28 (v2.1.220)** — two launches identical except the environment:
+
+| | transcript |
+|---|---|
+| env inherited (what the old script did) | **no `.jsonl` at all after 12 minutes** |
+| env scrubbed | `.jsonl` with a real assistant turn after **5 seconds** |
+
+`spawn.ps1`'s generated boot script deletes those variables before running `claude`.
+**That is the whole fix.** It affected every spawned session, Remote Control or not.
+
+### ⛔ Refuted — do not re-derive it
+
+> "`--remote-control <name>` at launch makes the session *bridge-born*, so its
+> conversation lives on the bridge and cannot be resumed locally."
+
+**False.** It looked true because every Remote-Control session on this machine had
+been *spawned* (dirty env) while every session with a healthy transcript had been
+*hand-started* in a terminal (clean env) — the environment was perfectly confounded
+with the flag. A controlled test (clean env + `--remote-control` at launch) produced a
+transcript containing the real user prompt, the real assistant reply, **and** the
+`bridge-session` marker. **Remote Control does not cost local persistence.** Keep the
+flag; Remote Control is on by default and needs no manual `/remote-control` step.
 
 ## What it does
 
-Runs the bundled `spawn.ps1`, which opens a new **Windows Terminal** window (falling
-back to a plain PowerShell window if `wt.exe` is unavailable), `cd`s into the target
-directory, and runs:
+1. Validates the target directory and every `-HandoffFile` **before** opening a window.
+2. Pre-assigns a session id (`--session-id <uuid>`) so the resume command and the
+   transcript path are known up front rather than guessed by diffing a directory.
+3. Opens a new **Windows Terminal** window, `cd`s into the target directory, and runs a
+   generated boot script that **scrubs the inherited Claude env**, then launches
+   `claude -n <name> --session-id <uuid> --remote-control <name> "<opening prompt>"`.
+4. Verifies: a live `claude.exe` carrying that session id, **and** a transcript
+   containing a real conversation turn (which is exactly what `--resume` reads), **and**
+   the `bridge-session` marker confirming Remote Control attached.
+5. Prints the exact `claude --resume <id>` command.
 
-```
-claude --remote-control "<name>"    # DEFAULT: local session + phone/web control (resumable)
-claude                              # with -Local: pure local, no phone pairing (resumable)
+## Handover
+
+`-HandoffFile` is the normal way to brief the new session. Paths are resolved to
+absolute and referenced **by path** in the opening prompt — the file stays the single
+source of truth and the prompt stays small.
+
+```powershell
+-HandoffFile "C:\...\memory\handover_one_system_execution_2026-07-28_evening.md"
+-HandoffFile "C:\...\handover.md","C:\...\plan_master.md"     # several, read in order
 ```
 
-Resume either later with `claude --resume` / `claude --continue` from a terminal in
-that directory. The window is kept open (`-NoExit`) so the pairing URL/QR stays readable.
+The generated opening prompt tells the session to read them end-to-end first and treat
+them as the authoritative account of the work. Combine with `-Prompt` to add the
+concrete first task on top of the handover.
 
 ## How to run it
 
-1. **Determine the target directory:** use the path the user gave (`-Directory`), or
-   default to the **current working directory** and say so.
-2. **Mode:** default to **local + Remote Control** (just run it). Add `-Local` only if
-   the user wants no phone pairing.
-3. **Optionally** pick up a session name and/or model alias.
-4. **Run the launcher** via the Bash or PowerShell tool:
+1. **Target directory:** use the path the user gave (`-Directory`), or default to the
+   current working directory and say which you used.
+2. **Handover:** pass `-HandoffFile` for every doc the new session must read.
+3. **Opening prompt:** `-Prompt` for the concrete first task. Never spawn with neither —
+   a session that takes no turn does nothing and dies with its window.
+4. **Run the launcher:**
 
    ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\mauri\.claude\skills\spawn-claude-session\spawn.ps1" -Directory "<dir>" [-Name "<name>"] [-Model "<alias>"] [-Local]
+   powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\mauri\.claude\skills\spawn-claude-session\spawn.ps1" -Directory "<dir>" -HandoffFile "<handover.md>" -Prompt "<first task>" [-Name "<name>"] [-Model "<alias>"]
    ```
 
-   - Add `-DryRun` to preview the exact command + mode without spawning anything.
-   - Add `-Pwsh` to force a plain PowerShell window instead of Windows Terminal.
+   - `-DryRun` prints the resolved command, transcript path, env-scrub list and the
+     full opening prompt without spawning anything.
+   - `-Local` disables Remote Control (phone pairing) only.
 
-5. **Report back:** the session name + directory; that it runs locally with full control,
-   is phone/web drivable (window shows the pairing URL/QR), AND is resumable via
-   `claude --resume` / `claude --continue` from a terminal there.
+5. **Report back:** session name, directory, handover file(s), the
+   `claude --resume <session-id>` command, and that Remote Control is active.
 
 ## Arguments (spawn.ps1)
 
-| Param            | Meaning                                                                                    |
-|------------------|--------------------------------------------------------------------------------------------|
-| `-Directory`     | Repo/working dir for the new session. CHOOSE it, or omit to smart-detect the caller's cwd. |
-| `-Name`          | Session display name (Remote Control name / resume-by-name label). Auto-derived if omitted. |
-| `-Model`         | Optional model alias (`opus`, `sonnet`, …) for the spawned session.                        |
-| `-Local`         | (alias `-NoRemoteControl`) OPT OUT of Remote Control → local session, no phone pairing.      |
-| `-RemoteControl` | (alias `-Rc`) No-op affirmation — Remote Control is the DEFAULT now; kept for back-compat.  |
-| `-Pwsh`          | Force a PowerShell window instead of Windows Terminal.                                      |
-| `-DryRun`        | Print the resolved command + mode; launch nothing.                                         |
+| Param             | Meaning                                                                                      |
+|-------------------|----------------------------------------------------------------------------------------------|
+| `-Directory`      | Repo/working dir for the new session. CHOOSE it, or omit to smart-detect the caller's cwd.    |
+| `-Name`           | Session display name — used for `claude -n` (labels the `--resume` picker and terminal title) and as the Remote Control session name. Auto-derived if omitted. |
+| `-Prompt`         | Opening prompt / first task. Delivered via a file, never through `-Command`.                  |
+| `-HandoffFile`    | One or more handover/plan/memory `.md` files. Validated up front; referenced by absolute path. |
+| `-Model`          | Optional model alias (`opus`, `sonnet`, …).                                                   |
+| `-Local`          | (alias `-NoRemoteControl`) No Remote Control — local session only, no phone pairing.          |
+| `-RemoteControl`  | (alias `-Rc`) No-op affirmation — Remote Control is the default.                              |
+| `-Pwsh`           | Force a PowerShell window instead of Windows Terminal.                                        |
+| `-TurnTimeoutSec` | How long to wait for the first turn to land in the transcript (default 180).                  |
+| `-DryRun`         | Print the resolved command, transcript path and opening prompt; launch nothing.               |
 
 ## Notes / gotchas
 
-- **Local + Remote Control is the default, and it's fully resumable.** Full local
-  functionality on the PC + phone/web navigation + `claude --resume` all coexist. Use
-  `-Local` only to drop the phone pairing, not for resumability (identical either way).
-- **Resume recipe:** `claude --continue` (most recent) or `claude --resume "<name>"` /
-  `claude --resume <session-id>` from a terminal in the launch directory. `/remote-control`
-  inside a session re-attaches a dropped phone link. `--fork-session` branches to a NEW id.
-- **Auth (Remote Control):** needs a logged-in claude.ai account. If the window prompts
-  for `/login`, complete it in that window; the pairing URL/QR appears after.
-- **Verified CLI surface:** the `claude` flag is `--remote-control <name>`; resume via
-  `--resume [value]` / `--continue`. Do not invent a `--rc` flag on `claude` (`-Rc` is
-  only an alias for *this launcher's* `-RemoteControl` param).
-- **Keep spawn.ps1 pure ASCII:** Windows PowerShell 5.1 reads `.ps1` as ANSI, so an
-  em-dash / smart quote corrupts the parse. Use `-`, plain quotes.
-- **Independent session:** the spawned session has its own context window and does not
-  inherit the current conversation. Brief it via the opening prompt if needed.
-- **Windows-only launcher:** `spawn.ps1` targets Windows (wt.exe / PowerShell). The
-  network path is outbound HTTPS:443 to Anthropic — no inbound ports.
+- **Windows Terminal is required in practice.** A plain PowerShell window started from
+  a non-interactive parent has repeatedly failed to give `claude` a usable console: the
+  session starts but never submits its opening prompt. `-Pwsh` exists but warns.
+- **`/remote-control` is a TOGGLE, not a re-attach button.** Typing it into a session
+  that already believes it is connected **disconnects** it. An odd number of toggles
+  from a connected state leaves you disconnected.
+- **A successful connect prints nothing to stdout** (a disconnect does). Verify by the
+  footer `[/rc active]` / the pairing URL, never by stdout being empty.
+- **Do not try to auto-type keystrokes into the new window.** Windows Defender AMSI
+  blocks `SendKeys` + `user32` window-targeting outright ("This script contains
+  malicious content"), and Windows Terminal hosts many windows in **one process**, so
+  activating by process id can land on a *different* session.
+- **Auth (Remote Control):** needs a logged-in claude.ai subscription account. An
+  API-key-authenticated session fails **silently**.
+- **Diagnostic order for any RC failure:** ① status.claude.com ② count bridge
+  connections (≫8 = retry storm — wait, don't fix) ③ only then suspect local config.
+- **Keep `spawn.ps1` pure ASCII:** Windows PowerShell 5.1 reads `.ps1` as ANSI, so an
+  em-dash / smart quote corrupts the parse.
+- **Prompt text never crosses a shell boundary as syntax.** `powershell.exe -Command`
+  re-parses its argv, so `(S4 first)` once became a subexpression and killed the window.
+  The prompt goes to a `.txt` that a boot `.ps1` reads — a path is never parsed as code.
+- **Independent session:** the spawned session inherits nothing from this conversation
+  except what the handover file and opening prompt say.
+- **Windows-only launcher.** Outbound HTTPS:443 only; no inbound ports.
