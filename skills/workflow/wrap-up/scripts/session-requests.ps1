@@ -28,7 +28,11 @@ param(
     [string]$TranscriptPath,
     [switch]$IncludeCarryOver,
     [int]$TailLines = 45,
-    [int]$Limit = 0
+    [int]$Limit = 0,
+    # A long session can hold a few enormous pasted messages. Truncate each request so total
+    # output stays proportional to the NUMBER of requests, not to the longest paste.
+    [int]$MaxChars = 600,
+    [switch]$Full
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,6 +81,11 @@ function Get-UserText {
 
 function Get-Kind {
     param([string]$Text)
+    # The turn queue carries harness traffic as well as the user: background-task
+    # notifications and subagent reports are enqueued exactly like a typed message.
+    # Measured on a 26-compaction session: 236 of 263 apparent requests were these.
+    if ($Text -match '^\s*<(task-notification|agent-message|system-reminder|local-command[a-z-]*|command-[a-z]+)\b') { return 'system' }
+    if ($Text -match '^Another Claude session sent a message:')             { return 'system' }
     if ($Text -match '^Base directory for this skill:')                     { return 'skill' }
     if ($Text -match '^This session is being continued from a previous')    { return 'carryover' }
     if ($Text -match '^\s*<command-name>')                                  { return 'command' }
@@ -94,7 +103,7 @@ if ($TranscriptPath) {
 $requests  = New-Object System.Collections.ArrayList
 $carryover = New-Object System.Collections.ArrayList
 $seen      = New-Object System.Collections.Generic.HashSet[string]
-$nSkill = 0; $nCommand = 0
+$nSkill = 0; $nCommand = 0; $nSystem = 0
 
 foreach ($line in [System.IO.File]::ReadLines($file.FullName)) {
     if (-not $line.Trim()) { continue }
@@ -119,6 +128,7 @@ foreach ($line in [System.IO.File]::ReadLines($file.FullName)) {
     # request list while the counters still look correct. Measured, not theoretical.
     $kind = Get-Kind $text
     if     ($kind -eq 'skill')     { $nSkill++;   continue }
+    elseif ($kind -eq 'system')    { $nSystem++;  continue }
     elseif ($kind -eq 'command')   { $nCommand++; continue }
     elseif ($kind -eq 'carryover') { [void]$carryover.Add($text); continue }
 
@@ -141,7 +151,11 @@ foreach ($r in $requests) {
     $tag = if ($r.Queued) { "  (queued mid-turn)" } else { "" }
     Write-Host ""
     Write-Host "[$n]$tag" -ForegroundColor Cyan
-    Write-Host $r.Text
+    $body = $r.Text
+    if (-not $Full -and $body.Length -gt $MaxChars) {
+        $body = $body.Substring(0, $MaxChars) + "`n    ... [truncated; $($body.Length) chars total - use -Full]"
+    }
+    Write-Host $body
     if ($Limit -gt 0 -and $n -ge $Limit) { Write-Host ""; Write-Host "(stopped at -Limit $Limit)"; break }
 }
 
@@ -149,22 +163,22 @@ if ($carryover.Count -gt 0) {
     Write-Host ""
     Write-Host "=== CARRY-OVER FROM EARLIER CONTEXT ===" -ForegroundColor Green
     Write-Host "$($carryover.Count) compaction summary block(s). This session did not start empty:"
-    Write-Host "anything left unfinished BEFORE the compaction is recorded here, not above."
-    $i = 0
-    foreach ($c in $carryover) {
-        $i++
+    Write-Host "work already unfinished BEFORE a compaction is recorded here, not in REQUESTS."
+    # Each summary folds in the ones before it, so the LAST is the authoritative one. Printing
+    # all of them buries the report in its own evidence - one session here had 26.
+    $blocks = if ($IncludeCarryOver) { $carryover } else { @($carryover[$carryover.Count - 1]) }
+    if (-not $IncludeCarryOver -and $carryover.Count -gt 1) {
+        Write-Host "Showing the LAST only; it supersedes the earlier $($carryover.Count - 1). -IncludeCarryOver for all."
+    }
+    foreach ($c in $blocks) {
         Write-Host ""
-        Write-Host "--- block $i ($($c.Length) chars) ---" -ForegroundColor Cyan
-        if ($IncludeCarryOver) {
-            Write-Host $c
+        Write-Host "--- block ($($c.Length) chars) ---" -ForegroundColor Cyan
+        $lines = $c -split "`n"
+        if (-not $IncludeCarryOver -and $lines.Count -gt $TailLines) {
+            Write-Host "(tail $TailLines of $($lines.Count) lines)"
+            Write-Host (($lines | Select-Object -Last $TailLines) -join "`n")
         } else {
-            $lines = $c -split "`n"
-            if ($lines.Count -gt $TailLines) {
-                Write-Host "(tail $TailLines of $($lines.Count) lines; -IncludeCarryOver for all)"
-                Write-Host (($lines | Select-Object -Last $TailLines) -join "`n")
-            } else {
-                Write-Host $c
-            }
+            Write-Host $c
         }
     }
 }
@@ -172,6 +186,7 @@ if ($carryover.Count -gt 0) {
 Write-Host ""
 Write-Host "=== SUPPRESSED (not user speech) ===" -ForegroundColor Green
 Write-Host "skill payloads : $nSkill"
+Write-Host "harness traffic: $nSystem   (task notifications, subagent reports)"
 Write-Host "command echoes : $nCommand"
 
 Write-Host ""

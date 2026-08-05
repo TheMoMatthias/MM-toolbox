@@ -23,15 +23,20 @@ powershell -NoProfile -File "$HOME\.claude\skills\wrap-up\scripts\session-reques
 1. **The requests** - run the script. It reads the transcript, so it survives compaction, and
    it separates three things you must treat differently:
    - `REQUESTS` - what the user actually said, including **messages typed mid-turn** (marked
-     `queued mid-turn`; these reach the log by a different route and are easy to lose).
-   - `CARRY-OVER` - a compaction summary of an earlier context. **Read it.** Work that was
-     already unfinished before the compaction is recorded there and nowhere else. Fold its
-     pending items into the ledger, marked as inherited.
-   - `SUPPRESSED` - counts of injected skill payloads and slash-command echoes, so nothing is
+     `queued mid-turn`; these reach the log by a different route and are easy to lose). Each is
+     truncated to 600 chars; pass `-Full` when one needs reading whole.
+   - `CARRY-OVER` - a compaction summary of an earlier context. **Read it.** Work already
+     unfinished before a compaction is recorded there and nowhere else; fold its pending items
+     into the ledger, marked as inherited. Only the last block shows - each supersedes the ones
+     before it, and a long session can hold dozens.
+   - `SUPPRESSED` - counts of skill payloads, harness traffic (background-task notifications,
+     subagent reports, other sessions' messages) and slash-command echoes, so nothing is
      dropped silently.
 
    🔴 If it recovers zero requests, **say so in the report** and label the list
    reconstructed-from-context. Never silently substitute recollection.
+   🪤 A very long session yields a lot of requests - measured, 113 across 26 compactions. If the
+   full ledger would be unreadable, agree a scope with the user; never quietly drop rows.
 
 2. **Derived items - the ones nobody asked for.** Requests are only half the ledger. Re-read
    your own turns for work that entered the session another way, because this is the half that
