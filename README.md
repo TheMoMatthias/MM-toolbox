@@ -50,7 +50,9 @@ two shell functions.
 |---|---|
 | `ccr` | restore the conversations you were last working on, one tab each, Remote Control attached under each one's real name |
 | `ccr -DryRun` | show what *would* come back |
+| `ccr -All` | ignore the recency window and the cap |
 | `cc` | start a correctly-**named** new session in the current directory |
+| `cc "my-name" --model opus` | …with a name you choose, plus any `claude` flags (the name comes first) |
 
 Projects are discovered, not listed — work in a new repo once and it is picked up.
 Pass `-NoSessionRestore` to `install.ps1` to skip all of it.

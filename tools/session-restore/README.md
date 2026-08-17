@@ -24,6 +24,16 @@ desktop, and adds two shell functions. Open a new terminal:
 | `ccr -All` | ignore the recency window and the cap |
 | `cc` | start a correctly-**named** new session in the current directory |
 | `cc "my-name"` | …with a name you choose |
+| `cc "my-name" --model opus` | …and any `claude` flags, forwarded verbatim |
+
+⚠️ **The name must come first.** `cc [name] [claude flags…]`. Once a flag appears,
+everything after it is forwarded to `claude` — otherwise the *value* of a flag gets
+taken as the session name (`cc --model opus` would name the session `opus`).
+
+🪤 The `cc`/`ccr` wrappers splat a **hashtable**, never `& script @args`. Array
+splatting does not reliably bind switches: measured, `cc -DryRun --model opus` put
+`-DryRun` into the pass-through array and **actually launched claude** instead of
+dry-running it.
 
 `.\uninstall.ps1` removes the task, the button and the shell functions.
 

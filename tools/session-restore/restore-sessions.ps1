@@ -67,7 +67,13 @@ param(
     [string]$Name,
     [switch]$DryRun,
     [switch]$All,
-    [string]$ConfigPath
+    [string]$ConfigPath,
+
+    # Anything not recognised above is forwarded verbatim to `claude` by -New, so
+    # `cc --model opus` works. Without this the flag bound to -Name and the session
+    # was silently called "model" on the default model -- no error, wrong result.
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$ClaudeArgs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -492,6 +498,17 @@ function Invoke-Restore {
 function Invoke-NewSession {
     $dir = (Get-Location).Path
     $n = $Name
+    $extra = @()
+    if ($ClaudeArgs) { $extra = @($ClaudeArgs) }
+
+    # A leading token starting with '-' is a claude flag, never a session name.
+    # PowerShell would otherwise bind it to -Name and you would get a session
+    # called "model" with the flag silently discarded.
+    if ($n -and $n.StartsWith('-')) {
+        $extra = @($n) + $extra
+        $n = $null
+    }
+
     if ([string]::IsNullOrWhiteSpace($n)) {
         $n = (Split-Path $dir -Leaf) + '-' + (Get-Date -Format 'MMdd-HHmm')
     }
@@ -501,17 +518,22 @@ function Invoke-NewSession {
     Write-Host ""
     Write-Host "Starting a NEW named session: `"$n`"" -ForegroundColor Cyan
     Write-Host "  in $dir"
+    if ($extra.Count -gt 0) { Write-Host ("  forwarding to claude: " + ($extra -join ' ')) }
     Write-Host ""
 
+    $claudeArgv = @('-n', $n, '--remote-control', $n) + $extra
+
     if ($DryRun) {
-        Write-Step "claude -n `"$n`" --remote-control `"$n`""
+        Write-Step ("claude " + (($claudeArgv | ForEach-Object {
+            if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
+        }) -join ' '))
         return 0
     }
 
     # Runs in THIS console on purpose - you are already here, and a new window
     # would just be another thing to find.
     Clear-ChildSessionEnv
-    & claude -n $n --remote-control $n
+    & claude @claudeArgv
     return 0
 }
 
