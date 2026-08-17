@@ -20,3 +20,9 @@ local/
 # session-restore runtime state: the log and the generated per-project boot scripts.
 # Machine-specific and regenerated on every run - never committed.
 tools/session-restore/.state/
+
+# session-restore selection registry: which directories reopen at logon, on THIS
+# machine. It lives beside the scripts (one place, nothing scattered) but the paths
+# in it are local, so it is never committed.
+tools/session-restore/sessions-registry.json
+tools/session-restore/sessions-registry.json.tmp

@@ -1,4 +1,4 @@
-# install.ps1 - Install MM-toolbox by symlinking each asset into ~/.claude/.
+﻿# install.ps1 - Install MM-toolbox by symlinking each asset into ~/.claude/.
 # Idempotent. Backs up replaced originals to ~/.claude/.pre-mmtoolbox-backup-<timestamp>/.
 # Requires Windows Developer Mode (for symlinks without admin) OR Administrator.
 # Falls back to Junction for directories if SymbolicLink fails.
@@ -174,53 +174,21 @@ if ($NoSessionRestore) {
     Write-Host "[tools]  session-restore"
     & $SessionRestore -Install
 
-    # Shell front door. `cc` starts a correctly-NAMED new session in the current
-    # directory; `ccr` restores recent ones. This matters because NO hook can set a
+    # Shell front door: `cc` (new NAMED session, here), `ccr` (restore what you
+    # selected), `ccs` (choose what reopens). This matters because NO hook can set a
     # session title -- all 31 hook events are informational or permission-gating --
     # so a bare `claude` can only ever end up with an auto-generated name on your
     # phone. Never launching bare is the whole fix.
-    # 🪤 These wrappers must NOT forward with `& script @args`. ARRAY splatting does
-    # not reliably bind switches: measured 2026-08-17, `cc -DryRun --model opus`
-    # bound -DryRun into the pass-through array and ACTUALLY LAUNCHED claude instead
-    # of dry-running it. HASH splatting binds by name and is reliable, so the
-    # wrappers classify their own arguments and splat a hashtable.
+    #
+    # The functions themselves live in the REPO (tools/session-restore/profile.ps1);
+    # the profile gets a SINGLE dot-source line. Editing them needs no re-install,
+    # and nothing about this tool is scattered outside MM-toolbox.
     $begin = '# >>> MM-toolbox session-restore >>>'
     $end   = '# <<< MM-toolbox session-restore <<<'
+    $shellProfile = Join-Path (Split-Path -Parent $SessionRestore) 'profile.ps1'
     $block = @"
 $begin
-# ccr - restore recent Claude conversations.   cc - start a NEW named session here.
-function ccr {
-    `$p = @{}
-    foreach (`$a in `$args) {
-        switch -regex ([string]`$a) {
-            '^-+(DryRun|WhatIf|n)`$'  { `$p['DryRun']    = `$true }
-            '^-+All`$'                { `$p['All']       = `$true }
-            '^-+Install`$'            { `$p['Install']   = `$true }
-            '^-+Uninstall`$'          { `$p['Uninstall'] = `$true }
-            default { Write-Warning ("ccr: ignoring unrecognised argument '`$a' (try -DryRun, -All, -Install, -Uninstall)") }
-        }
-    }
-    & '$SessionRestore' @p
-}
-# Usage: cc [name] [claude flags...]   -- the NAME, if given, must come FIRST.
-# Once a flag is seen everything after it belongs to claude, otherwise the VALUE
-# of a flag gets taken as the session name (`cc --model opus` named it "opus").
-function cc {
-    `$p = @{ New = `$true }
-    `$rest = @()
-    `$seenFlag = `$false
-    foreach (`$a in `$args) {
-        `$s = [string]`$a
-        if (`$s -match '^-+(DryRun|WhatIf)`$') { `$p['DryRun'] = `$true; continue }
-        if (-not `$seenFlag -and -not `$p.ContainsKey('Name') -and `$s -notmatch '^-') {
-            `$p['Name'] = `$s; continue
-        }
-        `$seenFlag = `$true
-        `$rest += `$s
-    }
-    if (`$rest.Count -gt 0) { `$p['ClaudeArgs'] = `$rest }
-    & '$SessionRestore' @p
-}
+. '$shellProfile'
 $end
 "@
 

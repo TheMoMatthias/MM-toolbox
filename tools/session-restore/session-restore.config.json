@@ -1,24 +1,30 @@
-{
+﻿{
   "_README": [
     "Discovery settings for restore-sessions.ps1.",
     "",
-    "Nothing here names a repository. The tool scans ~/.claude/projects/, reads each",
-    "conversation's real working directory out of the transcript, and restores the",
-    "most recent one per directory. New projects are picked up automatically the",
-    "first time you work in them.",
+    "Nothing here names a repository. A background scan reads ~/.claude/projects/,",
+    "resolves each conversation's real working directory from its transcript, and",
+    "records it in sessions-registry.json. WHICH of those reopen is your choice --",
+    "make it with select-sessions.ps1 (or ccs), not here.",
     "",
-    "  recencyDays      only restore conversations touched within this many days",
-    "  maxSessions      cap on how many tabs to open (most recent first). The tool",
-    "                   SAYS how many it dropped -- it never truncates silently.",
+    "  recencyDays      how recently a directory must have been worked in for a",
+    "                   NEWLY DISCOVERED one to arrive already ticked. It does NOT",
+    "                   gate the restore: once a directory is ticked, your tick",
+    "                   wins and it reopens -- staleness is only reported, never",
+    "                   acted on. One source of truth, which is the tick.",
+    "  maxSessions      cap on how many tabs to open in one restore (most recent",
+    "                   first). The tool SAYS how many it dropped -- it never",
+    "                   truncates silently. Use -All to ignore it once.",
     "  excludePatterns  PowerShell -like patterns matched against the resolved",
-    "                   working directory. Environment variables are expanded.",
+    "                   working directory; environment variables are expanded.",
     "                   The home directory is always excluded, pattern or not.",
     "",
-    "Per-machine tweaks belong in ~/.claude/session-restore.local.json, which is",
-    "merged over this file and never committed. Same keys, only the ones you change.",
+    "Everything for this tool lives in this folder. Your selections are in",
+    "sessions-registry.json beside this file (gitignored -- the paths are local).",
     "",
-    "Run restore-sessions.ps1 -DryRun to see exactly what would come back.",
-    "Run restore-sessions.ps1 -All to ignore recencyDays and maxSessions once."
+    "  select-sessions.ps1            choose what reopens",
+    "  restore-sessions.ps1 -DryRun   see exactly what would come back",
+    "  restore-sessions.ps1 -Scan     refresh the registry now (the hourly task)"
   ],
 
   "recencyDays": 14,
@@ -32,3 +38,4 @@
     "%TEMP%\\*"
   ]
 }
+

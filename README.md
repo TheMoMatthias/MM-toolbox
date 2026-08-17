@@ -48,14 +48,23 @@ two shell functions.
 
 | command | does |
 |---|---|
-| `ccr` | restore the conversations you were last working on, one tab each, Remote Control attached under each one's real name |
+| `ccs` | **choose which directories reopen** — interactive picker |
+| `ccs -List` | print the current selection |
+| `ccr` | restore the selected conversations, one tab each, Remote Control attached under each one's real name |
 | `ccr -DryRun` | show what *would* come back |
-| `ccr -All` | ignore the recency window and the cap |
 | `cc` | start a correctly-**named** new session in the current directory |
 | `cc "my-name" --model opus` | …with a name you choose, plus any `claude` flags (the name comes first) |
 
-Projects are discovered, not listed — work in a new repo once and it is picked up.
-Pass `-NoSessionRestore` to `install.ps1` to skip all of it.
+**What exists and what reopens are separate.** A scan-only task runs hourly and at
+logon, discovering every project you have a conversation in — it launches nothing.
+A registry records your tick per directory, so a finished project stops reopening
+the moment you untick it. New directories arrive pre-ticked if you worked in them
+recently. If a ticked directory goes stale, **your tick still wins** — it reopens
+and says `STALE` rather than silently dropping out of your morning.
+
+`select-sessions.ps1` and `restore-sessions.ps1` are ordinary scripts you can run
+directly, and both have desktop buttons. Pass `-NoSessionRestore` to `install.ps1`
+to skip all of it.
 
 **Never launch a bare `claude` if you want to drive it from your phone.** Remote
 Control registers against the *empty* conversation, so the phone shows an
