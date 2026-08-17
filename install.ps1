@@ -81,6 +81,25 @@ function Link-One {
             Write-Host "[unlink] $Target (was -> $curStr)"
             if ($item.PSIsContainer) { $item.Delete() } else { Remove-Item -LiteralPath $Target -Force }
         } else {
+            # A HARDLINK is not a reparse point, so the check above cannot see one.
+            # Without this, every re-run treats an already-hardlinked file as an
+            # original, backs it up again, and re-links it -- so install.ps1 was
+            # idempotent for directories (junctions) but NOT for files, and each run
+            # left another .pre-mmtoolbox-backup-* dir behind. Six had accumulated.
+            if (-not $item.PSIsContainer) {
+                try {
+                    $links = & fsutil.exe hardlink list $Target 2>$null
+                    $repoRef = $links | Where-Object {
+                        $_ -and $_.TrimEnd() -and $Source.EndsWith($_.Trim(), [System.StringComparison]::OrdinalIgnoreCase)
+                    }
+                    if ($repoRef) {
+                        Write-Host "[skip]   $Target (already hardlinked here)"
+                        return
+                    }
+                } catch {
+                    # fsutil unavailable -- fall through to the backup path.
+                }
+            }
             Ensure-Backup
             $relName = Split-Path -Leaf $Target
             $parent = Split-Path -Parent $Target

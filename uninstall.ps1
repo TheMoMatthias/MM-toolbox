@@ -49,8 +49,23 @@ function Remove-IfRepoLink {
     # Not a symlink/junction. If it's a file, check whether it's a hardlink that also lives in the repo.
     if (-not $item.PSIsContainer) {
         try {
+            # `fsutil hardlink list` returns paths WITHOUT the drive letter, e.g.
+            #   \Users\mauri\Documents\MM-toolbox\CLAUDE.md
+            # so comparing against the full "C:\Users\..." RepoRoot NEVER matched, and
+            # uninstall silently left every hardlinked file (CLAUDE.md, keybindings.json,
+            # hooks/*, agents/*.md) pointing at the repo while reporting success. The
+            # restore step then skipped them too, as "already exists". Compare on the
+            # volume-relative form, and keep the full-path form as a fallback.
+            $rootLen  = [System.IO.Path]::GetPathRoot($RepoRoot).Length
+            $repoRel  = if ($rootLen -gt 1) { $RepoRoot.Substring($rootLen - 1) } else { $RepoRoot }
             $links = & fsutil.exe hardlink list $Target 2>$null
-            $repoRef = $links | Where-Object { $_ -and $_.StartsWith($RepoRoot, [System.StringComparison]::OrdinalIgnoreCase) }
+            $repoRef = $links | Where-Object {
+                $t = if ($_) { $_.Trim() } else { '' }
+                $t -and (
+                    $t.StartsWith($repoRel,  [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $t.StartsWith($RepoRoot, [System.StringComparison]::OrdinalIgnoreCase)
+                )
+            }
             if ($repoRef) {
                 Write-Host "[remove-hardlink] $Target  (hardlinked to $repoRef)"
                 Remove-Item -LiteralPath $Target -Force
