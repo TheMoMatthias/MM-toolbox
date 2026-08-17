@@ -31,10 +31,14 @@ Open a new terminal:
 | `cc` | start a correctly-**named** new session in the current directory |
 | `cc "my-name" --model opus` | …with a name, plus any `claude` flags |
 
-`select-sessions.ps1` and `restore-sessions.ps1` are ordinary scripts — run them
-directly, or use the **Select Claude Sessions** / **Restore Claude Sessions**
-desktop buttons. `.\uninstall.ps1` removes both tasks and both buttons and leaves
-your selections alone.
+**Double-click** `Select Sessions.bat` or `Restore Sessions.bat` in this folder —
+the desktop buttons point at those same two files, so there is one launch path.
+They pass any arguments straight through (`Restore Sessions.bat -DryRun`) and pause
+only when double-clicked, so the output stays readable. Set `SR_NOPAUSE=1` if you
+ever drive them from a script.
+
+`.\uninstall.ps1` removes both tasks and both buttons and leaves your selections
+alone.
 
 ⚠️ **The name must come first:** `cc [name] [claude flags…]`. Once a flag appears,
 everything after it goes to `claude` — otherwise the *value* of a flag gets taken
@@ -59,18 +63,35 @@ several at once. The registry is therefore two levels: a **project** has a maste
 tick, and each **conversation** under it has its own. Untick the project and nothing
 in it reopens; untick one conversation to drop just that slice.
 
+### The ticks roll
+
+The scan **recomputes** the auto-ticked set every hour, so it follows the work
+rather than freezing at first discovery. Within each project, the newest
+`autoTickPerDirectory` (3) conversations that were active within
+`sessionWindowDays` (3) are ticked; anything that drops below that is unticked.
+Go back to an old slice and it re-ticks itself; move on and it falls out.
+
+That ceiling is the whole point. Measured here: AlgoTrader had **44** conversations
+inside the tracking window and **16** inside a 3-day one. Without a ceiling,
+"reopen everything recent" means sixteen tabs in one repo.
+
+### …unless you pin it
+
+Touching a conversation in the picker **pins** it — the roll then leaves it alone
+permanently, and `*` marks it in the list. Without this, the hourly scan would undo
+every hand-made choice within the hour and the picker would be decorative.
+
+A pinned-and-ticked conversation **spends part of the ceiling**, so the total per
+project stays bounded however it was set. Verified: pinning a fourth conversation
+in a 3-ceiling project pushed the lowest auto-ticked one out, keeping the total at
+three.
+
+`U` in the picker hands one back to the roll (`U` on a project row releases all of
+its conversations). `A`, `N`, `-Enable` and `-Disable` all pin what they change,
+since they are deliberate acts.
+
 A newly discovered **project** arrives ticked if you worked in it within
-`recencyDays`. Within it, a newly discovered **conversation** arrives ticked if it
-was active within `sessionWindowDays` (3) — but **at most `autoTickPerDirectory`
-(3) per project, newest first**.
-
-That ceiling is the whole point. Measured on this machine: AlgoTrader had **44**
-conversations inside the tracking window and **16** inside a 3-day one. Without a
-ceiling, "reopen everything recent" means sixteen tabs in one repo. With it, the
-three live slices arrive ticked and the finished ones don't.
-
-The ceiling applies to the **project**, not to each scan — if you have already
-ticked that many by hand, a scan adds none.
+`recencyDays`; the project-level tick is never auto-managed.
 
 ### Two conversations in one working tree
 
@@ -140,7 +161,8 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
 
 | file | |
 |---|---|
-| `_common.ps1` | discovery, registry, guards, launching — shared, so there is one copy |
+| `Restore Sessions.bat` · `Select Sessions.bat` | double-clickable; the desktop buttons point here |
+| `_common.ps1` | discovery, registry, the rolling auto-tick, guards, launching — shared, so there is one copy |
 | `restore-sessions.ps1` | restore · `-Scan` · `-New` · `-Install` · `-Uninstall` |
 | `select-sessions.ps1` | the picker |
 | `profile.ps1` | the `cc` / `ccr` / `ccs` functions; your PowerShell profile gets a single dot-source line pointing here |

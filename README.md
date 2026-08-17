@@ -61,12 +61,20 @@ records your ticks at **two levels**: a project has a master tick, and each
 conversation under it has its own, so a project can reopen **several** conversations
 and you can drop a finished slice without touching the rest.
 
-New conversations arrive pre-ticked if they were active within `sessionWindowDays`
-(3), capped at `autoTickPerDirectory` (3) per project, newest first. That ceiling
+**The ticks roll.** Every hour the scan recomputes the newest `autoTickPerDirectory`
+(3) conversations per project that were active within `sessionWindowDays` (3) — go
+back to an old slice and it re-ticks itself, move on and it falls out. That ceiling
 matters: this repo had **44** conversations in the tracking window and **16** inside
-3 days — without it, "reopen everything recent" means sixteen tabs. If a ticked
-conversation goes stale, **your tick still wins** — it reopens and says `STALE`
-rather than silently dropping out of your morning.
+3 days, so without it "reopen everything recent" means sixteen tabs.
+
+**Unless you pin it.** Touching a conversation in the picker pins it and the roll
+leaves it alone; `*` marks it. A pinned-and-ticked one spends part of the ceiling,
+so the total per project stays bounded either way. `U` hands one back to the roll.
+If a ticked conversation goes stale, **your tick still wins** — it reopens and says
+`STALE` rather than silently dropping out of your morning.
+
+**Double-click** `Restore Sessions.bat` or `Select Sessions.bat`, or use the desktop
+buttons, which point at those same files.
 
 `select-sessions.ps1` and `restore-sessions.ps1` are ordinary scripts you can run
 directly, and both have desktop buttons. Pass `-NoSessionRestore` to `install.ps1`

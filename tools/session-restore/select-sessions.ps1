@@ -67,6 +67,17 @@ function Get-Age { param($Iso)
 }
 function Test-Stale { param($Iso) return (((Get-Date) - [datetime]$Iso).TotalDays -gt $staleDays) }
 
+# Touching a conversation here PINS it: the hourly roll then leaves it alone.
+# Without this the scan would undo every hand-made choice within the hour and the
+# picker would be decorative.
+function Set-Pin {
+    param($Session, [bool]$Value)
+    if ($null -eq $Session.PSObject.Properties['pinned']) {
+        $Session | Add-Member -NotePropertyName pinned -NotePropertyValue $Value -Force
+    } else { $Session.pinned = $Value }
+}
+function Test-Pinned { param($Session) return ([bool]$Session.pinned) }
+
 function Get-Counts {
     $on = 0; $tot = 0; $projOn = 0
     foreach ($d in $dirs) {
@@ -80,8 +91,10 @@ function Get-Counts {
 
 function Write-Summary {
     $c = Get-Counts
+    $pinned = @(@($dirs) | ForEach-Object { @($_.sessions) } | Where-Object { $_.pinned }).Count
     Write-Host ""
     Write-Host ("  {0} conversation(s) across {1} project(s) will reopen at logon, out of {2} known." -f $c.Sessions, $c.Projects, $c.Total)
+    Write-Host ("  {0} pinned (yours, the roll leaves them alone); the rest follow the newest {1} per project." -f $pinned, $cfg.autoTickPerDirectory) -ForegroundColor DarkGray
     # Two conversations in one working tree share a git index.
     foreach ($d in $dirs) {
         if ($d.missing -or -not $d.enabled) { continue }
@@ -106,8 +119,10 @@ if ($Enable -or $Disable) {
                 }
                 foreach ($s in @($d.sessions)) {
                     if (("$($s.title)" -like "*$pat*") -or ("$($s.sessionId)" -like "*$pat*")) {
-                        if ($s.enabled -ne $pair.v) { $s.enabled = $pair.v; $changed++
-                            Write-Host ("  session  {0}  {1}  ({2})" -f $(if($pair.v){'ticked  '}else{'unticked'}), $s.title, (Split-Path $d.path -Leaf)) -ForegroundColor $(if($pair.v){'Green'}else{'DarkYellow'}) }
+                        # -Enable/-Disable are manual acts, so they pin too.
+                        if ($s.enabled -ne $pair.v -or -not (Test-Pinned $s)) {
+                            $s.enabled = $pair.v; Set-Pin $s $true; $changed++
+                            Write-Host ("  session  {0}  {1}  ({2})  [pinned]" -f $(if($pair.v){'ticked  '}else{'unticked'}), $s.title, (Split-Path $d.path -Leaf)) -ForegroundColor $(if($pair.v){'Green'}else{'DarkYellow'}) }
                     }
                 }
             }
@@ -129,8 +144,9 @@ function Write-PlainList {
         Write-Host ("  {0} {1,-26} {2,2}/{3,-2} ticked   {4}" -f $mark, (Split-Path $d.path -Leaf), $n, @($d.sessions).Count, $d.path) -ForegroundColor $col
         foreach ($s in @($d.sessions | Sort-Object { [datetime]$_.lastActive } -Descending)) {
             $sm = if ($s.enabled) { '[x]' } else { '[ ]' }
+            $sp = if (Test-Pinned $s) { '*' } else { ' ' }
             $sc = if (-not $d.enabled) { 'DarkGray' } elseif (-not $s.enabled) { 'Gray' } elseif (Test-Stale $s.lastActive) { 'DarkYellow' } else { 'Green' }
-            Write-Host ("        {0} {1,-34} {2,5}   {3}" -f $sm, $s.title, (Get-Age $s.lastActive), $s.sessionId.Substring(0,8)) -ForegroundColor $sc
+            Write-Host ("       {0}{1} {2,-34} {3,5}   {4}" -f $sp, $sm, $s.title, (Get-Age $s.lastActive), $s.sessionId.Substring(0,8)) -ForegroundColor $sc
         }
     }
     Write-Summary
@@ -209,8 +225,9 @@ function Render {
             $note = ''
             if ($d.enabled -and $s.enabled -and (Test-Stale $s.lastActive)) { $note = '  STALE' }
             if (-not $d.enabled) { $note = '  (project off)' }
+            $pin = if (Test-Pinned $s) { '*' } else { ' ' }
             $col = if ($i -eq $Cursor) { 'White' } elseif (-not $d.enabled) { 'DarkGray' } elseif (-not $s.enabled) { 'Gray' } elseif (Test-Stale $s.lastActive) { 'DarkYellow' } else { 'Green' }
-            Write-Host ("  {0}       {1} {2,-34} {3,5}{4}" -f $sel, $mark, $s.title, (Get-Age $s.lastActive), $note) -ForegroundColor $col
+            Write-Host ("  {0}      {1}{2} {3,-34} {4,5}{5}" -f $sel, $pin, $mark, $s.title, (Get-Age $s.lastActive), $note) -ForegroundColor $col
         }
     }
     if ($last -lt $Rows.Count - 1) { Write-Host "      ..." -ForegroundColor DarkGray }
@@ -218,7 +235,8 @@ function Render {
     Write-Host ""
     Write-Host ("  " + $Rows[$Cursor].Dir.path) -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "  UP/DOWN move  SPACE toggle  LEFT/RIGHT fold  A all  N none  R rescan  ENTER save  ESC cancel" -ForegroundColor DarkCyan
+    Write-Host "  UP/DOWN move  SPACE toggle+pin  U unpin  LEFT/RIGHT fold  A all  N none  R rescan  ENTER save  ESC cancel" -ForegroundColor DarkCyan
+    Write-Host "  * = pinned (the hourly roll leaves it alone). Unpinned rows follow the newest few automatically." -ForegroundColor DarkGray
 }
 
 $rows = Build-Rows
@@ -239,7 +257,11 @@ while ($true) {
             if ($row.Kind -eq 'dir') {
                 if (-not $row.Dir.missing) { $row.Dir.enabled = -not $row.Dir.enabled; $dirty = $true }
             } else {
-                $row.Session.enabled = -not $row.Session.enabled; $dirty = $true
+                # Toggling a conversation PINS it, so the hourly roll stops managing
+                # it and your choice survives. U hands it back.
+                $row.Session.enabled = -not $row.Session.enabled
+                Set-Pin $row.Session $true
+                $dirty = $true
             }
         }
         'Enter' {
@@ -259,8 +281,18 @@ while ($true) {
         }
         default {
             switch -regex ([string]$key.KeyChar) {
-                '[aA]' { foreach ($d in $dirs) { if (-not $d.missing) { $d.enabled = $true;  foreach ($s in @($d.sessions)) { $s.enabled = $true  } } }; $dirty = $true }
-                '[nN]' { foreach ($d in $dirs) { if (-not $d.missing) { $d.enabled = $false; foreach ($s in @($d.sessions)) { $s.enabled = $false } } }; $dirty = $true }
+                # A and N are manual acts too, so they pin what they change --
+                # otherwise the roll would undo the sweep within the hour. U on a
+                # project row hands all of its conversations back.
+                '[aA]' { foreach ($d in $dirs) { if (-not $d.missing) { $d.enabled = $true;  foreach ($s in @($d.sessions)) { $s.enabled = $true;  Set-Pin $s $true } } }; $dirty = $true }
+                '[nN]' { foreach ($d in $dirs) { if (-not $d.missing) { $d.enabled = $false; foreach ($s in @($d.sessions)) { $s.enabled = $false; Set-Pin $s $true } } }; $dirty = $true }
+                '[uU]' {
+                    # Hand back to the roll. The tick itself is recomputed by the
+                    # next scan -- press R to see it now.
+                    if ($row.Kind -eq 'dir') { foreach ($s in @($row.Dir.sessions)) { Set-Pin $s $false } }
+                    else                     { Set-Pin $row.Session $false }
+                    $dirty = $true
+                }
                 '[qQ]' { Clear-Host; Write-Host "`n  Cancelled.`n" -ForegroundColor Yellow; exit 0 }
                 '[rR]' {
                     if ($dirty) { Save-SRRegistry -Registry $reg; $dirty = $false }

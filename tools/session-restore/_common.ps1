@@ -250,7 +250,7 @@ function Update-SRRegistry {
     $byDir = @{}
     foreach ($d in @($reg.directories)) { if ($d.path) { $byDir[$d.path.ToLowerInvariant()] = $d } }
 
-    $newDirs = 0; $newSessions = 0
+    $newDirs = 0; $newSessions = 0; $rolled = 0
     $groups = $disc | Group-Object -Property { $_.Path.ToLowerInvariant() }
 
     foreach ($g in $groups) {
@@ -278,13 +278,14 @@ function Update-SRRegistry {
         $dir.missing = $false
 
         $known = @{}
-        foreach ($s in @($dir.sessions)) { if ($s.sessionId) { $known[$s.sessionId] = $s } }
-
-        # Which of the NEW sessions may arrive ticked: inside the window, newest
-        # first, and only up to the per-directory allowance MINUS what is already
-        # ticked -- so the allowance is a ceiling on the directory, not per scan.
-        $alreadyOn = @(@($dir.sessions) | Where-Object { $_.enabled }).Count
-        $budget    = [Math]::Max(0, $autoTick - $alreadyOn)
+        foreach ($s in @($dir.sessions)) {
+            if (-not $s.sessionId) { continue }
+            # `pinned` arrives with this version; absent means auto-managed.
+            if ($null -eq $s.PSObject.Properties['pinned']) {
+                $s | Add-Member -NotePropertyName pinned -NotePropertyValue $false -Force
+            }
+            $known[$s.sessionId] = $s
+        }
 
         foreach ($r in $rows) {
             if ($known.ContainsKey($r.SessionId)) {
@@ -293,16 +294,41 @@ function Update-SRRegistry {
                 $s.title      = $r.Title
                 continue
             }
-            $tick = ($r.LastActive -ge $sessCutoff) -and ($budget -gt 0)
-            if ($tick) { $budget-- }
+            # New conversations start auto-managed and unticked; the roll below
+            # decides, so the rule lives in exactly one place.
             $dir.sessions += [PSCustomObject]@{
                 sessionId  = $r.SessionId
                 title      = $r.Title
-                enabled    = $tick
+                enabled    = $false
+                pinned     = $false
                 lastActive = $r.LastActive.ToString('o')
                 firstSeen  = $now
             }
             $newSessions++
+        }
+
+        # ROLLING AUTO-TICK, recomputed on every scan so the ticked set follows the
+        # work rather than freezing at first discovery. Go back to an old slice and
+        # it re-ticks itself; move on and it drops out.
+        #
+        # PINNED conversations -- the ones you touched in the picker -- are never
+        # changed here. A pinned-and-ticked one spends part of the per-project
+        # ceiling, so the total stays bounded whichever way it was set.
+        $ordered  = @($dir.sessions | Sort-Object { [datetime]$_.lastActive } -Descending)
+        $pinnedOn = @($ordered | Where-Object { $_.pinned -and $_.enabled }).Count
+        $budget   = [Math]::Max(0, $autoTick - $pinnedOn)
+        $taken    = 0
+        foreach ($s in $ordered) {
+            if ($s.pinned) { continue }
+            $want = ((([datetime]$s.lastActive) -ge $sessCutoff) -and ($taken -lt $budget))
+            if ($want) { $taken++ }
+            if ([bool]$s.enabled -ne $want) {
+                $rolled++
+                if (-not $Quiet) {
+                    Write-SRStep ("{0}: {1} -> {2}" -f (Split-Path $dir.path -Leaf), $s.title, $(if ($want) { 'ticked (now in the newest ' + $autoTick + ')' } else { 'unticked (fell out)' }))
+                }
+            }
+            $s.enabled = $want
         }
     }
 
@@ -319,7 +345,8 @@ function Update-SRRegistry {
     if (-not $Quiet) {
         $nd = @($reg.directories).Count
         $ns = @(@($reg.directories) | ForEach-Object { @($_.sessions) }).Count
-        Write-SRStep ("registry: {0} project(s), {1} conversation(s); {2} new project(s), {3} new conversation(s)" -f $nd, $ns, $newDirs, $newSessions)
+        $np = @(@($reg.directories) | ForEach-Object { @($_.sessions) } | Where-Object { $_.pinned }).Count
+        Write-SRStep ("registry: {0} project(s), {1} conversation(s) ({2} pinned); {3} new project(s), {4} new conversation(s), {5} auto-tick change(s)" -f $nd, $ns, $np, $newDirs, $newSessions, $rolled)
     }
     return $reg
 }

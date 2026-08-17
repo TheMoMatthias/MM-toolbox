@@ -1,4 +1,4 @@
-{
+﻿{
   "_README": [
     "Discovery + auto-tick settings for session-restore.",
     "",
@@ -14,11 +14,19 @@
     "  sessionWindowDays     within a project, a newly discovered CONVERSATION",
     "                        arrives ticked if it was active within this many days.",
     "",
-    "  autoTickPerDirectory  ceiling on how many conversations are pre-ticked per",
-    "                        project, newest first. Without it a repo with sixteen",
-    "                        live conversations would open sixteen tabs. It is a",
-    "                        ceiling on the PROJECT, not per scan -- if you have",
-    "                        already ticked this many by hand, nothing is added.",
+    "  autoTickPerDirectory  how many conversations per project the roll keeps",
+    "                        ticked, newest first. RECOMPUTED ON EVERY SCAN, so the",
+    "                        set follows the work: return to an old slice and it",
+    "                        re-ticks itself, move on and it falls out. Without a",
+    "                        ceiling a repo with sixteen live conversations would",
+    "                        open sixteen tabs.",
+    "",
+    "                        Conversations you TOUCH in the picker are PINNED and",
+    "                        the roll never changes them -- otherwise the scan would",
+    "                        undo your choices within the hour. A pinned+ticked one",
+    "                        spends part of this ceiling, so the total stays bounded",
+    "                        however it was set. Press U in the picker to hand one",
+    "                        back to the roll.",
     "",
     "  registryWindowDays    conversations older than this are not tracked at all.",
     "                        Bounds the scan: without it every historical transcript",
@@ -57,3 +65,4 @@
     "%TEMP%\\*"
   ]
 }
+

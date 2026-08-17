@@ -287,11 +287,15 @@ function Invoke-Install {
         -Description 'Discover Claude Code project directories. Updates the selection registry only; launches nothing.' | Out-Null
     Write-SROk "task '$TaskScan' - hourly + at logon (scan only, launches nothing)"
 
-    $l1 = New-SRShortcut -LinkName $LnkRestore -Target 'powershell.exe' `
-            -Arguments ("-NoProfile -ExecutionPolicy Bypass -File `"{0}`"" -f $restore) -Description 'Restore selected Claude Code conversations'
+    # The desktop buttons point at the .bat files rather than at powershell.exe, so
+    # a double-click from Explorer and a double-click on the shortcut take the SAME
+    # path -- one launch route, one place to fix anything. The .bat pauses only when
+    # it was double-clicked, so the output stays readable.
+    $l1 = New-SRShortcut -LinkName $LnkRestore -Target (Join-Path $SR_Root 'Restore Sessions.bat') `
+            -Arguments '' -Description 'Restore the Claude conversations you have selected'
     Write-SROk "desktop: $LnkRestore"
-    $l2 = New-SRShortcut -LinkName $LnkSelect -Target 'powershell.exe' `
-            -Arguments ("-NoProfile -ExecutionPolicy Bypass -NoExit -File `"{0}`"" -f $select) -Description 'Choose which directories reopen at logon'
+    $l2 = New-SRShortcut -LinkName $LnkSelect -Target (Join-Path $SR_Root 'Select Sessions.bat') `
+            -Arguments '' -Description 'Choose which conversations reopen at logon'
     Write-SROk "desktop: $LnkSelect"
 
     # Seed the registry so the picker has something to show immediately.
