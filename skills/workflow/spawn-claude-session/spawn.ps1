@@ -288,8 +288,16 @@ if ($proc -and $fullPrompt) {
         }
     }
 }
+# Match the bridge session ID, NOT the record type. A FAILED Remote Control
+# registration still writes a bridge-session line - it just carries an empty
+# bridgeSessionId and no owner fields:
+#     {"type":"bridge-session","sessionId":"...","bridgeSessionId":"","lastSequenceNum":0}
+# Seven such 118-byte transcripts exist on this machine (measured 2026-08-17), so
+# matching on '"type":"bridge-session"' reports "Remote Control active" for a
+# connect that never happened - a check that cannot fail. A real connect writes
+# '"bridgeSessionId":"cse_...' plus ownerAccountUuid.
 if (Test-Path -LiteralPath $transcript) {
-    $rcAttached = @(Select-String -LiteralPath $transcript -Pattern '"type":"bridge-session"' -ErrorAction SilentlyContinue).Count -gt 0
+    $rcAttached = @(Select-String -LiteralPath $transcript -Pattern '"bridgeSessionId":"cse_' -ErrorAction SilentlyContinue).Count -gt 0
 }
 
 # --- Report -------------------------------------------------------------------
@@ -307,9 +315,27 @@ if ($turns -gt 0) {
     Write-Warning "NO conversation turn on disk after ${TurnTimeoutSec}s. Expected at $transcript . If this file never appears, the environment scrub in $bootPath did not take effect - the session will NOT be resumable."
 }
 
+# The resume command MUST carry the name when Remote Control is wanted.
+# `claude --resume <id>` alone reconnects to the Remote Control session recorded in
+# the conversation - but once that recorded session is gone server-side (an
+# overnight shutdown is enough), Claude Code "starts a replacement session with an
+# auto-generated name and leaves the conversation's earlier messages out of it".
+# It does NOT fall back to the conversation's own title, so the phone shows
+# <hostname>-graceful-unicorn. Passing --remote-control "<name>" is title-precedence
+# rule 1 and is the only form that survives the replacement path.
 Write-Host ""
-Write-Host "RESUME     : claude --resume $sessionId       (from a terminal in $resolved)"
+if ($rcOn) {
+    Write-Host "RESUME     : claude --resume $sessionId --remote-control `"$Name`""
+    Write-Host "             (from a terminal in $resolved)"
+    Write-Host "             Pass --remote-control every time. Resuming without it can hand the"
+    Write-Host "             phone an auto-generated name once the old remote session has expired."
+} else {
+    Write-Host "RESUME     : claude --resume $sessionId       (from a terminal in $resolved)"
+}
 Write-Host "             or run 'claude --resume' there and pick '$Name'."
+Write-Host "NEVER      : bare 'claude' then /resume. Remote Control registers against the"
+Write-Host "             EMPTY conversation first, and switching with /resume never sends the"
+Write-Host "             switched-to title or history to the connected device."
 
 if ($rcOn) {
     if ($rcAttached) { Write-Host "VERIFIED   : Remote Control active - drive it from the Claude mobile app / https://claude.ai/code . The new window shows the pairing URL/QR." }
