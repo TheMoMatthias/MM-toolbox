@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     Bring back the Claude Code conversations you have SELECTED, each with Remote
@@ -81,7 +81,7 @@ function Invoke-Scan {
     Write-SRLog "---- scan ----"
     $cfg = Get-SRConfig
     $reg = Update-SRRegistry -Config $cfg
-    $sel = Get-SRSelected -Registry $reg
+    $sel = Get-SRSelected -Registry $reg -Config $cfg
     $allS = @(@($reg.directories) | ForEach-Object { @($_.sessions) }).Count
     Write-Host ""
     Write-Host ("  {0} of {1} conversation(s), across {2} project(s), selected for restore" -f @($sel).Count, $allS, @($reg.directories).Count)
@@ -109,7 +109,7 @@ function Invoke-Restore {
     Write-Host (" {0} ms" -f $swScan.ElapsedMilliseconds) -ForegroundColor DarkGray
     Write-SRLog ("         scan {0} ms" -f $swScan.ElapsedMilliseconds)
 
-    $wanted   = Get-SRSelected -Registry $reg -IgnoreTicks:$All
+    $wanted   = Get-SRSelected -Registry $reg -Config $cfg -IgnoreTicks:$All
     $knownDir = @($reg.directories).Count
     $knownSes = @(@($reg.directories) | ForEach-Object { @($_.sessions) }).Count
 
@@ -127,6 +127,8 @@ function Invoke-Restore {
     # One line per directory that is about to get two or more sessions. They share a
     # single git index, so a bare `git commit` in either takes whatever the other
     # staged -- the mitigation is `git commit -- <paths>`, not avoiding this.
+    # Grouped by the SESSION's working directory, so main and each worktree count
+    # separately -- which is the point of a worktree: its own tree, its own index.
     foreach ($grp in ($wanted | Group-Object -Property Path)) {
         if ($grp.Count -ge 2) {
             # Single-quoted: a backtick is PowerShell's escape character, and a
@@ -151,7 +153,13 @@ function Invoke-Restore {
     $staleDays = [double]$cfg.recencyDays
 
     foreach ($e in $wanted) {
-        $label = Split-Path $e.path -Leaf
+        # Name the repo AND the lane: "AlgoTrader" and "AlgoTrader/D1" are different
+        # working trees, and a bare leaf would render both as their folder name.
+        $label = if ($e.Lane -eq 'worktree' -and $e.Worktree) {
+            "{0}/{1}" -f (Split-Path $e.Repo -Leaf), $e.Worktree
+        } else {
+            Split-Path $e.Repo -Leaf
+        }
 
         if (-not (Test-Path -LiteralPath $e.path -PathType Container)) {
             Write-SRFail "$label - directory no longer exists: $($e.path)"; $failed++; continue
@@ -311,7 +319,7 @@ function Invoke-Install {
     try {
         $cfg = Get-SRConfig
         $reg = Update-SRRegistry -Config $cfg -Quiet
-        $sel = Get-SRSelected -Registry $reg
+        $sel = Get-SRSelected -Registry $reg -Config $cfg
         $all = @(@($reg.directories) | ForEach-Object { @($_.sessions) }).Count
         Write-SROk ("registry seeded: {0} project(s), {1} conversation(s), {2} ticked" -f @($reg.directories).Count, $all, @($sel).Count)
     } catch {
@@ -363,3 +371,4 @@ try {
     Write-SRLog  ("       at " + $_.InvocationInfo.PositionMessage)
     exit 1
 }
+

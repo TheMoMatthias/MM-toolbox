@@ -56,20 +56,47 @@ as the session name (`cc --model opus` would name the session `opus`).
   ticks. A project you untick stays shut however discoverable it is — which is how
   a finished repo stops reopening every morning.
 
-### Several conversations per project
+### Projects, lanes, conversations
+
+A **project** is a repository. Under it sit **lanes** — `main` for the repo's own
+tree, and **one lane per git worktree**. Each conversation has its own tick, and the
+project has a master tick above them all.
+
+```
+[x] AlgoTrader                 4/67
+      main                     3/44
+         [x] RC-WORKFLOW              0h
+        *[x] I1-ingest-spine          0h
+         [x] F1-seam-wave             1h
+      worktree: D1               1/1
+         [x] D1-design                0h
+      worktree: bounded-contexts 0/22
+```
+
+A worktree is a **separate tree with its own git index** — that is the whole point
+of one — so it gets its own lane and its own budget rather than competing with main.
+Detection is the definitive marker: a linked worktree has a `.git` **file** whose
+first line is `gitdir: <repo>/.git/worktrees/<name>`, which also hands back the
+parent repo. Not a path pattern, so a worktree anywhere is found.
+
+Set **`includeWorktrees: false`** to hide them entirely — not listed, not restored,
+including any already recorded in the registry.
 
 A project can reopen **more than one** conversation, because you routinely run
-several at once. The registry is therefore two levels: a **project** has a master
-tick, and each **conversation** under it has its own. Untick the project and nothing
-in it reopens; untick one conversation to drop just that slice.
+several at once. Untick the project and nothing in it reopens; untick one
+conversation to drop just that slice.
 
 ### The ticks roll
 
 The scan **recomputes** the auto-ticked set every hour, so it follows the work
-rather than freezing at first discovery. Within each project, the newest
-`autoTickPerDirectory` (3) conversations that were active within
-`sessionWindowDays` (3) are ticked; anything that drops below that is unticked.
-Go back to an old slice and it re-ticks itself; move on and it falls out.
+rather than freezing at first discovery. **Per lane**: the newest
+`autoTickPerDirectory` (3) in `main`, and `autoTickPerWorktree` (3) in *each*
+worktree, among conversations active within `sessionWindowDays` (3). Anything that
+drops below is unticked. Go back to an old slice and it re-ticks itself; move on and
+it falls out.
+
+Per lane, not per project — otherwise one busy lane crowds out every other, and
+"one worktree per lane" stops working.
 
 That ceiling is the whole point. Measured here: AlgoTrader had **44** conversations
 inside the tracking window and **16** inside a 3-day one. Without a ceiling,
@@ -96,9 +123,12 @@ A newly discovered **project** arrives ticked if you worked in it within
 ### Two conversations in one working tree
 
 They share a single git index, so a bare `git commit` in either takes whatever the
-other staged. The restore **warns once per project** when it opens two or more, and
-the picker flags it. The mitigation is `git commit -m msg -- <paths>`, not avoiding
+other staged. The restore **warns once per tree** when it opens two or more, and the
+picker flags the lane. The mitigation is `git commit -m msg -- <paths>`, not avoiding
 it — you already run concurrent sessions this way.
+
+**Main and each worktree count separately**, because they are different trees with
+different indexes. Three in `main` warns; one in `main` and one in `D1` does not.
 
 ### Your tick wins
 

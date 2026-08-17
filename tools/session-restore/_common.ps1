@@ -77,6 +77,8 @@ function Get-SRConfig {
         @{ k = 'recencyDays';          v = 14 },
         @{ k = 'sessionWindowDays';    v = 3  },
         @{ k = 'autoTickPerDirectory'; v = 3  },
+        @{ k = 'autoTickPerWorktree';  v = 3  },
+        @{ k = 'includeWorktrees';     v = $true },
         @{ k = 'registryWindowDays';   v = 30 },
         @{ k = 'maxSessions';          v = 12 }
     )) {
@@ -154,6 +156,43 @@ function Get-SRClaudeCommandLines {
     return $script:SR_ProcCache
 }
 
+# A linked git worktree has a `.git` FILE (not a directory) whose first line reads
+# `gitdir: <repo>/.git/worktrees/<name>`. That is the definitive marker -- it works
+# wherever the worktree lives, unlike matching on a path pattern, and it hands back
+# the parent repo for free.
+#
+# 🪤 Do NOT go back to excluding worktrees. That was tried, on the reasoning that two
+# sessions in one tree share a git index -- which is backwards: a worktree has its
+# OWN index, and "one worktree per lane" is the MITIGATION for that hazard. The
+# exclusion hid a live session and no amount of rescanning could surface it.
+$script:SR_WtCache = @{}
+function Get-SRWorktreeInfo {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $key = $Path.ToLowerInvariant()
+    if ($script:SR_WtCache.ContainsKey($key)) { return $script:SR_WtCache[$key] }
+
+    $info = [PSCustomObject]@{ RepoRoot = $Path; Lane = 'main'; Worktree = $null }
+    try {
+        $dotGit = Join-Path $Path '.git'
+        if (Test-Path -LiteralPath $dotGit -PathType Leaf) {
+            $first = Get-Content -LiteralPath $dotGit -TotalCount 1 -ErrorAction Stop
+            if ($first -match '^\s*gitdir:\s*(.+?)\s*$') {
+                # <repo>\.git\worktrees\<name>  ->  name, and <repo> three levels up.
+                $gitdir = $Matches[1]
+                $name   = Split-Path $gitdir -Leaf
+                $up     = Split-Path (Split-Path (Split-Path $gitdir -Parent) -Parent) -Parent
+                if ($name -and $up -and (Test-Path -LiteralPath $up -PathType Container)) {
+                    $info = [PSCustomObject]@{ RepoRoot = $up.TrimEnd('\'); Lane = 'worktree'; Worktree = $name }
+                }
+            }
+        }
+    } catch { }
+
+    $script:SR_WtCache[$key] = $info
+    return $info
+}
+
 function Test-SRExcluded {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Config)
 
@@ -194,7 +233,7 @@ function Get-SRDiscovered {
 
             $cwd = $null; $title = $null
             if ($Cache -and $Cache.ContainsKey($f.BaseName) -and $Cache[$f.BaseName].Stamp -eq $stamp) {
-                $cwd   = $Cache[$f.BaseName].Path
+                $cwd   = $Cache[$f.BaseName].Cwd
                 $title = $Cache[$f.BaseName].Title
             } else {
                 $info  = Get-SRSessionInfo -JsonlPath $f.FullName
@@ -208,8 +247,17 @@ function Get-SRDiscovered {
             if (Test-SRExcluded -Path $cwd -Config $Config) { continue }
             if ([string]::IsNullOrWhiteSpace($title)) { $title = '(untitled)' }
 
+            # A conversation belongs to its REPO, in one of two lanes. Worktree
+            # conversations therefore sit under the parent repo rather than beside it
+            # as a project of their own.
+            $wt = Get-SRWorktreeInfo -Path $cwd
+            if ($wt.Lane -eq 'worktree' -and -not $Config.includeWorktrees) { continue }
+
             $found += [PSCustomObject]@{
-                Path       = $cwd
+                RepoRoot   = $wt.RepoRoot
+                Lane       = $wt.Lane
+                Worktree   = $wt.Worktree
+                Cwd        = $cwd
                 SessionId  = $f.BaseName
                 Jsonl      = $f.FullName
                 LastActive = $f.LastWriteTime
@@ -269,6 +317,47 @@ function Get-SRRegistry {
     if ($null -eq $r.PSObject.Properties['directories']) {
         $r | Add-Member -NotePropertyName directories -NotePropertyValue @() -Force
     }
+
+    # v2 -> v3: a project was keyed on the WORKING DIRECTORY, so each worktree was a
+    # project of its own. v3 keys on the REPO and puts worktree conversations in a
+    # second lane beneath it. Re-parent rather than rediscover: a fresh scan would
+    # re-add these sessions as new and unticked, silently discarding every tick and
+    # pin attached to them.
+    if ([int]$r.version -lt 3) {
+        $byRepo = @{}
+        $keep   = @()
+        foreach ($d in @($r.directories)) {
+            if (-not $d.path) { continue }
+            $wt = Get-SRWorktreeInfo -Path $d.path
+            foreach ($s in @($d.sessions)) {
+                foreach ($kv in @(
+                    @{ n = 'cwd';      v = $d.path },
+                    @{ n = 'lane';     v = $wt.Lane },
+                    @{ n = 'worktree'; v = $wt.Worktree }
+                )) {
+                    if ($null -eq $s.PSObject.Properties[$kv.n]) {
+                        $s | Add-Member -NotePropertyName $kv.n -NotePropertyValue $kv.v -Force
+                    }
+                }
+            }
+
+            $k = $wt.RepoRoot.ToLowerInvariant()
+            if ($byRepo.ContainsKey($k)) {
+                # Merge into the repo entry. A project that was ticked in either form
+                # stays ticked -- never silently switch something off in a migration.
+                $t = $byRepo[$k]
+                $t.sessions = @($t.sessions) + @($d.sessions)
+                if ($d.enabled) { $t.enabled = $true }
+            } else {
+                $d.path = $wt.RepoRoot
+                $byRepo[$k] = $d
+                $keep += $d
+            }
+        }
+        $r = [PSCustomObject]@{ version = 3; lastScan = $r.lastScan; directories = $keep }
+        Write-SRLog ("registry migrated v2 -> v3 ({0} project(s) after re-parenting worktrees)" -f @($keep).Count)
+    }
+
     return $r
 }
 
@@ -300,8 +389,10 @@ function Update-SRRegistry {
     $cache = @{}
     foreach ($cd in @($reg.directories)) {
         foreach ($cs in @($cd.sessions)) {
-            if ($cs.sessionId -and $cs.stamp) {
-                $cache[$cs.sessionId] = @{ Path = $cd.path; Title = $cs.title; Stamp = $cs.stamp }
+            # cwd is required for a hit: a v2 entry has none, so it is re-read once
+            # and cached from then on.
+            if ($cs.sessionId -and $cs.stamp -and $cs.cwd) {
+                $cache[$cs.sessionId] = @{ Cwd = $cs.cwd; Title = $cs.title; Stamp = $cs.stamp }
             }
         }
     }
@@ -311,16 +402,20 @@ function Update-SRRegistry {
     $dirCutoff  = (Get-Date).AddDays(-1 * [double]$Config.recencyDays)
     $sessCutoff = (Get-Date).AddDays(-1 * [double]$Config.sessionWindowDays)
     $autoTick   = [int]$Config.autoTickPerDirectory
+    $autoTickWt = [int]$Config.autoTickPerWorktree
 
     $byDir = @{}
     foreach ($d in @($reg.directories)) { if ($d.path) { $byDir[$d.path.ToLowerInvariant()] = $d } }
 
     $newDirs = 0; $newSessions = 0; $rolled = 0
-    $groups = $disc | Group-Object -Property { $_.Path.ToLowerInvariant() }
+    # Group by REPO, not by working directory: a worktree's conversations belong to
+    # their parent repo, in the 'worktree' lane, rather than beside it as a project
+    # of their own.
+    $groups = $disc | Group-Object -Property { $_.RepoRoot.ToLowerInvariant() }
 
     foreach ($g in $groups) {
         $rows    = @($g.Group | Sort-Object LastActive -Descending)
-        $dirPath = $rows[0].Path
+        $dirPath = $rows[0].RepoRoot
         $key     = $g.Name
 
         if (-not $byDir.ContainsKey($key)) {
@@ -357,9 +452,18 @@ function Update-SRRegistry {
                 $s = $known[$r.SessionId]
                 $s.lastActive = $r.LastActive.ToString('o')
                 $s.title      = $r.Title
-                if ($null -eq $s.PSObject.Properties['stamp']) {
-                    $s | Add-Member -NotePropertyName stamp -NotePropertyValue $r.Stamp -Force
-                } else { $s.stamp = $r.Stamp }
+                # cwd/lane/worktree can all change under a session (it can be moved
+                # into a worktree), so refresh them rather than trusting first sight.
+                foreach ($kv in @(
+                    @{ n = 'stamp';    v = $r.Stamp },
+                    @{ n = 'cwd';      v = $r.Cwd },
+                    @{ n = 'lane';     v = $r.Lane },
+                    @{ n = 'worktree'; v = $r.Worktree }
+                )) {
+                    if ($null -eq $s.PSObject.Properties[$kv.n]) {
+                        $s | Add-Member -NotePropertyName $kv.n -NotePropertyValue $kv.v -Force
+                    } else { $s.($kv.n) = $kv.v }
+                }
                 continue
             }
             # New conversations start auto-managed and unticked; the roll below
@@ -372,6 +476,9 @@ function Update-SRRegistry {
                 lastActive = $r.LastActive.ToString('o')
                 firstSeen  = $now
                 stamp      = $r.Stamp
+                cwd        = $r.Cwd
+                lane       = $r.Lane
+                worktree   = $r.Worktree
             }
             $newSessions++
         }
@@ -383,27 +490,44 @@ function Update-SRRegistry {
         # PINNED conversations -- the ones you touched in the picker -- are never
         # changed here. A pinned-and-ticked one spends part of the per-project
         # ceiling, so the total stays bounded whichever way it was set.
-        $ordered  = @($dir.sessions | Sort-Object { [datetime]$_.lastActive } -Descending)
-        $pinnedOn = @($ordered | Where-Object { $_.pinned -and $_.enabled }).Count
-        $budget   = [Math]::Max(0, $autoTick - $pinnedOn)
-        $taken    = 0
-        foreach ($s in $ordered) {
-            if ($s.pinned) { continue }
-            $want = ((([datetime]$s.lastActive) -ge $sessCutoff) -and ($taken -lt $budget))
-            if ($want) { $taken++ }
-            if ([bool]$s.enabled -ne $want) {
-                $rolled++
-                if (-not $Quiet) {
-                    Write-SRStep ("{0}: {1} -> {2}" -f (Split-Path $dir.path -Leaf), $s.title, $(if ($want) { 'ticked (now in the newest ' + $autoTick + ')' } else { 'unticked (fell out)' }))
+        # ...and it runs PER LANE GROUP. The main tree gets its own budget and so does
+        # EACH worktree, because a worktree is a separate lane of work with its own
+        # git index -- three from main plus three from every active lane, rather than
+        # three for the whole repo where one busy lane would crowd out the others.
+        $ordered = @($dir.sessions | Sort-Object { [datetime]$_.lastActive } -Descending)
+        $laneGroups = $ordered | Group-Object -Property {
+            if ($_.lane -eq 'worktree' -and $_.worktree) { 'wt:' + $_.worktree } else { 'main' }
+        }
+
+        foreach ($lg in $laneGroups) {
+            $cap      = if ($lg.Name -eq 'main') { $autoTick } else { $autoTickWt }
+            $members  = @($lg.Group)   # already newest-first, Group-Object keeps order
+            $pinnedOn = @($members | Where-Object { $_.pinned -and $_.enabled }).Count
+            $budget   = [Math]::Max(0, $cap - $pinnedOn)
+            $taken    = 0
+            $laneName = if ($lg.Name -eq 'main') { 'main' } else { $lg.Name.Substring(3) }
+
+            foreach ($s in $members) {
+                if ($s.pinned) { continue }
+                $want = ((([datetime]$s.lastActive) -ge $sessCutoff) -and ($taken -lt $budget))
+                if ($want) { $taken++ }
+                if ([bool]$s.enabled -ne $want) {
+                    $rolled++
+                    if (-not $Quiet) {
+                        Write-SRStep ("{0}/{1}: {2} -> {3}" -f (Split-Path $dir.path -Leaf), $laneName, $s.title, $(if ($want) { "ticked (newest $cap in this lane)" } else { 'unticked (fell out)' }))
+                    }
                 }
+                $s.enabled = $want
             }
-            $s.enabled = $want
         }
     }
 
     # Mark directories whose path is gone, rather than dropping them.
     $seen = @{}
-    foreach ($d in $disc) { $seen[$d.Path.ToLowerInvariant()] = $true }
+    # A project is keyed on its REPO root, so presence is judged on RepoRoot. This
+    # read `.Path` until v3 renamed the field, and a discovery row's missing property
+    # came back as $null -- which is how a rename turns into a null method call.
+    foreach ($d in $disc) { if ($d.RepoRoot) { $seen[$d.RepoRoot.ToLowerInvariant()] = $true } }
     foreach ($d in @($reg.directories)) {
         if ($d.path -and -not $seen.ContainsKey($d.path.ToLowerInvariant())) {
             $d | Add-Member -NotePropertyName missing -NotePropertyValue $true -Force
@@ -423,16 +547,28 @@ function Update-SRRegistry {
 # The flat list of what should actually reopen: enabled sessions inside enabled,
 # present directories. Newest first.
 function Get-SRSelected {
-    param([Parameter(Mandatory)]$Registry, [switch]$IgnoreTicks)
+    param([Parameter(Mandatory)]$Registry, $Config, [switch]$IgnoreTicks)
+
+    # Turning worktrees off must also silence what is ALREADY in the registry.
+    # Entries are never deleted, so without this a session recorded while the toggle
+    # was on would keep reopening after you switched it off.
+    $wtOff = ($Config -and -not $Config.includeWorktrees)
 
     $out = @()
     foreach ($d in @($Registry.directories)) {
         if ($d.missing) { continue }
         if (-not $IgnoreTicks -and -not $d.enabled) { continue }
         foreach ($s in @($d.sessions)) {
+            if ($wtOff -and $s.lane -eq 'worktree') { continue }
             if (-not $IgnoreTicks -and -not $s.enabled) { continue }
+            # Path is the SESSION's own working directory, not the project root:
+            # main and each worktree launch in different places.
+            $cwd = if ($s.cwd) { $s.cwd } else { $d.path }
             $out += [PSCustomObject]@{
-                Path       = $d.path
+                Path       = $cwd
+                Repo       = $d.path
+                Lane       = $(if ($s.lane) { $s.lane } else { 'main' })
+                Worktree   = $s.worktree
                 SessionId  = $s.sessionId
                 Title      = $s.title
                 LastActive = [datetime]$s.lastActive

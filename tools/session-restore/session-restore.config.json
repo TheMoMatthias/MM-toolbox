@@ -14,7 +14,21 @@
     "  sessionWindowDays     within a project, a newly discovered CONVERSATION",
     "                        arrives ticked if it was active within this many days.",
     "",
-    "  autoTickPerDirectory  how many conversations per project the roll keeps",
+    "  includeWorktrees      true  = git worktrees are discovered, shown as their",
+    "                                own lane under the parent repo, and restorable.",
+    "                        false = hidden entirely and never restored, including",
+    "                                any already recorded in the registry.",
+    "",
+    "                        A PROJECT is a repository. Under it sit LANES: 'main'",
+    "                        for the repo's own tree, and one per worktree. A",
+    "                        worktree is a separate tree with its OWN git index, so",
+    "                        it gets its own lane and its own budget instead of",
+    "                        competing with main for one.",
+    "",
+    "  autoTickPerWorktree   the roll's budget for EACH worktree lane, same rules",
+    "                        as autoTickPerDirectory below.",
+    "",
+    "  autoTickPerDirectory  how many conversations in the MAIN lane the roll keeps",
     "                        ticked, newest first. RECOMPUTED ON EVERY SCAN, so the",
     "                        set follows the work: return to an old slice and it",
     "                        re-ticks itself, move on and it falls out. Without a",
@@ -69,6 +83,8 @@
   "recencyDays": 14,
   "sessionWindowDays": 3,
   "autoTickPerDirectory": 3,
+  "autoTickPerWorktree": 3,
+  "includeWorktrees": true,
   "registryWindowDays": 30,
   "maxSessions": 12,
 
@@ -79,4 +95,6 @@
     "%TEMP%\\*"
   ]
 }
+
+
 

@@ -61,11 +61,17 @@ records your ticks at **two levels**: a project has a master tick, and each
 conversation under it has its own, so a project can reopen **several** conversations
 and you can drop a finished slice without touching the rest.
 
-**The ticks roll.** Every hour the scan recomputes the newest `autoTickPerDirectory`
-(3) conversations per project that were active within `sessionWindowDays` (3) — go
-back to an old slice and it re-ticks itself, move on and it falls out. That ceiling
-matters: this repo had **44** conversations in the tracking window and **16** inside
-3 days, so without it "reopen everything recent" means sixteen tabs.
+**Projects, lanes, conversations.** A project is a repository; under it sit lanes —
+`main` for the repo's own tree and **one per git worktree**, each with its own budget,
+because a worktree is a separate tree with its own git index. `includeWorktrees: false`
+hides them entirely.
+
+**The ticks roll.** Every hour the scan recomputes the newest few **per lane** —
+`autoTickPerDirectory` (3) in main, `autoTickPerWorktree` (3) in each worktree — among
+conversations active within `sessionWindowDays` (3). Go back to an old slice and it
+re-ticks itself, move on and it falls out. That ceiling matters: this repo had **44**
+conversations in the tracking window and **16** inside 3 days, so without it "reopen
+everything recent" means sixteen tabs.
 
 **Unless you pin it.** Touching a conversation in the picker pins it and the roll
 leaves it alone; `*` marks it. A pinned-and-ticked one spends part of the ceiling,
