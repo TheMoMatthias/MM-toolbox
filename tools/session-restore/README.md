@@ -20,9 +20,10 @@ Open a new terminal:
 
 | command | does |
 |---|---|
-| `ccs` | **choose which directories reopen** — interactive picker |
-| `ccs -List` | print the current selection and exit |
-| `ccs -Disable CardTrader` | untick by path substring, no picker |
+| `ccs` | **choose what reopens** — interactive picker, projects with their conversations |
+| `ccs -List` | print the current selection as a tree |
+| `ccs -Disable E2b-python-312` | untick without the picker — matches a project path *or* a conversation title/id |
+| `ccs -Enable F1-seam-wave` | tick the same way |
 | `ccr` | restore the selected conversations, one tab each |
 | `ccr -DryRun` | show what *would* come back, launch nothing |
 | `ccr -All` | ignore the tick list and the cap, just this once |
@@ -43,17 +44,40 @@ as the session name (`cc --model opus` would name the session `opus`).
 
 **What exists** and **what should reopen** are deliberately different things.
 
-- **Discovery** scans `~/.claude/projects/` and resolves each conversation's real
+- **Discovery** scans `~/.claude/projects/` and resolves every conversation's real
   working directory. It runs hourly and at logon as a *scan-only* task that
-  **launches nothing**, so a project you start today appears in the picker within
-  the hour with no risk attached.
+  **launches nothing**, so work you start today appears in the picker within the
+  hour with no risk attached.
 - **The registry** (`sessions-registry.json`, beside these scripts) records your
-  tick per directory. A directory you untick stays shut however discoverable it is —
-  which is how a finished project stops reopening every morning.
+  ticks. A project you untick stays shut however discoverable it is — which is how
+  a finished repo stops reopening every morning.
 
-A newly discovered directory arrives **ticked if you worked in it within
-`recencyDays`**, and unticked if it is older. So it behaves sensibly out of the box
-and you only intervene to switch something off.
+### Several conversations per project
+
+A project can reopen **more than one** conversation, because you routinely run
+several at once. The registry is therefore two levels: a **project** has a master
+tick, and each **conversation** under it has its own. Untick the project and nothing
+in it reopens; untick one conversation to drop just that slice.
+
+A newly discovered **project** arrives ticked if you worked in it within
+`recencyDays`. Within it, a newly discovered **conversation** arrives ticked if it
+was active within `sessionWindowDays` (3) — but **at most `autoTickPerDirectory`
+(3) per project, newest first**.
+
+That ceiling is the whole point. Measured on this machine: AlgoTrader had **44**
+conversations inside the tracking window and **16** inside a 3-day one. Without a
+ceiling, "reopen everything recent" means sixteen tabs in one repo. With it, the
+three live slices arrive ticked and the finished ones don't.
+
+The ceiling applies to the **project**, not to each scan — if you have already
+ticked that many by hand, a scan adds none.
+
+### Two conversations in one working tree
+
+They share a single git index, so a bare `git commit` in either takes whatever the
+other staged. The restore **warns once per project** when it opens two or more, and
+the picker flags it. The mitigation is `git commit -m msg -- <paths>`, not avoiding
+it — you already run concurrent sessions this way.
 
 ### Your tick wins
 
@@ -97,12 +121,11 @@ permission-gating, so a *new* session can only be named at launch — which is w
 
 ## Guards
 
-- **One session per working tree.** Two Claude sessions in one directory share a
-  single git index, and a bare `git commit` in either takes whatever the other
-  staged. A directory is skipped if a `claude.exe` is already running that
-  conversation (matched on `--resume <id>` in its command line) *or* if the
+- **Never opens a conversation twice.** A conversation is skipped if a `claude.exe`
+  is already running it (matched on `--resume <id>` in its command line) *or* if its
   transcript was written in the last 3 minutes. Complementary: a bare-started
-  session carries no id, and an idle one writes nothing.
+  session carries no id, and an idle one writes nothing. Every line names *which*
+  conversation, since a project can have several.
 - **Child-session environment is scrubbed.** A `claude` launched with
   `CLAUDE_CODE_CHILD_SESSION` inherited writes **no transcript at all**. Measured:
   env inherited → no `.jsonl` after 12 minutes; scrubbed → a real turn in 5 seconds.

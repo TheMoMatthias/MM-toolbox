@@ -4,6 +4,10 @@
     select-sessions.ps1 so discovery, the registry and the guards exist ONCE.
 
     Defines functions and paths only -- it must never do work on load.
+
+    REGISTRY v2: directories, each holding its conversations. The directory has a
+    master tick and every session under it has its own, so you can switch off a whole
+    project or drop a single finished slice.
 #>
 
 # $PSScriptRoot inside a dot-sourced file is THAT file's directory, and it is
@@ -15,9 +19,9 @@ $SR_StateDir   = Join-Path $SR_Root '.state'
 $SR_LogPath    = Join-Path $SR_StateDir 'restore.log'
 $SR_ConfigPath = Join-Path $SR_Root 'session-restore.config.json'
 
-# The registry is the OPERATOR'S selection and is NOT disposable, so it lives
-# beside the scripts rather than inside .state/ (which holds regenerated junk).
-# Gitignored: the paths in it are specific to this machine.
+# The registry is the OPERATOR'S selection and is NOT disposable, so it lives beside
+# the scripts rather than inside .state/ (which holds regenerated junk). Gitignored:
+# the paths in it are specific to this machine.
 $SR_RegistryPath = Join-Path $SR_Root 'sessions-registry.json'
 
 # A transcript smaller than this is a Remote Control placeholder, not a
@@ -52,6 +56,7 @@ function Write-SRStep { param([string]$m) Write-Host "  $m";                    
 function Write-SROk   { param([string]$m) Write-Host "  [ok]   $m" -ForegroundColor Green;      Write-SRLog "  [ok]   $m" }
 function Write-SRSkip { param([string]$m) Write-Host "  [skip] $m" -ForegroundColor DarkYellow; Write-SRLog "  [skip] $m" }
 function Write-SRFail { param([string]$m) Write-Host "  [FAIL] $m" -ForegroundColor Red;        Write-SRLog "  [FAIL] $m" }
+function Write-SRWarn { param([string]$m) Write-Host "  [warn] $m" -ForegroundColor Yellow;     Write-SRLog "  [warn] $m" }
 
 function Clear-SRChildEnv {
     foreach ($v in $SR_ChildVars) {
@@ -63,64 +68,59 @@ function Clear-SRChildEnv {
 # Config
 # ---------------------------------------------------------------------------
 function Get-SRConfig {
-    if (-not (Test-Path -LiteralPath $SR_ConfigPath)) {
-        throw "config not found: $SR_ConfigPath"
+    if (-not (Test-Path -LiteralPath $SR_ConfigPath)) { throw "config not found: $SR_ConfigPath" }
+    $c = Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json
+
+    # Defaults for keys added after a config was first written, so an older config
+    # keeps working instead of silently behaving as if the value were zero.
+    foreach ($kv in @(
+        @{ k = 'recencyDays';          v = 14 },
+        @{ k = 'sessionWindowDays';    v = 3  },
+        @{ k = 'autoTickPerDirectory'; v = 3  },
+        @{ k = 'registryWindowDays';   v = 30 },
+        @{ k = 'maxSessions';          v = 12 }
+    )) {
+        if ($null -eq $c.PSObject.Properties[$kv.k]) {
+            $c | Add-Member -NotePropertyName $kv.k -NotePropertyValue $kv.v -Force
+        }
     }
-    return (Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json)
+    return $c
 }
 
 # ---------------------------------------------------------------------------
-# Reading a conversation
+# Reading a conversation. ONE tail read yields both the working directory and the
+# title -- with dozens of transcripts, two reads each is wasted work.
 # ---------------------------------------------------------------------------
-
-# The transcript FOLDER name is a lossy encoding of the working directory -- every
-# non-alphanumeric character becomes '-', so a space and a backslash are
-# indistinguishable and the path cannot be reversed. The transcript records the
-# real path in a "cwd" field.
-#
-# Read the LAST one. A session that moved directories keeps its original cwd at
-# the top and exists under BOTH project folders; the last value resolves both
-# copies to the same real directory, which the one-per-directory rule then folds.
-function Get-SRSessionCwd {
+function Get-SRSessionInfo {
     param([Parameter(Mandatory)][string]$JsonlPath)
+
+    $cwd = $null; $title = $null
     try {
         $tail = Get-Content -LiteralPath $JsonlPath -Tail 400 -ErrorAction Stop
-        $line = $tail | Where-Object { $_ -like '*"cwd":*' } | Select-Object -Last 1
-        if (-not $line) {
+
+        # Read the LAST cwd. A session that moved directories keeps its original at
+        # the top and exists under BOTH project folders; the last value resolves
+        # both copies to the same real directory.
+        $cl = $tail | Where-Object { $_ -like '*"cwd":*' } | Select-Object -Last 1
+        if (-not $cl) {
             $head = Get-Content -LiteralPath $JsonlPath -TotalCount 60 -ErrorAction Stop
-            $line = $head | Where-Object { $_ -like '*"cwd":*' } | Select-Object -Last 1
+            $cl = $head | Where-Object { $_ -like '*"cwd":*' } | Select-Object -Last 1
         }
-        if ($line) {
-            $parsed = $line | ConvertFrom-Json
-            if ($parsed.cwd) { return [string]$parsed.cwd }
-        }
-    } catch { }
-    return $null
-}
+        if ($cl) { try { $cwd = [string]($cl | ConvertFrom-Json).cwd } catch { } }
 
-# The title set with /rename or -n. Written repeatedly, so the tail suffices and
-# a 100 MB transcript is never read end to end.
-function Get-SRSessionTitle {
-    param([Parameter(Mandatory)][string]$JsonlPath)
-    try {
-        $tail = Get-Content -LiteralPath $JsonlPath -Tail 400 -ErrorAction Stop
-    } catch { return $null }
-    $line = $tail | Where-Object { $_ -like '*"type":"custom-title"*' } | Select-Object -Last 1
-    if (-not $line) { return $null }
-    try {
-        $parsed = $line | ConvertFrom-Json
-        if ($parsed.customTitle) { return [string]$parsed.customTitle }
+        $tl = $tail | Where-Object { $_ -like '*"type":"custom-title"*' } | Select-Object -Last 1
+        if ($tl) { try { $title = [string]($tl | ConvertFrom-Json).customTitle } catch { } }
     } catch { }
-    return $null
+
+    return [PSCustomObject]@{ Cwd = $cwd; Title = $title }
 }
 
 function Test-SRExcluded {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Config)
 
-    # The home directory is never a project: Claude Code creates a transcript
-    # folder for it the moment anyone runs `claude` from ~.
+    # The home directory is never a project: Claude Code creates a transcript folder
+    # for it the moment anyone runs `claude` from ~.
     if ($Path.TrimEnd('\') -ieq $env:USERPROFILE.TrimEnd('\')) { return $true }
-
     foreach ($pat in @($Config.excludePatterns)) {
         if ([string]::IsNullOrWhiteSpace($pat)) { continue }
         if ($Path -like ([Environment]::ExpandEnvironmentVariables($pat))) { return $true }
@@ -129,9 +129,8 @@ function Test-SRExcluded {
 }
 
 # ---------------------------------------------------------------------------
-# Discovery -- what conversations exist on this machine, right now.
-# Returns one row per DIRECTORY, newest first. It launches nothing and it does
-# not consult the registry; selection is a separate concern.
+# Discovery -- EVERY real conversation, grouped by its working directory.
+# Launches nothing and does not consult the registry; selection is separate.
 # ---------------------------------------------------------------------------
 function Get-SRDiscovered {
     param([Parameter(Mandatory)]$Config)
@@ -140,138 +139,221 @@ function Get-SRDiscovered {
         throw "no Claude projects folder at $SR_Projects - has claude ever run on this machine?"
     }
 
+    # Transcripts older than this are not tracked at all. Without a bound, every
+    # historical conversation on the machine would be tail-read on every scan.
+    $regCutoff = (Get-Date).AddDays(-1 * [double]$Config.registryWindowDays)
     $found = @()
+
     foreach ($pdir in (Get-ChildItem -LiteralPath $SR_Projects -Directory -ErrorAction SilentlyContinue)) {
-        $newest = Get-ChildItem -LiteralPath $pdir.FullName -Filter *.jsonl -File -ErrorAction SilentlyContinue |
-                  Where-Object { $_.Length -ge $SR_MinRealBytes } |
-                  Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if (-not $newest) { continue }
+        $files = Get-ChildItem -LiteralPath $pdir.FullName -Filter *.jsonl -File -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Length -ge $SR_MinRealBytes -and $_.LastWriteTime -ge $regCutoff }
+        foreach ($f in $files) {
+            $info = Get-SRSessionInfo -JsonlPath $f.FullName
+            if (-not $info.Cwd) { continue }
+            $cwd = $info.Cwd.TrimEnd('\')
+            if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { continue }
+            if (Test-SRExcluded -Path $cwd -Config $Config) { continue }
 
-        $cwd = Get-SRSessionCwd -JsonlPath $newest.FullName
-        if (-not $cwd) { continue }
-        if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { continue }
-        if (Test-SRExcluded -Path $cwd -Config $Config) { continue }
+            $title = $info.Title
+            if ([string]::IsNullOrWhiteSpace($title)) { $title = '(untitled)' }
 
-        $found += [PSCustomObject]@{
-            Path       = $cwd.TrimEnd('\')
-            SessionId  = $newest.BaseName
-            Jsonl      = $newest.FullName
-            LastActive = $newest.LastWriteTime
+            $found += [PSCustomObject]@{
+                Path       = $cwd
+                SessionId  = $f.BaseName
+                Jsonl      = $f.FullName
+                LastActive = $f.LastWriteTime
+                Title      = $title
+            }
         }
     }
 
-    # One session per working tree: two sessions in one directory share a single
-    # git index, and a bare `git commit` in either takes what the other staged.
+    # A session that changed directory mid-life exists under two project folders
+    # with the SAME id; keep one row per id, the most recently written.
     return ,@($found |
-        Group-Object -Property { $_.Path.ToLowerInvariant() } |
-        ForEach-Object { $_.Group | Sort-Object LastActive -Descending | Select-Object -First 1 } |
-        Sort-Object LastActive -Descending)
+        Group-Object -Property SessionId |
+        ForEach-Object { $_.Group | Sort-Object LastActive -Descending | Select-Object -First 1 })
 }
 
 # ---------------------------------------------------------------------------
-# Registry -- the operator's selection. Discovery says what EXISTS; this says
-# what should come back. Keeping them separate is the whole point: a directory
-# you untick stays untickled even though it is still discoverable.
+# Registry v2 -- directories, each holding its conversations.
 # ---------------------------------------------------------------------------
 function Get-SRRegistry {
     if (-not (Test-Path -LiteralPath $SR_RegistryPath)) {
-        return [PSCustomObject]@{ version = 1; lastScan = $null; entries = @() }
+        return [PSCustomObject]@{ version = 2; lastScan = $null; directories = @() }
     }
     try {
         $r = Get-Content -LiteralPath $SR_RegistryPath -Raw | ConvertFrom-Json
-        if ($null -eq $r.PSObject.Properties['entries']) {
-            $r | Add-Member -NotePropertyName entries -NotePropertyValue @() -Force
-        }
-        return $r
     } catch {
         throw "registry is unreadable ($SR_RegistryPath): $($_.Exception.Message). Delete it to start fresh."
     }
+
+    # Migrate v1 (one flat entry per directory, carrying a single sessionId) rather
+    # than discarding the operator's ticks.
+    if ($null -ne $r.PSObject.Properties['entries'] -and $null -eq $r.PSObject.Properties['directories']) {
+        $dirs = @()
+        foreach ($e in @($r.entries)) {
+            $sessions = @()
+            if ($e.sessionId) {
+                $sessions += [PSCustomObject]@{
+                    sessionId  = $e.sessionId
+                    title      = $e.title
+                    enabled    = $true
+                    lastActive = $e.lastActive
+                    firstSeen  = $e.firstSeen
+                }
+            }
+            $dirs += [PSCustomObject]@{
+                path      = $e.path
+                enabled   = [bool]$e.enabled
+                firstSeen = $e.firstSeen
+                missing   = [bool]$e.missing
+                sessions  = $sessions
+            }
+        }
+        $r = [PSCustomObject]@{ version = 2; lastScan = $r.lastScan; directories = $dirs }
+        Write-SRLog "registry migrated v1 -> v2 ($(@($dirs).Count) directories)"
+    }
+
+    if ($null -eq $r.PSObject.Properties['directories']) {
+        $r | Add-Member -NotePropertyName directories -NotePropertyValue @() -Force
+    }
+    return $r
 }
 
 function Save-SRRegistry {
     param([Parameter(Mandatory)]$Registry)
     $Registry.lastScan = (Get-Date).ToString('o')
-    # Atomic-ish: write beside the target, then replace. A half-written registry
-    # would lose every selection.
+    # Write beside the target then replace: a half-written registry would lose every
+    # selection.
     $tmp = "$SR_RegistryPath.tmp"
-    ($Registry | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $tmp -Encoding utf8
+    ($Registry | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $tmp -Encoding utf8
     Move-Item -LiteralPath $tmp -Destination $SR_RegistryPath -Force
 }
 
-# Refresh the registry from what is on disk. NEVER launches anything.
-# New directories arrive ticked only if they were active within recencyDays --
-# so the tool behaves like it did before out of the box, and you intervene only
-# to switch something off.
-# Entries are never deleted: unticking is the operator's job, and a directory
-# that disappears is marked rather than forgotten.
+# Refresh the registry from disk. NEVER launches anything.
+#
+# A newly seen DIRECTORY arrives ticked if it was worked in within recencyDays.
+# Within a directory, newly seen SESSIONS arrive ticked if they were active within
+# sessionWindowDays -- but at most autoTickPerDirectory of them, newest first, so a
+# repo with sixteen live conversations does not open sixteen tabs.
+# Nothing is ever deleted: unticking is the operator's job.
 function Update-SRRegistry {
     param([Parameter(Mandatory)]$Config, [switch]$Quiet)
 
-    $reg   = Get-SRRegistry
-    $disc  = Get-SRDiscovered -Config $Config
-    $now   = (Get-Date).ToString('o')
-    $cutoff = (Get-Date).AddDays(-1 * [double]$Config.recencyDays)
+    $reg  = Get-SRRegistry
+    $disc = Get-SRDiscovered -Config $Config
+    $now  = (Get-Date).ToString('o')
+    $dirCutoff  = (Get-Date).AddDays(-1 * [double]$Config.recencyDays)
+    $sessCutoff = (Get-Date).AddDays(-1 * [double]$Config.sessionWindowDays)
+    $autoTick   = [int]$Config.autoTickPerDirectory
 
-    $byPath = @{}
-    foreach ($e in @($reg.entries)) {
-        if ($e.path) { $byPath[$e.path.ToLowerInvariant()] = $e }
-    }
+    $byDir = @{}
+    foreach ($d in @($reg.directories)) { if ($d.path) { $byDir[$d.path.ToLowerInvariant()] = $d } }
 
-    $added = 0; $updated = 0
-    foreach ($d in $disc) {
-        $key = $d.Path.ToLowerInvariant()
-        $title = Get-SRSessionTitle -JsonlPath $d.Jsonl
-        if (-not $title) { $title = Split-Path $d.Path -Leaf }
+    $newDirs = 0; $newSessions = 0
+    $groups = $disc | Group-Object -Property { $_.Path.ToLowerInvariant() }
 
-        if ($byPath.ContainsKey($key)) {
-            $e = $byPath[$key]
-            $e.lastActive = $d.LastActive.ToString('o')
-            $e.sessionId  = $d.SessionId
-            $e.title      = $title
-            $e.missing    = $false
-            $updated++
-        } else {
-            $reg.entries += [PSCustomObject]@{
-                path       = $d.Path
-                enabled    = ($d.LastActive -ge $cutoff)
-                firstSeen  = $now
-                lastActive = $d.LastActive.ToString('o')
-                sessionId  = $d.SessionId
-                title      = $title
-                missing    = $false
+    foreach ($g in $groups) {
+        $rows    = @($g.Group | Sort-Object LastActive -Descending)
+        $dirPath = $rows[0].Path
+        $key     = $g.Name
+
+        if (-not $byDir.ContainsKey($key)) {
+            $newest = $rows[0].LastActive
+            $dir = [PSCustomObject]@{
+                path      = $dirPath
+                enabled   = ($newest -ge $dirCutoff)
+                firstSeen = $now
+                missing   = $false
+                sessions  = @()
             }
-            $added++
+            $reg.directories += $dir
+            $byDir[$key] = $dir
+            $newDirs++
             if (-not $Quiet) {
-                $state = if ($d.LastActive -ge $cutoff) { 'ticked' } else { 'unticked (older than the window)' }
-                Write-SRStep ("new: {0}  -> {1}" -f (Split-Path $d.Path -Leaf), $state)
+                Write-SRStep ("new project: {0} -> {1}" -f (Split-Path $dirPath -Leaf), $(if ($newest -ge $dirCutoff) { 'ticked' } else { 'unticked (older than recencyDays)' }))
             }
+        }
+        $dir = $byDir[$key]
+        $dir.missing = $false
+
+        $known = @{}
+        foreach ($s in @($dir.sessions)) { if ($s.sessionId) { $known[$s.sessionId] = $s } }
+
+        # Which of the NEW sessions may arrive ticked: inside the window, newest
+        # first, and only up to the per-directory allowance MINUS what is already
+        # ticked -- so the allowance is a ceiling on the directory, not per scan.
+        $alreadyOn = @(@($dir.sessions) | Where-Object { $_.enabled }).Count
+        $budget    = [Math]::Max(0, $autoTick - $alreadyOn)
+
+        foreach ($r in $rows) {
+            if ($known.ContainsKey($r.SessionId)) {
+                $s = $known[$r.SessionId]
+                $s.lastActive = $r.LastActive.ToString('o')
+                $s.title      = $r.Title
+                continue
+            }
+            $tick = ($r.LastActive -ge $sessCutoff) -and ($budget -gt 0)
+            if ($tick) { $budget-- }
+            $dir.sessions += [PSCustomObject]@{
+                sessionId  = $r.SessionId
+                title      = $r.Title
+                enabled    = $tick
+                lastActive = $r.LastActive.ToString('o')
+                firstSeen  = $now
+            }
+            $newSessions++
         }
     }
 
-    # Mark entries whose directory no longer exists, rather than dropping them.
+    # Mark directories whose path is gone, rather than dropping them.
     $seen = @{}
     foreach ($d in $disc) { $seen[$d.Path.ToLowerInvariant()] = $true }
-    foreach ($e in @($reg.entries)) {
-        if ($e.path -and -not $seen.ContainsKey($e.path.ToLowerInvariant())) {
-            $e | Add-Member -NotePropertyName missing -NotePropertyValue $true -Force
+    foreach ($d in @($reg.directories)) {
+        if ($d.path -and -not $seen.ContainsKey($d.path.ToLowerInvariant())) {
+            $d | Add-Member -NotePropertyName missing -NotePropertyValue $true -Force
         }
     }
 
     Save-SRRegistry -Registry $reg
     if (-not $Quiet) {
-        Write-SRStep ("registry: {0} entr{1}, {2} new, {3} refreshed" -f @($reg.entries).Count, $(if(@($reg.entries).Count -eq 1){'y'}else{'ies'}), $added, $updated)
+        $nd = @($reg.directories).Count
+        $ns = @(@($reg.directories) | ForEach-Object { @($_.sessions) }).Count
+        Write-SRStep ("registry: {0} project(s), {1} conversation(s); {2} new project(s), {3} new conversation(s)" -f $nd, $ns, $newDirs, $newSessions)
     }
     return $reg
+}
+
+# The flat list of what should actually reopen: enabled sessions inside enabled,
+# present directories. Newest first.
+function Get-SRSelected {
+    param([Parameter(Mandatory)]$Registry, [switch]$IgnoreTicks)
+
+    $out = @()
+    foreach ($d in @($Registry.directories)) {
+        if ($d.missing) { continue }
+        if (-not $IgnoreTicks -and -not $d.enabled) { continue }
+        foreach ($s in @($d.sessions)) {
+            if (-not $IgnoreTicks -and -not $s.enabled) { continue }
+            $out += [PSCustomObject]@{
+                Path       = $d.path
+                SessionId  = $s.sessionId
+                Title      = $s.title
+                LastActive = [datetime]$s.lastActive
+            }
+        }
+    }
+    return ,@($out | Sort-Object LastActive -Descending)
 }
 
 # ---------------------------------------------------------------------------
 # Guards
 # ---------------------------------------------------------------------------
 
-# The mtime guard only catches a session that is actively WRITING. A session idle
-# at its prompt writes nothing. Sessions launched by this tool carry
-# `--resume <id>` in their command line, so they are identifiable. Bare-`claude`
-# sessions that later /resume'd carry no id -- hence both guards.
+# The mtime guard only catches a session that is actively WRITING. A session idle at
+# its prompt writes nothing. Sessions launched by this tool carry `--resume <id>` in
+# their command line, so they are identifiable. Bare-`claude` sessions that later
+# /resume'd carry no id -- hence both guards.
 function Test-SRProcessRunning {
     param([Parameter(Mandatory)][string]$SessionId)
     $p = Get-CimInstance Win32_Process -Filter "Name='claude.exe'" -ErrorAction SilentlyContinue |
@@ -285,13 +367,18 @@ function Test-SRTranscriptLive {
     return (((Get-Date) - (Get-Item -LiteralPath $JsonlPath).LastWriteTime).TotalMinutes -lt $SR_LiveWindowMinutes)
 }
 
+function Get-SRTranscriptPath {
+    param([Parameter(Mandatory)][string]$Dir, [Parameter(Mandatory)][string]$SessionId)
+    return (Join-Path (Join-Path $SR_Projects (($Dir -replace '[^A-Za-z0-9]', '-'))) "$SessionId.jsonl")
+}
+
 # ---------------------------------------------------------------------------
 # Launching
 # ---------------------------------------------------------------------------
 
 # Get-Command does NOT find wt.exe: it ships as a WindowsApps execution alias, a
-# reparse point often absent from a child shell's PATH and from the thinner PATH
-# a scheduled task inherits. Resolving by PATH alone failed here once already.
+# reparse point often absent from a child shell's PATH and from the thinner PATH a
+# scheduled task inherits. Resolving by PATH alone failed here once already.
 function Resolve-SRWindowsTerminal {
     $gc = Get-Command wt.exe -ErrorAction SilentlyContinue
     if ($gc -and $gc.Source) { return $gc.Source }
@@ -317,8 +404,11 @@ function New-SRBootScript {
     if (-not (Test-Path -LiteralPath $SR_StateDir)) {
         New-Item -ItemType Directory -Path $SR_StateDir -Force | Out-Null
     }
+    # The SESSION ID is part of the filename. Keying on the directory alone was fine
+    # while only one conversation per tree could be restored; with several it would
+    # have had them overwrite each other's boot script mid-launch.
     $slug = ((Split-Path $Dir -Leaf) -replace '[^A-Za-z0-9]', '-')
-    $boot = Join-Path $SR_StateDir "boot-$slug.ps1"
+    $boot = Join-Path $SR_StateDir ("boot-{0}-{1}.ps1" -f $slug, $SessionId.Substring(0, 8))
 
     # Single-quoted here-string: nothing expands here. Placeholders are substituted
     # afterwards, so a title containing $ or a backtick can never be re-parsed as

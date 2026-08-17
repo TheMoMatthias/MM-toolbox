@@ -56,11 +56,17 @@ two shell functions.
 | `cc "my-name" --model opus` | …with a name you choose, plus any `claude` flags (the name comes first) |
 
 **What exists and what reopens are separate.** A scan-only task runs hourly and at
-logon, discovering every project you have a conversation in — it launches nothing.
-A registry records your tick per directory, so a finished project stops reopening
-the moment you untick it. New directories arrive pre-ticked if you worked in them
-recently. If a ticked directory goes stale, **your tick still wins** — it reopens
-and says `STALE` rather than silently dropping out of your morning.
+logon, discovering every conversation you have — it launches nothing. A registry
+records your ticks at **two levels**: a project has a master tick, and each
+conversation under it has its own, so a project can reopen **several** conversations
+and you can drop a finished slice without touching the rest.
+
+New conversations arrive pre-ticked if they were active within `sessionWindowDays`
+(3), capped at `autoTickPerDirectory` (3) per project, newest first. That ceiling
+matters: this repo had **44** conversations in the tracking window and **16** inside
+3 days — without it, "reopen everything recent" means sixteen tabs. If a ticked
+conversation goes stale, **your tick still wins** — it reopens and says `STALE`
+rather than silently dropping out of your morning.
 
 `select-sessions.ps1` and `restore-sessions.ps1` are ordinary scripts you can run
 directly, and both have desktop buttons. Pass `-NoSessionRestore` to `install.ps1`

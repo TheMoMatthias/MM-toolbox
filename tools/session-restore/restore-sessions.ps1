@@ -79,9 +79,10 @@ function Invoke-Scan {
     Write-SRLog "---- scan ----"
     $cfg = Get-SRConfig
     $reg = Update-SRRegistry -Config $cfg
-    $on  = @(@($reg.entries) | Where-Object { $_.enabled -and -not $_.missing }).Count
+    $sel = Get-SRSelected -Registry $reg
+    $allS = @(@($reg.directories) | ForEach-Object { @($_.sessions) }).Count
     Write-Host ""
-    Write-Host ("  {0} of {1} director{2} selected for restore" -f $on, @($reg.entries).Count, $(if(@($reg.entries).Count -eq 1){'y'}else{'ies'}))
+    Write-Host ("  {0} of {1} conversation(s), across {2} project(s), selected for restore" -f @($sel).Count, $allS, @($reg.directories).Count)
     Write-Host "  Choose with: select-sessions.ps1   (or ccs)"
     Write-Host ""
     return 0
@@ -100,24 +101,31 @@ function Invoke-Restore {
     # Refresh first, quietly, so a project you started today is offered today.
     $reg = Update-SRRegistry -Config $cfg -Quiet
 
-    if ($All) {
-        $wanted = @(@($reg.entries) | Where-Object { -not $_.missing })
-    } else {
-        $wanted = @(@($reg.entries) | Where-Object { $_.enabled -and -not $_.missing })
-    }
+    $wanted   = Get-SRSelected -Registry $reg -IgnoreTicks:$All
+    $knownDir = @($reg.directories).Count
+    $knownSes = @(@($reg.directories) | ForEach-Object { @($_.sessions) }).Count
 
     # Three distinct states, never one silent green: nothing known, nothing
     # ticked, and nothing restorable are different problems with different fixes.
-    if (@($reg.entries).Count -eq 0) {
+    if ($knownSes -eq 0) {
         Write-SRFail "no conversations discovered under $SR_Projects. Has claude ever run on this machine?"
         return 1
     }
     if (@($wanted).Count -eq 0) {
-        Write-SRFail ("{0} director{1} known, but NONE is ticked. Run select-sessions.ps1 (or ccs) to choose." -f @($reg.entries).Count, $(if(@($reg.entries).Count -eq 1){'y is'}else{'ies are'}))
+        Write-SRFail ("{0} conversation(s) across {1} project(s) known, but NONE is ticked. Run select-sessions.ps1 (or ccs) to choose." -f $knownSes, $knownDir)
         return 1
     }
 
-    $wanted = @($wanted | Sort-Object { [datetime]$_.lastActive } -Descending)
+    # One line per directory that is about to get two or more sessions. They share a
+    # single git index, so a bare `git commit` in either takes whatever the other
+    # staged -- the mitigation is `git commit -- <paths>`, not avoiding this.
+    foreach ($grp in ($wanted | Group-Object -Property Path)) {
+        if ($grp.Count -ge 2) {
+            # Single-quoted: a backtick is PowerShell's escape character, and a
+            # markdown-style one inside a double-quoted string is a parse error.
+            Write-SRWarn (('{0}: restoring {1} conversations into ONE working tree - they share a git index, so commit with:  git commit -m msg -- <paths>') -f (Split-Path $grp.Name -Leaf), $grp.Count)
+        }
+    }
 
     $cap = [int]$cfg.maxSessions
     if (-not $All -and $cap -gt 0 -and @($wanted).Count -gt $cap) {
@@ -137,29 +145,31 @@ function Invoke-Restore {
             Write-SRFail "$label - directory no longer exists: $($e.path)"; $failed++; continue
         }
 
-        $tdir  = Join-Path $SR_Projects (($e.path -replace '[^A-Za-z0-9]', '-'))
-        $jsonl = Join-Path $tdir "$($e.sessionId).jsonl"
+        # Several conversations can share a directory now, so every line has to name
+        # WHICH one -- three consecutive "AlgoTrader - skipped" tell you nothing.
+        $title = $e.title
+        if ([string]::IsNullOrWhiteSpace($title)) { $title = $label }
+        $who = "$label / `"$title`""
+
+        $jsonl = Get-SRTranscriptPath -Dir $e.path -SessionId $e.sessionId
         if (-not (Test-Path -LiteralPath $jsonl)) {
-            Write-SRFail "$label - transcript missing for session $($e.sessionId); run -Scan"; $failed++; continue
+            Write-SRFail "$who - transcript missing for session $($e.sessionId); run -Scan"; $failed++; continue
         }
 
         if (Test-SRProcessRunning -SessionId $e.sessionId) {
-            Write-SRSkip "$label - a claude.exe is already running this conversation (one session per working tree)"
+            Write-SRSkip "$who - already open in a running claude.exe"
             $skipped++; continue
         }
         if (Test-SRTranscriptLive -JsonlPath $jsonl) {
-            Write-SRSkip "$label - a session is already live here (transcript written < $SR_LiveWindowMinutes min ago)"
+            Write-SRSkip "$who - already live (transcript written < $SR_LiveWindowMinutes min ago)"
             $skipped++; continue
         }
-
-        $title = $e.title
-        if ([string]::IsNullOrWhiteSpace($title)) { $title = $label }
 
         $ageDays  = [int]((Get-Date) - [datetime]$e.lastActive).TotalDays
         $ageHours = [int]((Get-Date) - [datetime]$e.lastActive).TotalHours
 
         if ($DryRun) {
-            Write-SROk "$label   (last active $(if($ageDays -ge 1){"${ageDays}d"}else{"${ageHours}h"}) ago)"
+            Write-SROk "$label / `"$title`"   (last active $(if($ageDays -ge 1){"${ageDays}d"}else{"${ageHours}h"}) ago)"
             Write-SRStep "claude --resume $($e.sessionId) -n `"$title`" --remote-control `"$title`""
             Write-SRStep "in $($e.path)"
             if ($ageDays -gt $staleDays) { Write-Host "         STALE - ticked, but untouched for ${ageDays}d. Untick it in select-sessions.ps1 if it is finished." -ForegroundColor DarkYellow }
@@ -282,8 +292,9 @@ function Invoke-Install {
     try {
         $cfg = Get-SRConfig
         $reg = Update-SRRegistry -Config $cfg -Quiet
-        $on  = @(@($reg.entries) | Where-Object { $_.enabled }).Count
-        Write-SROk ("registry seeded: {0} director{1}, {2} ticked" -f @($reg.entries).Count, $(if(@($reg.entries).Count -eq 1){'y'}else{'ies'}), $on)
+        $sel = Get-SRSelected -Registry $reg
+        $all = @(@($reg.directories) | ForEach-Object { @($_.sessions) }).Count
+        Write-SROk ("registry seeded: {0} project(s), {1} conversation(s), {2} ticked" -f @($reg.directories).Count, $all, @($sel).Count)
     } catch {
         Write-SRFail "registry seed failed: $($_.Exception.Message)"
     }
