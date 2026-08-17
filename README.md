@@ -13,11 +13,19 @@ mm-toolbox/
 ├── hooks/
 │   ├── grill-gate.ps1   # UserPromptSubmit hook — fires every prompt, content-blind reminder of the mandatory grill gate
 │   └── verify-loop.ps1  # Stop hook — opt-in self-healing verify loop (see hooks/README.md)
-├── skills/
-│   ├── workflow/       # grill-with-docs, grill-me, domain-modeling, grilling, handoff, spawn-claude-session, reevaluate, writing-great-skills, teach
-│   ├── development/    # implement, tdd, write-a-skill, to-issues, to-prd, prototype, research, resolving-merge-conflicts, triage, wayfinder, setup-engineering-skills
+├── SKILLS-UPSTREAM.md  # provenance: which skills come from mattpocock/skills, at which commit,
+│                       # what was renamed, and which divergences a sync must not undo
+├── skills/             # 45 skills. Every one carries agents/openai.yaml for Codex as well.
+│   ├── workflow/       # grill-with-docs, grill-me, grilling, domain-modeling, handoff, claude-handoff,
+│   │                   # spawn-claude-session, reevaluate, wrap-up, teach, ask-matt, loop-me,
+│   │                   # to-questionnaire, wait-what, writing-great-skills
+│   ├── development/    # implement, tdd, write-a-skill, to-issues, to-prd, prototype, research,
+│   │                   # resolving-merge-conflicts, triage, wayfinder, wizard,
+│   │                   # setup-engineering-skills, setup-pre-commit
 │   ├── diagnosis/      # diagnose, audit, audit-loop, audit-loop-codebase, diagnosing-bugs, code-review
-│   ├── architecture/   # improve-codebase-architecture, codebase-design
+│   ├── architecture/   # improve-codebase-architecture, codebase-design, setup-ts-deep-modules
+│   ├── writing/        # writing-for-agents, writing-beats, writing-fragments, writing-shape
+│   ├── misc/           # git-guardrails-claude-code, migrate-to-shoehorn, scaffold-exercises
 │   └── orchestration/  # agent-cluster
 ├── agents/
 │   ├── core/           # universal: code-reviewer, function-tester, systems-architect, research-engineer, data-quality-engineer, ml-engineer
@@ -26,9 +34,32 @@ mm-toolbox/
 │   ├── security/       # security-auditor
 │   ├── frontend/       # ui-design-architect
 │   └── quant/          # quant-trading-architect, quant-researcher, data-quality-scientist, ml-systems-architect
+├── tools/
+│   └── session-restore/ # bring back recent Claude conversations at logon, correctly named
+│                        # (see tools/session-restore/README.md)
 ├── install.ps1         # symlink ~/.claude/* into this repo (backs up originals)
 └── uninstall.ps1       # remove symlinks, optionally restore originals
 ```
+
+## Resuming yesterday's work
+
+`install.ps1` also sets up **session-restore**: a logon task, a desktop button, and
+two shell functions.
+
+| command | does |
+|---|---|
+| `ccr` | restore the conversations you were last working on, one tab each, Remote Control attached under each one's real name |
+| `ccr -DryRun` | show what *would* come back |
+| `cc` | start a correctly-**named** new session in the current directory |
+
+Projects are discovered, not listed — work in a new repo once and it is picked up.
+Pass `-NoSessionRestore` to `install.ps1` to skip all of it.
+
+**Never launch a bare `claude` if you want to drive it from your phone.** Remote
+Control registers against the *empty* conversation, so the phone shows an
+auto-generated name and a later `/resume` never sends it your history. `cc` and
+`ccr` exist to make that impossible. Full explanation in
+[tools/session-restore/README.md](tools/session-restore/README.md).
 
 ## Install
 
@@ -86,6 +117,6 @@ Examples of when to add a project-level `CLAUDE.md`:
 
 Day 1 of cross-machine use. Future work (deferred):
 
-- Multi-LLM portability (GPT / Gemini adapter layer) — triggered when I actually use a non-Claude LLM with this workflow.
+- ~~Multi-LLM portability (GPT / Gemini adapter layer)~~ — **partly done 2026-08-17**: every skill now carries an `agents/openai.yaml` with Codex metadata (`display_name`, `short_description`, and `allow_implicit_invocation: false` on user-invoked skills), adopted from upstream. Gemini remains untouched, and the skill *bodies* are still written for Claude Code — see divergence 3 in [SKILLS-UPSTREAM.md](SKILLS-UPSTREAM.md).
 - Auto-pull on session start via a `SessionStart` hook — currently manual `git pull`.
 - Adoption-by-others install script that asks which preferences to keep — currently single-user.
