@@ -1,0 +1,5 @@
+interface:
+  display_name: "Agent Cluster"
+  short_description: "Partition a codebase across agents"
+policy:
+  allow_implicit_invocation: false

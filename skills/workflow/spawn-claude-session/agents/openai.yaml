@@ -1,0 +1,3 @@
+interface:
+  display_name: "Spawn Claude Session"
+  short_description: "Launch a briefed session in a new terminal"

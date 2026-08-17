@@ -1,0 +1,5 @@
+interface:
+  display_name: "Writing Great Skills"
+  short_description: "Vocabulary and principles for skills"
+policy:
+  allow_implicit_invocation: false

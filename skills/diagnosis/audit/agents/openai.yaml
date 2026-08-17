@@ -1,0 +1,5 @@
+interface:
+  display_name: "Audit"
+  short_description: "One-shot correctness audit"
+policy:
+  allow_implicit_invocation: false

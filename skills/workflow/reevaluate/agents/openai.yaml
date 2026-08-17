@@ -1,0 +1,5 @@
+interface:
+  display_name: "Reevaluate"
+  short_description: "Deep-dive audit of current state"
+policy:
+  allow_implicit_invocation: false

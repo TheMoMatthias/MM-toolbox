@@ -1,0 +1,5 @@
+interface:
+  display_name: "Audit Loop"
+  short_description: "Audit and fix until clean"
+policy:
+  allow_implicit_invocation: false

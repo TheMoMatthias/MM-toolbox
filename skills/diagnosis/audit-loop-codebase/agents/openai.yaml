@@ -1,0 +1,5 @@
+interface:
+  display_name: "Audit Loop Codebase"
+  short_description: "Repo-wide audit and fix loop"
+policy:
+  allow_implicit_invocation: false
