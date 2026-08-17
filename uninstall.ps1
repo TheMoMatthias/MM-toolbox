@@ -92,6 +92,25 @@ if (Test-Path "$RepoRoot\agents") {
     }
 }
 
+# Session-restore tool: logon task, desktop shortcut, and the cc/ccr profile block.
+$SessionRestore = Join-Path $RepoRoot 'tools\session-restore\restore-sessions.ps1'
+if (Test-Path -LiteralPath $SessionRestore) {
+    try { & $SessionRestore -Uninstall } catch { Write-Warning "[session-restore] $_" }
+}
+
+$begin = '# >>> MM-toolbox session-restore >>>'
+$end   = '# <<< MM-toolbox session-restore <<<'
+$profilePath = $PROFILE.CurrentUserAllHosts
+if (Test-Path -LiteralPath $profilePath) {
+    $existing = Get-Content -LiteralPath $profilePath -Raw
+    if ($existing -and $existing -match [regex]::Escape($begin)) {
+        $pattern = [regex]::Escape($begin) + '.*?' + [regex]::Escape($end)
+        $stripped = [regex]::Replace($existing, $pattern, '', 'Singleline').TrimEnd() + "`r`n"
+        Set-Content -LiteralPath $profilePath -Value $stripped -Encoding utf8
+        Write-Host "[profile] removed cc/ccr from $profilePath"
+    }
+}
+
 # Restore originals from backup if available
 if ($BackupDir -and (Test-Path -LiteralPath $BackupDir)) {
     Write-Host "[restore] from $BackupDir"

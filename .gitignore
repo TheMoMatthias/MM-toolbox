@@ -16,3 +16,7 @@ desktop.ini
 # Local-only overrides (a user can add machine-local rules here without committing)
 local/
 *.local
+
+# session-restore runtime state: the log and the generated per-project boot scripts.
+# Machine-specific and regenerated on every run - never committed.
+tools/session-restore/.state/

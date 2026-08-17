@@ -12,7 +12,11 @@
 
 param(
     [switch]$Force,
-    [string]$ClaudeHome = "$env:USERPROFILE\.claude"
+    [string]$ClaudeHome = "$env:USERPROFILE\.claude",
+
+    # Skip the session-restore tool (logon task + desktop button + cc/ccr shell
+    # functions). Everything else installs as normal.
+    [switch]$NoSessionRestore
 )
 
 $ErrorActionPreference = 'Stop'
@@ -135,6 +139,59 @@ Get-ChildItem -LiteralPath "$RepoRoot\agents" -Directory | ForEach-Object {
         if ($_.Name -ieq 'README.md') { return }
         Link-One $_.FullName (Join-Path "$ClaudeHome\agents" $_.Name) 'File'
     }
+}
+
+# ---- 5) Session-restore tool ----
+# NOT symlinked into ~/.claude: the scheduled task and the desktop shortcut point
+# at an absolute path, so they should point straight at this checkout. Clone the
+# repo anywhere, run install.ps1, and the task follows the clone.
+$SessionRestore = Join-Path $RepoRoot 'tools\session-restore\restore-sessions.ps1'
+if ($NoSessionRestore) {
+    Write-Host "[skip]   session-restore (-NoSessionRestore)"
+} elseif (-not (Test-Path -LiteralPath $SessionRestore)) {
+    Write-Warning "[missing] $SessionRestore"
+} else {
+    Write-Host ""
+    Write-Host "[tools]  session-restore"
+    & $SessionRestore -Install
+
+    # Shell front door. `cc` starts a correctly-NAMED new session in the current
+    # directory; `ccr` restores recent ones. This matters because NO hook can set a
+    # session title -- all 31 hook events are informational or permission-gating --
+    # so a bare `claude` can only ever end up with an auto-generated name on your
+    # phone. Never launching bare is the whole fix.
+    $begin = '# >>> MM-toolbox session-restore >>>'
+    $end   = '# <<< MM-toolbox session-restore <<<'
+    $block = @"
+$begin
+function cc  { & '$SessionRestore' -New @args }      # new NAMED session, here
+function ccr { & '$SessionRestore' @args }           # restore recent sessions
+$end
+"@
+
+    $profilePath = $PROFILE.CurrentUserAllHosts
+    $profileDir  = Split-Path -Parent $profilePath
+    if (-not (Test-Path -LiteralPath $profileDir)) {
+        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+    }
+
+    $existing = ''
+    if (Test-Path -LiteralPath $profilePath) {
+        $existing = Get-Content -LiteralPath $profilePath -Raw
+        if ($null -eq $existing) { $existing = '' }
+    }
+
+    if ($existing -match [regex]::Escape($begin)) {
+        # Idempotent: replace the previous block rather than appending another.
+        $pattern = [regex]::Escape($begin) + '.*?' + [regex]::Escape($end)
+        $updated = [regex]::Replace($existing, $pattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $block }, 'Singleline')
+        Set-Content -LiteralPath $profilePath -Value $updated -Encoding utf8
+        Write-Host "[profile] refreshed cc/ccr in $profilePath"
+    } else {
+        Add-Content -LiteralPath $profilePath -Value ("`r`n" + $block) -Encoding utf8
+        Write-Host "[profile] added cc/ccr to $profilePath"
+    }
+    Write-Host "[profile] open a NEW terminal, then: cc   (new named session)  /  ccr   (restore)"
 }
 
 Write-Host ""
