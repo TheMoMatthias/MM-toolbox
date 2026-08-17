@@ -32,7 +32,9 @@
     hourly scheduled task runs.
 
 .PARAMETER All
-    Ignore the tick list and the cap: restore everything discoverable.
+    Ignore the tick list: consider every discovered conversation. The maxSessions
+    cap still applies -- without it this opens a tab per conversation, which is 46
+    on a machine with a busy repo.
 
 .PARAMETER New
     Start a correctly-named NEW session in the current directory.
@@ -127,12 +129,16 @@ function Invoke-Restore {
         }
     }
 
+    # The cap applies to -All too. It used to be exempt, which was harmless while a
+    # project could contribute one conversation -- with several it meant `ccr -All`
+    # opened 46 real tabs on this machine. Raise maxSessions if you want more; one
+    # lever, not two.
     $cap = [int]$cfg.maxSessions
-    if (-not $All -and $cap -gt 0 -and @($wanted).Count -gt $cap) {
+    if ($cap -gt 0 -and @($wanted).Count -gt $cap) {
         $dropped = @($wanted).Count - $cap
         $wanted = @($wanted | Select-Object -First $cap)
         # Never truncate silently: a capped list reads exactly like a complete one.
-        Write-SRStep "capped at $cap most recent - $dropped ticked director$(if($dropped -eq 1){'y'}else{'ies'}) not restored this run (raise maxSessions, or use -All)"
+        Write-SRStep "capped at $cap most recent - $dropped conversation$(if($dropped -eq 1){''}else{'s'}) not restored this run (raise maxSessions in the config if you want more)"
     }
 
     $launched = 0; $skipped = 0; $failed = 0
