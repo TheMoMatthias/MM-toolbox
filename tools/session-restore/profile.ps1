@@ -51,21 +51,35 @@ function cc {
     & (Join-Path $Global:MMSessionRestoreRoot 'restore-sessions.ps1') @p
 }
 
+# ccs                      the picker
+# ccs -List                print the current selection
+# ccs -Enable  <match>     tick   by project path, worktree name, title or id
+# ccs -Disable <match>     untick the same way
+# ccs -Worktrees on|off    show or hide git-worktree lanes (writes the config)
 function ccs {
     $p = @{}
-    $vals = @{}
-    $pending = $null
+    $lists = @{}
+    $pendingList   = $null
+    $pendingScalar = $null
+
     foreach ($a in $args) {
         $s = [string]$a
-        if ($pending) { $vals[$pending] += $s; $pending = $null; continue }
+        if ($pendingList)   { $lists[$pendingList] += $s;  $pendingList   = $null; continue }
+        if ($pendingScalar) { $p[$pendingScalar]    = $s;  $pendingScalar = $null; continue }
         switch -regex ($s) {
-            '^-+List$'    { $p['List']   = $true }
-            '^-+NoScan$'  { $p['NoScan'] = $true }
-            '^-+Enable$'  { $pending = 'Enable';  if (-not $vals.ContainsKey('Enable'))  { $vals['Enable']  = @() } }
-            '^-+Disable$' { $pending = 'Disable'; if (-not $vals.ContainsKey('Disable')) { $vals['Disable'] = @() } }
-            default { Write-Warning "ccs: ignoring unrecognised argument '$a' (try -List, -Enable <match>, -Disable <match>)" }
+            '^-+List$'      { $p['List']   = $true }
+            '^-+NoScan$'    { $p['NoScan'] = $true }
+            '^-+Enable$'    { $pendingList = 'Enable';  if (-not $lists.ContainsKey('Enable'))  { $lists['Enable']  = @() } }
+            '^-+Disable$'   { $pendingList = 'Disable'; if (-not $lists.ContainsKey('Disable')) { $lists['Disable'] = @() } }
+            '^-+Worktrees$' { $pendingScalar = 'Worktrees' }
+            # `ccs -Worktrees off` is the long form; `ccs worktrees off` is not, so a
+            # bare on/off with nothing pending is a mistake worth naming.
+            default { Write-Warning "ccs: ignoring unrecognised argument '$a' (try -List, -Enable <match>, -Disable <match>, -Worktrees on|off)" }
         }
     }
-    foreach ($k in $vals.Keys) { if (@($vals[$k]).Count -gt 0) { $p[$k] = $vals[$k] } }
+    if ($pendingList -or $pendingScalar) {
+        Write-Warning "ccs: -$($pendingList)$($pendingScalar) was given no value - ignored"
+    }
+    foreach ($k in $lists.Keys) { if (@($lists[$k]).Count -gt 0) { $p[$k] = $lists[$k] } }
     & (Join-Path $Global:MMSessionRestoreRoot 'select-sessions.ps1') @p
 }

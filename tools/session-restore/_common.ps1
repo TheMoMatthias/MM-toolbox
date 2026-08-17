@@ -67,6 +67,40 @@ function Clear-SRChildEnv {
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+# Flip includeWorktrees in the config file.
+#
+# Deliberately a targeted text replacement rather than ConvertTo-Json round-tripping
+# the parsed object: the config is mostly a hand-laid-out _README block, and
+# re-serialising it would reflow every line of documentation to change one boolean.
+#
+# 🪤 The _README also contains the WORD includeWorktrees. The pattern requires the
+# quoted key followed by a colon, which the prose form never is -- and the result is
+# verified by re-reading, so a miss cannot pass silently.
+function Set-SRIncludeWorktrees {
+    param([Parameter(Mandatory)][bool]$Value)
+
+    $raw = Get-Content -LiteralPath $SR_ConfigPath -Raw
+    $lit = $Value.ToString().ToLowerInvariant()
+    $new = [regex]::Replace($raw, '("includeWorktrees"\s*:\s*)(?:true|false)', ('${1}' + $lit))
+
+    if ($new -eq $raw -and -not ($raw -match '"includeWorktrees"\s*:\s*' + $lit)) {
+        throw "could not find an `"includeWorktrees`" key to set in $SR_ConfigPath"
+    }
+
+    # WriteAllText, not Set-Content: Set-Content appends a trailing newline on every
+    # write, so each toggle grew the file by a blank line. Normalise the ending and
+    # write exactly that. UTF8 without a BOM, matching how the file was authored.
+    $new = $new.TrimEnd("`r", "`n") + "`r`n"
+    [System.IO.File]::WriteAllText($SR_ConfigPath, $new, (New-Object System.Text.UTF8Encoding($false)))
+
+    $check = (Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json).includeWorktrees
+    if ([bool]$check -ne $Value) {
+        throw "wrote includeWorktrees=$lit but the file reads back as $check"
+    }
+    Write-SRLog "includeWorktrees set to $lit"
+    return $Value
+}
+
 function Get-SRConfig {
     if (-not (Test-Path -LiteralPath $SR_ConfigPath)) { throw "config not found: $SR_ConfigPath" }
     $c = Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json

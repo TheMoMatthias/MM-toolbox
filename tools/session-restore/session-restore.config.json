@@ -1,4 +1,4 @@
-﻿{
+{
   "_README": [
     "Discovery + auto-tick settings for session-restore.",
     "",
@@ -95,6 +95,3 @@
     "%TEMP%\\*"
   ]
 }
-
-
-

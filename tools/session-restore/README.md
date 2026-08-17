@@ -24,6 +24,7 @@ Open a new terminal:
 | `ccs -List` | print the current selection as a tree |
 | `ccs -Disable E2b-python-312` | untick without the picker — matches a project path *or* a conversation title/id |
 | `ccs -Enable F1-seam-wave` | tick the same way |
+| `ccs -Worktrees off` | hide git-worktree lanes (`on` to show) — writes the config |
 | `ccr` | restore the selected conversations, one tab each |
 | `ccr -DryRun` | show what *would* come back, launch nothing |
 | `ccr -All` | ignore the tick list and the cap, just this once |
@@ -79,8 +80,17 @@ Detection is the definitive marker: a linked worktree has a `.git` **file** whos
 first line is `gitdir: <repo>/.git/worktrees/<name>`, which also hands back the
 parent repo. Not a path pattern, so a worktree anywhere is found.
 
-Set **`includeWorktrees: false`** to hide them entirely — not listed, not restored,
-including any already recorded in the registry.
+**Turning them off** hides them entirely — not listed, not restored, including any
+already recorded in the registry. Three ways in, none of which needs you to open the
+config file:
+
+- press **`W`** in the picker (the footer shows the current state)
+- `ccs -Worktrees off` / `ccs -Worktrees on` from a terminal
+- set `includeWorktrees` in `session-restore.config.json` by hand
+
+All three write the same setting. The file write is a targeted replacement of that
+one value, so the hand-laid-out `_README` block is never reflowed, and the result is
+read back and verified rather than assumed.
 
 A project can reopen **more than one** conversation, because you routinely run
 several at once. Untick the project and nothing in it reopens; untick one

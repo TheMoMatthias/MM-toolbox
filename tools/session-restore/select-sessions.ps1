@@ -38,6 +38,12 @@ param(
     [switch]$List,
     [string[]]$Enable,
     [string[]]$Disable,
+
+    # Turn git-worktree lanes on or off and write it back to the config, so the
+    # setting is reachable without hand-editing JSON. W does the same in the picker.
+    [ValidateSet('on', 'off')]
+    [string]$Worktrees,
+
     [switch]$NoScan
 )
 
@@ -49,6 +55,20 @@ if (-not $here) { $here = (Get-Location).Path }
 . (Join-Path $here '_common.ps1')
 
 $cfg = Get-SRConfig
+
+# Applied BEFORE the scan, so turning worktrees on discovers them in the same run
+# rather than needing a second pass.
+if ($Worktrees) {
+    $want = ($Worktrees -eq 'on')
+    if ([bool]$cfg.includeWorktrees -eq $want) {
+        Write-Host ("  worktrees were already {0}" -f $Worktrees.ToUpper()) -ForegroundColor Yellow
+    } else {
+        $null = Set-SRIncludeWorktrees -Value $want
+        Write-Host ("  worktrees {0}" -f $(if ($want) { 'ON  - a lane under each repo, restorable' } else { 'OFF - hidden and never restored' })) `
+            -ForegroundColor $(if ($want) { 'Green' } else { 'DarkYellow' })
+    }
+    $cfg = Get-SRConfig
+}
 
 if (-not $NoScan) {
     # Say something BEFORE the scan. It used to run silently and the window sat
@@ -211,7 +231,9 @@ function Write-PlainList {
     Write-Host ""
 }
 
-if ($List) { Write-PlainList; exit 0 }
+# -Worktrees is a one-shot setting change, so report the result and stop rather than
+# dropping into the picker unasked.
+if ($List -or $Worktrees) { Write-PlainList; exit 0 }
 
 # Without a real console, ReadKey throws or blocks forever. Degrade to the list
 # rather than hanging a scheduled task or a piped invocation.
@@ -309,7 +331,8 @@ function Render {
     $curPath = if ($cur.Kind -eq 'session' -and $cur.Session.cwd) { $cur.Session.cwd } else { $cur.Dir.path }
     Write-Host ("  " + $curPath) -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "  UP/DOWN move  SPACE toggle+pin  U unpin  LEFT/RIGHT fold  A all  N none  R rescan  ENTER save  ESC cancel" -ForegroundColor DarkCyan
+    Write-Host "  UP/DOWN move  SPACE toggle+pin  U unpin  LEFT/RIGHT fold  A all  N none" -ForegroundColor DarkCyan
+    Write-Host ("  W worktrees {0}  R rescan  ENTER save  ESC cancel" -f $(if ($showWt) { 'ON (press to hide) ' } else { 'OFF (press to show)' })) -ForegroundColor DarkCyan
     Write-Host "  * = pinned (the roll leaves it alone). Unpinned rows follow the newest few in their lane." -ForegroundColor DarkGray
 }
 
@@ -374,6 +397,21 @@ while ($true) {
                         'session' { Set-Pin $row.Session $false }
                     }
                     $dirty = $true
+                }
+                '[wW]' {
+                    # Flip worktree lanes and persist it. Turning them ON needs a
+                    # rescan, because discovery skips them entirely while off.
+                    try {
+                        $null = Set-SRIncludeWorktrees -Value (-not $script:showWt)
+                        $script:cfg    = Get-SRConfig
+                        $script:showWt = [bool]$script:cfg.includeWorktrees
+                        Invoke-Rescan
+                        $rows = Build-Rows
+                        $cursor = 0
+                    } catch {
+                        # Leave the picker usable if the config could not be written.
+                        Write-SRLog ("worktree toggle failed: " + $_.Exception.Message)
+                    }
                 }
                 '[qQ]' { Clear-Host; Write-Host "`n  Cancelled.`n" -ForegroundColor Yellow; exit 0 }
                 '[rR]' { Invoke-Rescan; $rows = Build-Rows }
