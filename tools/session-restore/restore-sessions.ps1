@@ -100,8 +100,14 @@ function Invoke-Restore {
 
     $cfg = Get-SRConfig
 
-    # Refresh first, quietly, so a project you started today is offered today.
+    # Refresh first so a project you started today is offered today. Announce it:
+    # a silent scan leaves the window blank and reads as nothing happening.
+    Write-Host "  Scanning conversations..." -NoNewline -ForegroundColor DarkGray
+    $swScan = [Diagnostics.Stopwatch]::StartNew()
     $reg = Update-SRRegistry -Config $cfg -Quiet
+    $swScan.Stop()
+    Write-Host (" {0} ms" -f $swScan.ElapsedMilliseconds) -ForegroundColor DarkGray
+    Write-SRLog ("         scan {0} ms" -f $swScan.ElapsedMilliseconds)
 
     $wanted   = Get-SRSelected -Registry $reg -IgnoreTicks:$All
     $knownDir = @($reg.directories).Count
@@ -194,7 +200,10 @@ function Invoke-Restore {
                 Write-SRLog "         STALE - $label ticked but untouched for ${ageDays}d"
             }
             $launched++
-            Start-Sleep -Milliseconds 1200
+            # Breathing room between tabs so Windows Terminal does not race itself.
+            # Was 1200 ms, which at the 12-session cap was 14 seconds of pure sleeping
+            # at every logon; 500 ms keeps a margin and cuts that to five.
+            Start-Sleep -Milliseconds 500
         } catch {
             Write-SRFail "$label - $($_.Exception.Message)"; $failed++
         }

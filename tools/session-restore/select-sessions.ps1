@@ -48,7 +48,14 @@ if (-not $here) { $here = (Get-Location).Path }
 
 $cfg = Get-SRConfig
 if (-not $NoScan) {
+    # Say something BEFORE the scan. It used to run silently and the window sat
+    # blank for the whole of it -- which read as "nothing is happening" rather than
+    # "working". -NoScan skips it entirely.
+    Write-Host "  Scanning conversations..." -NoNewline -ForegroundColor DarkGray
+    $swScan = [Diagnostics.Stopwatch]::StartNew()
     try { $null = Update-SRRegistry -Config $cfg -Quiet } catch { Write-Warning "scan failed: $($_.Exception.Message)" }
+    $swScan.Stop()
+    Write-Host (" {0} ms" -f $swScan.ElapsedMilliseconds) -ForegroundColor DarkGray
 }
 $reg  = Get-SRRegistry
 $dirs = @($reg.directories | Sort-Object { if (@($_.sessions).Count) { [datetime](@($_.sessions) | Sort-Object { [datetime]$_.lastActive } -Descending)[0].lastActive } else { [datetime]'1970-01-01' } } -Descending)

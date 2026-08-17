@@ -265,26 +265,35 @@ if ($useWt) {
 # binary - filtering for node.exe finds nothing and looks like failure) carrying OUR
 # session id, and (2) a transcript at the KNOWN path containing a real assistant
 # turn - which is exactly what `claude --resume` reads.
+# Poll fast, not slowly. This used to Start-Sleep 5 seconds BEFORE its first look,
+# so a session that appeared in one second still cost five - and it re-queried WMI
+# on every pass. Same 45s budget, but it now usually returns in about a second.
 $proc = $null
-for ($i = 0; $i -lt 9; $i++) {
-    Start-Sleep -Seconds 5
+$deadlineProc = (Get-Date).AddSeconds(45)
+while ((Get-Date) -lt $deadlineProc) {
     $proc = Get-CimInstance Win32_Process -Filter "Name='claude.exe'" -ErrorAction SilentlyContinue |
             Where-Object { $_.CommandLine -like "*$sessionId*" } | Select-Object -First 1
     if ($proc) { break }
+    Start-Sleep -Milliseconds 400
 }
 if (-not $proc) {
     Write-Warning "spawn-claude-session: NO claude.exe carrying session id $sessionId appeared within 45s. The window is open but the session did NOT start - check it for an error. Boot script: $bootPath"
 }
 
+# `Select-String` without -List scans the WHOLE transcript, and this ran every 3
+# seconds against a file that is actively growing. We only need to know whether ANY
+# assistant turn exists, so stop at the first hit.
 $turns = 0
 $rcAttached = $false
 if ($proc -and $fullPrompt) {
     $deadline = (Get-Date).AddSeconds($TurnTimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Seconds 3
+        Start-Sleep -Milliseconds 750
         if (Test-Path -LiteralPath $transcript) {
-            $turns = @(Select-String -LiteralPath $transcript -Pattern '"type":"assistant"' -ErrorAction SilentlyContinue).Count
-            if ($turns -gt 0) { break }
+            if (Select-String -LiteralPath $transcript -Pattern '"type":"assistant"' -List -Quiet -ErrorAction SilentlyContinue) {
+                $turns = 1
+                break
+            }
         }
     }
 }
@@ -297,7 +306,9 @@ if ($proc -and $fullPrompt) {
 # connect that never happened - a check that cannot fail. A real connect writes
 # '"bridgeSessionId":"cse_...' plus ownerAccountUuid.
 if (Test-Path -LiteralPath $transcript) {
-    $rcAttached = @(Select-String -LiteralPath $transcript -Pattern '"bridgeSessionId":"cse_' -ErrorAction SilentlyContinue).Count -gt 0
+    # -List -Quiet: stop at the first hit. We only need to know whether a real
+    # connect happened, not how many times it was recorded.
+    $rcAttached = [bool](Select-String -LiteralPath $transcript -Pattern '"bridgeSessionId":"cse_' -List -Quiet -ErrorAction SilentlyContinue)
 }
 
 # --- Report -------------------------------------------------------------------
