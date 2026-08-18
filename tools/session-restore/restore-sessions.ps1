@@ -133,7 +133,10 @@ function Invoke-Restore {
         if ($grp.Count -ge 2) {
             # Single-quoted: a backtick is PowerShell's escape character, and a
             # markdown-style one inside a double-quoted string is a parse error.
-            Write-SRWarn (('{0}: restoring {1} conversations into ONE working tree - they share a git index, so commit with:  git commit -m msg -- <paths>') -f (Split-Path $grp.Name -Leaf), $grp.Count)
+            # "will be live", not "restoring": this counts the WANTED set, and some of
+            # it is skipped below precisely BECAUSE it is already running. The hazard
+            # is how many end up sharing the tree, which is true either way.
+            Write-SRWarn (('{0}: {1} conversations will be live in ONE working tree - they share a git index, so commit with:  git commit -m msg -- <paths>') -f (Split-Path $grp.Name -Leaf), $grp.Count)
         }
     }
 

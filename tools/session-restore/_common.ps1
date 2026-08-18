@@ -701,6 +701,25 @@ Set-Location -LiteralPath '__DIR__'
     return $boot
 }
 
+# 🪤 `Start-Process -ArgumentList @(...)` JOINS THE ARRAY WITH SPACES AND QUOTES
+# NOTHING. Measured 2026-08-18 by dumping the receiver's argv: a directory under
+# "Trading Bot" arrived as
+#     -d  [C:\Users\mauri\Documents\Trading]  +  a stray [Bot\Python\...\D2]
+# so wt.exe took the fragment as the command to RUN and every AlgoTrader tab died
+# with 0x80070002 while space-free repos launched fine. 🔑 The tell in that error is
+# that the failing command line starts MID-PATH.
+# A single STRING is forwarded verbatim instead, so quote each argument ourselves.
+function ConvertTo-SRArg {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
+    # CommandLineToArgvW rules, which is how both wt.exe and powershell.exe build
+    # their argv: a backslash is literal EXCEPT in the run immediately preceding a
+    # quote (the closing one included), where each must be doubled; an embedded
+    # quote becomes \".
+    $e = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $e = [regex]::Replace($e,     '(\\+)$', '$1$1')
+    return '"' + $e + '"'
+}
+
 function Start-SRSession {
     param(
         [Parameter(Mandatory)][string]$Dir,
@@ -711,8 +730,19 @@ function Start-SRSession {
     if (-not $wt) {
         throw "Windows Terminal (wt.exe) not found. A plain PowerShell window spawned from a non-interactive parent does not reliably give claude a usable console."
     }
-    Start-Process -FilePath $wt -ArgumentList @(
-        '-w', '0', 'new-tab', '--title', $Title, '-d', $Dir,
-        'powershell.exe', '-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $BootScript
-    ) | Out-Null
+    # wt splits its OWN argv on a bare ';' to begin a second command, and quoting
+    # does not take that away. ';' is legal in a Windows path but effectively never
+    # present -- so refuse rather than launch something nobody asked for. A title is
+    # cosmetic, so that one is sanitised instead of thrown on.
+    foreach ($p in @($Dir, $BootScript)) {
+        if ($p -like '*;*') { throw "Refusing to launch: ';' in a path is a command separator to wt.exe -- $p" }
+    }
+    $cmdline = @(
+        '-w', '0', 'new-tab',
+        '--title', (ConvertTo-SRArg ($Title -replace ';', ',')),
+        '-d',      (ConvertTo-SRArg $Dir),
+        'powershell.exe', '-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+        '-File',   (ConvertTo-SRArg $BootScript)
+    ) -join ' '
+    Start-Process -FilePath $wt -ArgumentList $cmdline | Out-Null
 }

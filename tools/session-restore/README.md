@@ -222,5 +222,14 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
 3. **`& script @args` (array splatting) does not reliably bind switches.** Measured:
    `cc -DryRun --model opus` put `-DryRun` into the pass-through array and *actually
    launched claude* instead of dry-running. The wrappers splat a **hashtable**.
+4. **`Start-Process -ArgumentList @(...)` joins the array with spaces and quotes
+   *nothing*.** Same family as trap 3 — PowerShell does not quote on your behalf.
+   Measured by dumping the receiver's argv: a project under `Trading Bot` arrived as
+   `-d C:\Users\mauri\Documents\Trading` plus a stray `Bot\Python\…`, so `wt.exe`
+   tried to **run** the fragment and every tab in that repo died with `0x80070002`
+   while space-free repos launched fine. 🔑 The tell is that the failing command line
+   in the error **starts mid-path**. A single *string* is forwarded verbatim, so
+   `ConvertTo-SRArg` quotes each argument (CommandLineToArgvW rules) and the launcher
+   passes one string.
 
 If it ever seems to do nothing at logon, read `.state/restore.log` first.

@@ -256,7 +256,12 @@ if ($useWt) {
     & $wtPath -w new -d "$resolved" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "$bootPath"
 } else {
     Write-Warning "spawn-claude-session: wt.exe not available - falling back to a plain PowerShell window. The session may fail to submit its opening prompt in this mode."
-    Start-Process powershell.exe -ArgumentList @("-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$bootPath") -WorkingDirectory $resolved | Out-Null
+    # 🪤 -ArgumentList JOINS THE ARRAY WITH SPACES AND QUOTES NOTHING, so an unquoted
+    # -File path splits at its first space and powershell.exe runs the wrong thing.
+    # $env:TEMP has no space here, but $Name does the moment anyone passes one, and
+    # the same defect took out every session-restore tab under "Trading Bot"
+    # (2026-08-18). -WorkingDirectory is a real parameter and needs no quoting.
+    Start-Process powershell.exe -ArgumentList @("-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $bootPath + '"')) -WorkingDirectory $resolved | Out-Null
 }
 
 # --- VERIFY - the launch call can only confirm an ATTEMPT ---------------------
