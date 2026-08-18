@@ -3,6 +3,9 @@
 # and removes any symlink whose target lives inside this repo.
 # With a backup dir (auto-detected from .pre-mmtoolbox-backup-*) it restores originals.
 
+# [CmdletBinding()] so an unknown switch is an ERROR, not silently collected into
+# $args -- see the note in install.ps1. This script does not read $args.
+[CmdletBinding()]
 param(
     [string]$ClaudeHome = "$env:USERPROFILE\.claude",
     [string]$BackupDir,

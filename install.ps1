@@ -10,6 +10,12 @@
 # This also leaves any existing items in ~/.claude/hooks/skills/agents that AREN'T
 # in MM-toolbox (e.g. ~/.claude/hooks/verify-loop.ps1) UNTOUCHED.
 
+# 🪤 [CmdletBinding()] is load-bearing, not decoration. A plain param() block puts
+# UNBOUND arguments into $args and carries on: measured 2026-08-18,
+# `install.ps1 -NotARealSwitch` installed everything and exited 0, so a typo'd
+# -NoSessionRestore would silently install the very thing you asked it to skip.
+# This makes an unknown switch an error instead. Neither script reads $args.
+[CmdletBinding()]
 param(
     [switch]$Force,
     [string]$ClaudeHome = "$env:USERPROFILE\.claude",

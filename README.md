@@ -37,7 +37,9 @@ mm-toolbox/
 ├── tools/
 │   └── session-restore/ # bring back recent Claude conversations at logon, correctly named
 │                        # (see tools/session-restore/README.md)
-├── install.ps1         # symlink ~/.claude/* into this repo (backs up originals)
+├── Install.bat         # double-click to install (or re-install after a git pull)
+├── Uninstall.bat       # double-click to remove
+├── install.ps1         # symlink ~/.claude/* into this repo, register the tasks
 └── uninstall.ps1       # remove symlinks, optionally restore originals
 ```
 
@@ -100,6 +102,15 @@ cd MM-toolbox
 .\install.ps1
 ```
 
+Or **double-click `Install.bat`** in the repo root — same thing, no terminal needed,
+and it pauses so you can read the result. It passes any switches through, so
+`Install.bat -NoSessionRestore` works too. Re-running it is also how you **apply an
+update** after `git pull`.
+
+That single step registers both scheduled tasks — `ClaudeSessionRestore` (at logon)
+and `ClaudeSessionScan` (hourly + at logon, scan only) — plus the two desktop
+buttons and the `cc`/`ccr`/`ccs` shell functions. There is nothing else to install.
+
 Works **without admin** on a vanilla Windows install: tries `SymbolicLink` first; falls back to **NTFS Junction** for directories and **HardLink** for files (both work for non-admin users). For real symlinks instead, enable **Developer Mode** (Settings > Privacy & security > For developers) OR run as Administrator.
 
 `install.ps1` does:
@@ -116,7 +127,7 @@ After install, `git pull` in this repo is enough to update every machine's Claud
 .\uninstall.ps1
 ```
 
-Removes the symlinks. If a backup dir exists under `~/.claude/`, restores the originals from the most recent one. Pass `-NoRestore` to keep the symlinks gone without restoring (the repo still has all your assets — useful when you're moving away from MM-toolbox but not throwing it away).
+Or double-click **`Uninstall.bat`**. Removes the symlinks. If a backup dir exists under `~/.claude/`, restores the originals from the most recent one. Pass `-NoRestore` to keep the symlinks gone without restoring (the repo still has all your assets — useful when you're moving away from MM-toolbox but not throwing it away).
 
 ## Update workflow
 
