@@ -330,8 +330,9 @@ function Invoke-Install {
     }
 
     Write-Host ""
-    Write-Host "  Choose what reopens :  select-sessions.ps1   (or ccs, or the desktop button)"
-    Write-Host "  Preview a restore   :  restore-sessions.ps1 -DryRun   (or ccr -DryRun)"
+    Write-Host "  Choose what reopens :  double-click 'Select Sessions.bat'   (or the desktop button)"
+    Write-Host "  Bring them back now :  double-click 'Restore Sessions.bat'  (or the desktop button)"
+    Write-Host "  Preview first       :  restore-sessions.ps1 -DryRun"
     Write-Host "  Everything lives in :  $SR_Root"
     Write-Host ""
     return 0

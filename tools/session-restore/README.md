@@ -9,14 +9,37 @@ them reopen is **your choice**.
 
 ## Quick start
 
+**Double-click `Install Session Restore.bat` in this folder.** That is the whole
+install: it registers the two scheduled tasks, creates the two desktop buttons, and
+seeds the registry so the picker has something to show straight away. It does *not*
+touch your PowerShell profile.
+
+Re-run it any time — the tasks are re-registered with `-Force`, so it doubles as the
+repair when a checkout moves. To remove all of it: `restore-sessions.ps1 -Uninstall`.
+
+From then on the tool is two double-clicks:
+
+| double-click | does |
+|---|---|
+| `Select Sessions.bat` | **choose what reopens** — the picker |
+| `Restore Sessions.bat` | bring the selected conversations back now |
+
+The desktop buttons point at those same two files, so there is one launch path. They
+pass arguments through (`Restore Sessions.bat -DryRun`) and pause only when
+double-clicked, so the output stays readable. Set `SR_NOPAUSE=1` to drive them from
+a script.
+
+### Optional: the repo-wide install
+
 ```powershell
 git clone https://github.com/TheMoMatthias/MM-toolbox.git
 cd MM-toolbox
-.\install.ps1
+.\install.ps1        # or double-click Install.bat
 ```
 
-That registers two scheduled tasks, two desktop buttons, and three shell functions.
-Open a new terminal:
+That does everything above **plus** links the skills and agents into `~/.claude` and
+adds three shell functions. The functions are optional — skip them entirely with
+`Install Session Restore.bat` above. Open a new terminal:
 
 | command | does |
 |---|---|
@@ -32,14 +55,8 @@ Open a new terminal:
 | `cc` | start a correctly-**named** new session in the current directory |
 | `cc "my-name" --model opus` | …with a name, plus any `claude` flags |
 
-**Double-click** `Select Sessions.bat` or `Restore Sessions.bat` in this folder —
-the desktop buttons point at those same two files, so there is one launch path.
-They pass any arguments straight through (`Restore Sessions.bat -DryRun`) and pause
-only when double-clicked, so the output stays readable. Set `SR_NOPAUSE=1` if you
-ever drive them from a script.
-
 `.\uninstall.ps1` removes both tasks and both buttons and leaves your selections
-alone.
+alone — as does `restore-sessions.ps1 -Uninstall` without touching anything else.
 
 ⚠️ **The name must come first:** `cc [name] [claude flags…]`. Once a flag appears,
 everything after it goes to `claude` — otherwise the *value* of a flag gets taken
@@ -201,6 +218,7 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
 
 | file | |
 |---|---|
+| `Install Session Restore.bat` | double-click to install just this tool — tasks + buttons, no profile changes |
 | `Restore Sessions.bat` · `Select Sessions.bat` | double-clickable; the desktop buttons point here |
 | `_common.ps1` | discovery, registry, the rolling auto-tick, guards, launching — shared, so there is one copy |
 | `restore-sessions.ps1` | restore · `-Scan` · `-New` · `-Install` · `-Uninstall` |
