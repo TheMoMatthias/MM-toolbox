@@ -70,6 +70,13 @@ param(
     # Optional model alias (e.g. 'opus', 'sonnet') for the spawned session.
     [string]$Model = "",
 
+    # EXTRA `claude` FLAGS, passed straight through, e.g.
+    #   -ClaudeArg '--settings','{"outputStyle":"Concise"}'
+    # Each element becomes ONE argv token, so a JSON value can never be re-parsed
+    # as PowerShell syntax. Use this rather than hand-rolling a launch: the boot
+    # script's env scrub is the only thing keeping a spawned session resumable.
+    [string[]]$ClaudeArg = @(),
+
     # Opt OUT of Remote Control -> plain local session, no phone pairing.
     # (Resumability is identical either way - this only drops the phone channel.)
     [Alias("NoRemoteControl")]
@@ -148,6 +155,7 @@ if ($rcOn) { $claudeTokens += @("--remote-control", $Name) }
 if (-not [string]::IsNullOrWhiteSpace($Model)) {
     $claudeTokens += @("--model", $Model)
 }
+if ($ClaudeArg.Count -gt 0) { $claudeTokens += $ClaudeArg }
 $claudeCmd = ("claude " + (($claudeTokens | ForEach-Object {
     if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
 }) -join ' ')).Trim()
