@@ -1,10 +1,10 @@
 @echo off
-REM Double-click to let this PC sign itself in at boot, so the session restore
-REM runs without anyone typing a password.
+REM Double-click, or right-click -> Run as administrator, to let this PC sign
+REM itself in at boot so the session restore runs with nobody at the keyboard.
 REM
-REM It asks for elevation (it writes HKLM and the LSA secret store) and then asks
-REM for your Windows password IN THAT WINDOW. The password is verified first, then
-REM stored encrypted -- it is never written to the registry in plaintext.
+REM It opens an ELEVATED WINDOW and asks for your Windows password IN THAT WINDOW.
+REM The password is verified against Windows first, then stored encrypted in the
+REM LSA secret store -- never in the registry in plaintext.
 REM
 REM   Enable Auto Logon.bat                  enable it
 REM   Enable Auto Logon.bat -LockAfterLogon  enable it, but lock the screen once
@@ -23,18 +23,21 @@ if not errorlevel 1 (
     exit /b %ERRORLEVEL%
 )
 
-REM The elevated command line is built as ONE STRING, deliberately. Passing an
-REM array to Start-Process -ArgumentList joins it with spaces and quotes NOTHING,
-REM so a toolbox checked out under a path with a space in it would send the
-REM elevated shell half a filename. That bug already cost this tool every tab in
-REM one repo -- see the ConvertTo-SRArg note in _common.ps1.
-REM -NoExit keeps the elevated window open: it prompts for a password, and the
-REM result would otherwise scroll away with the window.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$s='%~dp0enable-autologon.ps1'; $x='%*'.Trim(); $c='-NoExit -NoProfile -ExecutionPolicy Bypass -File \"' + $s + '\"'; if ($x) { $c += ' ' + $x }; Start-Process powershell.exe -Verb RunAs -ArgumentList $c"
-if errorlevel 1 (
+REM The script elevates ITSELF (-Elevate), into Windows Terminal where possible.
+REM That is deliberate: elevating a bare powershell.exe from a non-interactive
+REM parent has repeatedly produced a process with NO CONSOLE, and this script then
+REM reaches its password prompt, reads end-of-file, and exits having silently
+REM changed nothing -- which is exactly what happened on 2026-08-21. Keeping the
+REM window logic in the .ps1 also keeps it out of batch quoting.
+REM Already elevated (right-click -> Run as administrator)? It just runs here.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0enable-autologon.ps1" -Elevate %*
+set SR_EXIT=%ERRORLEVEL%
+
+if not "%SR_EXIT%"=="0" (
     echo.
-    echo [autologon] Elevation was declined or failed - nothing was changed.
+    echo [autologon] Exited with code %SR_EXIT% - nothing was changed.
+    echo [autologon] If no window appeared, right-click this file and Run as administrator.
     echo.
     pause
 )
-exit /b %ERRORLEVEL%
+exit /b %SR_EXIT%

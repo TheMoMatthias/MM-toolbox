@@ -54,19 +54,42 @@ param(
     [switch]$Disable,
     [switch]$Status,
     [switch]$LockAfterLogon,
-    [string]$UserName
+    [string]$UserName,
+
+    # Re-launch elevated in a window of its own and exit. This is what the .bat
+    # passes; you would not normally type it.
+    [switch]$Elevate
 )
 
 $ErrorActionPreference = 'Stop'
+
+$here = $PSScriptRoot
+if (-not $here -and $MyInvocation.MyCommand.Path) { $here = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $here) { $here = (Get-Location).Path }
 
 $WinlogonKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 $PwLessKey   = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device'
 $LockTask    = 'ClaudeSessionLockAfterLogon'
 
-function Write-Ok   { param($m) Write-Host "  [ok]   $m" -ForegroundColor Green }
-function Write-Fail { param($m) Write-Host "  [FAIL] $m" -ForegroundColor Red }
-function Write-Warn { param($m) Write-Host "  [warn] $m" -ForegroundColor Yellow }
-function Write-Step { param($m) Write-Host "  $m" }
+# This script runs in a window that is elevated, sometimes hidden, and easy to
+# close before it is read -- and when it went wrong the evidence went with it. It
+# leaves a trail. NOTHING here is ever handed a password: the prompt reads into a
+# SecureString and no message carries it.
+$ALogPath = Join-Path (Join-Path $here '.state') 'autologon.log'
+function Write-ALog {
+    param([string]$Message)
+    try {
+        $d = Split-Path -Parent $ALogPath
+        if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+        Add-Content -LiteralPath $ALogPath -Encoding utf8 `
+            -Value ("{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message)
+    } catch { }
+}
+
+function Write-Ok   { param($m) Write-Host "  [ok]   $m" -ForegroundColor Green;  Write-ALog "[ok]   $m" }
+function Write-Fail { param($m) Write-Host "  [FAIL] $m" -ForegroundColor Red;    Write-ALog "[FAIL] $m" }
+function Write-Warn { param($m) Write-Host "  [warn] $m" -ForegroundColor Yellow; Write-ALog "[warn] $m" }
+function Write-Step { param($m) Write-Host "  $m";                                Write-ALog "       $m" }
 
 function Test-Admin {
     return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -150,6 +173,65 @@ public static class SRLsa
 }
 '@
 
+# --- credential check -------------------------------------------------------
+# LogonUser goes through the real authentication packages, so the cloud provider
+# gets a look at a Microsoft-account credential. PrincipalContext('Machine') does
+# not, and silently rejects a correct MSA password.
+#
+# Two logon types are tried per identity. INTERACTIVE is what the logon screen
+# uses and is the truest test, but it needs SeInteractiveLogonRight; NETWORK needs
+# no rights at all and still proves the password. Either one passing is enough.
+$logonSource = @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class SRLogon
+{
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern bool LogonUserW(string user, string domain, string password,
+                                  int logonType, int logonProvider, out IntPtr token);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CloseHandle(IntPtr handle);
+
+    public static int LastError = 0;
+
+    const int LOGON32_LOGON_INTERACTIVE = 2;
+    const int LOGON32_LOGON_NETWORK     = 3;
+    const int LOGON32_PROVIDER_DEFAULT  = 0;
+
+    public static bool Check(string user, string domain, string password)
+    {
+        foreach (int type in new int[] { LOGON32_LOGON_INTERACTIVE, LOGON32_LOGON_NETWORK })
+        {
+            IntPtr token;
+            bool ok = LogonUserW(user, string.IsNullOrEmpty(domain) ? null : domain,
+                                 password, type, LOGON32_PROVIDER_DEFAULT, out token);
+            if (ok) { CloseHandle(token); LastError = 0; return true; }
+            LastError = Marshal.GetLastWin32Error();
+        }
+        return false;
+    }
+}
+'@
+if (-not ('SRLogon' -as [type])) { Add-Type -TypeDefinition $logonSource -Language CSharp }
+
+# A bare error number tells the operator nothing, and "wrong password" and "this
+# account is not allowed to log on" need completely different reactions.
+function Get-LogonErrorMeaning {
+    param([int]$Code)
+    switch ($Code) {
+        0     { 'no error reported - the identity form was probably wrong, not the password' }
+        1326  { 'wrong user name or password' }
+        1327  { 'account restriction - often a BLANK PASSWORD on an account that forbids it' }
+        1330  { 'the password has expired' }
+        1331  { 'the account is disabled' }
+        1385  { 'this account is not granted the requested logon type' }
+        1907  { 'the password must be changed before the account can be used' }
+        default { 'see "net helpmsg ' + $Code + '"' }
+    }
+}
+
 function Set-LsaSecret {
     param([Parameter(Mandatory)][string]$Key, [AllowNull()][string]$Value)
     if (-not ('SRLsa' -as [type])) { Add-Type -TypeDefinition $lsaSource -Language CSharp }
@@ -210,16 +292,97 @@ function Unregister-LockTask {
 }
 
 # ---------------------------------------------------------------------------
+# 🪤 Re-launch through WINDOWS TERMINAL, not a bare powershell.exe. Elevating a
+# plain powershell from a non-interactive parent has repeatedly produced a process
+# with NO console -- the same trap spawn-claude-session documents -- and this script
+# then reaches Read-Host, gets end-of-file, and exits having silently done nothing.
+# wt.exe reliably gives a real window. It falls back to powershell.exe if Windows
+# Terminal is absent, and says which it used so a failure is attributable.
+if ($Elevate) {
+    if (Test-Admin) {
+        Write-Warn "-Elevate was passed but this shell is ALREADY elevated - continuing here."
+    } else {
+        . (Join-Path $here '_common.ps1')   # Resolve-SRWindowsTerminal + ConvertTo-SRArg
+
+        # Forward the real switches, never $Elevate itself: that would recurse.
+        $fwd = @()
+        if ($Disable)        { $fwd += '-Disable' }
+        if ($LockAfterLogon) { $fwd += '-LockAfterLogon' }
+        if ($UserName)       { $fwd += @('-UserName', (ConvertTo-SRArg $UserName)) }
+
+        $me = Join-Path $here 'enable-autologon.ps1'
+        $wt = Resolve-SRWindowsTerminal
+        $target = $null; $cmdline = $null
+
+        if ($wt) {
+            $target  = $wt
+            # -w -1 forces a NEW window: an elevated tab cannot join a
+            # non-elevated one anyway, and joining silently would hide it.
+            $cmdline = (@('-w', '-1', 'new-tab', '--title', (ConvertTo-SRArg 'Claude auto-logon'),
+                          'powershell.exe', '-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                          '-File', (ConvertTo-SRArg $me)) + $fwd) -join ' '
+        } else {
+            $target  = 'powershell.exe'
+            $cmdline = (@('-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                          '-File', (ConvertTo-SRArg $me)) + $fwd) -join ' '
+        }
+
+        Write-Host ""
+        Write-Host "Opening an elevated window$(if ($wt) { ' (Windows Terminal)' } else { ' (PowerShell - Windows Terminal not found)' })..." -ForegroundColor Cyan
+        Write-Host "  Accept the UAC prompt, then type your password IN THAT WINDOW." -ForegroundColor Cyan
+        Write-Host "  It stays open afterwards so you can read the result."
+        Write-Host ""
+        try {
+            # One STRING. -ArgumentList @(...) joins with spaces and quotes nothing.
+            Start-Process -FilePath $target -ArgumentList $cmdline -Verb RunAs | Out-Null
+        } catch {
+            Write-Fail "could not elevate: $($_.Exception.Message)"
+            Write-Host ""
+            Write-Host "  Right-click 'Enable Auto Logon.bat' -> Run as administrator instead."
+            Write-Host ""
+            exit 1
+        }
+        exit 0
+    }
+}
+
 if ($Status) { Write-State; exit 0 }
 
 if (-not (Test-Admin)) {
     Write-Host ""
     Write-Fail "this needs an elevated shell - it writes HKLM and the LSA secret store."
     Write-Host ""
-    Write-Host "  Double-click 'Enable Auto Logon.bat' instead; it asks for elevation itself."
+    Write-Host "  Right-click 'Enable Auto Logon.bat' -> Run as administrator."
     # One STRING, not an array: -ArgumentList @(...) joins with spaces and quotes
     # nothing, so an array form breaks the moment the path has a space in it.
     Write-Host "  Or:  Start-Process powershell -Verb RunAs -ArgumentList '-NoExit -NoProfile -File `"$PSCommandPath`"'"
+    Write-Host ""
+    exit 1
+}
+
+# 🪤 THIS SCRIPT ASKS FOR A PASSWORD, SO IT NEEDS A REAL CONSOLE -- and it is
+# routinely started from things that do not have one. Measured 2026-08-21: launched
+# from an agent's non-interactive shell it elevated, reached Read-Host, got EOF,
+# treated that as "no password given", and exited having changed NOTHING. The
+# operator went looking for a window that was never there.
+# Refuse LOUDLY instead. A tool whose failure mode is silence is the bug this whole
+# folder exists to avoid.
+$hasConsole = $true
+try {
+    if (-not [Environment]::UserInteractive) { $hasConsole = $false }
+    elseif ([Console]::IsInputRedirected)     { $hasConsole = $false }
+    else { $null = [Console]::WindowWidth }   # throws when there is no console at all
+} catch { $hasConsole = $false }
+
+if (-not $hasConsole -and -not $Status -and -not $Disable) {
+    Write-Host ""
+    Write-Fail "no interactive console - there is nowhere to type a password, so NOTHING was changed."
+    Write-Host ""
+    Write-Host "  This happens when the script is started from an agent, a scheduled task, or any"
+    Write-Host "  other non-interactive parent: it elevates, reaches the prompt, reads end-of-file"
+    Write-Host "  and exits looking like you declined."
+    Write-Host ""
+    Write-Host "  Run it YOURSELF instead:  right-click 'Enable Auto Logon.bat' -> Run as administrator"
     Write-Host ""
     exit 1
 }
@@ -254,8 +417,32 @@ $user = $UserName
 if (-not $user) { $user = $env:USERNAME }
 $domain = $env:USERDOMAIN
 
+# 🪤 THIS ACCOUNT MAY NOT BE THE ONE YOU LOG IN AS. A Microsoft-account sign-in
+# leaves a LOCAL shadow account (KAMPFSTATION\mauri, SID S-1-5-21-...) while the
+# credential that actually authenticates belongs to the MSA identity
+# (maurice.matthias@gmx.de, SID S-1-11-96-...). Measured 2026-08-21: the first
+# version validated against the local SAM with PrincipalContext('Machine') and
+# REJECTED THE OPERATOR'S CORRECT PASSWORD, because the local store cannot check an
+# MSA credential -- and the DefaultUserName it would then have written named the
+# wrong identity anyway, so even a "successful" run would have failed at boot.
+$msaIdentity = $null
+try {
+    $cacheRoot = 'HKLM:\SOFTWARE\Microsoft\IdentityStore\LogonCache\D7F9888F-E3FC-49b0-9EA6-A85B5F392A4F\Sid2Name'
+    foreach ($k in (Get-ChildItem $cacheRoot -ErrorAction SilentlyContinue)) {
+        $n = (Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue).IdentityName
+        if ($n -and $n -like '*@*') { $msaIdentity = $n; break }
+    }
+} catch { }
+
 Write-Host ""
-Write-Host "Enabling auto-logon for $domain\$user" -ForegroundColor Cyan
+Write-Host "Enabling auto-logon" -ForegroundColor Cyan
+Write-Host ""
+Write-Step ("local account   : {0}\{1}" -f $domain, $user)
+if ($msaIdentity) {
+    Write-Step ("Microsoft account: {0}   <- this is the password Windows will want" -f $msaIdentity)
+} else {
+    Write-Step "Microsoft account: none found - this looks like a pure local account"
+}
 Write-Host ""
 Write-Host "  This machine will sign in by itself at every boot. Anyone who can reach the" -ForegroundColor Yellow
 Write-Host "  power button reaches your desktop, signed in, with your sessions on it." -ForegroundColor Yellow
@@ -264,36 +451,74 @@ if (-not $LockAfterLogon) {
 }
 Write-Host ""
 
-$sec = Read-Host "  Windows password for $domain\$user" -AsSecureString
+$prompt = if ($msaIdentity) { "  Password for $msaIdentity" } else { "  Windows password for $domain\$user" }
+$sec = Read-Host $prompt -AsSecureString
 if ($sec.Length -eq 0) { Write-Fail 'no password given - nothing changed'; exit 1 }
+
+# The identity that actually authenticated, which is what gets written to the
+# registry. Guessing it is how auto-logon "succeeds" and then fails at boot.
+$winDomain = $null; $winUser = $null
 
 $bstr  = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
 $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
 try {
-    # Validate BEFORE writing anything. A wrong password here does not fail loudly
-    # -- it fails at the next boot, on the logon screen, where you cannot read an
-    # error message and cannot tell it apart from auto-logon simply not working.
-    Add-Type -AssemblyName System.DirectoryServices.AccountManagement
-    $ctx = New-Object System.DirectoryServices.AccountManagement.PrincipalContext('Machine')
-    if (-not $ctx.ValidateCredentials($user, $plain)) {
-        Write-Fail "Windows rejected that password for $domain\$user - nothing was changed."
+    # LogonUser, not PrincipalContext: it goes through the SAME authentication
+    # packages the logon screen does, so the cloud provider gets a look at an MSA
+    # credential. Every plausible identity form is tried and the winner is recorded.
+    $candidates = @()
+    if ($msaIdentity) {
+        $candidates += ,@('MicrosoftAccount', $msaIdentity)
+        $candidates += ,@('',                 $msaIdentity)
+    }
+    $candidates += ,@('.',     $user)
+    $candidates += ,@($domain, $user)
+
+    $lastErr = 0
+    foreach ($c in $candidates) {
+        if ([SRLogon]::Check($c[1], $c[0], $plain)) {
+            $winDomain = $c[0]; $winUser = $c[1]
+            break
+        }
+        $lastErr = [SRLogon]::LastError
+    }
+
+    if (-not $winUser) {
+        Write-Fail "Windows rejected that password - NOTHING was changed."
+        Write-Host ""
+        Write-Step ("last Win32 error: {0}  ({1})" -f $lastErr, (Get-LogonErrorMeaning $lastErr))
+        Write-Host ""
+        if ($msaIdentity) {
+            Write-Host "  This account signs in with the MICROSOFT ACCOUNT $msaIdentity." -ForegroundColor Yellow
+            Write-Host "  That is the password to type here - not a PIN, and not a local password." -ForegroundColor Yellow
+            Write-Host "  If you only ever use a PIN or Windows Hello, reset or look it up at" -ForegroundColor Yellow
+            Write-Host "  https://account.microsoft.com/security first." -ForegroundColor Yellow
+        }
+        Write-Host ""
         exit 1
     }
-    Write-Ok 'password verified against Windows'
 
+    Write-Ok ("password verified by Windows as {0}" -f $(if ($winDomain) { "$winDomain\$winUser" } else { $winUser }))
     Set-LsaSecret -Key 'DefaultPassword' -Value $plain
     Write-Ok 'password stored in the LSA secret store (encrypted, SYSTEM-only)'
 }
 finally {
-    # Do not leave it in memory any longer than the two calls above need it.
+    # Do not leave it in memory any longer than the calls above need it.
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     if (Get-Variable plain -ErrorAction SilentlyContinue) { Remove-Variable plain -Force }
 }
 
-Set-ItemProperty $WinlogonKey -Name AutoAdminLogon    -Value '1'    -Type String
-Set-ItemProperty $WinlogonKey -Name DefaultUserName   -Value $user  -Type String
-Set-ItemProperty $WinlogonKey -Name DefaultDomainName -Value $domain -Type String
-Write-Ok "AutoAdminLogon = 1, as $domain\$user"
+# Write the identity that AUTHENTICATED. For a Microsoft account Winlogon expects
+# the domain literal 'MicrosoftAccount' and the e-mail as the user name; writing the
+# local shadow account instead is the classic "auto-logon does nothing" cause.
+$regUser   = $winUser
+$regDomain = $winDomain
+if ($regDomain -eq '.' -or [string]::IsNullOrWhiteSpace($regDomain)) {
+    $regDomain = if ($winUser -like '*@*') { 'MicrosoftAccount' } else { $env:COMPUTERNAME }
+}
+Set-ItemProperty $WinlogonKey -Name AutoAdminLogon    -Value '1'       -Type String
+Set-ItemProperty $WinlogonKey -Name DefaultUserName   -Value $regUser   -Type String
+Set-ItemProperty $WinlogonKey -Name DefaultDomainName -Value $regDomain -Type String
+Write-Ok "AutoAdminLogon = 1, as $regDomain\$regUser"
 
 # Anything that ever wrote the plaintext value wins over the secret store, so it
 # has to go or the encrypted copy is decoration.
