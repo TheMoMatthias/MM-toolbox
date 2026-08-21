@@ -3,6 +3,9 @@
 The shape of the document `to-execution-plan` produces. Keep the headings; drop any
 section that genuinely does not apply and say why rather than leaving it blank.
 
+**Sections 1 and 2 are written and complete before section 3 is started.** The sequence is
+derived from the design; a sequence drafted first silently dictates the design instead.
+
 ---
 
 ## 1. Vision
