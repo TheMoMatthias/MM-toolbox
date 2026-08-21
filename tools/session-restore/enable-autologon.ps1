@@ -40,6 +40,10 @@
     run. The machine signs itself in, your sessions come up, and the screen is
     locked -- reachable from Remote Control, not from whoever walks past.
 
+.PARAMETER RemoveLock
+    Remove the lock task and leave auto-logon alone, so the machine boots straight
+    to an unlocked desktop. Needs no password.
+
 .PARAMETER UserName
     Defaults to the account you run this as, which is nearly always what you want.
 
@@ -47,6 +51,7 @@
     .\enable-autologon.ps1 -Status
     .\enable-autologon.ps1
     .\enable-autologon.ps1 -LockAfterLogon
+    .\enable-autologon.ps1 -RemoveLock
     .\enable-autologon.ps1 -Disable
 #>
 [CmdletBinding()]
@@ -54,6 +59,13 @@ param(
     [switch]$Disable,
     [switch]$Status,
     [switch]$LockAfterLogon,
+
+    # Take the lock task away WITHOUT touching auto-logon. Deliberately its own
+    # switch: re-running the enable path without -LockAfterLogon also removes it,
+    # but makes you retype your password to change something a password does not
+    # protect.
+    [switch]$RemoveLock,
+
     [string]$UserName,
 
     # Re-launch elevated in a window of its own and exit. This is what the .bat
@@ -288,6 +300,8 @@ function Unregister-LockTask {
     if (Get-ScheduledTask -TaskName $LockTask -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $LockTask -Confirm:$false
         Write-Ok "task '$LockTask' removed"
+    } else {
+        Write-Step "task '$LockTask' was not registered"
     }
 }
 
@@ -308,6 +322,7 @@ if ($Elevate) {
         $fwd = @()
         if ($Disable)        { $fwd += '-Disable' }
         if ($LockAfterLogon) { $fwd += '-LockAfterLogon' }
+        if ($RemoveLock)     { $fwd += '-RemoveLock' }
         if ($UserName)       { $fwd += @('-UserName', (ConvertTo-SRArg $UserName)) }
 
         $me = Join-Path $here 'enable-autologon.ps1'
@@ -374,7 +389,8 @@ try {
     else { $null = [Console]::WindowWidth }   # throws when there is no console at all
 } catch { $hasConsole = $false }
 
-if (-not $hasConsole -and -not $Status -and -not $Disable) {
+# -RemoveLock and -Disable never prompt, so they need no console.
+if (-not $hasConsole -and -not $Status -and -not $Disable -and -not $RemoveLock) {
     Write-Host ""
     Write-Fail "no interactive console - there is nowhere to type a password, so NOTHING was changed."
     Write-Host ""
@@ -385,6 +401,18 @@ if (-not $hasConsole -and -not $Status -and -not $Disable) {
     Write-Host "  Run it YOURSELF instead:  right-click 'Enable Auto Logon.bat' -> Run as administrator"
     Write-Host ""
     exit 1
+}
+
+if ($RemoveLock) {
+    Write-Host ""
+    Write-Host "Removing the lock-after-logon task" -ForegroundColor Cyan
+    Write-Host ""
+    Unregister-LockTask
+    if (-not (Get-ScheduledTask -TaskName $LockTask -ErrorAction SilentlyContinue)) {
+        Write-Step 'the machine will now boot straight to an unlocked desktop'
+    }
+    Write-State
+    exit 0
 }
 
 if ($Disable) {

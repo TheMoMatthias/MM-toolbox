@@ -10,6 +10,8 @@ REM   Enable Auto Logon.bat                  enable it
 REM   Enable Auto Logon.bat -LockAfterLogon  enable it, but lock the screen once
 REM                                          the sessions are up
 REM   Enable Auto Logon.bat -Status          just report the current state
+REM   Enable Auto Logon.bat -RemoveLock      stop locking the screen after logon;
+REM                                          auto-logon stays on, no password needed
 REM   Enable Auto Logon.bat -Disable         undo it, and delete the stored password
 setlocal
 
