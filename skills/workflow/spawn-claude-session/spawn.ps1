@@ -94,6 +94,10 @@ param(
     # covers a slow first turn.
     [int]$TurnTimeoutSec = 180,
 
+    # Spawn even though a live session is already working this directory or this name.
+    # R-95 section 2 (operator, 2026-08-21). Prints itself, so an override is a visible act.
+    [switch]$AllowDuplicate,
+
     # Print what would launch without spawning anything.
     [switch]$DryRun
 )
@@ -148,6 +152,64 @@ $sessionId  = [guid]::NewGuid().ToString()
 $slug       = $resolved -replace '[^A-Za-z0-9]', '-'
 $projDir    = Join-Path $env:USERPROFILE ".claude\projects\$slug"
 $transcript = Join-Path $projDir "$sessionId.jsonl"
+
+# --- R-95 section 2: IS THIS LANE ALREADY HELD? ------------------------------
+# MEASURED, 2026-08-21: a second session was spawned onto a plan row a live session had held
+# for 73 minutes. The spawner had checked every register the programme offers and not one of
+# them observes a running process (F-434/F-435). This script queried Win32_Process exactly
+# once, and only to poll for its OWN session id AFTER launching - it never asked whether the
+# lane it was about to take was already taken. This is that question, asked BEFORE the launch.
+#
+# TWO KEYS, and the first is the strong one:
+#   1. the DIRECTORY. Every session's transcript lives at $projDir\<session-id>.jsonl, so a
+#      live process whose --session-id resolves into THIS $projDir is working THIS directory,
+#      whatever it happens to be called. A name is free text; a launch directory is where the
+#      work actually is.
+#   2. the NAME, as a second opinion, for a live session the transcript store cannot place
+#      (measured: 3 of 12 processes carry neither -n nor --session-id).
+#
+# IT FAILS OPEN ON EVERY UNCERTAINTY. An unreadable process table, a missing project dir, any
+# error at all -> it prints a note and proceeds. It can MISS a duplicate; it can never INVENT
+# one, because a false refusal here blocks a session that has done nothing wrong.
+$dupWhy = @()
+try {
+    $procs = @(Get-CimInstance Win32_Process -Filter "Name='claude.exe'" -ErrorAction Stop)
+    foreach ($p in $procs) {
+        $cl = [string]$p.CommandLine
+        if ([string]::IsNullOrWhiteSpace($cl)) { continue }
+        $idm = [regex]::Match($cl, '--(?:session-id|resume)\s+([0-9a-fA-F-]{36})')
+        if ($idm.Success) {
+            $other = Join-Path $projDir ($idm.Groups[1].Value + ".jsonl")
+            if (Test-Path -LiteralPath $other) {
+                $dupWhy += ("pid " + $p.ProcessId + " is already working this directory")
+                continue
+            }
+        }
+        $nm = [regex]::Match($cl, '(?:^|\s)-n\s+(\S+)')
+        if ($nm.Success -and $nm.Groups[1].Value -eq $Name) {
+            $dupWhy += ("pid " + $p.ProcessId + " is already running under the name '" + $Name + "'")
+        }
+    }
+} catch {
+    Write-Host ("NOTE       : the process table could not be read (" + $_.Exception.Message +
+                ") - the duplicate check is being SKIPPED, not passed.") -ForegroundColor DarkYellow
+    $dupWhy = @()
+}
+if ($dupWhy.Count -gt 0 -and -not $AllowDuplicate) {
+    Write-Host ""
+    Write-Host "REFUSING TO SPAWN - this lane is already held (R-95 section 2)." -ForegroundColor Red
+    foreach ($w in $dupWhy) { Write-Host ("  " + $w) -ForegroundColor Red }
+    Write-Host "  Directory : $resolved"
+    Write-Host "  Two sessions on one lane share one worktree, one index and one register row."
+    Write-Host "  Talk to the live one instead: 'ListAgents', then 'SendMessage' to its name."
+    Write-Host "  If that process is dead or this is deliberate, re-run with -AllowDuplicate."
+    exit 1
+}
+if ($dupWhy.Count -gt 0) {
+    Write-Host ("OVERRIDE   : -AllowDuplicate was passed and " + $dupWhy.Count +
+                " live session(s) already hold this lane:") -ForegroundColor Yellow
+    foreach ($w in $dupWhy) { Write-Host ("             " + $w) -ForegroundColor Yellow }
+}
 
 # --- Build the inner `claude` command ----------------------------------------
 $claudeTokens = @("-n", $Name, "--session-id", $sessionId)

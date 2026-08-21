@@ -109,9 +109,25 @@ concrete first task on top of the handover.
 | `-RemoteControl`  | (alias `-Rc`) No-op affirmation — Remote Control is the default.                              |
 | `-Pwsh`           | Force a PowerShell window instead of Windows Terminal.                                        |
 | `-TurnTimeoutSec` | How long to wait for the first turn to land in the transcript (default 180).                  |
+| `-AllowDuplicate` | Spawn even though a live session already holds this directory or this name. **Prints itself** — an override is a visible act. |
 | `-DryRun`         | Print the resolved command, transcript path and opening prompt; launch nothing.               |
 
 ## Notes / gotchas
+
+- 🔴 **IT REFUSES TO SPAWN ONTO A LANE SOMEBODY IS ALREADY WORKING.** Measured 2026-08-21:
+  a second session was spawned onto a plan row a live session had held for **73 minutes**,
+  by a spawner who had checked every register the project offers — **none of which observes
+  a running process**. This script queried the process table exactly once before, and only
+  to poll for *its own* session id **after** launching.
+  **Two keys, and the first is the strong one:** ① the **DIRECTORY** — a live `claude.exe`
+  whose `--session-id` resolves into this directory's transcript folder is working this
+  directory, whatever it is called; ② the **NAME**, as a second opinion for a live session
+  the transcript store cannot place (measured: 3 of 12 processes carry neither `-n` nor
+  `--session-id`).
+  🔒 **It fails OPEN on every uncertainty** — an unreadable process table prints a note and
+  proceeds. It can miss a duplicate; it can never invent one, because a false refusal blocks
+  a session that has done nothing wrong. `-AllowDuplicate` overrides and says so.
+  *(Ruled as R-95 §2 in the AlgoTrader refactor ledger, where the incident was measured.)*
 
 - **Windows Terminal is required in practice.** A plain PowerShell window started from
   a non-interactive parent has repeatedly failed to give `claude` a usable console: the
