@@ -1,0 +1,5 @@
+interface:
+  display_name: "Handover and spawn"
+  short_description: "Write a handover, then open a session that acts on it"
+policy:
+  allow_implicit_invocation: false

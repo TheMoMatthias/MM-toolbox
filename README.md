@@ -15,13 +15,13 @@ mm-toolbox/
 │   └── verify-loop.ps1  # Stop hook — opt-in self-healing verify loop (see hooks/README.md)
 ├── SKILLS-UPSTREAM.md  # provenance: which skills come from mattpocock/skills, at which commit,
 │                       # what was renamed, and which divergences a sync must not undo
-├── skills/             # 45 skills. Every one carries agents/openai.yaml for Codex as well.
+├── skills/             # 48 skills. Every one carries agents/openai.yaml for Codex as well.
 │   ├── workflow/       # grill-with-docs, grill-me, grilling, domain-modeling, handoff, claude-handoff,
-│   │                   # spawn-claude-session, reevaluate, wrap-up, teach, ask-matt, loop-me,
-│   │                   # to-questionnaire, wait-what, writing-great-skills
-│   ├── development/    # implement, tdd, write-a-skill, to-issues, to-prd, prototype, research,
-│   │                   # resolving-merge-conflicts, triage, wayfinder, wizard,
-│   │                   # setup-engineering-skills, setup-pre-commit
+│   │                   # spawn-claude-session, handover-and-spawn, realign, reevaluate, wrap-up,
+│   │                   # teach, ask-matt, loop-me, to-questionnaire, wait-what, writing-great-skills
+│   ├── development/    # implement, tdd, write-a-skill, to-issues, to-prd, to-execution-plan,
+│   │                   # prototype, research, resolving-merge-conflicts, triage, wayfinder,
+│   │                   # wizard, setup-engineering-skills, setup-pre-commit
 │   ├── diagnosis/      # diagnose, audit, audit-loop, audit-loop-codebase, diagnosing-bugs, code-review
 │   ├── architecture/   # improve-codebase-architecture, codebase-design, setup-ts-deep-modules
 │   ├── writing/        # writing-for-agents, writing-beats, writing-fragments, writing-shape

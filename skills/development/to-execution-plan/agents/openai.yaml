@@ -1,0 +1,5 @@
+interface:
+  display_name: "To execution plan"
+  short_description: "Turn an idea into a two-layer, machine-checkable plan"
+policy:
+  allow_implicit_invocation: false
