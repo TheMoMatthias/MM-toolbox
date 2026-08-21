@@ -71,6 +71,7 @@ separation the whole screen is built around.
 |---|---|
 | `LIVE` | a `claude.exe` is holding that conversation's id — certain |
 | `live` | its transcript was written in the last few minutes — near certain |
+| `GONE` | its transcript is no longer on disk — it can never be launched |
 | blank | **no evidence**, which is not the same as "closed" |
 
 Two probes, because neither is enough alone. Only sessions carrying `--resume <id>`
@@ -312,7 +313,24 @@ permission-gating, so a *new* session can only be named at launch — which is w
 - **Three distinct outcomes, never one silent green:** nothing discovered, nothing
   ticked, and nothing restorable are different problems and say so separately.
 - **It logs.** At logon both tasks run hidden, so `Write-Host` reaches nobody. Every
-  line also lands in `.state/restore.log`.
+  line also lands in `.state/restore.log`, which is trimmed to its last 2000 lines once
+  it passes 512 KB — it is the file you read when the tool seems dead, and scrolling a
+  year of it to find this morning is its own failure.
+- **The registry is locked while it is rewritten.** The hourly scan, a restore and the
+  panel all read-modify-write the same file and overlap routinely. Without a lock that is
+  a plain lost update: the scan reads, you tick something and save, the scan writes its
+  copy back, and your tick is gone with nothing reported. A re-entrant named mutex spans
+  the whole read-modify-write; it **fails open** after 15 s rather than losing your work.
+  ⚠️ It does *not* cover the panel holding a copy in memory while you browse — there the
+  last writer wins, which is you, and the scan's findings are regenerated an hour later.
+- **`GONE` conversations are never launched and never auto-ticked.** A transcript can be
+  deleted out from under the registry. The row is kept (a tick is the operator's, not the
+  scan's, to delete) but marked, excluded from the restore, and skipped by the rolling
+  auto-tick so it cannot spend a lane's budget on something that can never come back.
+- **`.state/` is swept on every scan.** Generated boot scripts are regenerated on demand,
+  so an old one is litter. The per-session ones expire after 30 days; the new-session ones
+  carry a timestamp in their name and would otherwise accumulate one per press of `S`,
+  forever, so they expire after one day.
 
 ## Files
 

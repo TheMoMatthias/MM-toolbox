@@ -207,10 +207,27 @@ function Update-Running {
 # you just launched still reads as idle and invites a second, duplicate tab.
 function Get-SessionState { param($Session)
     $id = "$($Session.sessionId)".ToLower()
+    # GONE outranks everything: there is nothing to launch, so nothing else about
+    # this row matters.
+    if ($Session.gone)          { return 'gone' }
     if ($script:running[$id])   { return 'run' }
-    if ($script:launching[$id]) { return 'new' }
+    if (Test-JustLaunched $id)  { return 'new' }
     if ($script:live[$id])      { return 'act' }
     return ''
+}
+
+# The optimistic mark expires on the CLOCK, not on the next rescan. R is also how
+# you ask "what is open?", and clearing the mark there used to hand back a row that
+# claude had not yet surfaced in Win32_Process -- reading as idle, inviting a second
+# tab for the session you launched four seconds ago.
+function Test-JustLaunched { param([string]$Id)
+    $t = $script:launching[$Id]
+    if (-not $t) { return $false }
+    if (((Get-Date) - [datetime]$t).TotalSeconds -gt $SR_LaunchGraceSeconds) {
+        $script:launching.Remove($Id)
+        return $false
+    }
+    return $true
 }
 
 # The session's OWN working directory. Main and each worktree launch in different
@@ -238,13 +255,13 @@ function Invoke-LaunchSession {
     $jsonl = Get-SRTranscriptPath -Dir $cwd -SessionId $Session.sessionId -Recorded $Session.jsonl
     if (-not (Test-Path -LiteralPath $jsonl)) { return "transcript missing for $($Session.sessionId.Substring(0,8)) - press R to rescan" }
     if ($script:running[$id])   { return "already open in a running claude.exe" }
-    if ($script:launching[$id]) { return "already launched a moment ago" }
+    if (Test-JustLaunched $id)  { return "already launched a moment ago" }
     if ($script:live[$id])      { return "already live - its transcript was written < $SR_LiveWindowMinutes min ago" }
     if ($Preview) { return $null }
 
     $boot = New-SRBootScript -Dir $cwd -SessionId $Session.sessionId -Title $title
     Start-SRSession -Dir $cwd -BootScript $boot -Title $title
-    $script:launching[$id] = $true
+    $script:launching[$id] = (Get-Date)
     Write-SRLog ("  [ok]   panel launch  {0}  {1}  {2}" -f $title, $Session.sessionId, $cwd)
     return $null
 }
@@ -414,7 +431,7 @@ function Write-PlainList {
                 $sm = if ($s.enabled) { '[x]' } else { '[ ]' }
                 $sp = if (Test-Pinned $s) { '*' } else { ' ' }
                 $sc = if (-not $d.enabled) { 'DarkGray' } elseif (-not $s.enabled) { 'Gray' } elseif (Test-Stale $s.lastActive) { 'DarkYellow' } else { 'Green' }
-                $sl = switch (Get-SessionState $s) { 'run' { 'LIVE' } 'act' { 'live' } default { '    ' } }
+                $sl = switch (Get-SessionState $s) { 'run' { 'LIVE' } 'act' { 'live' } 'gone' { 'GONE' } default { '    ' } }
                 Write-Host ("        {0}{1} {2,-32} {3,5}  {4}  {5}" -f $sp, $sm, $s.title, (Get-Age $s.lastActive), $sl, $s.sessionId.Substring(0,8)) -ForegroundColor $sc
             }
         }
@@ -472,7 +489,7 @@ function Render {
     param($Rows, $Cursor)
     Clear-Host
     $c = Get-Counts
-    $liveTotal = @(@($dirs) | ForEach-Object { Get-Visible $_ } | Where-Object { Get-SessionState $_ }).Count
+    $liveTotal = @(@($dirs) | ForEach-Object { Get-Visible $_ } | Where-Object { (Get-SessionState $_) -in @('run','act','new') }).Count
     Write-Host ""
     Write-Host "  Claude sessions" -ForegroundColor Cyan -NoNewline
     Write-Host ("   {0} live now" -f $liveTotal) -ForegroundColor Cyan -NoNewline
@@ -501,7 +518,7 @@ function Render {
                 $n    = @($v | Where-Object { $_.enabled }).Count
                 $fold = if ($collapsed[$d.path]) { '+' } else { '-' }
                 # Folded away, a project's live conversations would be invisible.
-                $live = @(@($v) | Where-Object { Get-SessionState $_ }).Count
+                $live = @(@($v) | Where-Object { (Get-SessionState $_) -in @('run','act','new') }).Count
                 $note = if ($d.missing) { '  MISSING' } elseif ($live -gt 0) { "  $live live" } else { '' }
                 $col  = if ($i -eq $Cursor) { 'White' } elseif ($d.missing) { 'DarkGray' } elseif ($d.enabled) { 'Cyan' } else { 'Gray' }
                 Write-Host ("  {0} {1} {2} {3,-26} {4,2}/{5,-3}{6}" -f $sel, $mark, $fold, (Split-Path $d.path -Leaf), $n, $v.Count, $note) -ForegroundColor $col
@@ -533,6 +550,7 @@ function Render {
                     'run'   { Write-Host 'LIVE' -ForegroundColor Cyan     -NoNewline }
                     'act'   { Write-Host 'live' -ForegroundColor DarkCyan -NoNewline }
                     'new'   { Write-Host '..  ' -ForegroundColor DarkCyan -NoNewline }
+                    'gone'  { Write-Host 'GONE' -ForegroundColor Red      -NoNewline }
                     default { Write-Host '    '                           -NoNewline }
                 }
                 Write-Host $note -ForegroundColor $col
@@ -553,6 +571,7 @@ function Render {
     # The one distinction this screen lives or dies on, plus how far to trust LIVE.
     Write-Host "  [x] = reopens at LOGON.  L = open it NOW regardless.  * = pinned, the roll leaves it alone." -ForegroundColor DarkGray
     Write-Host "  LIVE = a claude.exe holds it.  live = its transcript just moved.  Blank is no evidence, not proof." -ForegroundColor DarkGray
+    Write-Host "  GONE = its transcript is no longer on disk. It can never be launched; untick it and move on." -ForegroundColor DarkGray
 }
 
 function Invoke-Rescan {
@@ -563,7 +582,6 @@ function Invoke-Rescan {
     # R is also how you ask "what is actually open?" -- and it is the only thing
     # that clears the optimistic '..' marks, once the real processes have appeared.
     Update-Running
-    $script:launching = @{}
 }
 
 # ReadKey rather than Read-Host: the panel is already in raw-key mode, and a

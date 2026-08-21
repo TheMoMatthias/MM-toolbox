@@ -31,6 +31,11 @@ $SR_MinRealBytes = 5000
 # A transcript written this recently is being held by a live session.
 $SR_LiveWindowMinutes = 3
 
+# How long a just-launched conversation keeps its optimistic mark in the panel.
+# claude takes seconds to surface in Win32_Process, and a row that reads idle in
+# that gap invites a second, duplicate tab.
+$SR_LaunchGraceSeconds = 90
+
 # The six variables that mark a process as a CHILD session. A claude started with
 # these set writes NO transcript at all and cannot be resumed afterwards.
 $SR_ChildVars = @(
@@ -41,11 +46,32 @@ $SR_ChildVars = @(
 # ---------------------------------------------------------------------------
 # Logging. At logon these scripts run hidden, so Write-Host reaches nobody.
 # ---------------------------------------------------------------------------
+# Trimmed once per process, not per line: the check is a stat, and a scan writes
+# dozens of lines. Unbounded, this grew ~20 KB a day from the hourly task alone --
+# slow, but it is the log you read when the tool seems dead, and scrolling a year
+# of it to find this morning is its own failure.
+$script:SR_LogTrimmed = $false
+$SR_LogMaxBytes = 512KB
+$SR_LogKeepLines = 2000
+
 function Write-SRLog {
     param([string]$Message)
     try {
         if (-not (Test-Path -LiteralPath $SR_StateDir)) {
             New-Item -ItemType Directory -Path $SR_StateDir -Force | Out-Null
+        }
+        if (-not $script:SR_LogTrimmed) {
+            $script:SR_LogTrimmed = $true
+            $f = Get-Item -LiteralPath $SR_LogPath -ErrorAction SilentlyContinue
+            if ($f -and $f.Length -gt $SR_LogMaxBytes) {
+                $keep = @(Get-Content -LiteralPath $SR_LogPath -Tail $SR_LogKeepLines)
+                # Via a temp + replace, so a crash mid-trim cannot leave no log at all.
+                $tmp = "$SR_LogPath.tmp"
+                Set-Content -LiteralPath $tmp -Value $keep -Encoding utf8
+                Move-Item -LiteralPath $tmp -Destination $SR_LogPath -Force
+                Add-Content -LiteralPath $SR_LogPath -Encoding utf8 `
+                    -Value ("{0}  ---- trimmed to the last {1} lines ----" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $SR_LogKeepLines)
+            }
         }
         Add-Content -LiteralPath $SR_LogPath -Encoding utf8 `
             -Value ("{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message)
@@ -419,14 +445,52 @@ function Get-SRRegistry {
     return $r
 }
 
+# 🪤 The registry is READ-MODIFY-WRITTEN by more than one process. The hourly
+# ClaudeSessionScan task, a restore, and the panel all do it, and they overlap
+# routinely -- the panel scans every time you open it. Without a lock the classic
+# lost update applies: the scan reads, you tick something and save, the scan writes
+# its copy back, and your tick is gone with nothing reported. Atomic replace does
+# not help; it makes the LAST writer win cleanly rather than making both survive.
+#
+# A named mutex is re-entrant for the same thread, so Update-SRRegistry can hold it
+# across its whole read-modify-write while Save-SRRegistry takes it again inside.
+# Local\ (not Global\) -- this is per-user state and Global needs privileges.
+$SR_RegistryMutexName = 'Local\MMToolbox.SessionRestore.Registry'
+
+function Invoke-SRWithRegistryLock {
+    param([Parameter(Mandatory)][scriptblock]$Body, [int]$TimeoutMs = 15000)
+    $mutex = New-Object System.Threading.Mutex($false, $SR_RegistryMutexName)
+    $held  = $false
+    try {
+        try { $held = $mutex.WaitOne($TimeoutMs) }
+        catch [System.Threading.AbandonedMutexException] {
+            # A previous holder died without releasing. We now own it; the registry
+            # itself is fine because every write is an atomic replace.
+            $held = $true
+            Write-SRLog "registry lock was abandoned by a dead process - taken over"
+        }
+        if (-not $held) {
+            # Fail OPEN rather than lose the operator's work. Fifteen seconds is far
+            # longer than any scan takes, so this means something is wedged.
+            Write-SRLog "registry lock timed out after ${TimeoutMs}ms - proceeding unlocked"
+        }
+        return (& $Body)
+    } finally {
+        if ($held) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+}
+
 function Save-SRRegistry {
     param([Parameter(Mandatory)]$Registry)
-    $Registry.lastScan = (Get-Date).ToString('o')
-    # Write beside the target then replace: a half-written registry would lose every
-    # selection.
-    $tmp = "$SR_RegistryPath.tmp"
-    ($Registry | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $tmp -Encoding utf8
-    Move-Item -LiteralPath $tmp -Destination $SR_RegistryPath -Force
+    Invoke-SRWithRegistryLock -Body {
+        $Registry.lastScan = (Get-Date).ToString('o')
+        # Write beside the target then replace: a half-written registry would lose
+        # every selection.
+        $tmp = "$SR_RegistryPath.tmp"
+        ($Registry | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $tmp -Encoding utf8
+        Move-Item -LiteralPath $tmp -Destination $SR_RegistryPath -Force
+    }
 }
 
 # Refresh the registry from disk. NEVER launches anything.
@@ -436,7 +500,17 @@ function Save-SRRegistry {
 # sessionWindowDays -- but at most autoTickPerDirectory of them, newest first, so a
 # repo with sixteen live conversations does not open sixteen tabs.
 # Nothing is ever deleted: unticking is the operator's job.
+#
+# The lock spans the WHOLE read-modify-write, not just the write. Save-SRRegistry
+# takes it again inside; a named mutex is re-entrant on one thread, so that nests
+# safely. A thin wrapper rather than an indented body, so the diff that added
+# locking stayed readable.
 function Update-SRRegistry {
+    param([Parameter(Mandatory)]$Config, [switch]$Quiet)
+    return (Invoke-SRWithRegistryLock -Body { Update-SRRegistryCore -Config $Config -Quiet:$Quiet })
+}
+
+function Update-SRRegistryCore {
     param([Parameter(Mandatory)]$Config, [switch]$Quiet)
 
     $reg = Get-SRRegistry
@@ -529,6 +603,28 @@ function Update-SRRegistry {
         foreach ($s in @($d.sessions)) { if ($s.sessionId) { $ownerOf[$s.sessionId] = $d } }
     }
 
+    # Flag conversations whose transcript is no longer on disk. They are NOT deleted
+    # -- a registry row carries the operator's tick, and deleting it is not the
+    # scan's call -- but they can never be launched, so the panel has to SAY so
+    # rather than offering a row that always refuses. Measured here: 5 of 98.
+    # Done before the roll, so the auto-tick does not spend a lane's budget on a
+    # conversation that cannot come back.
+    $goneCount = 0
+    foreach ($d in @($reg.directories)) {
+        foreach ($s in @($d.sessions)) {
+            if (-not $s.sessionId) { continue }
+            $gcwd   = if ($s.cwd) { $s.cwd } else { $d.path }
+            $isGone = -not (Test-Path -LiteralPath (Get-SRTranscriptPath -Dir $gcwd -SessionId $s.sessionId -Recorded $s.jsonl))
+            if ($null -eq $s.PSObject.Properties['gone']) {
+                $s | Add-Member -NotePropertyName gone -NotePropertyValue $isGone -Force
+            } else { $s.gone = $isGone }
+            if ($isGone) { $goneCount++ }
+        }
+    }
+    if ($goneCount -and -not $Quiet) {
+        Write-SRStep ("{0} conversation(s) have no transcript left on disk - shown as GONE, never launched" -f $goneCount)
+    }
+
     $newDirs = 0; $newSessions = 0; $rolled = 0
     # Group by REPO, not by working directory: a worktree's conversations belong to
     # their parent repo, in the 'worktree' lane, rather than beside it as a project
@@ -616,6 +712,9 @@ function Update-SRRegistry {
                 firstSeen  = $now
                 stamp      = $r.Stamp
                 cwd        = $r.Cwd
+                # Discovery walks real files, so a brand-new row's transcript exists
+                # by construction.
+                gone       = $false
                 # The transcript's REAL path, as found on disk. Deriving it from cwd
                 # later is wrong for any session that changed directory -- see
                 # Get-SRTranscriptPath.
@@ -652,6 +751,10 @@ function Update-SRRegistry {
 
             foreach ($s in $members) {
                 if ($s.pinned) { continue }
+                # No transcript, no restore. Leave whatever tick it carries alone --
+                # overriding the operator is not the roll's job -- but do not let it
+                # consume budget a launchable conversation could use.
+                if ($s.gone) { continue }
                 $want = ((([datetime]$s.lastActive) -ge $sessCutoff) -and ($taken -lt $budget))
                 if ($want) { $taken++ }
                 if ([bool]$s.enabled -ne $want) {
@@ -683,6 +786,21 @@ function Update-SRRegistry {
     # and leaving it makes the panel list a repo with 0/0 forever.
     # Deliberately narrow: a project that still holds conversations keeps its row and
     # its tick, however missing it looks, because that tick is an operator decision.
+    # Generated boot scripts are regenerated on demand, so an old one is pure litter.
+    # The per-session ones (boot-<slug>-<id>.ps1) reuse their name and are bounded by
+    # the number of conversations ever launched; the new-session ones carry a
+    # timestamp and so would accumulate FOREVER, one per press of S.
+    try {
+        $nowDt = Get-Date
+        foreach ($f in @(Get-ChildItem -LiteralPath $SR_StateDir -Filter 'boot-*.ps1' -File -ErrorAction SilentlyContinue)) {
+            # A new-session script is consumed seconds after it is written.
+            $maxAge = if ($f.Name -like 'boot-new-*') { 1 } else { 30 }
+            if (($nowDt - $f.LastWriteTime).TotalDays -gt $maxAge) {
+                Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch { }
+
     $husks = @(@($reg.directories) | Where-Object { $_.missing -and -not @(@($_.sessions) | Where-Object { $_ }).Count })
     if ($husks.Count) {
         $reg.directories = @(@($reg.directories) | Where-Object { -not ($husks -contains $_) })
@@ -717,6 +835,7 @@ function Get-SRSelected {
         if (-not $IgnoreTicks -and -not $d.enabled) { continue }
         foreach ($s in @($d.sessions)) {
             if ($wtOff -and $s.lane -eq 'worktree') { continue }
+            if ($s.gone) { continue }
             if (-not $IgnoreTicks -and -not $s.enabled) { continue }
             # Path is the SESSION's own working directory, not the project root:
             # main and each worktree launch in different places.
