@@ -35,7 +35,8 @@ mm-toolbox/
 │   ├── frontend/       # ui-design-architect
 │   └── quant/          # quant-trading-architect, quant-researcher, data-quality-scientist, ml-systems-architect
 ├── tools/
-│   └── session-restore/ # bring back recent Claude conversations at logon, correctly named
+│   └── session-restore/ # every conversation across every repo: relaunch any of them any
+│                        # time, or bring back the ticked ones at logon, correctly named
 │                        # (see tools/session-restore/README.md)
 ├── Install.bat         # double-click to install (or re-install after a git pull)
 ├── Uninstall.bat       # double-click to remove
@@ -45,13 +46,14 @@ mm-toolbox/
 
 ## Resuming yesterday's work
 
-`install.ps1` also sets up **session-restore**: a logon task, a desktop button, and
-two shell functions.
+`install.ps1` also sets up **session-restore**: two scheduled tasks, two desktop
+buttons, and three shell functions.
 
 | command | does |
 |---|---|
-| `ccs` | **choose which directories reopen** — interactive picker |
-| `ccs -List` | print the current selection |
+| `ccs` | **the control panel** — every conversation on the machine; tick what reopens at logon, `L` to open any of them now |
+| `ccs -List` | print the current selection, with what is live |
+| `ccs -Launch RC-WORKFLOW` | open one now, ticked or not — matches title, id, worktree or project |
 | `ccr` | restore the selected conversations, one tab each, Remote Control attached under each one's real name |
 | `ccr -DryRun` | show what *would* come back |
 | `cc` | start a correctly-**named** new session in the current directory |
@@ -81,8 +83,22 @@ so the total per project stays bounded either way. `U` hands one back to the rol
 If a ticked conversation goes stale, **your tick still wins** — it reopens and says
 `STALE` rather than silently dropping out of your morning.
 
-**Double-click** `Restore Sessions.bat` or `Select Sessions.bat`, or use the desktop
-buttons, which point at those same files.
+**The tick and the launch are separate.** `[x]` decides what reopens at *logon*;
+`L` opens the row under the cursor **now**, whatever its tick says. So a
+conversation you never want back automatically is still one keypress away, and
+ticking something does not launch it. `S` starts a new named session in that row's
+directory, `X` opens everything ticked. The panel marks what is already live and
+refuses to open it twice.
+
+**Double-click** `Sessions.bat` or `Restore Sessions.bat`, or use the desktop
+buttons, which point at those same files. (`Select Sessions.bat` is the old name for
+`Sessions.bat` and still works.)
+
+**Auto-logon.** `Enable Auto Logon.bat` lets the PC sign itself in, so the restore
+runs with nobody at the keyboard — power on, and the tabs are there. The password
+goes into the encrypted LSA store, never the registry in plaintext, and is verified
+before anything is written. `-LockAfterLogon` starts the sessions and then locks the
+screen. Weigh it against physical access to the machine.
 
 `select-sessions.ps1` and `restore-sessions.ps1` are ordinary scripts you can run
 directly, and both have desktop buttons. Pass `-NoSessionRestore` to `install.ps1`

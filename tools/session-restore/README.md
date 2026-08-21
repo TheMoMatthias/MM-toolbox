@@ -1,8 +1,8 @@
 # session-restore
 
 Bring back the Claude Code conversations **you have selected** — each with Remote
-Control attached under its real name — automatically at logon, or from a desktop
-button.
+Control attached under its real name — automatically at logon, from a desktop
+button, or one at a time from a control panel whenever you want them.
 
 Nothing is tied to a particular repository. Projects are **discovered**; which of
 them reopen is **your choice**.
@@ -21,13 +21,112 @@ From then on the tool is two double-clicks:
 
 | double-click | does |
 |---|---|
-| `Select Sessions.bat` | **choose what reopens** — the picker |
-| `Restore Sessions.bat` | bring the selected conversations back now |
+| `Sessions.bat` | **the control panel** — every conversation, what is live, launch any of them |
+| `Restore Sessions.bat` | bring back everything you ticked, in one go |
+| `Enable Auto Logon.bat` | let the PC sign itself in, so the restore runs with nobody at the keyboard |
 
-The desktop buttons point at those same two files, so there is one launch path. They
+The desktop buttons point at those same files, so there is one launch path. They
 pass arguments through (`Restore Sessions.bat -DryRun`) and pause only when
 double-clicked, so the output stays readable. Set `SR_NOPAUSE=1` to drive them from
 a script.
+
+`Select Sessions.bat` still works and opens the same panel — it is kept so an older
+desktop shortcut does not break.
+
+## The control panel
+
+`Sessions.bat` (or `select-sessions.ps1`, or `ccs`) is one screen for every
+conversation on the machine, across every repo.
+
+**Two independent things live on it, and confusing them is the one way to misread
+the screen:**
+
+| | |
+|---|---|
+| the tick `[x]` | does this reopen automatically **at logon**? |
+| the key **`L`** | open this one **now**, whatever its tick says |
+
+So a conversation you never want back at logon is still one keypress away, and
+ticking something does not launch it. Nothing launches until you press `L` or `X`.
+
+| key | does |
+|---|---|
+| `L` | **launch the row under the cursor now.** On a project or lane row, everything under it — confirmed by count first |
+| `S` | **spawn a new named session** in that row's directory |
+| `X` | launch everything ticked, skipping whatever is already open |
+| `SPACE` | tick/untick (and pin, so the hourly roll leaves it alone) |
+| `U` | unpin — hand the row back to the roll |
+| `←` `→` | fold a project or lane away |
+| `A` `N` | tick all / none |
+| `W` | show or hide git-worktree lanes, and write it to the config |
+| `R` | rescan — also the only thing that re-checks what is live |
+| `ENTER` `ESC` | save the ticks / discard them |
+
+Launching never consults the ticks, and ticking never launches. That is the
+separation the whole screen is built around.
+
+### What "live" means
+
+| mark | evidence |
+|---|---|
+| `LIVE` | a `claude.exe` is holding that conversation's id — certain |
+| `live` | its transcript was written in the last few minutes — near certain |
+| blank | **no evidence**, which is not the same as "closed" |
+
+Two probes, because neither is enough alone. Only sessions carrying `--resume <id>`
+on their command line — the ones this tool launched — are visible to the first;
+measured here, that was 5 of 9 running `claude.exe`. The other 3 were a bare
+`claude` with a conversation picked from `/resume` afterwards, which leaves the id
+nowhere on the command line. The transcript's mtime catches those, but only while
+the session is actively writing; one sitting idle at its prompt looks closed.
+
+`L` refuses on either signal, so the worst case is a refusal to open something you
+could have opened — never a duplicate tab on a live conversation.
+
+### From the terminal, without the panel
+
+```powershell
+.\select-sessions.ps1 -Launch RC-WORKFLOW        # by title
+.\select-sessions.ps1 -Launch D2                 # by worktree lane
+.\select-sessions.ps1 -Launch AlgoTrader -DryRun # by project, see it first
+```
+
+Same matching as `-Enable`/`-Disable` — project path, worktree name, conversation
+title or id — and the same guards. Ticks are ignored. A pattern that matches more
+than `maxSessions` says so and takes the most recent, rather than opening 46 tabs.
+
+## Auto-logon
+
+The logon task cannot fire until someone signs in. `Enable Auto Logon.bat` removes
+that step: power on → Windows signs in → the restore runs → the tabs are there.
+
+```powershell
+.\enable-autologon.ps1 -Status          # change nothing, just report
+.\enable-autologon.ps1                  # enable (prompts, elevates)
+.\enable-autologon.ps1 -LockAfterLogon  # …and lock the screen once the sessions are up
+.\enable-autologon.ps1 -Disable         # undo, and delete the stored password
+```
+
+⚠️ **What it costs.** Anyone who can press the power button gets your desktop,
+already signed in, with every restored conversation and its Remote Control session
+attached. Disk encryption does not help — the machine unlocks itself.
+`-LockAfterLogon` buys most of that back: the sessions still start, the screen still
+locks a few minutes later, and Remote Control still reaches them.
+
+**Where the password goes.** Into the **LSA private-data store** — encrypted,
+readable only by SYSTEM, the same place Sysinternals Autologon puts it. It is *not*
+written to `HKLM\…\Winlogon\DefaultPassword`, which is where nearly every
+"enable autologon" registry snippet puts it **in plaintext**, readable by anything
+running as you. If the script finds that value, it deletes it.
+
+The password is **verified against Windows before anything is written**. A wrong one
+does not fail here — it fails at the next boot, on a logon screen that cannot tell
+you why.
+
+Windows 11 hides the `netplwiz` checkbox once Hello-only sign-in is on
+(`DevicePasswordLessBuildVersion = 2`); the script clears it to `0`, which is
+exactly what that checkbox does. Hold **SHIFT** during boot for the normal logon
+screen once.
 
 ### Optional: the repo-wide install
 
@@ -43,8 +142,9 @@ adds three shell functions. The functions are optional — skip them entirely wi
 
 | command | does |
 |---|---|
-| `ccs` | **choose what reopens** — interactive picker, projects with their conversations |
-| `ccs -List` | print the current selection as a tree |
+| `ccs` | **the control panel** — every conversation; tick what reopens, `L` to launch now |
+| `ccs -List` | print the current selection as a tree, with what is live |
+| `ccs -Launch RC-WORKFLOW` | launch a conversation now, ticked or not — matches title, id, worktree or project |
 | `ccs -Disable E2b-python-312` | untick without the picker — matches a project path *or* a conversation title/id |
 | `ccs -Enable F1-seam-wave` | tick the same way |
 | `ccs -Worktrees off` | hide git-worktree lanes (`on` to show) — writes the config |
@@ -203,7 +303,9 @@ permission-gating, so a *new* session can only be named at launch — which is w
   is already running it (matched on `--resume <id>` in its command line) *or* if its
   transcript was written in the last 3 minutes. Complementary: a bare-started
   session carries no id, and an idle one writes nothing. Every line names *which*
-  conversation, since a project can have several.
+  conversation, since a project can have several. The panel's `L`, `X` and
+  `-Launch` go through the same two guards — one launch path, one set of rules, so
+  launching by hand can never disagree with the logon restore.
 - **Child-session environment is scrubbed.** A `claude` launched with
   `CLAUDE_CODE_CHILD_SESSION` inherited writes **no transcript at all**. Measured:
   env inherited → no `.jsonl` after 12 minutes; scrubbed → a real turn in 5 seconds.
@@ -219,16 +321,19 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
 | file | |
 |---|---|
 | `Install Session Restore.bat` | double-click to install just this tool — tasks + buttons, no profile changes |
-| `Restore Sessions.bat` · `Select Sessions.bat` | double-clickable; the desktop buttons point here |
+| `Sessions.bat` · `Restore Sessions.bat` | double-clickable; the desktop buttons point here |
+| `Select Sessions.bat` | the old name for `Sessions.bat`, kept so an older shortcut still works |
+| `Enable Auto Logon.bat` | self-elevating wrapper for `enable-autologon.ps1` |
 | `_common.ps1` | discovery, registry, the rolling auto-tick, guards, launching — shared, so there is one copy |
 | `restore-sessions.ps1` | restore · `-Scan` · `-New` · `-Install` · `-Uninstall` |
-| `select-sessions.ps1` | the picker |
+| `select-sessions.ps1` | the control panel · `-List` · `-Launch` · `-Enable`/`-Disable` · `-Worktrees` |
+| `enable-autologon.ps1` | auto-logon on/off, password into the LSA store — needs elevation |
 | `profile.ps1` | the `cc` / `ccr` / `ccs` functions; your PowerShell profile gets a single dot-source line pointing here |
 | `session-restore.config.json` | `recencyDays`, `maxSessions`, `excludePatterns` |
 | `sessions-registry.json` | **your selections** (gitignored — the paths are local) |
 | `.state/` | log + generated boot scripts (gitignored, regenerated) |
 
-## Three traps worth knowing
+## Six traps worth knowing
 
 1. **`$PSScriptRoot` is empty while a `param()` default is evaluated** under
    `powershell.exe -File`, which is how the tasks run. Resolve the script directory
@@ -249,5 +354,23 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
    in the error **starts mid-path**. A single *string* is forwarded verbatim, so
    `ConvertTo-SRArg` quotes each argument (CommandLineToArgvW rules) and the launcher
    passes one string.
+5. **A conversation's `cwd` moves, and the transcript does not follow it.** Claude
+   Code files a transcript under the directory the session was *created* in and
+   never moves it. Deriving the folder from the *current* `cwd` therefore resolves
+   to a path that does not exist, and the restore refuses the conversation as
+   "transcript missing" — it quietly stops being restorable. Not exotic: the Bash
+   tool's cwd persists between calls, so a session that `cd`s into a subfolder
+   writes the new cwd into its own transcript. The registry now records the real
+   path the scan found, and `Get-SRTranscriptPath` prefers it — but only when the
+   filename matches the session id, so a stale row cannot vouch for someone else's
+   transcript.
+6. **`RepoRoot` used to be the cwd itself on the main lane**, which made every
+   *subfolder* its own "project". Combined with trap 5, this repo appeared twice —
+   once as `MM-toolbox` and once as `MM-toolbox\tools\session-restore`. A project is
+   a repository, so discovery now walks up to the git root exactly as the worktree
+   branch already did. Registry rows are never deleted, so a scan also **collapses**
+   a conversation that exists in two projects down to one — keeping the *pinned*
+   row's tick verbatim rather than OR-ing the ticks together, because a pinned row
+   is an operator decision and the other is just whatever the roll last computed.
 
 If it ever seems to do nothing at logon, read `.state/restore.log` first.

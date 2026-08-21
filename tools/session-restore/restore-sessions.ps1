@@ -71,7 +71,11 @@ if (-not $here) { $here = (Get-Location).Path }
 $TaskRestore   = 'ClaudeSessionRestore'
 $TaskScan      = 'ClaudeSessionScan'
 $LnkRestore    = 'Restore Claude Sessions.lnk'
-$LnkSelect     = 'Select Claude Sessions.lnk'
+$LnkSelect     = 'Claude Sessions.lnk'
+# It was called this while the screen only ticked things. Now that the same screen
+# also launches, the button is renamed -- and the old one is deleted rather than
+# left behind, or the desktop grows two buttons for one panel.
+$LnkSelectOld  = 'Select Claude Sessions.lnk'
 
 # ---------------------------------------------------------------------------
 function Invoke-Scan {
@@ -174,7 +178,7 @@ function Invoke-Restore {
         if ([string]::IsNullOrWhiteSpace($title)) { $title = $label }
         $who = "$label / `"$title`""
 
-        $jsonl = Get-SRTranscriptPath -Dir $e.path -SessionId $e.sessionId
+        $jsonl = Get-SRTranscriptPath -Dir $e.path -SessionId $e.sessionId -Recorded $e.Jsonl
         if (-not (Test-Path -LiteralPath $jsonl)) {
             Write-SRFail "$who - transcript missing for session $($e.sessionId); run -Scan"; $failed++; continue
         }
@@ -314,9 +318,14 @@ function Invoke-Install {
     $l1 = New-SRShortcut -LinkName $LnkRestore -Target (Join-Path $SR_Root 'Restore Sessions.bat') `
             -Arguments '' -Description 'Restore the Claude conversations you have selected'
     Write-SROk "desktop: $LnkRestore"
-    $l2 = New-SRShortcut -LinkName $LnkSelect -Target (Join-Path $SR_Root 'Select Sessions.bat') `
-            -Arguments '' -Description 'Choose which conversations reopen at logon'
+    $l2 = New-SRShortcut -LinkName $LnkSelect -Target (Join-Path $SR_Root 'Sessions.bat') `
+            -Arguments '' -Description 'Every conversation across every repo: see what is live, open any of them now, and choose what reopens at logon'
     Write-SROk "desktop: $LnkSelect"
+    $old = Join-Path ([Environment]::GetFolderPath('Desktop')) $LnkSelectOld
+    if (Test-Path -LiteralPath $old) {
+        [System.IO.File]::Delete($old)
+        Write-SROk "desktop: $LnkSelectOld removed (replaced by '$LnkSelect')"
+    }
 
     # Seed the registry so the picker has something to show immediately.
     try {
@@ -330,8 +339,11 @@ function Invoke-Install {
     }
 
     Write-Host ""
-    Write-Host "  Choose what reopens :  double-click 'Select Sessions.bat'   (or the desktop button)"
-    Write-Host "  Bring them back now :  double-click 'Restore Sessions.bat'  (or the desktop button)"
+    Write-Host "  The control panel   :  double-click 'Sessions.bat'          (or the desktop button)"
+    Write-Host "                         see what is live, L opens any conversation now, S starts a new one,"
+    Write-Host "                         and the ticks decide what comes back at logon"
+    Write-Host "  Bring back the ticked:  double-click 'Restore Sessions.bat'  (or the desktop button)"
+    Write-Host "  Open one by name    :  select-sessions.ps1 -Launch <title, worktree, project or id>"
     Write-Host "  Preview first       :  restore-sessions.ps1 -DryRun"
     Write-Host "  Everything lives in :  $SR_Root"
     Write-Host ""
@@ -347,7 +359,9 @@ function Invoke-Uninstall {
             Write-SROk "task '$t' removed"
         } else { Write-SRSkip "task '$t' was not registered" }
     }
-    foreach ($l in @($LnkRestore, $LnkSelect)) {
+    # The legacy name is in the list so an uninstall after an old install still
+    # leaves a clean desktop.
+    foreach ($l in @($LnkRestore, $LnkSelect, $LnkSelectOld)) {
         $p = Join-Path ([Environment]::GetFolderPath('Desktop')) $l
         if (Test-Path -LiteralPath $p) { [System.IO.File]::Delete($p); Write-SROk "desktop: $l removed" }
         else { Write-SRSkip "desktop: $l was not present" }

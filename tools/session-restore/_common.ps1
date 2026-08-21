@@ -221,6 +221,30 @@ function Get-SRWorktreeInfo {
                 }
             }
         }
+        else {
+            # 🪤 RepoRoot used to be $Path itself on the main lane, which made EVERY
+            # SUBFOLDER its own "project". Not exotic: the Bash tool's cwd persists
+            # between calls, so a session that cd's into a subdirectory writes that
+            # cwd into its own transcript and the next scan files it as a new repo.
+            # Measured 2026-08-21: this conversation appeared twice, once under
+            # MM-toolbox and once under MM-toolbox\tools\session-restore.
+            # "A PROJECT is a repository" is the tool's own model -- so walk up to
+            # the repo root, exactly as the worktree branch above already does. The
+            # session's `cwd` is untouched, so it still relaunches where it was.
+            $walk = $Path
+            while ($walk) {
+                if (Test-Path -LiteralPath (Join-Path $walk '.git') -PathType Container) {
+                    $info = [PSCustomObject]@{ RepoRoot = $walk.TrimEnd('\'); Lane = 'main'; Worktree = $null }
+                    break
+                }
+                # Never walk past the home directory: a stray ~\.git would otherwise
+                # swallow every project on the machine into one row.
+                if ($walk.TrimEnd('\') -ieq $env:USERPROFILE.TrimEnd('\')) { break }
+                $parent = Split-Path $walk -Parent
+                if (-not $parent -or $parent -eq $walk) { break }
+                $walk = $parent
+            }
+        }
     } catch { }
 
     $script:SR_WtCache[$key] = $info
@@ -441,6 +465,70 @@ function Update-SRRegistry {
     $byDir = @{}
     foreach ($d in @($reg.directories)) { if ($d.path) { $byDir[$d.path.ToLowerInvariant()] = $d } }
 
+    # A conversation belongs to exactly ONE project. Its home can legitimately change
+    # -- it moves into a worktree, or an earlier scan filed it under a subfolder
+    # before RepoRoot learned to walk up to the repo -- and registry entries are
+    # never deleted, so without this the old row lingers forever: the same
+    # conversation listed twice, one copy pointing at a project it has left.
+    #
+    # Collapse first, re-home second. Doing only the re-home appends the incoming
+    # row to a project that may ALREADY hold one for that id, which turns a
+    # cross-project duplicate into a same-project duplicate -- measured, exactly
+    # that happened on the first attempt.
+    $rowsById = @{}
+    foreach ($d in @($reg.directories)) {
+        foreach ($s in @($d.sessions)) {
+            if (-not $s.sessionId) { continue }
+            if (-not $rowsById.ContainsKey($s.sessionId)) { $rowsById[$s.sessionId] = @() }
+            $rowsById[$s.sessionId] += $s
+        }
+    }
+    $winnerOf = @{}
+    $dupRows  = 0
+    foreach ($id in @($rowsById.Keys)) {
+        $all = @($rowsById[$id])
+        if ($all.Count -eq 1) { $winnerOf[$id] = $all[0]; continue }
+        # A PINNED row is an operator decision; an unpinned one is whatever the roll
+        # last computed. So a single pinned copy wins outright and keeps its tick
+        # VERBATIM -- including an unticked one.
+        #
+        # 🪤 Do NOT simply OR the ticks together here. Measured 2026-08-21: this
+        # conversation was deliberately pinned-and-UNticked, its phantom duplicate
+        # had been auto-ticked by the roll, and OR-ing silently overrode the
+        # deliberate choice. Merging is only right between rows of equal standing.
+        $pinned = @($all | Where-Object { $_.pinned })
+        if (@($pinned).Count -eq 1) {
+            $w = $pinned[0]
+        } else {
+            $w = @($all | Sort-Object { [datetime]$_.lastActive } -Descending)[0]
+            # Equal standing: several pins, or none. Now a tick anywhere counts,
+            # since losing one would silently drop a conversation from the restore.
+            foreach ($o in $all) {
+                if ([object]::ReferenceEquals($o, $w)) { continue }
+                if ($o.enabled -and $null -ne $w.PSObject.Properties['enabled']) { $w.enabled = $true }
+                if ($o.pinned) {
+                    if ($null -eq $w.PSObject.Properties['pinned']) { $w | Add-Member -NotePropertyName pinned -NotePropertyValue $true -Force }
+                    else { $w.pinned = $true }
+                }
+            }
+        }
+        $dupRows += (@($all).Count - 1)
+        $winnerOf[$id] = $w
+    }
+    if ($dupRows -gt 0) {
+        foreach ($d in @($reg.directories)) {
+            $d.sessions = @(@($d.sessions) | Where-Object {
+                (-not $_.sessionId) -or [object]::ReferenceEquals($winnerOf[$_.sessionId], $_)
+            })
+        }
+        if (-not $Quiet) { Write-SRStep ("collapsed {0} duplicate conversation row(s) - one project per conversation" -f $dupRows) }
+    }
+
+    $ownerOf = @{}
+    foreach ($d in @($reg.directories)) {
+        foreach ($s in @($d.sessions)) { if ($s.sessionId) { $ownerOf[$s.sessionId] = $d } }
+    }
+
     $newDirs = 0; $newSessions = 0; $rolled = 0
     # Group by REPO, not by working directory: a worktree's conversations belong to
     # their parent repo, in the 'worktree' lane, rather than beside it as a project
@@ -471,6 +559,22 @@ function Update-SRRegistry {
         $dir = $byDir[$key]
         $dir.missing = $false
 
+        # Re-home anything that used to live elsewhere, BEFORE $known is built, so
+        # the moved row is the one that gets refreshed rather than a second copy.
+        foreach ($r in $rows) {
+            $prev = $ownerOf[$r.SessionId]
+            if (-not $prev -or [object]::ReferenceEquals($prev, $dir)) { continue }
+            $moved = @(@($prev.sessions) | Where-Object { $_.sessionId -eq $r.SessionId })[0]
+            $prev.sessions = @(@($prev.sessions) | Where-Object { $_.sessionId -ne $r.SessionId })
+            if ($moved) {
+                $dir.sessions = @(@($dir.sessions) + $moved)
+                $ownerOf[$r.SessionId] = $dir
+                if (-not $Quiet) {
+                    Write-SRStep ("moved: `"{0}`" {1} -> {2}" -f $moved.title, (Split-Path $prev.path -Leaf), (Split-Path $dir.path -Leaf))
+                }
+            }
+        }
+
         $known = @{}
         foreach ($s in @($dir.sessions)) {
             if (-not $s.sessionId) { continue }
@@ -491,6 +595,7 @@ function Update-SRRegistry {
                 foreach ($kv in @(
                     @{ n = 'stamp';    v = $r.Stamp },
                     @{ n = 'cwd';      v = $r.Cwd },
+                    @{ n = 'jsonl';    v = $r.Jsonl },
                     @{ n = 'lane';     v = $r.Lane },
                     @{ n = 'worktree'; v = $r.Worktree }
                 )) {
@@ -511,6 +616,10 @@ function Update-SRRegistry {
                 firstSeen  = $now
                 stamp      = $r.Stamp
                 cwd        = $r.Cwd
+                # The transcript's REAL path, as found on disk. Deriving it from cwd
+                # later is wrong for any session that changed directory -- see
+                # Get-SRTranscriptPath.
+                jsonl      = $r.Jsonl
                 lane       = $r.Lane
                 worktree   = $r.Worktree
             }
@@ -568,6 +677,20 @@ function Update-SRRegistry {
         }
     }
 
+    # Drop a project that this scan did not see AND that holds no conversations. It
+    # can only be a husk -- a subfolder filed as a project before RepoRoot walked up,
+    # or a project whose conversations have all been re-homed. It restores nothing,
+    # and leaving it makes the panel list a repo with 0/0 forever.
+    # Deliberately narrow: a project that still holds conversations keeps its row and
+    # its tick, however missing it looks, because that tick is an operator decision.
+    $husks = @(@($reg.directories) | Where-Object { $_.missing -and -not @(@($_.sessions) | Where-Object { $_ }).Count })
+    if ($husks.Count) {
+        $reg.directories = @(@($reg.directories) | Where-Object { -not ($husks -contains $_) })
+        if (-not $Quiet) {
+            foreach ($h in $husks) { Write-SRStep ("dropped empty project: {0}" -f $h.path) }
+        }
+    }
+
     Save-SRRegistry -Registry $reg
     if (-not $Quiet) {
         $nd = @($reg.directories).Count
@@ -605,6 +728,9 @@ function Get-SRSelected {
                 Worktree   = $s.worktree
                 SessionId  = $s.sessionId
                 Title      = $s.title
+                # The transcript as the scan actually found it. Callers must not
+                # re-derive this from Path -- see Get-SRTranscriptPath.
+                Jsonl      = $s.jsonl
                 LastActive = [datetime]$s.lastActive
             }
         }
@@ -628,14 +754,50 @@ function Test-SRProcessRunning {
     return $false
 }
 
+# The same probe as a lookup table, for a UI that has to state the live/not-live of
+# every row on every redraw. Test-SRProcessRunning is a substring scan per call --
+# fine for a dozen launches in a row, wrong for 75 rows times every keystroke.
+# Only sessions this tool launched carry their id on the command line, so a
+# conversation someone /resume'd inside a bare `claude` still reads as not running.
+function Get-SRRunningIds {
+    param([switch]$Refresh)
+    $ids = @{}
+    $rx  = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    foreach ($cl in (Get-SRClaudeCommandLines -Refresh:$Refresh)) {
+        foreach ($m in [regex]::Matches($cl, $rx)) { $ids[$m.Value.ToLower()] = $true }
+    }
+    return $ids
+}
+
 function Test-SRTranscriptLive {
     param([Parameter(Mandatory)][string]$JsonlPath)
     if (-not (Test-Path -LiteralPath $JsonlPath)) { return $false }
     return (((Get-Date) - (Get-Item -LiteralPath $JsonlPath).LastWriteTime).TotalMinutes -lt $SR_LiveWindowMinutes)
 }
 
+# 🪤 Claude Code files a transcript under the directory the session was CREATED in
+# and never moves it afterwards. Deriving the folder from the session's CURRENT cwd
+# is therefore wrong for any conversation that changed directory mid-life -- and
+# that is not exotic: the Bash tool's cwd persists between calls, so a session that
+# cd's into a subfolder gets a new cwd written into its own transcript.
+# Measured 2026-08-21: this very conversation resolved to
+#   ...\C--Users-mauri-Documents-MM-toolbox-tools-session-restore\<id>.jsonl
+# which does not exist, so the restore refused it as "transcript missing" and it had
+# quietly stopped being restorable. The scan already knows the real path; prefer it,
+# and keep the derivation only for registry rows written before `jsonl` existed.
 function Get-SRTranscriptPath {
-    param([Parameter(Mandatory)][string]$Dir, [Parameter(Mandatory)][string]$SessionId)
+    param(
+        [Parameter(Mandatory)][string]$Dir,
+        [Parameter(Mandatory)][string]$SessionId,
+        [string]$Recorded
+    )
+    # The recorded path must actually BELONG to this session. Trusting it on
+    # existence alone would let a stale row vouch for someone else's transcript, and
+    # the caller would then launch `--resume <id>` having verified the wrong file --
+    # a guard that passes and a resume that fails.
+    if ($Recorded -and
+        ([System.IO.Path]::GetFileNameWithoutExtension($Recorded) -ieq $SessionId) -and
+        (Test-Path -LiteralPath $Recorded)) { return $Recorded }
     return (Join-Path (Join-Path $SR_Projects (($Dir -replace '[^A-Za-z0-9]', '-'))) "$SessionId.jsonl")
 }
 
@@ -662,11 +824,16 @@ function Resolve-SRWindowsTerminal {
     return $null
 }
 
+# Omit -SessionId to boot a NEW conversation instead of resuming one. Both cases
+# have to go through here: a bare `claude` registers Remote Control against an
+# EMPTY conversation and the device then shows "<hostname>-graceful-unicorn"
+# forever, so -n / --remote-control are not optional on either path.
 function New-SRBootScript {
     param(
         [Parameter(Mandatory)][string]$Dir,
-        [Parameter(Mandatory)][string]$SessionId,
-        [Parameter(Mandatory)][string]$Title
+        [string]$SessionId,
+        [Parameter(Mandatory)][string]$Title,
+        [string[]]$ClaudeArgs
     )
     if (-not (Test-Path -LiteralPath $SR_StateDir)) {
         New-Item -ItemType Directory -Path $SR_StateDir -Force | Out-Null
@@ -675,7 +842,13 @@ function New-SRBootScript {
     # while only one conversation per tree could be restored; with several it would
     # have had them overwrite each other's boot script mid-launch.
     $slug = ((Split-Path $Dir -Leaf) -replace '[^A-Za-z0-9]', '-')
-    $boot = Join-Path $SR_StateDir ("boot-{0}-{1}.ps1" -f $slug, $SessionId.Substring(0, 8))
+    if ($SessionId) {
+        $boot = Join-Path $SR_StateDir ("boot-{0}-{1}.ps1" -f $slug, $SessionId.Substring(0, 8))
+    } else {
+        # A new session has no id yet, so there is nothing stable to key on. The
+        # clock keeps two rapid-fire spawns in the same directory apart.
+        $boot = Join-Path $SR_StateDir ("boot-new-{0}-{1}.ps1" -f $slug, (Get-Date -Format 'MMdd-HHmmss-fff'))
+    }
 
     # Single-quoted here-string: nothing expands here. Placeholders are substituted
     # afterwards, so a title containing $ or a backtick can never be re-parsed as
@@ -690,12 +863,20 @@ foreach ($v in @(__SCRUBVARS__)) {
 Set-Location -LiteralPath '__DIR__'
 # -n writes a DURABLE custom-title into the conversation (precedence rule 2);
 # --remote-control names only THIS remote session (rule 1). Both are needed.
-& claude --resume '__SESSION__' -n '__TITLE__' --remote-control '__TITLE__'
+__CLAUDELINE__
 '@
-    $body = $body.Replace('__SCRUBVARS__', (($SR_ChildVars | ForEach-Object { "'" + $_ + "'" }) -join ','))
-    $body = $body.Replace('__DIR__',       $Dir.Replace("'", "''"))
-    $body = $body.Replace('__SESSION__',   $SessionId.Replace("'", "''"))
-    $body = $body.Replace('__TITLE__',     $Title.Replace("'", "''"))
+    # Built out here, then substituted, so every value stays inside a PowerShell
+    # single-quoted literal and no title can be re-parsed as syntax.
+    $q = { param($v) "'" + ([string]$v).Replace("'", "''") + "'" }
+    $parts = @('& claude')
+    if ($SessionId) { $parts += @('--resume', (& $q $SessionId)) }
+    $parts += @('-n', (& $q $Title), '--remote-control', (& $q $Title))
+    foreach ($a in @($ClaudeArgs)) { if ($a) { $parts += (& $q $a) } }
+
+    $body = $body.Replace('__SCRUBVARS__',  (($SR_ChildVars | ForEach-Object { "'" + $_ + "'" }) -join ','))
+    $body = $body.Replace('__DIR__',        $Dir.Replace("'", "''"))
+    $body = $body.Replace('__TITLE__',      $Title.Replace("'", "''"))
+    $body = $body.Replace('__CLAUDELINE__', ($parts -join ' '))
 
     Set-Content -LiteralPath $boot -Value $body -Encoding utf8
     return $boot
