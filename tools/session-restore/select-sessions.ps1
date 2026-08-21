@@ -168,9 +168,14 @@ function Get-Lanes { param($Dir)
 # Probed once into lookup tables, NOT recomputed per row: this screen redraws on
 # every keystroke over ~90 rows, and the probes are a WMI round trip (~100 ms) and
 # a stat per transcript.
-$script:running   = @{}
-$script:live      = @{}
-$script:launching = @{}
+$script:running      = @{}
+$script:live         = @{}
+$script:launching    = @{}
+# Set by '/'. Narrows the list to matching conversations, carrying their project
+# and lane rows along so the tree still reads as a tree.
+$script:filter       = $null
+# How many running claude.exe we could not attribute to any conversation.
+$script:unattributed = 0
 $script:status    = $null
 $script:statusCol = 'Gray'
 
@@ -190,7 +195,8 @@ function Set-Status { param([string]$Message, [string]$Color = 'Gray')
 #
 # So "no mark" means "no evidence it is open", never "definitely closed".
 function Update-Running {
-    $script:running = Get-SRRunningIds -Refresh
+    $script:running      = Get-SRRunningIds -Refresh
+    $script:unattributed = Get-SRUnattributedCount
     $script:live    = @{}
     foreach ($d in @($script:dirs)) {
         foreach ($s in @($d.sessions)) {
@@ -264,6 +270,24 @@ function Invoke-LaunchSession {
     $script:launching[$id] = (Get-Date)
     Write-SRLog ("  [ok]   panel launch  {0}  {1}  {2}" -f $title, $Session.sessionId, $cwd)
     return $null
+}
+
+# Conversations that look live in a given working directory. This is what stops S
+# from opening a second session onto a tree somebody is already working -- the same
+# refusal spawn-claude-session makes, which exists because it happened: a session was
+# spawned onto a lane a live one had held for 73 minutes.
+function Get-LiveInDirectory {
+    param([Parameter(Mandatory)][string]$Dir)
+    $out = @()
+    foreach ($d in @($script:dirs)) {
+        foreach ($s in @($d.sessions)) {
+            $cwd = if ($s.cwd) { $s.cwd } else { $d.path }
+            if ($cwd -and ($cwd.TrimEnd('') -ieq $Dir.TrimEnd('')) -and ((Get-SessionState $s) -in @('run','act','new'))) {
+                $out += $s
+            }
+        }
+    }
+    return ,@($out)
 }
 
 function Invoke-SpawnNew {
@@ -392,7 +416,7 @@ if ($Launch) {
         $hits = @($hits | Select-Object -First $cap)
     }
 
-    $ok = 0; $no = 0
+    $ok = 0; $no = 0; $launchedIds = @()
     foreach ($h in $hits) {
         $who = "{0}/{1} / `"{2}`"" -f (Split-Path $h.D.path -Leaf), (Get-LaneName $h.S), (Get-SessionTitle $h.S $h.D)
         $why = Invoke-LaunchSession -Session $h.S -Dir $h.D -Preview:$DryRun
@@ -400,16 +424,29 @@ if ($Launch) {
         else {
             Write-SROk $who
             $ok++
+            if (-not $DryRun) { $launchedIds += $h.S.sessionId }
             # Breathing room so Windows Terminal does not race itself, same as the
             # logon restore.
             if (-not $DryRun) { Start-Sleep -Milliseconds 500 }
         }
     }
 
+    # A launch reports only that wt.exe started; the tab's child is what fails.
+    $never = @()
+    if (-not $DryRun -and $launchedIds.Count) {
+        Write-Host ""
+        Write-Host ("  Verifying {0} session(s) came up..." -f $launchedIds.Count) -NoNewline -ForegroundColor DarkGray
+        $never = Wait-SRSessionsUp -SessionIds $launchedIds
+        Write-Host " done" -ForegroundColor DarkGray
+        foreach ($id in $never) {
+            Write-SRFail ("no claude.exe ever appeared for {0} - the tab opened and died. Read {1}" -f $id.Substring(0,8), $SR_LogPath)
+        }
+    }
+
     Write-Host ""
-    Write-Host ("  {0} {1}   skipped {2}" -f $(if ($DryRun) { 'would launch' } else { 'launched' }), $ok, $no)
+    Write-Host ("  {0} {1}   verified {2}   skipped {3}" -f $(if ($DryRun) { 'would launch' } else { 'launched' }), $ok, ($ok - @($never).Count), $no)
     Write-Host ""
-    if ($ok -eq 0) { exit 1 }
+    if ($ok -eq 0 -or @($never).Count) { exit 1 }
     exit 0
 }
 
@@ -468,19 +505,42 @@ $collapsed = @{}
 $cursor = 0
 $dirty  = $false
 
+# A conversation matches the filter on its title, its id, its lane or its project.
+# Same fields -Launch matches on, so what you can find you can also launch by name.
+function Test-RowMatch { param($Session, $Dir, $Lane)
+    if (-not $script:filter) { return $true }
+    $f = $script:filter
+    foreach ($hay in @($Session.title, $Session.sessionId, $Lane, (Split-Path $Dir.path -Leaf), $Dir.path)) {
+        if ("$hay" -like "*$f*") { return $true }
+    }
+    return $false
+}
+
 function Build-Rows {
     $rows = @()
+    $filtering = [bool]$script:filter
     foreach ($d in $dirs) {
-        $rows += [PSCustomObject]@{ Kind = 'dir'; Dir = $d; Lane = $null; Key = $d.path; Session = $null }
-        if ($collapsed[$d.path]) { continue }
+        # While filtering, build the project's rows first and keep the project only
+        # if something under it survived -- an empty repo header is just noise.
+        $sub = @()
         foreach ($lane in (Get-Lanes $d)) {
-            $lkey = "$($d.path)|$($lane.Name)"
-            $rows += [PSCustomObject]@{ Kind = 'lane'; Dir = $d; Lane = $lane; Key = $lkey; Session = $null }
-            if ($collapsed[$lkey]) { continue }
+            $lkey  = "$($d.path)|$($lane.Name)"
+            $kids  = @()
             foreach ($s in (@($lane.Group) | Sort-Object { [datetime]$_.lastActive } -Descending)) {
-                $rows += [PSCustomObject]@{ Kind = 'session'; Dir = $d; Lane = $lane; Key = $lkey; Session = $s }
+                if (-not (Test-RowMatch -Session $s -Dir $d -Lane $lane.Name)) { continue }
+                $kids += [PSCustomObject]@{ Kind = 'session'; Dir = $d; Lane = $lane; Key = $lkey; Session = $s }
             }
+            if ($filtering -and -not $kids.Count) { continue }
+            $sub += [PSCustomObject]@{ Kind = 'lane'; Dir = $d; Lane = $lane; Key = $lkey; Session = $null }
+            # A fold is the operator's choice about a full list; while filtering it
+            # would hide the very rows they searched for, so it is ignored.
+            if (-not $filtering -and $collapsed[$lkey]) { continue }
+            $sub += $kids
         }
+        if ($filtering -and -not $sub.Count) { continue }
+        $rows += [PSCustomObject]@{ Kind = 'dir'; Dir = $d; Lane = $null; Key = $d.path; Session = $null }
+        if (-not $filtering -and $collapsed[$d.path]) { continue }
+        $rows += $sub
     }
     return ,@($rows)
 }
@@ -494,7 +554,14 @@ function Render {
     Write-Host "  Claude sessions" -ForegroundColor Cyan -NoNewline
     Write-Host ("   {0} live now" -f $liveTotal) -ForegroundColor Cyan -NoNewline
     Write-Host ("   |   {0} of {1} ticked to reopen at logon, in {2} project(s)" -f $c.Sessions, $c.Total, $c.Projects) -ForegroundColor Gray
+    if ($script:unattributed -gt 0) {
+        # Honest about the blind spot rather than implying LIVE is complete.
+        Write-Host ("  {0} running claude.exe cannot be matched to a conversation (started bare, no id on the command line)" -f $script:unattributed) -ForegroundColor DarkYellow
+    }
     if (-not $showWt) { Write-Host "  worktrees OFF" -ForegroundColor DarkYellow }
+    if ($script:filter) {
+        Write-Host ("  FILTER '{0}' - showing {1} matching row(s). / to change, ESC-in-filter or an empty / to clear." -f $script:filter, @($Rows | Where-Object { $_.Kind -eq 'session' }).Count) -ForegroundColor Yellow
+    }
     Write-Host ""
 
     # Header plus the footer block, which grew when the action keys and the LIVE
@@ -561,12 +628,16 @@ function Render {
 
     Write-Host ""
     $cur = $Rows[$Cursor]
-    $curPath = if ($cur.Kind -eq 'session' -and $cur.Session.cwd) { $cur.Session.cwd } else { $cur.Dir.path }
-    Write-Host ("  " + $curPath) -ForegroundColor DarkGray
+    if ($null -eq $cur) {
+        Write-Host "  nothing matches - press / to change the filter, or ESC to clear it" -ForegroundColor Yellow
+    } else {
+        $curPath = if ($cur.Kind -eq 'session' -and $cur.Session.cwd) { $cur.Session.cwd } else { $cur.Dir.path }
+        Write-Host ("  " + $curPath) -ForegroundColor DarkGray
+    }
     Write-Host ""
     if ($script:status) { Write-Host ("  " + $script:status) -ForegroundColor $script:statusCol }
     Write-Host "  L launch NOW   S spawn new session here   X launch everything ticked" -ForegroundColor Cyan
-    Write-Host "  UP/DOWN move  SPACE tick+pin  U unpin  LEFT/RIGHT fold  A all  N none" -ForegroundColor DarkCyan
+    Write-Host "  UP/DOWN move  SPACE tick+pin  U unpin  LEFT/RIGHT fold  A all  N none  / find" -ForegroundColor DarkCyan
     Write-Host ("  W worktrees {0}  R rescan  ENTER save  ESC cancel" -f $(if ($showWt) { 'ON (press to hide) ' } else { 'OFF (press to show)' })) -ForegroundColor DarkCyan
     # The one distinction this screen lives or dies on, plus how far to trust LIVE.
     Write-Host "  [x] = reopens at LOGON.  L = open it NOW regardless.  * = pinned, the roll leaves it alone." -ForegroundColor DarkGray
@@ -657,6 +728,14 @@ while ($true) {
     Render -Rows $rows -Cursor $cursor
     $key = [Console]::ReadKey($true)
     $row = $rows[$cursor]
+    # A filter that matches nothing leaves NO rows, so there is no row under the
+    # cursor. Everything that acts on one has to bow out here -- without this, S
+    # reached Invoke-SpawnNew with a $null -Dir and took the whole panel down on a
+    # mandatory-parameter throw.
+    if ($null -eq $row -and ("$($key.KeyChar)" -match '[lLsSuU]' -or $key.Key -in @('Spacebar','LeftArrow','RightArrow'))) {
+        Set-Status 'no row here - / to change the filter, ESC to clear it' 'DarkYellow'
+        continue
+    }
 
     switch ($key.Key) {
         # Moving clears the last result line: a "launched 1" left hanging over a
@@ -690,6 +769,16 @@ while ($true) {
             exit 0
         }
         'Escape' {
+            # A filter is a view, not a change. ESC backs out of the view first --
+            # quitting the panel on the same key that narrows it would throw away
+            # unsaved ticks for what reads like "undo the search".
+            if ($script:filter) {
+                $script:filter = $null
+                $rows = Build-Rows
+                $cursor = 0
+                Set-Status 'filter cleared' 'DarkGray'
+                continue
+            }
             Clear-Host
             Write-Host "`n  $(if ($dirty) { 'Cancelled - changes discarded.' } else { 'Cancelled.' })`n" -ForegroundColor Yellow
             exit 0
@@ -726,7 +815,12 @@ while ($true) {
                 '[lL]' {
                     # Ticks are not consulted. L means "open this now", whether or
                     # not it is part of the logon set -- that is the point of it.
-                    $all = @(Get-RowSessions $row | ForEach-Object { [PSCustomObject]@{ S = $_; D = $row.Dir } })
+                    # Assigned first, then piped. Piping the call DIRECTLY hands
+                    # ForEach-Object the whole array as one item -- see the
+                    # ",@()" note in _common.ps1. Measured: on a project row this
+                    # produced ONE entry whose .S was every session at once.
+                    $rowSessions = Get-RowSessions $row
+                    $all = @($rowSessions | ForEach-Object { [PSCustomObject]@{ S = $_; D = $row.Dir } })
                     $go  = @($all | Where-Object { $null -eq (Invoke-LaunchSession -Session $_.S -Dir $_.D -Preview) })
 
                     if (@($go).Count -eq 0) {
@@ -753,6 +847,19 @@ while ($true) {
                     $path = Get-RowPath $row
                     Write-Host ""
                     Write-Host ("  New session in " + $path) -ForegroundColor Cyan
+                    # Two sessions in one working tree share a git index, and a
+                    # second one on a lane somebody is working is the failure
+                    # spawn-claude-session refuses outright. Warn and let the
+                    # operator override -- an override is a visible act.
+                    $busy = Get-LiveInDirectory $path
+                    if (@($busy).Count) {
+                        Write-Host ("  ALREADY LIVE HERE: {0}" -f ((@($busy) | ForEach-Object { '"' + $_.title + '"' }) -join ', ')) -ForegroundColor Red
+                        Write-Host "  They share this tree's git index - commit with:  git commit -m msg -- <paths>" -ForegroundColor DarkYellow
+                        if (-not (Read-YesNo "Spawn a second session here anyway?")) {
+                            Set-Status 'not spawned - a session is already live in that directory' 'DarkYellow'
+                            break
+                        }
+                    }
                     Write-Host "  Name it, or press ENTER for an automatic one: " -ForegroundColor Cyan -NoNewline
                     $nm  = Read-Host
                     $why = Invoke-SpawnNew -Dir $path -Name $nm
@@ -790,6 +897,20 @@ while ($true) {
                     } elseif (Read-YesNo ("Open the {0} ticked conversation(s) that are not open yet.{1}" -f @($go).Count, $(if ($over) { " $over more are over the cap of $cap and will be skipped." } else { '' }))) {
                         Invoke-LaunchMany -Items $go -What 'ticked session(s)'
                     } else { Set-Status 'cancelled' 'DarkYellow' }
+                }
+                '/' {
+                    Write-Host ""
+                    Write-Host ("  Find (title, id, worktree or project){0}: " -f $(if ($script:filter) { " - now '$($script:filter)', ENTER clears" } else { ', ENTER cancels' })) -ForegroundColor Cyan -NoNewline
+                    $f = Read-Host
+                    $script:filter = if ([string]::IsNullOrWhiteSpace($f)) { $null } else { $f.Trim() }
+                    $rows = Build-Rows
+                    $cursor = 0
+                    if ($script:filter) {
+                        $n = @($rows | Where-Object { $_.Kind -eq 'session' }).Count
+                        # Say when nothing matched, rather than showing a blank tree
+                        # that reads as though everything vanished.
+                        Set-Status $(if ($n) { "$n conversation(s) match '$($script:filter)'" } else { "nothing matches '$($script:filter)' - / again to change it" }) $(if ($n) { 'Green' } else { 'DarkYellow' })
+                    } else { Set-Status 'filter cleared' 'DarkGray' }
                 }
                 '[qQ]' { Clear-Host; Write-Host "`n  Cancelled.`n" -ForegroundColor Yellow; exit 0 }
                 '[rR]' { Invoke-Rescan; $rows = Build-Rows; Set-Status 'rescanned' 'DarkGray' }

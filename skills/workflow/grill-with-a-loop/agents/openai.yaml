@@ -1,0 +1,5 @@
+interface:
+  display_name: "Grill with a loop"
+  short_description: "Grill to a signed contract, then run its DONE-WHEN unattended"
+policy:
+  allow_implicit_invocation: false

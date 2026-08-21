@@ -59,6 +59,7 @@ ticking something does not launch it. Nothing launches until you press `L` or `X
 | `←` `→` | fold a project or lane away |
 | `A` `N` | tick all / none |
 | `W` | show or hide git-worktree lanes, and write it to the config |
+| `/` | **find** — narrow the list by title, id, worktree or project. ESC clears it |
 | `R` | rescan — also the only thing that re-checks what is live |
 | `ENTER` `ESC` | save the ticks / discard them |
 
@@ -84,6 +85,15 @@ the session is actively writing; one sitting idle at its prompt looks closed.
 `L` refuses on either signal, so the worst case is a refusal to open something you
 could have opened — never a duplicate tab on a live conversation.
 
+The header also reports **how many running `claude.exe` could not be matched to any
+conversation**. Rather than implying `LIVE` is complete, it puts a number on the
+blind spot.
+
+`S` applies the same reasoning to a *new* session: if anything is already live in
+that directory it says which, warns that they will share the tree's git index, and
+makes you confirm. It is the refusal `spawn-claude-session` makes, for the same
+reason — a session was once spawned onto a lane a live one had held for 73 minutes.
+
 ### From the terminal, without the panel
 
 ```powershell
@@ -95,6 +105,14 @@ could have opened — never a duplicate tab on a live conversation.
 Same matching as `-Enable`/`-Disable` — project path, worktree name, conversation
 title or id — and the same guards. Ticks are ignored. A pattern that matches more
 than `maxSessions` says so and takes the most recent, rather than opening 46 tabs.
+
+### Launches are verified, not assumed
+
+Both the restore and `-Launch` poll the process table afterwards and report
+`restored N   verified M`. Until this existed, `[ok]` meant only that `wt.exe`
+started — **the tab's child is what fails**, which is how every tab in one repo
+could die on a quoting bug while the restore printed success and the scheduled task
+returned `0`. A session that never appears is now named, and the run exits non-zero.
 
 ## Auto-logon
 

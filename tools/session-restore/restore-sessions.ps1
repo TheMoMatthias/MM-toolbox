@@ -158,6 +158,8 @@ function Invoke-Restore {
 
     $launched = 0; $skipped = 0; $failed = 0
     $staleDays = [double]$cfg.recencyDays
+    # Ids we opened a tab for, so it can be PROVED they came up rather than assumed.
+    $launchedIds = @()
 
     foreach ($e in $wanted) {
         # Name the repo AND the lane: "AlgoTrader" and "AlgoTrader/D1" are different
@@ -207,6 +209,7 @@ function Invoke-Restore {
         try {
             $boot = New-SRBootScript -Dir $e.path -SessionId $e.sessionId -Title $title
             Start-SRSession -Dir $e.path -BootScript $boot -Title $title
+            $launchedIds += $e.sessionId
             Write-SROk "$label -> `"$title`" ($($e.sessionId.Substring(0,8)), $(if($ageDays -ge 1){"${ageDays}d"}else{"${ageHours}h"}))"
             # Your tick wins over the age heuristic -- but staleness is visible,
             # here and in the log, rather than silently overruling you either way.
@@ -224,15 +227,37 @@ function Invoke-Restore {
         }
     }
 
+    # VERIFY. Up to here every [ok] means only that wt.exe started -- the tab's
+    # child is what actually fails, which is how every tab in one repo could die
+    # while this printed success and the scheduled task returned 0.
+    $neverCame = @()
+    if (-not $DryRun -and $launchedIds.Count) {
+        Write-Host ""
+        Write-Host ("  Verifying {0} session(s) came up..." -f $launchedIds.Count) -NoNewline -ForegroundColor DarkGray
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $neverCame = Wait-SRSessionsUp -SessionIds $launchedIds
+        $sw.Stop()
+        Write-Host (" {0:N1}s" -f ($sw.Elapsed.TotalSeconds)) -ForegroundColor DarkGray
+        foreach ($id in $neverCame) {
+            $who = @($wanted | Where-Object { $_.SessionId -eq $id })[0]
+            $nm  = if ($who) { $who.Title } else { $id }
+            Write-SRFail ("no claude.exe ever appeared for `"{0}`" ({1}) - the tab opened and died. Read {2}" -f $nm, $id.Substring(0,8), $SR_LogPath)
+        }
+    }
+    $verified = $launched - @($neverCame).Count
+
     Write-Host ""
-    Write-Host ("  restored {0}   skipped {1}   failed {2}" -f $launched, $skipped, $failed)
+    Write-Host ("  restored {0}   verified {1}   skipped {2}   failed {3}" -f $launched, $verified, $skipped, $failed)
     if ($launched -eq 0) {
         Write-Host "  NOTHING WAS RESTORED - every selected directory was skipped or failed." -ForegroundColor Yellow
     }
+    if (@($neverCame).Count) {
+        Write-Host ("  {0} tab(s) opened but no claude started in them." -f @($neverCame).Count) -ForegroundColor Red
+    }
     Write-Host ""
-    Write-SRLog ("  restored {0}   skipped {1}   failed {2}" -f $launched, $skipped, $failed)
+    Write-SRLog ("  restored {0}   verified {1}   skipped {2}   failed {3}" -f $launched, $verified, $skipped, $failed)
 
-    if ($failed -gt 0) { return 1 }
+    if ($failed -gt 0 -or @($neverCame).Count) { return 1 }
     return 0
 }
 

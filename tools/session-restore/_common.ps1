@@ -819,6 +819,19 @@ function Update-SRRegistryCore {
     return $reg
 }
 
+# 🪤 THESE FUNCTIONS RETURN `,@(...)` AND THAT CHANGES HOW YOU MAY CALL THEM.
+# The leading comma stops PowerShell unrolling an empty or single-item result into
+# $null or a scalar. The cost is that the ONLY safe call shape is:
+#
+#     $x = Get-Thing ...        # direct assignment, then @($x) wherever you need
+#
+# NOT `@(Get-Thing ...)` and NOT `Get-Thing ... | ForEach-Object`. Both hand you the
+# array wrapped in one more layer. Measured 2026-08-21: `@(Get-LiveInDirectory $p)`
+# came back Count 1 for a directory with nothing live, and piping Get-RowSessions
+# gave ForEach-Object every session as a single item -- so `L` on a project row
+# built one entry holding the whole set. Neither failed loudly; both just did the
+# wrong thing.
+#
 # The flat list of what should actually reopen: enabled sessions inside enabled,
 # present directories. Newest first.
 function Get-SRSelected {
@@ -886,6 +899,49 @@ function Get-SRRunningIds {
         foreach ($m in [regex]::Matches($cl, $rx)) { $ids[$m.Value.ToLower()] = $true }
     }
     return $ids
+}
+
+# How many claude.exe are running that we CANNOT attribute to a conversation.
+# A bare `claude` with a conversation picked from /resume carries neither
+# --resume nor --session-id, so nothing on its command line says which one it
+# holds. Reporting the number is the honest alternative to pretending LIVE is
+# complete: it turns "some sessions are invisible" into a figure you can see.
+function Get-SRUnattributedCount {
+    param([switch]$Refresh)
+    $rx = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    $n = 0
+    foreach ($cl in (Get-SRClaudeCommandLines -Refresh:$Refresh)) {
+        if (-not [regex]::IsMatch($cl, $rx)) { $n++ }
+    }
+    return $n
+}
+
+# Did the tabs we opened actually come up?
+#
+# 🪤 A launch reported [ok] the moment Start-Process returned, which says only that
+# wt.exe STARTED -- not that claude did. Every AlgoTrader tab once died on a quoting
+# bug while the restore logged [ok] and the scheduled task returned 0. Success was
+# unfalsifiable, which is worse than a failure you can see.
+#
+# Polls the process table until each id appears or the timeout expires. Returns the
+# ids that never showed. Verification only: it launches and fixes nothing.
+function Wait-SRSessionsUp {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$SessionIds,
+        [int]$TimeoutSec = 75,
+        [int]$PollMs = 2000
+    )
+    $want = @($SessionIds | Where-Object { $_ })
+    if (-not $want.Count) { return ,@() }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ($true) {
+        $up = Get-SRRunningIds -Refresh
+        $missing = @($want | Where-Object { -not $up[$_.ToLower()] })
+        if (-not $missing.Count) { return ,@() }
+        if ((Get-Date) -ge $deadline) { return ,@($missing) }
+        Start-Sleep -Milliseconds $PollMs
+    }
 }
 
 function Test-SRTranscriptLive {

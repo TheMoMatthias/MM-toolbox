@@ -1,0 +1,5 @@
+interface:
+  display_name: "AlgoTrader agent team"
+  short_description: "Spin up a team with a pre-mapped 8-domain ownership split"
+policy:
+  allow_implicit_invocation: false

@@ -20,9 +20,16 @@ param(
     [switch]$Force,
     [string]$ClaudeHome = "$env:USERPROFILE\.claude",
 
-    # Skip the session-restore tool (logon task + desktop button + cc/ccr shell
-    # functions). Everything else installs as normal.
-    [switch]$NoSessionRestore
+    # Skip the session-restore tool (logon task + desktop buttons). Everything else
+    # installs as normal.
+    [switch]$NoSessionRestore,
+
+    # Wire the cc / ccr / ccs shell functions into your PowerShell profile.
+    # OFF BY DEFAULT: the tool is driven from Sessions.bat, the desktop buttons and
+    # the panel, and a profile that dot-sources something on every terminal you open
+    # should be something you asked for. Without this the installer REMOVES the block
+    # if a previous install left one, so re-running it converges either way.
+    [switch]$ShellFunctions
 )
 
 $ErrorActionPreference = 'Stop'
@@ -181,10 +188,10 @@ if ($NoSessionRestore) {
     & $SessionRestore -Install
 
     # Shell front door: `cc` (new NAMED session, here), `ccr` (restore what you
-    # selected), `ccs` (choose what reopens). This matters because NO hook can set a
-    # session title -- all 31 hook events are informational or permission-gating --
-    # so a bare `claude` can only ever end up with an auto-generated name on your
-    # phone. Never launching bare is the whole fix.
+    # selected), `ccs` (the panel). Opt-in via -ShellFunctions. The same jobs are
+    # done by Sessions.bat and the desktop buttons, so this is convenience, not the
+    # tool -- and it is the only part of the install that touches a file outside
+    # MM-toolbox and ~/.claude.
     #
     # The functions themselves live in the REPO (tools/session-restore/profile.ps1);
     # the profile gets a SINGLE dot-source line. Editing them needs no re-install,
@@ -210,17 +217,33 @@ $end
         if ($null -eq $existing) { $existing = '' }
     }
 
-    if ($existing -match [regex]::Escape($begin)) {
+    $pattern = [regex]::Escape($begin) + '.*?' + [regex]::Escape($end)
+    $hasBlock = $existing -match [regex]::Escape($begin)
+
+    if (-not $ShellFunctions) {
+        # Not asked for. Leave nothing behind, and take out anything an earlier
+        # install added -- otherwise the default is "whatever you happened to run
+        # first", which is not a default at all.
+        if ($hasBlock) {
+            $updated = [regex]::Replace($existing, $pattern, '', 'Singleline').TrimEnd() + "`r`n"
+            Set-Content -LiteralPath $profilePath -Value $updated -Encoding utf8
+            Write-Host "[profile] removed the cc/ccr/ccs block from $profilePath (pass -ShellFunctions to keep it)"
+        } else {
+            Write-Host "[profile] untouched - pass -ShellFunctions if you want cc/ccr/ccs in your terminal"
+        }
+    }
+    elseif ($hasBlock) {
         # Idempotent: replace the previous block rather than appending another.
-        $pattern = [regex]::Escape($begin) + '.*?' + [regex]::Escape($end)
         $updated = [regex]::Replace($existing, $pattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $block }, 'Singleline')
         Set-Content -LiteralPath $profilePath -Value $updated -Encoding utf8
         Write-Host "[profile] refreshed cc/ccr in $profilePath"
-    } else {
+        Write-Host "[profile] open a NEW terminal, then: cc   (new named session)  /  ccr   (restore)"
+    }
+    else {
         Add-Content -LiteralPath $profilePath -Value ("`r`n" + $block) -Encoding utf8
         Write-Host "[profile] added cc/ccr to $profilePath"
+        Write-Host "[profile] open a NEW terminal, then: cc   (new named session)  /  ccr   (restore)"
     }
-    Write-Host "[profile] open a NEW terminal, then: cc   (new named session)  /  ccr   (restore)"
 }
 
 Write-Host ""

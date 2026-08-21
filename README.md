@@ -15,18 +15,20 @@ mm-toolbox/
 │   └── verify-loop.ps1  # Stop hook — opt-in self-healing verify loop (see hooks/README.md)
 ├── SKILLS-UPSTREAM.md  # provenance: which skills come from mattpocock/skills, at which commit,
 │                       # what was renamed, and which divergences a sync must not undo
-├── skills/             # 48 skills. Every one carries agents/openai.yaml for Codex as well.
+├── skills/             # 51 skills. Every one carries agents/openai.yaml for Codex as well.
 │   ├── workflow/       # grill-with-docs, grill-me, grilling, domain-modeling, handoff, claude-handoff,
 │   │                   # spawn-claude-session, handover-and-spawn, realign, reevaluate, wrap-up,
-│   │                   # teach, ask-matt, loop-me, to-questionnaire, wait-what, writing-great-skills
+│   │                   # teach, ask-matt, loop-me, grill-with-a-loop, to-questionnaire, wait-what,
+│   │                   # writing-great-skills
 │   ├── development/    # implement, tdd, write-a-skill, to-issues, to-prd, to-execution-plan,
 │   │                   # prototype, research, resolving-merge-conflicts, triage, wayfinder,
 │   │                   # wizard, setup-engineering-skills, setup-pre-commit
-│   ├── diagnosis/      # diagnose, audit, audit-loop, audit-loop-codebase, diagnosing-bugs, code-review
+│   ├── diagnosis/      # diagnose, audit, audit-loop, audit-loop-codebase, diagnosing-bugs,
+│   │                   # code-review, server-health
 │   ├── architecture/   # improve-codebase-architecture, codebase-design, setup-ts-deep-modules
 │   ├── writing/        # writing-for-agents, writing-beats, writing-fragments, writing-shape
 │   ├── misc/           # git-guardrails-claude-code, migrate-to-shoehorn, scaffold-exercises
-│   └── orchestration/  # agent-cluster
+│   └── orchestration/  # agent-cluster, algo-team
 ├── agents/
 │   ├── core/           # universal: code-reviewer, function-tester, systems-architect, research-engineer, data-quality-engineer, ml-engineer
 │   ├── backend/        # backend-platform-architect, database-architect

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Server health"
+  short_description: "Foundation-up sweep of the live server; fixes are gated"
+policy:
+  allow_implicit_invocation: false
