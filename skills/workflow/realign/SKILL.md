@@ -1,103 +1,98 @@
 ---
 name: realign
-description: Close out a session properly - sweep for every unfinished task, every open decision, and every drift from the agreed objective, put the decisions to the user as batched selectable questions, and re-plan what remains. Use when the user asks what you need from them, asks you to realign, says "ask me about anything you need decided", wants to know what is still open, or right after a progress report or summary when it is unclear whether the work is finished or still pointed where they wanted it.
-argument-hint: "(optional) an area to focus the sweep on"
+description: Close out a report or summary without leaving anything on the field - account for every unfinished task, decide everything that can be decided, ask the user ONLY about what genuinely needs their judgment, then carry straight on with the outstanding work and the next item. Use when a progress report, summary or status update has just been given, when the user asks what decisions you need from them, says "realign", "carry on", "keep going" or "do not leave anything open", or when work on a plan has paused and should continue.
+argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 ---
 
 # realign
 
-Stop producing. Account for **everything still open** — work and decisions both — put
-what needs the user's judgment to them, and come out with an agreed plan for the rest.
+**The deliverable is work resumed correctly, not a list of questions.** Used at the end
+of a report, summary or update — most often mid-way through a plan. Account for what is
+open, settle what you can settle, ask about the little that needs the user, then **keep
+going**. Four steps: step 4 is the point, steps 1-3 exist to make it safe.
 
-Three passes, in order. Do not skip to the questions: half of what needs deciding only
-becomes visible once the unfinished work is laid out.
+## 1. Sweep — what is actually still open
 
----
+From the last point of confirmed alignment to now, list honestly — done, partly done,
+not started, abandoned:
 
-## Pass 1 — the open-work sweep
+- **Scope not delivered.** Including the parts that turned out harder than expected.
+- **Started and left mid-air** — code not wired up, a refactor half applied.
+- **Promised in passing** — "I'll come back to that", offers never taken up. These
+  evaporate silently and are the most common thing a session loses.
+- **Red** — failing tests, lint, typecheck, TODOs left in the diff.
+- **Claimed done but never actually verified.**
+- **Deferred items whose trigger has now fired.**
 
-Walk the conversation from the last point of confirmed alignment to now and account for
-**every** commitment made in it. For each, state honestly: done, partly done, not started,
-or abandoned.
+**Report scope you cut, even when cutting it was right.** Silently narrowing the job
+is the failure this step exists to catch.
 
-Sweep for:
+## 2. Decide everything you can
 
-1. **Stated scope not delivered** — anything in the original ask that has not been built.
-   Including the parts that turned out to be harder than expected.
-2. **Started and left mid-air** — code written but not wired up, a refactor half applied,
-   a file created and never used.
-3. **Promised in passing** — "I'll come back to that", "worth doing later", offers you
-   made that were never taken up or declined. These evaporate silently and are the most
-   common thing a session loses.
-4. **Deliberately deferred** — what you scoped out, and whether its trigger has fired.
-5. **Red** — failing tests, lint or typecheck errors, TODOs left in the diff, anything
-   knowingly left broken.
-6. **Unverified** — anything you reported as done but never actually checked.
+Go through the open items and **settle each one yourself** where you legitimately can:
+from the code, the repo's conventions, the plan, or a defensible default.
 
-**Report scope you cut, even when cutting it was right.** Silently narrowing the job is
-the failure this pass exists to catch — scaling work down is the user's call, not yours.
+This is the default path, not the exception. Most items need no one.
 
-## Pass 2 — the open-decision sweep
+## 3. Ask only about what survives
 
-Now, over the same span, collect what needs **their judgment**:
+A question earns the user's attention **only** if both hold:
 
-1. **Assumptions in flight** — choices you made without asking that are now load-bearing.
-   The easiest to miss, because they stopped feeling like decisions once you built on them.
-2. **Forks ahead** — a coming decision where the options diverge enough that guessing
-   wrong wastes real work.
-3. **Drift** — where what is being built has moved away from what was asked. State the gap
-   plainly; do not soften it.
-4. **Blocked** — anything you cannot finish without something only they can give: a
-   credential, an external decision, access, a preference with no defensible default.
-5. **Contradictions** — two instructions, or an instruction and a constraint in the repo's
-   `CLAUDE.md`, that cannot both hold.
+- their answer **changes what you do next**, and
+- you genuinely **cannot** resolve it — no defensible default exists.
 
-If `$ARGUMENTS` names an area, scope both sweeps to it and say so.
+**If nothing survives the filter, do not ask anything.** Say in two lines what you are
+proceeding with and go to step 4. A round of manufactured questions trains the user to
+stop reading them.
 
-### The filter — do not skip this
+For what does survive, use **`AskUserQuestion` in batched rounds of up to 4**, options
+selectable, each with its consequence. Fire successive rounds until aligned.
 
-Drop anything you can settle yourself. A question earns their attention only if:
+- **Lead with your recommendation**, marked `(Recommended)`, and say why.
+- **Cite evidence** — a `file:line`, an earlier decision, a measured result.
+- **Include one option that challenges the current direction** where one exists. If you
+  think the plan has a flaw, this is where you say so.
+- Ask about the **unfinished work** too — what to finish, drop, or hand off — not only
+  about decisions.
 
-- **their answer changes what you do next** — not just how you describe it, and
-- **you cannot resolve it** from the code, the repo's conventions, or a sensible default.
+Order rounds so that decisions others depend on come first.
 
-Where a defensible default exists, do not ask — **state the default, act on it, and list
-it under "proceeding unless you say otherwise."**
+## 4. Carry on
 
-Never pad to fill a round. Two real decisions beat eight manufactured ones, and a round of
-busywork teaches the user to stop reading these.
+**Decisions are now locked.** Treat every answer as settled for the rest of the session.
+Do not re-ask, do not re-litigate, do not seek confirmation to begin.
 
-## Pass 3 — ask, then re-plan
+Work in this order:
 
-**Show the open-work list first**, compactly, so the questions have context. Then ask.
+1. **Finish the outstanding work from step 1** — the mid-air items and anything red.
+   Leaving those to start something new is how a session accumulates debt.
+2. **Then take the next item.** If a plan exists (see `to-execution-plan`), that is the
+   next step in it, and its DONE-WHEN is your stop condition. If not, it is the next
+   thing the objective implies.
+3. **Keep going** through further items until genuinely blocked, the objective is met,
+   or a new decision appears that meets the step-3 bar.
 
-Use **`AskUserQuestion`, in batched rounds of up to 4**, each option selectable with a
-one-line consequence. Fire successive rounds until aligned — the cap is per call, not per
-conversation. For every question:
+State what you are doing in one line, then do it. Report at the end, not before starting.
 
-- **Lead with your own recommendation**, marked `(Recommended)`, and say why. They rely on
-  your read, most of all where they cannot size up the territory themselves.
-- **Cite evidence** — a `file:line`, a decision earlier in this conversation, a measured
-  result. No preference-bare questions.
-- **Make at least one option a real challenge** to the current direction, where one exists.
-  If you think the plan has a flaw, this round is where you say so.
-
-Order rounds so decisions others depend on come first — never ask about a detail whose
-relevance a later answer could erase. **Ask about the unfinished work too**, not only the
-decisions: what to finish now, what to drop, and what to hand to a fresh session.
-
-Then close in one block:
+Close with this block, and write it into the run-file or spec if the project keeps one,
+so it survives a context compaction:
 
 ```
-DECIDED      what they chose, in their words
-DEFAULTS     what you are proceeding with unasked, and why
-DROPPED      what you are explicitly not doing, and that they agreed
-DEFERRED     what is still open + the exact trigger that resurfaces it
-NEXT         the remaining work, in the order you will now do it
+DECIDED    what they chose, in their words
+DEFAULTS   what you settled yourself, and why
+DROPPED    what you are explicitly not doing
+DEFERRED   still open + the exact trigger that resurfaces it
+NEXT       the remaining work, in the order you will now do it
 ```
 
-`NEXT` is the point of the whole skill: a realignment that ends without a re-ordered plan
-has only made a list. If the project keeps a run-file or spec (see the repo's `CLAUDE.md`),
-write the same block into it so this survives a context compaction.
+## Example
 
-Then resume work. Do not seek further confirmation on anything already decided.
+> *Report ends: "Phase 2 is committed. Tests green."* → `/realign`
+>
+> Sweep finds: the migration script is written but never run; a `TODO` left in
+> `loader.py:88`; phase 3 is next. Two are settleable — run the script, resolve the
+> TODO per the plan's convention. One is not: phase 3 assumed Postgres, but phase 2
+> introduced DuckDB.
+>
+> One question asked, about that conflict. Answer taken as locked. Then: migration run,
+> TODO closed, phase 3 started against the chosen store — without being told to.
