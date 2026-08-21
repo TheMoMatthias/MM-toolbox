@@ -80,7 +80,9 @@ re-litigate, do not seek confirmation to begin.
 
 State what you are doing in one line, then do it. Report at the end, not before starting.
 
-Close with this block, and write it into the run-file or spec if the project keeps one:
+Close with this block, **omitting every line that has nothing in it** — on a routine
+update that is often just VERIFIED and NEXT. Write it into the run-file or spec if the
+project keeps one, so it survives a compaction.
 
 ```
 VERIFIED   what you re-checked, and how
