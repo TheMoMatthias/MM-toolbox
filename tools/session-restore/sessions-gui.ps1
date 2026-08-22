@@ -89,6 +89,41 @@ if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
+# ---------------------------------------------------------------------------
+# DPI. This must run BEFORE the first top-level window exists, which is why it
+# sits here and not in Add_SourceInitialized: process DPI awareness is fixed at
+# the moment the first HWND is created and cannot be changed afterwards.
+#
+# Measured 2026-08-22, so the record is straight about what this does and does
+# not fix: BOTH of this machine's monitors are 3440x1440 at 100 per cent scaling
+# and report an effective DPI of 96. There is therefore NO bitmap scaling
+# happening and DPI was NOT the cause of the text looking low resolution -- that
+# was TextFormattingMode="Display" in the XAML, now Ideal. This block is
+# correctness for a screen this window has not met yet: a 4K panel, a laptop at
+# 150 per cent, or a second monitor at a different scale, where a system-aware
+# process gets its window bitmap-stretched and every glyph goes soft.
+#
+# Measured on the same day: SetProcessDpiAwarenessContext returns TRUE here, so
+# powershell.exe does NOT pin awareness in its manifest and this is allowed to
+# take effect. It is still wrapped, because the call does not exist before
+# Windows 10 1703 and both this and the AppContext switch are best-effort.
+if (-not ('SRGui.Dpi' -as [type])) {
+    Add-Type -Namespace SRGui -Name Dpi -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true)]
+public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+'@
+}
+try {
+    # WPF on .NET Framework only honours per-monitor DPI once this switch is off,
+    # and it is read during WPF's static initialisation -- so it has to be set
+    # before anything touches a visual.
+    [System.AppContext]::SetSwitch('Switch.System.Windows.DoNotScaleForDpiChanges', $false)
+} catch { }
+try {
+    # -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
+    $null = [SRGui.Dpi]::SetProcessDpiAwarenessContext([IntPtr](-4))
+} catch { }
+
 # The title bar is drawn by Windows, not by WPF, so a dark page inside a light
 # frame is the default and it reads as a dialog rather than a tool. This is the
 # documented way to ask for the dark frame (Windows 10 1809 and later); on
@@ -117,16 +152,59 @@ if (-not ('SRGui.Row' -as [type])) {
     $srRefs = @(
         [System.Windows.Media.Brush].Assembly.Location,
         [System.Windows.Thickness].Assembly.Location,
-        [System.Windows.DependencyObject].Assembly.Location
+        [System.Windows.DependencyObject].Assembly.Location,
+        [System.Windows.Controls.ScrollViewer].Assembly.Location,
+        # System.Xaml is not optional even though nothing here mentions XAML.
+        # ScrollViewer implements System.Windows.Markup.IQueryAmbient, which lives
+        # in System.Xaml, and the C# compiler refuses a type it cannot resolve on
+        # an interface of a referenced type -- so `ScrollViewer sv = o as
+        # ScrollViewer;` fails to compile with "the type IQueryAmbient is defined
+        # in an assembly that is not referenced". The GUI died at startup on this.
+        [System.Windows.Markup.IQueryAmbient].Assembly.Location
     ) | Sort-Object -Unique
     Add-Type -ReferencedAssemblies $srRefs -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 
 namespace SRGui
 {
+    // Smooth wheel scrolling. A ScrollViewer has no animatable offset - both
+    // VerticalOffset and ScrollToVerticalOffset are read-only / imperative - so
+    // there is nothing for a Storyboard to target and the wheel jumps a fixed
+    // step per notch. This attached property IS animatable, and its change
+    // callback pushes each interpolated value into the ScrollViewer. Animating
+    // it with an ease is what turns the jump into a glide.
+    // One row of the PROJECT / LANE dropdowns. A real class rather than a
+    // PSCustomObject with DisplayMemberPath: WPF reaches a plain object's
+    // ToString() with no binding machinery at all, which is one fewer thing that
+    // can silently render a list of type names.
+    public class Choice
+    {
+        public string Label;
+        public string Value;
+        public Choice(string label, string value) { Label = label; Value = value; }
+        public override string ToString() { return Label; }
+    }
+
+    public static class SmoothScroll
+    {
+        public static readonly DependencyProperty TargetOffsetProperty =
+            DependencyProperty.RegisterAttached("TargetOffset", typeof(double), typeof(SmoothScroll),
+                new PropertyMetadata(0.0, OnTargetOffsetChanged));
+
+        public static void SetTargetOffset(DependencyObject o, double v) { o.SetValue(TargetOffsetProperty, v); }
+        public static double GetTargetOffset(DependencyObject o) { return (double)o.GetValue(TargetOffsetProperty); }
+
+        private static void OnTargetOffsetChanged(DependencyObject o, DependencyPropertyChangedEventArgs e)
+        {
+            ScrollViewer sv = o as ScrollViewer;
+            if (sv != null) sv.ScrollToVerticalOffset((double)e.NewValue);
+        }
+    }
+
     public class Row : INotifyPropertyChanged
     {
         public event PropertyChangedEventHandler PropertyChanged;
@@ -163,9 +241,6 @@ namespace SRGui
 
         private Thickness _indent;
         public Thickness Indent { get { return _indent; } set { if (!_indent.Equals(value)) { _indent = value; N("Indent"); } } }
-
-        private string _foldGlyph = "";
-        public string FoldGlyph { get { return _foldGlyph; } set { if (_foldGlyph != value) { _foldGlyph = value; N("FoldGlyph"); } } }
 
         private Visibility _foldVisibility = Visibility.Collapsed;
         public Visibility FoldVisibility { get { return _foldVisibility; } set { if (_foldVisibility != value) { _foldVisibility = value; N("FoldVisibility"); } } }
@@ -255,6 +330,43 @@ namespace SRGui
 
         private string _launchTip = "";
         public string LaunchTip { get { return _launchTip; } set { if (_launchTip != value) { _launchTip = value; N("LaunchTip"); } } }
+
+        // ------------------------------------------------------------------
+        // DOING: what the conversation is actually doing. A DIFFERENT QUESTION
+        // from State/DotFill above, which answer "is anyone holding it".
+        // Deliberately its own set of properties rather than more overloads on
+        // the liveness ones, so nothing in the template can accidentally render
+        // one as the other.
+        // ------------------------------------------------------------------
+        private string _conv = "";
+        public string Conv { get { return _conv; } set { if (_conv != value) { _conv = value; N("Conv"); } } }
+
+        private Brush _convBrush;
+        public Brush ConvBrush { get { return _convBrush; } set { if (_convBrush != value) { _convBrush = value; N("ConvBrush"); } } }
+
+        private FontWeight _convWeight = FontWeights.Normal;
+        public FontWeight ConvWeight { get { return _convWeight; } set { if (!_convWeight.Equals(value)) { _convWeight = value; N("ConvWeight"); } } }
+
+        private string _convTip = "";
+        public string ConvTip { get { return _convTip; } set { if (_convTip != value) { _convTip = value; N("ConvTip"); } } }
+
+        // A frozen Geometry, not a string. A TypeConverter runs when XAML is
+        // PARSED, never on a runtime binding, so binding a path string to
+        // Path.Data silently renders nothing at all.
+        private Geometry _convGeometry;
+        public Geometry ConvGeometry { get { return _convGeometry; } set { if (_convGeometry != value) { _convGeometry = value; N("ConvGeometry"); } } }
+
+        private Visibility _convGlyphVisibility = Visibility.Collapsed;
+        public Visibility ConvGlyphVisibility { get { return _convGlyphVisibility; } set { if (_convGlyphVisibility != value) { _convGlyphVisibility = value; N("ConvGlyphVisibility"); } } }
+
+        // The fold chevron is ONE drawn path rotated, not two characters, so
+        // folded and expanded are provably the same mark at two angles.
+        private double _foldAngle;
+        public double FoldAngle { get { return _foldAngle; } set { if (_foldAngle != value) { _foldAngle = value; N("FoldAngle"); } } }
+
+        // The operator's last prompt, shown under the selected row. Not bound in
+        // the list: it is far too long for a cell and would wreck the row rhythm.
+        public string LastPrompt = "";
     }
 }
 '@
@@ -279,8 +391,33 @@ $C = @{}
 $Clear = [System.Windows.Media.Brushes]::Transparent
 $Strike = [System.Windows.TextDecorations]::Strikethrough
 
-$GlyphOpen   = [string][char]0x25BE   # down triangle: expanded
-$GlyphClosed = [string][char]0x25B8   # right triangle: folded away
+# The fold chevron is drawn, not typed, so it is one mark at two angles rather
+# than two different characters that a font substitution could take apart.
+$FoldAngleOpen   = 90   # pointing down: expanded
+$FoldAngleClosed = 0    # pointing right: folded away
+
+# ---------------------------------------------------------------------------
+# The DOING glyphs. Vector geometry, parsed once and FROZEN so every row can
+# share one instance -- an unfrozen Freezable handed to 150 rows is 150 copies
+# and a change-notification graph nobody wants.
+#
+# A vocabulary deliberately unlike the liveness marks beside them. Liveness uses
+# a DOT (round, filled or hollow) and an X. State uses STROKES:
+#   waiting      a chevron -- literally the prompt, pointing at you.
+#   working      three bars of rising height -- activity.
+#   summarising  three rules shrinking to a point -- compaction, which is what
+#                the step actually is.
+# Nothing here is round, and nothing beside it is a stroke figure, so the two
+# columns cannot be read as one another even at a glance.
+# ---------------------------------------------------------------------------
+function New-SRGlyph { param([string]$Path)
+    $g = [System.Windows.Media.Geometry]::Parse($Path)
+    $g.Freeze()
+    return $g
+}
+$GlyphWaiting     = New-SRGlyph 'M 2.5,0.5 L 7,5 L 2.5,9.5'
+$GlyphWorking     = New-SRGlyph 'M 1,9.5 L 1,5.5 M 5,9.5 L 5,1 M 9,9.5 L 9,6.5'
+$GlyphSummarising = New-SRGlyph 'M 0.5,1 L 9.5,1 M 2.5,5 L 7.5,5 M 4.5,9 L 5.5,9'
 
 # Named rather than passed as strings: FontWeight is a struct behind a
 # TypeConverter, and leaning on PowerShell's string coercion for it on every row
@@ -299,15 +436,43 @@ $script:dirs         = @()
 $script:showWt       = [bool]$script:cfg.includeWorktrees
 $script:staleDays    = [double]$script:cfg.recencyDays
 $script:collapsed    = @{}
-$script:filter       = $null
 $script:dirty        = $false
 $script:exitMode     = $null
 
 $script:running      = @{}   # sessionId -> a claude.exe holds it (certain)
 $script:live         = @{}   # sessionId -> its transcript moved recently (inferred)
 $script:launching    = @{}   # sessionId -> when we launched it (optimistic, expires)
+$script:conv         = @{}   # sessionId -> what that conversation is DOING
 $script:unattributed = 0
 $script:probedAt     = $null
+
+# ---------------------------------------------------------------------------
+# THE FILTERS. Every dimension the window shows, and one rule that has to hold
+# for the whole thing to be predictable:
+#
+#   AND across dimensions, OR within one.
+#
+# So {waiting, working} + {ticked} means "(waiting OR working) AND ticked". An
+# EMPTY set means that dimension is not filtering at all -- which is why these
+# are hash sets rather than tri-state flags: "nothing chosen" and "everything
+# chosen" have to be the same thing, or the operator would have to tick five
+# chips to get back to where they started.
+#
+# Deliberately NOT a query builder. There is no OR across dimensions, no
+# negation and no grouping; every one of those would buy an expressiveness
+# nobody asked for at the cost of the one property that makes this usable --
+# that the lit chips ARE the whole filter, readable in one glance.
+# ---------------------------------------------------------------------------
+$script:filter    = $null   # the text box
+$script:fState    = @{}     # waiting | working | summarising | idle | unknown
+$script:fLive     = @{}     # live | notlive | gone
+$script:fTick     = @{}     # ticked | unticked
+$script:fPin      = @{}     # pinned
+$script:fAge      = @{}     # recent | stale
+$script:fProject  = $null   # a project path, or $null for any
+$script:fLane     = $null   # a lane name, or $null for any
+$script:matchCount = 0
+$script:totalCount = 0
 
 $script:visCache     = @{}
 $script:rows         = New-Object System.Collections.Generic.List[object]
@@ -493,15 +658,95 @@ function Resolve-SpawnName { param([string]$Dir, [string]$Name)
     return $Name
 }
 
-# select-sessions.ps1 Test-RowMatch. Same fields -Launch matches on, so what you
-# can find here you can also launch by name from the terminal.
+# What _common.ps1 Get-SRConversationState last said about this conversation, or
+# $null before the first probe has landed.
+function Get-Conv { param($Session)
+    if (-not $Session -or -not $Session.sessionId) { return $null }
+    return $script:conv["$($Session.sessionId)".ToLower()]
+}
+
+# The bucket a conversation falls in for the DOING dimension.
+#
+# This is a PARTITION: every conversation is in exactly one bucket, so the chips
+# never overlap, OR-within-the-dimension adds up, and the counts cannot
+# double-count. That is the whole reason 'idle' exists here and does not exist in
+# _common.ps1: Get-SRConversationState returns the LAST state a conversation was
+# seen in plus a Stale flag, deliberately, so that the last-known state is not
+# thrown away. Measured 2026-08-22 across all 119 conversations: 113 of them are
+# stale. Collapsing those into one bucket in the DISPLAY would erase almost
+# everything the function works to preserve, so the display keeps the state word
+# and marks staleness with "was". The FILTER is the one place a flat partition is
+# worth more than the detail, because a chip has to select a set the operator can
+# point at: 'idle' selects exactly the rows that read "was ...".
+function Get-ConvBucket { param($Session)
+    # $cv rather than $c: see the note in Update-RowConv. $c IS $C, the palette.
+    $cv = Get-Conv $Session
+    if (-not $cv) { return 'unknown' }
+    $s = "$($cv.State)"
+    if ($s -eq 'unknown' -or -not $s) { return 'unknown' }
+    if ($cv.Stale) { return 'idle' }
+    return $s
+}
+
+# Is anything filtering at all? A fold is IGNORED while it is, because hiding the
+# very rows that were searched for is the one thing a filter must never do.
+function Test-AnyFilter {
+    return [bool]($script:filter -or $script:fProject -or $script:fLane -or
+                  $script:fState.Count -or $script:fLive.Count -or $script:fTick.Count -or
+                  $script:fPin.Count -or $script:fAge.Count)
+}
+
+# select-sessions.ps1 Test-RowMatch, widened to every dimension this window
+# shows. The text box is one clause among several now and composes with the rest.
+#
+# AND across dimensions, OR within one. An EMPTY dimension does not filter -- so
+# "no chips lit" and "every chip lit" mean the same thing, which is what keeps a
+# half-set filter from silently hiding rows.
 function Test-RowMatch { param($Session, $Dir, $Lane)
-    if (-not $script:filter) { return $true }
-    $f = $script:filter
-    foreach ($hay in @($Session.title, $Session.sessionId, $Lane, (Split-Path $Dir.path -Leaf), $Dir.path)) {
-        if ("$hay" -like "*$f*") { return $true }
+    # Text. Same fields -Launch matches on, so what you can find here you can
+    # also launch by name from the terminal.
+    if ($script:filter) {
+        $f = $script:filter
+        $hit = $false
+        foreach ($hay in @($Session.title, $Session.sessionId, $Lane, (Split-Path $Dir.path -Leaf), $Dir.path)) {
+            if ("$hay" -like "*$f*") { $hit = $true; break }
+        }
+        if (-not $hit) { return $false }
     }
-    return $false
+
+    if ($script:fProject -and ("$($Dir.path)" -ne $script:fProject)) { return $false }
+    if ($script:fLane    -and ("$Lane" -ne $script:fLane))           { return $false }
+
+    if ($script:fState.Count -and -not $script:fState[(Get-ConvBucket $Session)]) { return $false }
+
+    if ($script:fLive.Count) {
+        # LIVENESS, not state. run / act / new are all "something is holding it";
+        # the certain-versus-inferred distinction matters on the row, not here.
+        $l = switch (Get-SessionState $Session) {
+            'gone'  { 'gone' }
+            'run'   { 'live' }
+            'act'   { 'live' }
+            'new'   { 'live' }
+            default { 'notlive' }
+        }
+        if (-not $script:fLive[$l]) { return $false }
+    }
+
+    if ($script:fTick.Count) {
+        $t = $(if ($Session.enabled) { 'ticked' } else { 'unticked' })
+        if (-not $script:fTick[$t]) { return $false }
+    }
+
+    if ($script:fPin.Count -and -not (Test-Pinned $Session)) { return $false }
+
+    if ($script:fAge.Count) {
+        # The band the tool already understands: recencyDays, the same rule that
+        # puts STALE on a row.
+        $a = $(if (Test-Stale $Session.lastActive) { 'stale' } else { 'recent' })
+        if (-not $script:fAge[$a]) { return $false }
+    }
+
+    return $true
 }
 
 # ---------------------------------------------------------------------------
@@ -576,16 +821,21 @@ $script:ScanJob = {
     $running = Get-SRRunningIds -Refresh
     $unattr  = Get-SRUnattributedCount
     $live    = @{}
+    $conv    = @{}
     foreach ($d in @($r.directories)) {
         foreach ($s in @($d.sessions)) {
             if (-not $s.sessionId) { continue }
             $cwd = if ($s.cwd) { $s.cwd } else { $d.path }
-            if (Test-SRTranscriptLive -JsonlPath (Get-SRTranscriptPath -Dir $cwd -SessionId $s.sessionId -Recorded $s.jsonl)) {
-                $live["$($s.sessionId)".ToLower()] = $true
-            }
+            # Resolved once and used twice. Liveness is a file mtime; DOING reads
+            # the tail of the same file, ~3.5 ms each measured across 121
+            # conversations, so it rides along rather than costing its own pass.
+            $j   = Get-SRTranscriptPath -Dir $cwd -SessionId $s.sessionId -Recorded $s.jsonl
+            $key = "$($s.sessionId)".ToLower()
+            if (Test-SRTranscriptLive -JsonlPath $j) { $live[$key] = $true }
+            try { $conv[$key] = Get-SRConversationState -JsonlPath $j } catch { }
         }
     }
-    [PSCustomObject]@{ Registry = $r; Config = $cfg; Running = $running; Live = $live; Unattributed = $unattr; At = (Get-Date) }
+    [PSCustomObject]@{ Registry = $r; Config = $cfg; Running = $running; Live = $live; Conv = $conv; Unattributed = $unattr; At = (Get-Date) }
 }
 
 # Liveness only. No scan, nothing written, nothing launched.
@@ -594,12 +844,17 @@ $script:ProbeJob = {
     $running = Get-SRRunningIds -Refresh
     $unattr  = Get-SRUnattributedCount
     $live    = @{}
+    $conv    = @{}
     foreach ($s in @($SRData.Sessions)) {
-        if (Test-SRTranscriptLive -JsonlPath (Get-SRTranscriptPath -Dir $s.Cwd -SessionId $s.Id -Recorded $s.Jsonl)) {
-            $live["$($s.Id)".ToLower()] = $true
-        }
+        $j   = Get-SRTranscriptPath -Dir $s.Cwd -SessionId $s.Id -Recorded $s.Jsonl
+        $key = "$($s.Id)".ToLower()
+        if (Test-SRTranscriptLive -JsonlPath $j) { $live[$key] = $true }
+        # DOING has to refresh on the same cadence as liveness or the column
+        # would freeze at whatever it said when the window opened, while the
+        # "as of" stamp beside it kept moving. That reads as a lie.
+        try { $conv[$key] = Get-SRConversationState -JsonlPath $j } catch { }
     }
-    [PSCustomObject]@{ Running = $running; Live = $live; Unattributed = $unattr; At = (Get-Date) }
+    [PSCustomObject]@{ Running = $running; Live = $live; Conv = $conv; Unattributed = $unattr; At = (Get-Date) }
 }
 
 # Launching. Windows Terminal needs breathing room between tabs, and a launch
@@ -681,8 +936,26 @@ foreach ($n in @(
     'WorktreeToggle','LaunchTicked','RowList','EmptyNote','SelName','SelPath','SelTick',
     'SelUnpin','SelLaunch','SelSpawn','StatusText','CancelBtn','SaveBtn','Overlay','OvTitle',
     'OvPath','OvWarnBox','OvWarn','OvName','OvCancel','OvOk',
-    'ConfirmOverlay','CfTitle','CfMessage','CfNoteBox','CfNote','CfCancel','CfOk'
+    'ConfirmOverlay','CfTitle','CfMessage','CfNoteBox','CfNote','CfCancel','CfOk',
+    # The filter row and the state summary. Every one of these exists in the XAML;
+    # they were simply never added here, so $ui.<name> was $null and the first
+    # assignment to one of them took the whole window down at startup with
+    # "The property 'Text' cannot be found on this object". A name that is in the
+    # markup but not in this list fails at RUNTIME and says nothing about which
+    # element it was -- so keep the two in step.
+    'WaitSummary','FilterCount','ClearFilters','ProjectFilter','LaneFilter',
+    'FlLive','FlNot','FlGone',
+    'FsWaiting','FsWorking','FsSumm','FsIdle','FsUnknown',
+    'FtOn','FtOff','FpPin','FaRecent','FaStale',
+    'ListShift'
 )) { $ui[$n] = $window.FindName($n) }
+
+# A name in the markup that is not in the list above is $null here, and the
+# failure surfaces far away as a missing property. Say so at startup instead.
+$uiMissing = @($ui.Keys | Where-Object { $null -eq $ui[$_] } | Sort-Object)
+if ($uiMissing.Count) {
+    throw ("these named elements are not in gui-window.xaml: " + ($uiMissing -join ', '))
+}
 
 $script:here = $here
 $script:busyButtons = @(
@@ -745,7 +1018,10 @@ function New-Row { param([string]$Kind, [string]$Key, $Dir, $Lane, $Session)
 
 function Build-Rows {
     $out = New-Object System.Collections.Generic.List[object]
-    $filtering = [bool]$script:filter
+    $filtering = Test-AnyFilter
+    # Counted here rather than in a second pass: this loop already visits every
+    # conversation exactly once and already knows which ones survived.
+    $matched = 0; $total = 0
     foreach ($d in $script:dirs) {
         $sub = New-Object System.Collections.Generic.List[object]
         $lanes = Get-Lanes $d
@@ -753,7 +1029,9 @@ function Build-Rows {
             $lkey = "$($d.path)|$($lane.Name)"
             $kids = New-Object System.Collections.Generic.List[object]
             foreach ($s in (@($lane.Group) | Sort-Object { [datetime]$_.lastActive } -Descending)) {
+                $total++
                 if (-not (Test-RowMatch -Session $s -Dir $d -Lane $lane.Name)) { continue }
+                $matched++
                 $kids.Add((New-Row 'session' "$lkey|$($s.sessionId)" $d $lane $s))
             }
             if ($filtering -and $kids.Count -eq 0) { continue }
@@ -766,6 +1044,8 @@ function Build-Rows {
         if (-not $filtering -and $script:collapsed[$d.path]) { continue }
         foreach ($s in $sub) { $out.Add($s) }
     }
+    $script:matchCount = $matched
+    $script:totalCount = $total
     return ,$out
 }
 
@@ -906,23 +1186,154 @@ function Update-RowLive { param($Row)
     }
 }
 
+# ---------------------------------------------------------------------------
+# DOING. What the conversation is actually doing, from _common.ps1
+# Get-SRConversationState.
+#
+# THIS IS NOT LIVENESS AND MUST NEVER READ AS IT. Update-RowLive above answers
+# "is a process holding this conversation"; this answers "what is that process
+# doing". They are independent: a conversation can be LIVE and waiting, LIVE and
+# working, or not live at all and still carry the last state it was seen in.
+# They are kept apart in four ways at once -- separate view-model properties so
+# the template cannot cross them, a separate column behind its own rule, a
+# proportional face against the liveness column's mono, and a vocabulary of
+# stroke glyphs against its dots and X.
+#
+# now versus then. Get-SRConversationState returns the LAST state a conversation
+# was seen in plus Stale. Measured 2026-08-22 over all 119 conversations, 113 are
+# stale -- so rendering only what is CURRENT would leave 113 rows saying nothing
+# and would throw away the very distinction that function exists to keep. The
+# word is therefore always the last-known state, and staleness is carried by the
+# literal word "was" plus a drop to TextLow. Six bright rows against 113 dim ones
+# is exactly the thing the operator asked to be able to see.
+# ---------------------------------------------------------------------------
+function Update-RowConv { param($Row)
+    switch ($Row.Kind) {
+        'session' {
+            $s = $Row.Session
+            # $cv, NOT $c. PowerShell variable names are CASE-INSENSITIVE, so a
+            # local $c is the same variable as the palette $C -- assigning to it
+            # here replaced the brush table with a conversation-state object for
+            # the rest of this function, every $C.TextHigh came back $null, and a
+            # TextBlock with a null Foreground draws NOTHING. The column was
+            # populated and invisible: 'working' was in the row, correctly, and
+            # the screen was blank. Only the rollup branch rendered, because it
+            # never declares a $c.
+            $cv = Get-Conv $s
+            $Row.ConvWeight = $FW_Normal
+            $Row.ConvGeometry = $null
+            $Row.ConvGlyphVisibility = $V_Hide
+            $Row.LastPrompt = ''
+
+            if (-not $cv) {
+                $Row.Conv = ''
+                $Row.ConvBrush = $C.TextDim
+                $Row.ConvTip = 'Not read yet. The state of every conversation is read on the background pass, alongside the liveness probe.'
+                return
+            }
+
+            $Row.LastPrompt = "$($cv.LastPrompt)"
+            $word = switch ("$($cv.State)") {
+                'waiting'     { 'waiting' }
+                'working'     { 'working' }
+                'summarising' { 'summarising' }
+                default       { '' }
+            }
+            $geom = switch ("$($cv.State)") {
+                'waiting'     { $GlyphWaiting }
+                'working'     { $GlyphWorking }
+                'summarising' { $GlyphSummarising }
+                default       { $null }
+            }
+
+            if (-not $word) {
+                # Blank, exactly as an unknown LIVENESS is blank: no evidence is
+                # not a state, and inventing a word for it would be a lie with a
+                # glyph on it.
+                $Row.Conv = ''
+                $Row.ConvBrush = $C.TextDim
+            } elseif ($cv.Stale) {
+                $Row.Conv = 'was ' + $word
+                $Row.ConvBrush = $C.TextLow
+                $Row.ConvGeometry = $geom
+                $Row.ConvGlyphVisibility = $V_Show
+            } else {
+                $Row.Conv = $word
+                $Row.ConvGeometry = $geom
+                $Row.ConvGlyphVisibility = $V_Show
+                # Waiting is the loudest thing this column can say: it is the one
+                # state that is asking the operator for something.
+                if ("$($cv.State)" -eq 'waiting') {
+                    $Row.ConvBrush = $C.TextMax; $Row.ConvWeight = $FW_Semi
+                } else {
+                    $Row.ConvBrush = $C.TextHigh
+                }
+            }
+
+            $tip = "DOING (not the same question as OPEN?): $($cv.Detail)."
+            if ($cv.Stale) { $tip += "  Nothing has moved for at least $SR_LiveWindowMinutes min, so that is the LAST state it was seen in, not a current one." }
+            if ($cv.Mode)  { $tip += "`npermission mode: $($cv.Mode)" }
+            if ($cv.Title) { $tip += "`ntranscript title: $($cv.Title)" }
+            if ($cv.LastPrompt) { $tip += "`nlast prompt: $($cv.LastPrompt)" }
+            $Row.ConvTip = $tip
+        }
+        default {
+            # A project or lane rolls its children up, so a FOLDED parent still
+            # says that something underneath it wants attention. Waiting outranks
+            # working: one is asking for you, the other is busy without you.
+            $kids = $(if ($Row.Kind -eq 'lane') { @($Row.Lane.Group) } else { @(Get-Visible $Row.Dir) })
+            $wait = 0; $work = 0
+            foreach ($s in $kids) {
+                switch (Get-ConvBucket $s) {
+                    'waiting' { $wait++ }
+                    'working' { $work++ }
+                }
+            }
+            $Row.ConvWeight = $FW_Normal
+            if ($wait -gt 0) {
+                $Row.Conv = "{0} waiting" -f $wait
+                $Row.ConvBrush = $C.TextMax
+                $Row.ConvWeight = $FW_Semi
+                $Row.ConvGeometry = $GlyphWaiting
+                $Row.ConvGlyphVisibility = $V_Show
+                $Row.ConvTip = "$wait conversation(s) under this row are at their prompt and waiting for you right now."
+            } elseif ($work -gt 0) {
+                $Row.Conv = "{0} working" -f $work
+                $Row.ConvBrush = $C.TextHigh
+                $Row.ConvGeometry = $GlyphWorking
+                $Row.ConvGlyphVisibility = $V_Show
+                $Row.ConvTip = "$work conversation(s) under this row are running a tool or owe a reply right now."
+            } else {
+                $Row.Conv = ''
+                $Row.ConvBrush = $C.TextDim
+                $Row.ConvGeometry = $null
+                $Row.ConvGlyphVisibility = $V_Hide
+                $Row.ConvTip = 'Nothing under this row is doing anything right now.'
+            }
+        }
+    }
+}
+
 # The parts that never change once a row is built.
 function Update-RowStatic { param($Row)
     switch ($Row.Kind) {
         'dir' {
-            $Row.RowHeight = 32
-            $Row.Indent = New-Object System.Windows.Thickness (6, 0, 0, 0)
+            # Roomier than it was. The three levels are 44 / 36 / 34 rather than
+            # 32 / 26 / 24: the hierarchy still steps down, but no line is
+            # cramped, and a project header now has room to read as a header.
+            $Row.RowHeight = 44
+            $Row.Indent = New-Object System.Windows.Thickness (8, 0, 0, 0)
             $Row.Name = Split-Path $Row.Dir.path -Leaf
             $Row.NameWeight = $FW_Semi
-            $Row.NameSize = 13.5
+            $Row.NameSize = 15
             $Row.FoldVisibility = $V_Show
             $Row.LaunchLabel = 'Open all'
             $Row.IdShort = ''
             $Row.Age = ''
         }
         'lane' {
-            $Row.RowHeight = 26
-            $Row.Indent = New-Object System.Windows.Thickness (28, 0, 0, 0)
+            $Row.RowHeight = 36
+            $Row.Indent = New-Object System.Windows.Thickness (34, 0, 0, 0)
             # A worktree lane used to be told apart by hue. The literal prefix
             # "worktree: " now carries that entirely, which is more explicit than
             # the colour ever was.
@@ -930,18 +1341,18 @@ function Update-RowStatic { param($Row)
             $Row.Name = $(if ($wt) { 'worktree: ' + $Row.Lane.Name } else { 'main' })
             $Row.NameBrush = $C.TextMid
             $Row.NameWeight = $FW_Normal
-            $Row.NameSize = 12
+            $Row.NameSize = 13
             $Row.FoldVisibility = $V_Show
             $Row.LaunchLabel = 'Open all'
             $Row.IdShort = ''
             $Row.Age = ''
         }
         'session' {
-            $Row.RowHeight = 24
-            $Row.Indent = New-Object System.Windows.Thickness (52, 0, 0, 0)
+            $Row.RowHeight = 34
+            $Row.Indent = New-Object System.Windows.Thickness (62, 0, 0, 0)
             $Row.Name = Get-SessionTitle $Row.Session $Row.Dir
             $Row.NameWeight = $FW_Normal
-            $Row.NameSize = 12.5
+            $Row.NameSize = 13.5
             $Row.FoldVisibility = $V_Hide
             $Row.LaunchLabel = 'Open'
             $Row.IdShort = "$($Row.Session.sessionId)".Substring(0, 8)
@@ -955,20 +1366,160 @@ function Update-RowStatic { param($Row)
 function Update-RowFold { param($Row)
     if ($Row.Kind -eq 'session') { return }
     $folded = [bool]$script:collapsed[$Row.Key]
-    $Row.FoldGlyph = $(if ($folded) { $GlyphClosed } else { $GlyphOpen })
+    $Row.FoldAngle = $(if ($folded) { $FoldAngleClosed } else { $FoldAngleOpen })
 }
 
 function Update-AllTicks {
     foreach ($r in $script:rows) { Update-RowTicks $r }
     Update-Header
 }
+# Liveness and state land on the same background pass, so they refresh together
+# -- but they are computed by two functions and written to two sets of
+# properties, because they are two different questions and the moment they share
+# a code path is the moment one starts standing in for the other.
 function Update-AllLive {
-    foreach ($r in $script:rows) { Update-RowLive $r }
+    foreach ($r in $script:rows) { Update-RowLive $r; Update-RowConv $r }
     Update-Header
+    Update-Selection
+}
+
+# ---------------------------------------------------------------------------
+# The filter readout.
+#
+# The lit chips say WHAT is being filtered. This says WHAT IT COST: how many
+# conversations survived, out of how many, and how many dimensions are doing the
+# cutting. Without it, a filter that matches nothing looks exactly like a
+# registry that is empty -- which is the failure mode every filter UI has, and
+# the reason the count sits on the same strip as the chips rather than in a
+# status line somewhere else.
+# ---------------------------------------------------------------------------
+function Get-FilterDimensionCount {
+    $n = 0
+    if ($script:filter)       { $n++ }
+    if ($script:fProject)     { $n++ }
+    if ($script:fLane)        { $n++ }
+    if ($script:fState.Count) { $n++ }
+    if ($script:fLive.Count)  { $n++ }
+    if ($script:fTick.Count)  { $n++ }
+    if ($script:fPin.Count)   { $n++ }
+    if ($script:fAge.Count)   { $n++ }
+    return $n
+}
+
+function Update-FilterReadout {
+    if (-not $ui.FilterCount) { return }
+    $dims = Get-FilterDimensionCount
+    if ($dims -eq 0) {
+        $ui.FilterCount.Text = "all {0} conversations" -f $script:totalCount
+        $ui.FilterCount.Foreground = $C.TextDim
+    } else {
+        $ui.FilterCount.Text = "{0} of {1} conversations   |   {2} filter{3} on" -f `
+            $script:matchCount, $script:totalCount, $dims, $(if ($dims -eq 1) { '' } else { 's' })
+        # A filter that matches nothing is the loudest thing on the strip, because
+        # it is the one state the operator most needs to notice.
+        $ui.FilterCount.Foreground = $(if ($script:matchCount) { $C.TextHigh } else { $C.TextMax })
+    }
+    $ui.ClearFilters.IsEnabled = ($dims -gt 0)
+}
+
+function Get-ChipControls {
+    return @(
+        $ui.FsWaiting, $ui.FsWorking, $ui.FsSumm, $ui.FsIdle, $ui.FsUnknown,
+        $ui.FlLive, $ui.FlNot, $ui.FlGone,
+        $ui.FtOn, $ui.FtOff, $ui.FpPin,
+        $ui.FaRecent, $ui.FaStale
+    ) | Where-Object { $_ }
+}
+
+# One action clears everything: chips, both dropdowns and the text box. Anything
+# less means the operator has to remember where they left a filter on, and a
+# forgotten filter reads as missing data.
+function Clear-AllFilters {
+    $script:filter   = $null
+    $script:fState   = @{}
+    $script:fLive    = @{}
+    $script:fTick    = @{}
+    $script:fPin     = @{}
+    $script:fAge     = @{}
+    $script:fProject = $null
+    $script:fLane    = $null
+    try {
+        $script:suppress = $true
+        $ui.SearchBox.Text = ''
+        foreach ($c in Get-ChipControls) { $c.IsChecked = $false }
+        if ($ui.ProjectFilter.Items.Count) { $ui.ProjectFilter.SelectedIndex = 0 }
+        if ($ui.LaneFilter.Items.Count)    { $ui.LaneFilter.SelectedIndex = 0 }
+    } finally { $script:suppress = $false }
+    Update-List -ToTop
+    Set-Status 'every filter cleared' 'info'
+}
+
+# PROJECT and LANE are the only two dimensions whose values come from the data
+# rather than from a fixed vocabulary, so their lists are rebuilt after every
+# scan -- a project discovered a minute ago has to be selectable now. The
+# current choice is preserved across the rebuild if it still exists, and
+# silently dropped if the project has gone.
+function Update-FilterSources {
+    if (-not $ui.ProjectFilter) { return }
+    $keepP = $script:fProject
+    $keepL = $script:fLane
+    try {
+        $script:suppress = $true
+
+        # Two repos can share a leaf name. Where they do, the label carries the
+        # parent as well, because a dropdown with two identical rows is worse
+        # than no dropdown at all.
+        $leaves = @{}
+        foreach ($d in @($script:dirs)) {
+            $leaf = Split-Path $d.path -Leaf
+            $leaves[$leaf] = [int]$leaves[$leaf] + 1
+        }
+
+        $ui.ProjectFilter.Items.Clear()
+        $null = $ui.ProjectFilter.Items.Add((New-Object SRGui.Choice '(any project)', $null))
+        foreach ($d in @($script:dirs | Sort-Object { Split-Path $_.path -Leaf })) {
+            $leaf = Split-Path $d.path -Leaf
+            $label = $leaf
+            if ($leaves[$leaf] -gt 1) {
+                $parent = Split-Path (Split-Path $d.path -Parent) -Leaf
+                if ($parent) { $label = "$leaf  ($parent)" }
+            }
+            $null = $ui.ProjectFilter.Items.Add((New-Object SRGui.Choice $label, $d.path))
+        }
+
+        $laneNames = @{}
+        foreach ($d in @($script:dirs)) {
+            foreach ($s in @(Get-Visible $d)) { $laneNames[(Get-LaneName $s)] = $true }
+        }
+        $ui.LaneFilter.Items.Clear()
+        $null = $ui.LaneFilter.Items.Add((New-Object SRGui.Choice '(any lane)', $null))
+        $null = $ui.LaneFilter.Items.Add((New-Object SRGui.Choice 'main', 'main'))
+        foreach ($n in @($laneNames.Keys | Where-Object { $_ -ne 'main' } | Sort-Object)) {
+            $null = $ui.LaneFilter.Items.Add((New-Object SRGui.Choice ('worktree: ' + $n), $n))
+        }
+
+        Set-DropSelection $ui.ProjectFilter $keepP
+        Set-DropSelection $ui.LaneFilter    $keepL
+    } finally { $script:suppress = $false }
+}
+
+function Set-DropSelection { param($Combo, [string]$Value)
+    $idx = 0
+    if ($Value) {
+        for ($i = 0; $i -lt $Combo.Items.Count; $i++) {
+            if ("$($Combo.Items[$i].Value)" -eq $Value) { $idx = $i; break }
+        }
+    }
+    $Combo.SelectedIndex = $idx
+    # If the chosen value has vanished with its project, the filter goes with it
+    # rather than quietly matching nothing forever.
+    if ($idx -eq 0 -and $Value) {
+        if ($Combo -eq $ui.ProjectFilter) { $script:fProject = $null } else { $script:fLane = $null }
+    }
 }
 
 function Update-Header {
-    $on = 0; $tot = 0; $projOn = 0; $liveTotal = 0; $pinned = 0
+    $on = 0; $tot = 0; $projOn = 0; $liveTotal = 0; $pinned = 0; $waiting = 0; $working = 0
     foreach ($d in $script:dirs) {
         if ($d.missing) { continue }
         $v = @(Get-Visible $d)
@@ -976,6 +1527,10 @@ function Update-Header {
         foreach ($s in $v) {
             if ((Get-SessionState $s) -in @('run','act','new')) { $liveTotal++ }
             if ($s.pinned) { $pinned++ }
+            switch (Get-ConvBucket $s) {
+                'waiting' { $waiting++ }
+                'working' { $working++ }
+            }
         }
         if ($d.enabled) {
             $n = @($v | Where-Object { $_.enabled }).Count
@@ -984,11 +1539,17 @@ function Update-Header {
         }
     }
     $ui.LiveSummary.Text = "{0} live now" -f $liveTotal
+    # Two counts, two questions, two pills. "live" is how many are being held;
+    # "waiting" is how many are asking for the operator. They are routinely
+    # different numbers and the whole point of the DOING column is that they are.
+    $ui.WaitSummary.Text = "{0} waiting for you   |   {1} working" -f $waiting, $working
     $ui.TickSummary.Text = "{0} of {1} ticked to reopen at logon, in {2} project(s){3}" -f $on, $tot, $projOn, $(if ($script:dirty) { '  *unsaved*' } else { '' })
     $ui.ProbeStamp.Text  = $(if ($script:probedAt) {
-        "{0} pinned   |   live state as of {1}   |   auto: newest {2} from main, {3} from each worktree" -f `
+        "{0} pinned   |   live + doing as of {1}   |   auto: newest {2} from main, {3} from each worktree" -f `
             $pinned, ([datetime]$script:probedAt).ToString('HH:mm:ss'), $script:cfg.autoTickPerDirectory, $script:cfg.autoTickPerWorktree
     } else { '' })
+
+    Update-FilterReadout
 
     if ($script:unattributed -gt 0) {
         # Honest about the blind spot rather than implying LIVE is complete.
@@ -997,23 +1558,74 @@ function Update-Header {
     } else { $ui.Unattributed.Visibility = $V_Hide }
 
     $ui.SubTitle.Text = $(if ($script:showWt) {
-        'the tick reopens it at logon   |   Open launches it now   |   press / to find'
+        'the tick reopens it at logon   |   OPEN? is who holds it, DOING is what it is doing   |   press / to find'
     } else {
         'worktree lanes are OFF - hidden and never restored   |   press / to find'
     })
+}
+
+# Every filter currently applied, in words. Used when nothing matched, which is
+# the moment the operator most needs to be told what is cutting the list down
+# rather than left looking at an empty screen.
+function Get-FilterDescription {
+    $bits = @()
+    if ($script:filter)       { $bits += "text '$($script:filter)'" }
+    if ($script:fProject)     { $bits += "PROJECT " + (Split-Path $script:fProject -Leaf) }
+    if ($script:fLane)        { $bits += "LANE $script:fLane" }
+    if ($script:fState.Count) { $bits += "DOING " + (@($script:fState.Keys | Sort-Object) -join '/') }
+    if ($script:fLive.Count)  { $bits += "OPEN? " + (@($script:fLive.Keys | Sort-Object) -join '/') }
+    if ($script:fTick.Count)  { $bits += "LOGON " + (@($script:fTick.Keys | Sort-Object) -join '/') }
+    if ($script:fPin.Count)   { $bits += "pinned" }
+    if ($script:fAge.Count)   { $bits += "AGE " + (@($script:fAge.Keys | Sort-Object) -join '/') }
+    return ,@($bits)
+}
+
+# The list just changed under the operator -- a filter, a fold, a rescan. A hard
+# swap of 150 rows gives no clue that anything happened; a short settle does, and
+# it points DOWNWARD because that is the direction content arrives from.
+#
+# Animated on the transform rather than on a Storyboard in the XAML because the
+# trigger is a code path, not a visual state: Update-List is reached from six
+# different places and none of them is expressible as a XAML trigger.
+#
+# 170 ms with an EaseOut. Long enough to register, short enough that a fast
+# sequence of filter keystrokes does not feel like wading.
+function Start-ListSettle {
+    $t = $ui.ListShift
+    if (-not $t) { return }
+    $a = New-Object System.Windows.Media.Animation.DoubleAnimation
+    $a.From     = 6
+    $a.To       = 0
+    $a.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(170))
+    $ease = New-Object System.Windows.Media.Animation.CubicEase
+    $ease.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseOut
+    $a.EasingFunction = $ease
+    $t.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $a)
 }
 
 function Update-List { param([string]$KeepKey, [switch]$ToTop)
     if (-not $KeepKey -and -not $ToTop -and $ui.RowList.SelectedItem) { $KeepKey = $ui.RowList.SelectedItem.Key }
     if ($ToTop) { $KeepKey = $null }
     $script:rows = Build-Rows
-    foreach ($r in $script:rows) { Update-RowStatic $r; Update-RowTicks $r; Update-RowLive $r }
+    foreach ($r in $script:rows) { Update-RowStatic $r; Update-RowTicks $r; Update-RowLive $r; Update-RowConv $r }
+    # A row whose text has no brush renders as NOTHING, and a blank column reads
+    # as "no data" rather than as a bug -- which is exactly how a case-insensitive
+    # $c/$C collision hid a fully populated DOING column. Turn it into noise.
+    foreach ($r in $script:rows) {
+        if ($r.Conv -and $null -eq $r.ConvBrush) {
+            throw "row '$($r.Name)' has DOING text '$($r.Conv)' with a null brush - it would render invisible"
+        }
+    }
     $ui.RowList.ItemsSource = $script:rows
     Update-Header
+    # The hierarchy just changed under the operator. A 170 ms settle says so;
+    # a hard swap of 150 rows does not.
+    Start-ListSettle
 
     if ($script:rows.Count -eq 0) {
-        $ui.EmptyNote.Text = $(if ($script:filter) {
-            "nothing matches '$($script:filter)'"
+        $desc = Get-FilterDescription
+        $ui.EmptyNote.Text = $(if (@($desc).Count) {
+            "Nothing matches. {0} filter(s) on:  {1}.`n`nPress Clear all filters, or Esc." -f @($desc).Count, (@($desc) -join '   +   ')
         } elseif (@($script:dirs).Count -eq 0) {
             'No projects discovered yet. Run claude in a project once, then press Rescan.'
         } else { 'nothing to show' })
@@ -1066,6 +1678,7 @@ function Set-Registry { param($Registry, $Config)
 function Set-ProbeResult { param($Result)
     $script:running      = $Result.Running
     $script:live         = $Result.Live
+    if ($Result.PSObject.Properties['Conv'] -and $Result.Conv) { $script:conv = $Result.Conv }
     $script:unattributed = [int]$Result.Unattributed
     $script:probedAt     = $Result.At
 }
@@ -1511,23 +2124,35 @@ $ui.OvName.Add_KeyDown({ param($s, $e)
     elseif ($e.Key -eq 'Escape') { $e.Handled = $true; Close-Overlay }
 })
 
-# --- save / cancel ---
+# --- save / close ---
 function Save-Now {
     Save-SRRegistry -Registry $script:reg
     $script:dirty = $false
     Update-Header
 }
-$ui.SaveBtn.Add_Click({
+
+# SAVING DOES NOT CLOSE THE WINDOW. It used to, and that was the defect: this is
+# a panel the operator keeps open and adjusts, so writing the ticks is a
+# CHECKPOINT, not a way out. Measured 2026-08-22: the Save button called
+# $window.Close() while Ctrl+S did not, so the same act had two different
+# outcomes depending on how it was reached. Both now go through here, and the
+# only things that close the window are Close, ESC on an empty filter, and the
+# title bar.
+function Invoke-Save {
+    if ($script:busy) { Set-Status 'still busy - one background pass at a time' 'warn'; return }
     try { Save-Now } catch {
         Set-Status "could not save: $($_.Exception.Message)" 'bad'
         return
     }
-    $script:exitMode = 'saved'
-    $window.Close()
-})
+    # Says what was written and when, so a second press is visibly a second save
+    # rather than a button that might not have done anything.
+    Set-Status ("saved at {0} - the ticks are in sessions-registry.json. The window stays open." -f (Get-Date -Format 'HH:mm:ss')) 'ok'
+}
+$ui.SaveBtn.Add_Click({ Invoke-Guarded { Invoke-Save } 'save' })
+
 $ui.CancelBtn.Add_Click({
-    if ($script:dirty -and (Show-Confirm "Discard the tick changes made in this window?`n`nNothing that has been launched is affected - only the logon selection." 'Cancel') -ne 'Yes') { return }
-    $script:exitMode = 'cancelled'
+    if ($script:dirty -and (Show-Confirm "Discard the tick changes made in this window?`n`nNothing that has been launched is affected - only the logon selection." 'Close without saving') -ne 'Yes') { return }
+    $script:exitMode = $(if ($script:dirty) { 'cancelled' } else { 'closed' })
     $window.Close()
 })
 
@@ -1556,7 +2181,7 @@ $window.Add_PreviewKeyDown({ param($s, $e)
         if ($ctrl) {
             switch ($e.Key) {
                 'F' { $e.Handled = $true; $null = $ui.SearchBox.Focus(); $ui.SearchBox.SelectAll() }
-                'S' { $e.Handled = $true; if (-not $script:busy) { Save-Now; Set-Status 'saved' 'ok' } }
+                'S' { $e.Handled = $true; Invoke-Save }
             }
             return
         }
@@ -1664,6 +2289,7 @@ $null = $window.ShowDialog()
 
 switch ($script:exitMode) {
     'saved'     { Write-Host "  Saved. Registry: $SR_RegistryPath" }
-    'cancelled' { Write-Host "  Cancelled - tick changes discarded." }
+    'closed'    { Write-Host "  Closed. Registry: $SR_RegistryPath" }
+    'cancelled' { Write-Host "  Closed - unsaved tick changes discarded." }
 }
 exit 0
