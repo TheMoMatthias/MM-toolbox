@@ -23,9 +23,16 @@
     if they were active within sessionWindowDays -- at most autoTickPerDirectory
     from main and autoTickPerWorktree from each worktree.
 
-    Keys:  UP/DOWN move   SPACE tick+pin   U unpin   LEFT/RIGHT fold   A all  N none
+    Keys:  UP/DOWN move   PGUP/PGDN page   HOME/END ends
+           / or F find    SPACE tick+pin   U unpin   LEFT/RIGHT fold   A all  N none
            L launch now   S spawn new      X launch everything ticked
            W worktrees    R rescan         ENTER save   ESC / Q cancel
+
+    The panel repaints IN PLACE rather than clearing: a clear per keystroke pushes
+    the old frame into Windows Terminal's scrollback, so every arrow key read as the
+    whole list jumping and reloading. The frame is built as lines, its height is
+    derived from the chrome actually built rather than a constant, and the viewport
+    is sticky -- the marker moves down the list, the list does not move under it.
 
 .PARAMETER List
     Print the current selection and exit. Also the automatic fallback when there is
@@ -121,9 +128,17 @@ function Get-Newest { param($Sessions)
 # here hands them an array-of-one-array instead, which member-enumerates into
 # nonsense rather than failing outright. Empty therefore arrives as $null, which is
 # Get-Newest's job to survive.
+$script:visCache = @{}
 function Get-Visible { param($Dir)
-    if ($showWt) { return @($Dir.sessions) }
-    return @(@($Dir.sessions) | Where-Object { $_.lane -ne 'worktree' })
+    # Memoised. Render, Get-Counts and Build-Rows each walk every project, so an
+    # uncached filter ran thousands of pipeline operations per KEYSTROKE -- part of
+    # why an arrow key felt like the list reloading. Only R and W change what is
+    # visible, and both clear this.
+    $hit = $script:visCache[[string]$Dir.path]
+    if ($null -ne $hit) { return $hit }
+    $v = if ($showWt) { @($Dir.sessions) } else { @(@($Dir.sessions) | Where-Object { $_.lane -ne 'worktree' }) }
+    $script:visCache[[string]$Dir.path] = $v
+    return $v
 }
 
 $dirs = @($reg.directories | Sort-Object { Get-Newest (Get-Visible $_) } -Descending)
@@ -545,34 +560,201 @@ function Build-Rows {
     return ,@($rows)
 }
 
-function Render {
+# --- painting ---------------------------------------------------------------
+# This panel used to Clear-Host on every keystroke. In Windows Terminal a clear
+# pushes the old frame up into scrollback instead of repainting in place, so every
+# arrow key looked like the whole list jumped and then reloaded -- and because the
+# chrome around the list was measured by a hardcoded constant that under-counted it
+# by two to four lines, the frame really was taller than the window and really did
+# scroll. Both are fixed here: the frame is BUILT as lines, its height is DERIVED
+# from the lines actually built, and it is stamped over the previous frame from row
+# 0 with every line padded to the window width so nothing shows through. A real
+# clear now happens only when something foreign wrote below the panel (a prompt, a
+# launch log) or the window was resized -- detected, not guessed.
+$script:paintedLines = 0
+$script:frameEndRow  = -1
+$script:frameSize    = ''
+# Rows that fit on screen, set by the frame builder and read by PGUP/PGDN. A sane
+# value before the first frame, because a key can arrive before one is drawn.
+$script:pageSize     = 10
+# Top row of the visible window into $rows. Sticky: it moves only when the cursor
+# would leave the window, so DOWN moves the marker and not the list.
+$script:first        = 0
+
+function Hide-Caret { try { [Console]::CursorVisible = $false } catch { } }
+function Show-Caret { try { [Console]::CursorVisible = $true  } catch { } }
+
+# A line is an array of segments so LIVE can keep its own colour inside a row that
+# is otherwise written as one piece.
+function New-Seg { param([string]$T, [string]$C = 'Gray') return [PSCustomObject]@{ T = $T; C = $C } }
+$script:blankLine = @((New-Seg '' 'Gray'))
+
+function Get-WinSize {
+    $w = 120; $h = 30
+    try { $s = $Host.UI.RawUI.WindowSize; $w = $s.Width; $h = $s.Height } catch { }
+    # Floored only against nonsense. Reporting a window BIGGER than it is would put
+    # lines past the bottom edge and scroll it -- the exact failure being fixed --
+    # so a genuinely tiny window is told the truth and gets a truncated frame.
+    return [PSCustomObject]@{ W = [Math]::Max(24, [int]$w); H = [Math]::Max(4, [int]$h) }
+}
+
+function Paint {
+    param([object[]]$Lines)
+    $sz = Get-WinSize
+    # One column short of the edge: filling the last cell wraps the line and costs a
+    # row, which is how a frame that fits becomes a frame that scrolls.
+    $w  = $sz.W - 1
+
+    # If the cursor is not where the last frame left it, something printed under the
+    # panel. If the window changed shape, the old frame is the wrong size. Either
+    # way a stamp-over would leave debris, so clear once and repaint clean.
+    $moved = $true
+    try { $moved = ([Console]::CursorTop -ne $script:frameEndRow) } catch { }
+    if ($moved -or $script:frameSize -ne ("{0}x{1}" -f $sz.W, $sz.H)) {
+        Clear-Host
+        $script:paintedLines = 0
+    }
+    $script:frameSize = "{0}x{1}" -f $sz.W, $sz.H
+
+    Hide-Caret
+    try { [Console]::SetCursorPosition(0, 0) } catch { Clear-Host }
+
+    $n = [Math]::Min($Lines.Count, $sz.H - 1)
+    for ($i = 0; $i -lt $n; $i++) {
+        $used = 0
+        foreach ($seg in $Lines[$i]) {
+            if ($used -ge $w) { break }
+            $t = [string]$seg.T
+            if ($used + $t.Length -gt $w) { $t = $t.Substring(0, $w - $used) }
+            if ($t.Length -gt 0) { Write-Host $t -ForegroundColor $seg.C -NoNewline; $used += $t.Length }
+        }
+        # The padding IS the erase. Without it the tail of a longer previous line
+        # survives underneath the new one.
+        if ($used -lt $w) { Write-Host (' ' * ($w - $used)) -NoNewline }
+        Write-Host ''
+    }
+    # A frame that shrank would otherwise leave the bottom of the taller one behind.
+    for ($i = $n; $i -lt $script:paintedLines; $i++) { Write-Host (' ' * $w) }
+    if ($script:paintedLines -gt $n) { try { [Console]::SetCursorPosition(0, $n) } catch { } }
+    $script:paintedLines = $n
+    try { $script:frameEndRow = [Console]::CursorTop } catch { $script:frameEndRow = -1 }
+}
+
+# Builds the whole frame, chrome included, and returns it as lines. Nothing here
+# writes to the console -- which is what lets the height be measured before a single
+# character is printed.
+function Build-Frame {
     param($Rows, $Cursor)
-    Clear-Host
+    $sz    = Get-WinSize
+    $total = @($Rows).Count
+    $lines = New-Object System.Collections.Generic.List[object]
+    $foot  = New-Object System.Collections.Generic.List[object]
+
+    # --- header ---
     $c = Get-Counts
-    $liveTotal = @(@($dirs) | ForEach-Object { Get-Visible $_ } | Where-Object { (Get-SessionState $_) -in @('run','act','new') }).Count
-    Write-Host ""
-    Write-Host "  Claude sessions" -ForegroundColor Cyan -NoNewline
-    Write-Host ("   {0} live now" -f $liveTotal) -ForegroundColor Cyan -NoNewline
-    Write-Host ("   |   {0} of {1} ticked to reopen at logon, in {2} project(s)" -f $c.Sessions, $c.Total, $c.Projects) -ForegroundColor Gray
+    $liveTotal = 0
+    foreach ($d in $dirs) {
+        foreach ($s in @(Get-Visible $d)) {
+            if ((Get-SessionState $s) -in @('run','act','new')) { $liveTotal++ }
+        }
+    }
+
+    $lines.Add($script:blankLine)
+    $title = @(
+        (New-Seg '  Claude sessions' 'Cyan'),
+        (New-Seg ("   {0} live now" -f $liveTotal) 'Cyan'),
+        (New-Seg ("   |   {0} of {1} ticked to reopen at logon, in {2} project(s)" -f $c.Sessions, $c.Total, $c.Projects) 'Gray')
+    )
+    # The find key on the title line, not buried eighth on a hint line below the
+    # fold. With this many conversations it is the key that makes the list usable.
+    if (-not $script:filter) { $title += (New-Seg '    [ press / to find ]' 'Yellow') }
+    $lines.Add($title)
+
     if ($script:unattributed -gt 0) {
         # Honest about the blind spot rather than implying LIVE is complete.
-        Write-Host ("  {0} running claude.exe cannot be matched to a conversation (started bare, no id on the command line)" -f $script:unattributed) -ForegroundColor DarkYellow
+        $lines.Add(@((New-Seg ("  {0} running claude.exe cannot be matched to a conversation (started bare, no id on the command line)" -f $script:unattributed) 'DarkYellow')))
     }
-    if (-not $showWt) { Write-Host "  worktrees OFF" -ForegroundColor DarkYellow }
+    if (-not $showWt) { $lines.Add(@((New-Seg '  worktrees OFF' 'DarkYellow'))) }
     if ($script:filter) {
-        Write-Host ("  FILTER '{0}' - showing {1} matching row(s). / to change, ESC-in-filter or an empty / to clear." -f $script:filter, @($Rows | Where-Object { $_.Kind -eq 'session' }).Count) -ForegroundColor Yellow
+        $lines.Add(@((New-Seg ("  FILTER '{0}' - showing {1} matching conversation(s).  / or F to change it, ESC to clear it." -f $script:filter, @($Rows | Where-Object { $_.Kind -eq 'session' }).Count) 'Yellow')))
     }
-    Write-Host ""
+    $lines.Add($script:blankLine)
+    $headCount = $lines.Count
 
-    # Header plus the footer block, which grew when the action keys and the LIVE
-    # legend arrived. Under-count it and the top of the list scrolls off.
-    $height = 20
-    try { $height = [Math]::Max(6, $Host.UI.RawUI.WindowSize.Height - 14) } catch { }
-    $first = 0
-    if ($Rows.Count -gt $height) { $first = [Math]::Max(0, [Math]::Min($Cursor - [int]($height / 2), $Rows.Count - $height)) }
-    $last = [Math]::Min($Rows.Count - 1, $first + $height - 1)
+    # --- footer, built now so the list height can be derived from it ---
+    # The status line keeps its slot whether or not there is a status: a footer that
+    # grows and shrinks shifts the whole list by a row as you work.
+    #
+    # D is how droppable the line is, 0 = never. A short window cannot hold both a
+    # list and every line of chrome, and the way that used to resolve itself was the
+    # frame overrunning the window and the terminal scrolling the whole thing --
+    # exactly the "it jumped and reloaded" symptom. So shed reference text instead,
+    # worst first. Measured: at 14 rows the full chrome is 18 lines.
+    $cur = if ($Cursor -ge 0 -and $Cursor -lt $total) { $Rows[$Cursor] } else { $null }
+    $pathLine = if ($null -eq $cur) {
+        @((New-Seg '  nothing matches - / to change the filter, ESC to clear it' 'Yellow'))
+    } else {
+        $curPath = if ($cur.Kind -eq 'session' -and $cur.Session.cwd) { $cur.Session.cwd } else { $cur.Dir.path }
+        @((New-Seg ('  ' + $curPath) 'DarkGray'))
+    }
+    $statusLine = if ($script:status) { @((New-Seg ('  ' + $script:status) $script:statusCol)) } else { $script:blankLine }
 
-    if ($first -gt 0) { Write-Host "      ..." -ForegroundColor DarkGray }
+    $footSpec = @(
+        [PSCustomObject]@{ D = 3; L = $script:blankLine }
+        [PSCustomObject]@{ D = 0; L = $pathLine }
+        [PSCustomObject]@{ D = 3; L = $script:blankLine }
+        [PSCustomObject]@{ D = 2; L = $statusLine }
+        [PSCustomObject]@{ D = 0; L = @((New-Seg '  L launch NOW   S spawn new session here   X launch everything ticked   / find   R rescan' 'Cyan')) }
+        [PSCustomObject]@{ D = 1; L = @((New-Seg '  UP/DOWN move   PGUP/PGDN page   HOME/END ends   SPACE tick+pin   U unpin   LEFT/RIGHT fold   A all   N none' 'DarkCyan')) }
+        [PSCustomObject]@{ D = 1; L = @((New-Seg ("  W worktrees {0}   ENTER save   ESC quit" -f $(if ($showWt) { 'ON (press to hide) ' } else { 'OFF (press to show)' })) 'DarkCyan')) }
+        # The one distinction this screen lives or dies on, plus how far to trust LIVE.
+        [PSCustomObject]@{ D = 4; L = @((New-Seg '  [x] = reopens at LOGON.  L = open it NOW regardless.  * = pinned, the roll leaves it alone.' 'DarkGray')) }
+        [PSCustomObject]@{ D = 4; L = @((New-Seg '  LIVE = a claude.exe holds it.  live = its transcript just moved.  blank = no evidence, not proof.  GONE = transcript deleted.' 'DarkGray')) }
+    )
+
+    # --- how many rows actually fit ---
+    # Measured, never assumed. The old constant of 14 under-counted a chrome that
+    # reaches 18 once the filter line and the unattributed warning are both up, so
+    # the frame was taller than the window and the window scrolled. +2 is the pair
+    # of "..." markers, which get a reserved slot each so the list does not shift by
+    # a row the moment one appears; -1 keeps the last written line off the final row.
+    $minBody = 3
+    $budget  = $sz.H - $headCount - 2 - 1
+    $cut = 5
+    while ($cut -gt 1) {
+        if (($budget - @($footSpec | Where-Object { $_.D -lt $cut }).Count) -ge $minBody) { break }
+        $cut--
+    }
+    foreach ($f in @($footSpec | Where-Object { $_.D -lt $cut })) { $foot.Add($f.L) }
+    $height = [Math]::Max(1, $budget - $foot.Count)
+    # Backstop. A window short enough that even the shed footer does not fit gets
+    # its footer trimmed from the bottom until the frame genuinely does. Paint caps
+    # at the window height regardless, so nothing can scroll either way -- but a
+    # frame that has to be truncated to fit is a frame with lines it never showed.
+    while ((($headCount + 2 + $height + $foot.Count) -gt ($sz.H - 1)) -and $foot.Count -gt 0) {
+        $foot.RemoveAt($foot.Count - 1)
+    }
+    # PGUP/PGDN move by exactly what is on screen, so a page turns over rather than
+    # jumping some fixed number of rows that has nothing to do with the window.
+    $script:pageSize = $height
+
+    # --- sticky viewport ---
+    # This used to recentre on the cursor every keystroke, which is why the list
+    # slid under you instead of the marker moving down it.
+    if ($total -le $height) {
+        $script:first = 0
+    } else {
+        $m = 2
+        if ($Cursor -lt $script:first + $m)               { $script:first = $Cursor - $m }
+        if ($Cursor -gt $script:first + $height - 1 - $m) { $script:first = $Cursor - $height + 1 + $m }
+        $script:first = [Math]::Max(0, [Math]::Min($script:first, $total - $height))
+    }
+    $first = $script:first
+    $last  = [Math]::Min($total - 1, $first + $height - 1)
+
+    if ($first -gt 0) { $lines.Add(@((New-Seg ("      ... {0} more above" -f $first) 'DarkGray'))) }
+    else              { $lines.Add($script:blankLine) }
+
     for ($i = $first; $i -le $last; $i++) {
         $r   = $Rows[$i]
         $sel = if ($i -eq $Cursor) { '>' } else { ' ' }
@@ -588,7 +770,7 @@ function Render {
                 $live = @(@($v) | Where-Object { (Get-SessionState $_) -in @('run','act','new') }).Count
                 $note = if ($d.missing) { '  MISSING' } elseif ($live -gt 0) { "  $live live" } else { '' }
                 $col  = if ($i -eq $Cursor) { 'White' } elseif ($d.missing) { 'DarkGray' } elseif ($d.enabled) { 'Cyan' } else { 'Gray' }
-                Write-Host ("  {0} {1} {2} {3,-26} {4,2}/{5,-3}{6}" -f $sel, $mark, $fold, (Split-Path $d.path -Leaf), $n, $v.Count, $note) -ForegroundColor $col
+                $lines.Add(@((New-Seg ("  {0} {1} {2} {3,-26} {4,2}/{5,-3}{6}" -f $sel, $mark, $fold, (Split-Path $d.path -Leaf), $n, $v.Count, $note) $col)))
             }
             'lane' {
                 $ln   = @(@($r.Lane.Group) | Where-Object { $_.enabled }).Count
@@ -596,7 +778,7 @@ function Render {
                 $tag  = if ($r.Lane.Name -eq 'main') { 'main' } else { 'worktree: ' + $r.Lane.Name }
                 $warn = if ($r.Dir.enabled -and $ln -ge 2) { "  $ln in one tree" } else { '' }
                 $col  = if ($i -eq $Cursor) { 'White' } elseif ($r.Lane.Name -eq 'main') { 'DarkCyan' } else { 'Magenta' }
-                Write-Host ("  {0}     {1} {2,-30} {3,2}/{4,-3}{5}" -f $sel, $fold, $tag, $ln, @($r.Lane.Group).Count, $warn) -ForegroundColor $col
+                $lines.Add(@((New-Seg ("  {0}     {1} {2,-30} {3,2}/{4,-3}{5}" -f $sel, $fold, $tag, $ln, @($r.Lane.Group).Count, $warn) $col)))
             }
             'session' {
                 $d = $r.Dir; $s = $r.Session
@@ -606,49 +788,55 @@ function Render {
                 if ($d.enabled -and $s.enabled -and (Test-Stale $s.lastActive)) { $note = '  STALE' }
                 if (-not $d.enabled) { $note = '  (project off)' }
                 $col = if ($i -eq $Cursor) { 'White' } elseif (-not $d.enabled) { 'DarkGray' } elseif (-not $s.enabled) { 'Gray' } elseif (Test-Stale $s.lastActive) { 'DarkYellow' } else { 'Green' }
-                # Three writes so LIVE keeps its own colour: the tick tells you what
-                # reopens at logon, this tells you what is open NOW, and they must
+                # Three segments so LIVE keeps its own colour: the tick tells you what
+                # reopens at logon, the mark tells you what is open NOW, and they must
                 # not be readable as one thing.
-                Write-Host ("  {0}        {1}{2} {3,-30} {4,5}  " -f $sel, $pin, $mark, $s.title, (Get-Age $s.lastActive)) -ForegroundColor $col -NoNewline
                 # Upper case = certain, lower case = inferred. Deliberately not the
                 # same word twice: one is a process holding the id, the other is a
                 # file that moved recently.
-                switch (Get-SessionState $s) {
-                    'run'   { Write-Host 'LIVE' -ForegroundColor Cyan     -NoNewline }
-                    'act'   { Write-Host 'live' -ForegroundColor DarkCyan -NoNewline }
-                    'new'   { Write-Host '..  ' -ForegroundColor DarkCyan -NoNewline }
-                    'gone'  { Write-Host 'GONE' -ForegroundColor Red      -NoNewline }
-                    default { Write-Host '    '                           -NoNewline }
+                $stateSeg = switch (Get-SessionState $s) {
+                    'run'   { New-Seg 'LIVE' 'Cyan' }
+                    'act'   { New-Seg 'live' 'DarkCyan' }
+                    'new'   { New-Seg '..  ' 'DarkCyan' }
+                    'gone'  { New-Seg 'GONE' 'Red' }
+                    default { New-Seg '    ' 'Gray' }
                 }
-                Write-Host $note -ForegroundColor $col
+                $lines.Add(@(
+                    (New-Seg ("  {0}        {1}{2} {3,-30} {4,5}  " -f $sel, $pin, $mark, $s.title, (Get-Age $s.lastActive)) $col),
+                    $stateSeg,
+                    (New-Seg $note $col)
+                ))
             }
         }
     }
-    if ($last -lt $Rows.Count - 1) { Write-Host "      ..." -ForegroundColor DarkGray }
+    # Pad the list region to its full height so the footer sits in the same place
+    # whether the filter matched ninety rows or none.
+    for ($i = ($last - $first + 1); $i -lt $height; $i++) { $lines.Add($script:blankLine) }
 
-    Write-Host ""
-    $cur = $Rows[$Cursor]
-    if ($null -eq $cur) {
-        Write-Host "  nothing matches - press / to change the filter, or ESC to clear it" -ForegroundColor Yellow
-    } else {
-        $curPath = if ($cur.Kind -eq 'session' -and $cur.Session.cwd) { $cur.Session.cwd } else { $cur.Dir.path }
-        Write-Host ("  " + $curPath) -ForegroundColor DarkGray
-    }
-    Write-Host ""
-    if ($script:status) { Write-Host ("  " + $script:status) -ForegroundColor $script:statusCol }
-    Write-Host "  L launch NOW   S spawn new session here   X launch everything ticked" -ForegroundColor Cyan
-    Write-Host "  UP/DOWN move  SPACE tick+pin  U unpin  LEFT/RIGHT fold  A all  N none  / find" -ForegroundColor DarkCyan
-    Write-Host ("  W worktrees {0}  R rescan  ENTER save  ESC cancel" -f $(if ($showWt) { 'ON (press to hide) ' } else { 'OFF (press to show)' })) -ForegroundColor DarkCyan
-    # The one distinction this screen lives or dies on, plus how far to trust LIVE.
-    Write-Host "  [x] = reopens at LOGON.  L = open it NOW regardless.  * = pinned, the roll leaves it alone." -ForegroundColor DarkGray
-    Write-Host "  LIVE = a claude.exe holds it.  live = its transcript just moved.  Blank is no evidence, not proof." -ForegroundColor DarkGray
-    Write-Host "  GONE = its transcript is no longer on disk. It can never be launched; untick it and move on." -ForegroundColor DarkGray
+    $below = $total - 1 - $last
+    if ($below -gt 0) { $lines.Add(@((New-Seg ("      ... {0} more below" -f $below) 'DarkGray'))) }
+    else              { $lines.Add($script:blankLine) }
+
+    foreach ($f in $foot) { $lines.Add($f) }
+    # Comma-protected: a List returned bare is unrolled by the output stream, and a
+    # blank line would be unrolled a second time and VANISH, shifting the frame.
+    return ,($lines.ToArray())
+}
+
+function Render {
+    param($Rows, $Cursor)
+    # Assigned, then passed. See the ",@()" note in _common.ps1.
+    $frame = Build-Frame -Rows $Rows -Cursor $Cursor
+    Paint -Lines $frame
 }
 
 function Invoke-Rescan {
     if ($script:dirty) { Save-SRRegistry -Registry $script:reg; $script:dirty = $false }
     $null = Update-SRRegistry -Config $script:cfg -Quiet
     $script:reg  = Get-SRRegistry
+    # Before the sort, not after: the cache holds the OLD session objects, and
+    # sorting on them would order the new list by the previous scan's timestamps.
+    $script:visCache = @{}
     $script:dirs = @($script:reg.directories | Sort-Object { Get-Newest (Get-Visible $_) } -Descending)
     # R is also how you ask "what is actually open?" -- and it is the only thing
     # that clears the optimistic '..' marks, once the real processes have appeared.
@@ -723,6 +911,10 @@ function Invoke-LaunchMany {
 }
 
 $rows = Build-Rows
+# The caret is hidden for the whole run so it does not flicker around the frame as
+# it repaints. Ctrl+C would otherwise leave it invisible in a console the launching
+# .bat then pauses in, so put it back on the way out however we leave.
+try {
 while ($true) {
     if ($cursor -ge $rows.Count) { $cursor = [Math]::Max(0, $rows.Count - 1) }
     Render -Rows $rows -Cursor $cursor
@@ -744,6 +936,8 @@ while ($true) {
         'DownArrow'  { if ($cursor -lt $rows.Count - 1) { $cursor++ }; $script:status = $null }
         'Home'       { $cursor = 0; $script:status = $null }
         'End'        { $cursor = $rows.Count - 1; $script:status = $null }
+        'PageUp'     { $cursor = [Math]::Max(0, $cursor - $script:pageSize); $script:status = $null }
+        'PageDown'   { $cursor = [Math]::Min($rows.Count - 1, $cursor + $script:pageSize); $script:status = $null }
         'LeftArrow'  { $collapsed[$row.Key] = $true;  $rows = Build-Rows }
         'RightArrow' { $collapsed[$row.Key] = $false; $rows = Build-Rows }
         'Spacebar'   {
@@ -760,6 +954,7 @@ while ($true) {
         }
         'Enter' {
             if ($dirty) { Save-SRRegistry -Registry $reg }
+            Show-Caret
             Clear-Host
             Write-Host ""
             Write-Host $(if ($dirty) { "  Saved." } else { "  No changes." }) -ForegroundColor Green
@@ -779,6 +974,7 @@ while ($true) {
                 Set-Status 'filter cleared' 'DarkGray'
                 continue
             }
+            Show-Caret
             Clear-Host
             Write-Host "`n  $(if ($dirty) { 'Cancelled - changes discarded.' } else { 'Cancelled.' })`n" -ForegroundColor Yellow
             exit 0
@@ -861,6 +1057,7 @@ while ($true) {
                         }
                     }
                     Write-Host "  Name it, or press ENTER for an automatic one: " -ForegroundColor Cyan -NoNewline
+                    Show-Caret
                     $nm  = Read-Host
                     $why = Invoke-SpawnNew -Dir $path -Name $nm
                     if ($why) { Set-Status "not spawned - $why" 'DarkYellow' }
@@ -898,9 +1095,13 @@ while ($true) {
                         Invoke-LaunchMany -Items $go -What 'ticked session(s)'
                     } else { Set-Status 'cancelled' 'DarkYellow' }
                 }
-                '/' {
+                # F as well as '/'. The slash is the convention, but it is not a key
+                # anyone finds by looking at the screen, and with this many rows the
+                # find is the difference between a usable list and a scroll.
+                '[/fF]' {
                     Write-Host ""
                     Write-Host ("  Find (title, id, worktree or project){0}: " -f $(if ($script:filter) { " - now '$($script:filter)', ENTER clears" } else { ', ENTER cancels' })) -ForegroundColor Cyan -NoNewline
+                    Show-Caret
                     $f = Read-Host
                     $script:filter = if ([string]::IsNullOrWhiteSpace($f)) { $null } else { $f.Trim() }
                     $rows = Build-Rows
@@ -912,10 +1113,11 @@ while ($true) {
                         Set-Status $(if ($n) { "$n conversation(s) match '$($script:filter)'" } else { "nothing matches '$($script:filter)' - / again to change it" }) $(if ($n) { 'Green' } else { 'DarkYellow' })
                     } else { Set-Status 'filter cleared' 'DarkGray' }
                 }
-                '[qQ]' { Clear-Host; Write-Host "`n  Cancelled.`n" -ForegroundColor Yellow; exit 0 }
+                '[qQ]' { Show-Caret; Clear-Host; Write-Host "`n  Cancelled.`n" -ForegroundColor Yellow; exit 0 }
                 '[rR]' { Invoke-Rescan; $rows = Build-Rows; Set-Status 'rescanned' 'DarkGray' }
             }
         }
     }
-    if ($key.Key -notin @('UpArrow','DownArrow','Home','End')) { $rows = Build-Rows }
+    if ($key.Key -notin @('UpArrow','DownArrow','Home','End','PageUp','PageDown')) { $rows = Build-Rows }
 }
+} finally { Show-Caret }

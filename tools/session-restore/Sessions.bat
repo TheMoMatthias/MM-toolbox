@@ -3,8 +3,11 @@ REM Double-click for the Claude session control panel: every conversation across
 REM every repo, what is live right now, L to open any of them, S for a new one,
 REM and the ticks that decide what comes back at logon.
 REM
-REM Same screen as "Select Sessions.bat", which is kept so an older desktop
-REM shortcut still works. Either one gets you here.
+REM THIS IS THE ENTRY POINT -- the panel, and the only file here you need for
+REM day-to-day use. The others each do one specific job: "Install Session
+REM Restore.bat" sets up the logon task, "Restore Sessions.bat" reopens the
+REM ticked conversations without showing the panel, "Enable Auto Logon.bat"
+REM makes the machine sign in by itself. Nothing else opens this screen.
 setlocal
 
 REM Pause only when double-clicked -- see the note in Restore Sessions.bat.

@@ -30,13 +30,17 @@ pass arguments through (`Restore Sessions.bat -DryRun`) and pause only when
 double-clicked, so the output stays readable. Set `SR_NOPAUSE=1` to drive them from
 a script.
 
-`Select Sessions.bat` still works and opens the same panel — it is kept so an older
-desktop shortcut does not break.
+There used to be a second name for the panel, `Select Sessions.bat`, kept so an old
+shortcut would not break. It was removed on 2026-08-22: two files that open the same
+screen make the folder unreadable, and the first question on opening it was which of
+the two was the real one. **`Sessions.bat` is the entry point; every other file here
+does a different job.**
 
 ## The control panel
 
-`Sessions.bat` (or `select-sessions.ps1`, or `ccs`) is one screen for every
-conversation on the machine, across every repo.
+`Sessions.bat` — the one entry point — opens a single screen for every conversation
+on the machine, across every repo. (`select-sessions.ps1` is the same thing from a
+terminal.)
 
 **Two independent things live on it, and confusing them is the one way to misread
 the screen:**
@@ -57,14 +61,26 @@ ticking something does not launch it. Nothing launches until you press `L` or `X
 | `SPACE` | tick/untick (and pin, so the hourly roll leaves it alone) |
 | `U` | unpin — hand the row back to the roll |
 | `←` `→` | fold a project or lane away |
+| `PGUP` `PGDN` | move by a full page; `HOME` `END` jump to the ends |
 | `A` `N` | tick all / none |
 | `W` | show or hide git-worktree lanes, and write it to the config |
-| `/` | **find** — narrow the list by title, id, worktree or project. ESC clears it |
+| `/` or `F` | **find** — narrow the list by title, id, worktree or project. `ESC` clears it. Also advertised on the title line, because a key nobody can see is a key nobody presses |
 | `R` | rescan — also the only thing that re-checks what is live |
 | `ENTER` `ESC` | save the ticks / discard them |
 
 Launching never consults the ticks, and ticking never launches. That is the
 separation the whole screen is built around.
+
+**The screen repaints in place.** It used to `Clear-Host` on every keystroke, which
+in Windows Terminal pushes the old frame into scrollback instead of repainting — so
+every arrow key read as the whole list jumping and reloading, and it really was
+scrolling, because the chrome around the list was measured by a constant that
+under-counted it by up to four lines. Now the frame is built as lines first, its
+height is derived from the chrome actually built, and it is stamped over the previous
+frame from row 0. The viewport is **sticky**: it holds still while the marker walks
+down it and only scrolls when the cursor nears an edge. Measured on a real console:
+**two screen lines change per arrow key** — the row you left and the row you moved
+to — against a full clear and redraw before.
 
 ### What "live" means
 
@@ -357,8 +373,8 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
 | file | |
 |---|---|
 | `Install Session Restore.bat` | double-click to install just this tool — tasks + buttons, no profile changes |
-| `Sessions.bat` · `Restore Sessions.bat` | double-clickable; the desktop buttons point here |
-| `Select Sessions.bat` | the old name for `Sessions.bat`, kept so an older shortcut still works |
+| `Sessions.bat` | **the entry point** — the control panel. Double-clickable; the desktop button points here |
+| `Restore Sessions.bat` | reopen the ticked conversations without showing the panel |
 | `Enable Auto Logon.bat` | self-elevating wrapper for `enable-autologon.ps1` |
 | `_common.ps1` | discovery, registry, the rolling auto-tick, guards, launching — shared, so there is one copy |
 | `restore-sessions.ps1` | restore · `-Scan` · `-New` · `-Install` · `-Uninstall` |
@@ -369,7 +385,7 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
 | `sessions-registry.json` | **your selections** (gitignored — the paths are local) |
 | `.state/` | log + generated boot scripts (gitignored, regenerated) |
 
-## Six traps worth knowing
+## Eight traps worth knowing
 
 1. **`$PSScriptRoot` is empty while a `param()` default is evaluated** under
    `powershell.exe -File`, which is how the tasks run. Resolve the script directory
@@ -408,5 +424,25 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
    a conversation that exists in two projects down to one — keeping the *pinned*
    row's tick verbatim rather than OR-ing the ticks together, because a pinned row
    is an operator decision and the other is just whatever the roll last computed.
+
+7. **A frame measured by a constant is a frame that scrolls.** The panel reserved a
+   flat 14 lines for chrome that reaches 18 once the filter line and the
+   unattributed-processes warning are both up — so it wrote more lines than the
+   window held and the terminal scrolled the whole picture. Together with a
+   `Clear-Host` per keystroke (which in Windows Terminal pushes the old frame into
+   scrollback rather than repainting) and a viewport that recentred on the cursor
+   every keystroke, an arrow key looked like the list jumping and reloading. All
+   three are gone: the frame is built as lines and its height derived from them, it
+   is stamped over the previous frame from row 0, and the viewport is sticky. The
+   first test written against the fix **caught the fix's own bug** — a `Max(3, …)`
+   floor on the list height guaranteed an 18-line frame in a 14-line window. Chrome
+   now sheds itself, worst line first, rather than overrunning.
+8. **A `List` returned bare is unrolled by PowerShell's output stream — and an empty
+   element is unrolled a second time and vanishes.** Building the frame as a list of
+   lines, where a blank line is an empty array, means every blank silently
+   disappears on return and the whole frame shifts up. Same family as the `,@()`
+   trap: `return ,($lines.ToArray())`. Blank lines are also built as a one-segment
+   line holding an empty string rather than as an empty array, so there is nothing
+   for the stream to swallow in the first place.
 
 If it ever seems to do nothing at logon, read `.state/restore.log` first.
