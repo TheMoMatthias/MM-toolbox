@@ -88,6 +88,18 @@
   "registryWindowDays": 30,
   "maxSessions": 12,
 
+  "//panelScanMaxAgeSeconds": [
+    "How fresh the registry has to be for the panel to skip its opening scan.",
+    "Measured with 117 conversations: the scan is 679 ms cold, 329 ms warm, out",
+    "of 1.94 s from double-click to a usable screen. An hourly task already",
+    "rescans, so re-walking every transcript because you opened the panel twice",
+    "in a minute buys nothing. When the scan IS skipped and the list is over a",
+    "minute old the panel says so in its header, so a stale list is never quiet.",
+    "R always rescans; -Scan forces one; -NoScan never scans. 0 disables the",
+    "skip and restores the old always-scan behaviour."
+  ],
+  "panelScanMaxAgeSeconds": 300,
+
   "excludePatterns": [
     "*\\AppData\\Local\\Temp\\*",
     "*\\AppData\\Roaming\\*",

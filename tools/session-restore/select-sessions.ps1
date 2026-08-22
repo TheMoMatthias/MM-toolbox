@@ -71,7 +71,12 @@ param(
     [ValidateSet('on', 'off')]
     [string]$Worktrees,
 
-    [switch]$NoScan
+    [switch]$NoScan,
+
+    # Force a scan even if the registry was scanned moments ago. -NoScan is the
+    # opposite: never scan. With neither, the panel scans only when the registry
+    # has gone stale -- see the block below.
+    [switch]$Scan
 )
 
 $ErrorActionPreference = 'Stop'
@@ -97,14 +102,44 @@ if ($Worktrees) {
     $cfg = Get-SRConfig
 }
 
+# The panel used to scan unconditionally on every open. Measured on this machine,
+# 117 conversations: 1.94 s from double-click to a usable screen, of which the scan
+# was 679 ms cold and 329 ms warm. Nothing is on screen for any of it.
+#
+# An hourly task already rescans, so re-walking every transcript because somebody
+# opened the panel twice in a minute buys nothing. It is skipped while the registry
+# is fresh -- and the age is put in the header rather than left implicit, because a
+# panel that quietly shows you a stale list is worse than a slow one.
+#
+# The other 391 ms is the liveness probe, and that one stays: it is a single CIM
+# query already filtered to claude.exe, so the cost is the WMI round trip itself,
+# not the work. Measured, not assumed.
+$scanMaxAge = 300
+if ($cfg.PSObject.Properties['panelScanMaxAgeSeconds'] -and $cfg.panelScanMaxAgeSeconds -ne $null) {
+    $scanMaxAge = [int]$cfg.panelScanMaxAgeSeconds
+}
+$script:scanAgeSec = $null
 if (-not $NoScan) {
-    # Say something BEFORE the scan. It used to run silently and the window sat
-    # blank for the whole of it -- which read as "nothing is happening".
-    Write-Host "  Scanning conversations..." -NoNewline -ForegroundColor DarkGray
-    $swScan = [Diagnostics.Stopwatch]::StartNew()
-    try { $null = Update-SRRegistry -Config $cfg -Quiet } catch { Write-Warning "scan failed: $($_.Exception.Message)" }
-    $swScan.Stop()
-    Write-Host (" {0} ms" -f $swScan.ElapsedMilliseconds) -ForegroundColor DarkGray
+    $age = $null
+    if (-not $Scan) {
+        try {
+            $prev = Get-SRRegistry
+            if ($prev.lastScan) { $age = ((Get-Date) - [datetime]$prev.lastScan).TotalSeconds }
+        } catch { $age = $null }
+    }
+    if ($null -ne $age -and $age -ge 0 -and $age -lt $scanMaxAge) {
+        $script:scanAgeSec = [int]$age
+        Write-Host ("  Registry scanned {0}s ago - skipping the scan. R rescans, -Scan forces it." -f ([int]$age)) -ForegroundColor DarkGray
+    } else {
+        # Say something BEFORE the scan. It used to run silently and the window sat
+        # blank for the whole of it -- which read as "nothing is happening".
+        Write-Host "  Scanning conversations..." -NoNewline -ForegroundColor DarkGray
+        $swScan = [Diagnostics.Stopwatch]::StartNew()
+        try { $null = Update-SRRegistry -Config $cfg -Quiet } catch { Write-Warning "scan failed: $($_.Exception.Message)" }
+        $swScan.Stop()
+        $script:scanAgeSec = 0
+        Write-Host (" {0} ms" -f $swScan.ElapsedMilliseconds) -ForegroundColor DarkGray
+    }
 }
 
 $reg     = Get-SRRegistry
@@ -794,6 +829,12 @@ function Build-Frame {
         $lines.Add(@((New-Seg ("  {0} running claude.exe cannot be matched to a conversation (started bare, no id on the command line)" -f $script:unattributed) 'DarkYellow')))
     }
     if (-not $showWt) { $lines.Add(@((New-Seg '  worktrees OFF' 'DarkYellow'))) }
+    # Only when the scan was SKIPPED and the registry is old enough for it to
+    # matter. Under a minute needs no warning, and a row spent saying "this is
+    # current" is a row not spent on the list.
+    if ($null -ne $script:scanAgeSec -and $script:scanAgeSec -ge 60) {
+        $lines.Add(@((New-Seg ("  Not rescanned - this list is {0} minute(s) old. R rescans now." -f [int]($script:scanAgeSec / 60)) 'DarkYellow')))
+    }
     if ($script:filter) {
         $lines.Add(@((New-Seg ("  FILTER '{0}' - showing {1} matching conversation(s).  / or F to change it, ESC to clear it." -f $script:filter, @($Rows | Where-Object { $_.Kind -eq 'session' }).Count) 'Yellow')))
     }
@@ -970,6 +1011,8 @@ function Invoke-Rescan {
     # R is also how you ask "what is actually open?" -- and it is the only thing
     # that clears the optimistic '..' marks, once the real processes have appeared.
     Update-Running
+    # R always really scans, so the staleness warning has to go with it.
+    $script:scanAgeSec = 0
 }
 
 # ReadKey rather than Read-Host: the panel is already in raw-key mode, and a

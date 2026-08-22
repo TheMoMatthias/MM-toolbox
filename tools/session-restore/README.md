@@ -66,11 +66,25 @@ ticking something does not launch it. Nothing launches until you press `L` or `X
 | `A` `N` | tick all / none |
 | `W` | show or hide git-worktree lanes, and write it to the config |
 | `/` or `F` | **find** — narrow the list by title, id, worktree or project. `ESC` clears it. Also advertised on the title line, because a key nobody can see is a key nobody presses |
-| `R` | rescan — also the only thing that re-checks what is live |
+| `R` | rescan — also the only thing that re-checks what is live, and always really scans |
 | `ENTER` `ESC` | save the ticks / discard them |
 
 Launching never consults the ticks, and ticking never launches. That is the
 separation the whole screen is built around.
+
+**It opens in about a second, not two.** Measured with 117 conversations: 1.94 s
+from double-click to a usable screen, of which the opening scan was 679 ms cold and
+329 ms warm — with nothing on screen for any of it. An hourly task already rescans,
+so re-walking every transcript because you opened the panel twice in a minute buys
+nothing. The scan is now skipped while the registry is fresh (`panelScanMaxAgeSeconds`,
+default 300), which takes a warm open to **~1.03 s**. When the scan *is* skipped and
+the list is over a minute old the header says so — a stale list is never quiet. `R`
+always really scans, `-Scan` forces one, `-NoScan` never scans, and `0` restores the
+old always-scan behaviour.
+
+The other 391 ms is the liveness probe, and it stays: it is a single CIM query
+already filtered to `claude.exe`, so the cost is the WMI round trip itself rather
+than the work. Measured, not assumed.
 
 **The screen repaints in place, and only the lines that changed.** Getting this
 right took two passes, and the second one is the interesting half.
@@ -378,6 +392,30 @@ permission-gating, so a *new* session can only be named at launch — which is w
   so an old one is litter. The per-session ones expire after 30 days; the new-session ones
   carry a timestamp in their name and would otherwise accumulate one per press of `S`,
   forever, so they expire after one day.
+
+## Tests
+
+`testsun-tests.ps1`. Three suites, each of which exists because something shipped
+broken.
+
+| suite | |
+|---|---|
+| `frame` | pure geometry — 112 frames across seven window sizes, with the filter line, the staleness warning and the unattributed warning all forced on. Never taller than the window, always shows a list row, cursor always on screen |
+| `paint` | its own console window, because `CursorTop` / `CursorVisible` / `KeyAvailable` mean nothing without one. Counts the painter's **writes** — 4 per arrow key against ~190 for a full repaint — and times a frame against the 33 ms key-repeat interval |
+| `keys` | drives the GUI through UI Automation: `HOME`, `END`, `PAGEUP`, `PAGEDOWN`, arrows. Needs a desktop; skip with `-NoGui` |
+
+The panel is one script ending in an interactive loop, so a harness is that script
+with the loop cut off and a driver bolted on. The runner splices from the **live**
+source every time, and asserts every marker — if the script changes shape the run
+fails loudly instead of testing something that no longer exists.
+
+**They are calibrated, not merely written.** Reintroducing the viewport margin bug
+turns `frame` red (9 failures at 90x12). Removing the comma protection from
+`Build-Frame`'s return, however, left it **green** — that assertion never guarded the
+unroll hazard, and the hazard itself is gone for an unrelated reason (blank lines are
+a one-segment line holding an empty string, not an empty array). That is recorded in
+the driver rather than quietly deleted, because the wrong lesson is "we have a test
+for that". A suite that has never failed has never been shown capable of failing.
 
 ## Files
 

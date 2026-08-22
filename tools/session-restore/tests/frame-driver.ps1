@@ -19,6 +19,11 @@ if (@($rows).Count -lt 20) { Fail "need a real registry with >=20 rows to test s
 # window and the terminal scrolled it. Worst case forced here, every size.
 $script:unattributed = 3
 $script:status       = 'launched 1 session'
+# The staleness warning is a header line too, and it appears exactly when the
+# panel skips its opening scan -- which is now the COMMON case, not a rare one.
+# Leaving it out of the worst case would test a chrome one row shorter than the
+# one the operator actually sees.
+$script:scanAgeSec   = 600
 $checked = 0
 foreach ($wt in @($true, $false)) {
   $script:showWt = $wt
@@ -46,6 +51,7 @@ foreach ($wt in @($true, $false)) {
   }
 }
 $script:filter = $null; $script:unattributed = 0; $script:status = $null; $script:showWt = $true
+$script:scanAgeSec = $null
 if ($fails -eq 0) { Pass "frame always fits the window and always shows list rows ($checked frames)" }
 
 # --- 2. blank lines must survive the return --------------------------------
