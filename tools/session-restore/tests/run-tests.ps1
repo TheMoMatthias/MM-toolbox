@@ -20,6 +20,12 @@
       keys    drives the GUI through UI Automation: HOME, END, PAGEUP, PAGEDOWN
               and the arrows. Needs a desktop session; skipped with -NoGui.
 
+      headless  the GUI window BUILT BUT NEVER SHOWN, with fabricated session
+              states so every band, the background agent, the open dialog and the
+              idle-with-a-reply case are all present whatever the machine happens
+              to be running. Nothing appears on screen and nothing takes focus.
+              -Shot <path> also renders it to a PNG off-screen.
+
       inbox   drives the GUI's inbox: that it opens on the inbox, groups into
               bands, does NOT show the tree's column captions, that the count
               pills are real buttons, and that the view switch swaps lists.
@@ -59,7 +65,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('frame', 'paint', 'keys', 'state', 'inbox', 'jump')]
+    [ValidateSet('frame', 'paint', 'keys', 'state', 'inbox', 'jump', 'headless')]
     [string]$Only,
     [switch]$NoGui,
 
@@ -68,10 +74,15 @@ param(
     # left of the primary is negative -- e.g. -Place '-3440,0'.
     [string]$Place,
 
-    # Skip the suites that cannot work without stealing the foreground: `keys`
-    # sends real keystrokes, and `jump` raises a terminal window on purpose.
-    # Use this while the machine is being used for something else.
-    [switch]$NoSteal
+    # Skip every suite that puts a window on someone's screen: `keys` sends real
+    # keystrokes, `jump` raises a terminal on purpose, and `inbox` drives the
+    # visible window. Use this while the machine is being used for something
+    # else -- `headless` covers most of what `inbox` asserts, without appearing.
+    [switch]$NoSteal,
+
+    # Render the headless window to this PNG. Off-screen, via
+    # RenderTargetBitmap -- no window appears in order to produce it.
+    [string]$Shot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -123,7 +134,34 @@ if ($Place) {
 } else {
     Remove-Item Env:\SR_GUI_PLACE -ErrorAction SilentlyContinue
 }
-if ($NoSteal) { Write-Host "skipping the suites that need the foreground (keys, jump)" -ForegroundColor DarkGray }
+if ($NoSteal) { Write-Host "skipping the suites that put a window on screen (keys, inbox, jump)" -ForegroundColor DarkGray }
+
+# --- the GUI splice ---------------------------------------------------------
+# Same idea as New-Harness above, aimed at the other script. sessions-gui.ps1
+# builds its window and then calls ShowDialog; cut it at that line and the window
+# exists, fully wired, with nothing on screen. Add_ContentRendered never fires on
+# an unshown window, so no background scan starts and the state stays exactly
+# what the driver puts there.
+function New-GuiHarness {
+    param([string]$Driver, [string]$OutFile)
+
+    $src = @(Get-Content -LiteralPath (Join-Path $tool 'sessions-gui.ps1'))
+    $cut = -1
+    for ($k = 0; $k -lt $src.Count; $k++) {
+        if ($src[$k].Trim() -eq '$null = $window.ShowDialog()') { $cut = $k; break }
+    }
+    if ($cut -lt 0) { throw 'marker gone: sessions-gui.ps1 no longer ends with "$null = $window.ShowDialog()"' }
+
+    # $PSScriptRoot would be .state for a spliced harness, so pin the real folder.
+    $prefix = @($src[0..($cut - 1)]) | ForEach-Object {
+        if ($_ -eq '$here = $PSScriptRoot') { "`$here = '$tool'" } else { $_ }
+    }
+
+    $body = Get-Content -LiteralPath (Join-Path $here $Driver) -Raw
+    $path = Join-Path $state $OutFile
+    [System.IO.File]::WriteAllText($path, (($prefix -join "`n") + $body), (New-Object System.Text.UTF8Encoding($false)))
+    return $path
+}
 
 $results = @()
 function Record { param([string]$Name, [int]$Code, [string[]]$Output)
@@ -175,8 +213,23 @@ if ((-not $Only -or $Only -eq 'keys') -and -not $NoGui -and -not $NoSteal) {
     Record 'keys' $LASTEXITCODE @($out)
 }
 
+# --- headless: the window is BUILT but never SHOWN --------------------------
+# Needs STA for WPF, needs no desktop attention at all: nothing appears, nothing
+# takes focus, nothing touches the mouse. This is where the bulk of the checking
+# belongs -- every bug that shipped from this subsystem was a code bug that a
+# built-but-unshown window would have caught.
+if (-not $Only -or $Only -eq 'headless') {
+    Write-Host "`n=== headless (built, never shown) ===" -ForegroundColor Cyan
+    $h = New-GuiHarness -Driver 'headless-driver.ps1' -OutFile 'headless-test.ps1'
+    if ($Shot) { $env:SR_TEST_SHOT = $Shot } else { Remove-Item Env:\SR_TEST_SHOT -ErrorAction SilentlyContinue }
+    $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'headless' $LASTEXITCODE @($out)
+    Remove-Item Env:\SR_TEST_SHOT -ErrorAction SilentlyContinue
+}
+
 # --- inbox: drives the GUI, needs a desktop ---------------------------------
-if ((-not $Only -or $Only -eq 'inbox') -and -not $NoGui) {
+if ((-not $Only -or $Only -eq 'inbox') -and -not $NoGui -and -not $NoSteal) {
     Write-Host "`n=== inbox (the orchestration view) ===" -ForegroundColor Cyan
     $drv = Join-Path $here 'inbox-driver.ps1'
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $drv 2>&1

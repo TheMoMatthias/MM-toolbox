@@ -1,0 +1,308 @@
+
+# ===========================================================================
+# HEADLESS. The window is BUILT but never SHOWN.
+#
+# run-tests.ps1 splices sessions-gui.ps1 just before its ShowDialog and appends
+# this file. Everything above that line runs: the XAML loads, $ui binds, every
+# handler attaches, the registry loads and the first Update-List happens. What
+# does not happen is a window appearing on anybody's screen.
+#
+# WHY THIS EXISTS. Every bug that actually shipped from this subsystem today was
+# a code bug, not a pixel bug:
+#   - foreach ($c in ...) replacing the palette $C, so every brush came back
+#     null and the next repaint threw;
+#   - [System.Windows.Data.ItemsControl], a namespace that does not exist, so a
+#     button silently did nothing;
+#   - Get-Lanes' ",@()" return unwrapped one step too far, so a project label
+#     read as every lane name at once.
+# Not one of them needed a visible window to catch. They needed the code to RUN.
+# The suites that did need a real window were also the ones fighting the
+# operator for the mouse, which is the other half of why this is here.
+#
+# Add_ContentRendered never fires on an unshown window, so no background scan
+# starts and no timer touches anything: the state is exactly what this driver
+# puts there, which is what makes the assertions deterministic.
+# ===========================================================================
+
+$ErrorActionPreference = 'Stop'
+
+$fails = 0
+function Fail { param($m) Write-Host "  FAIL  $m" -ForegroundColor Red; $script:fails++ }
+function Pass { param($m) Write-Host "  ok    $m" -ForegroundColor Green }
+function Note { param($m) Write-Host "        $m" -ForegroundColor DarkGray }
+
+# --- synthetic state --------------------------------------------------------
+# The REAL registry is already loaded, so the rows are real rows with real ids;
+# only what each conversation is DOING is fabricated. Inventing registry objects
+# instead would test a shape this code never actually sees.
+$ids = @()
+foreach ($d in $script:dirs) {
+    foreach ($s in @($d.sessions)) { if ($s.sessionId) { $ids += "$($s.sessionId)" } }
+}
+if ($ids.Count -lt 6) {
+    Write-Host "  only $($ids.Count) conversations in the registry - need at least 6" -ForegroundColor Yellow
+    exit 2
+}
+Note "$($ids.Count) conversations in the registry; staging 6 of them"
+
+# $ProcId, not $Pid: $Pid is a READ-ONLY automatic variable in PowerShell, and a
+# parameter of that name kills the whole script with "Cannot overwrite variable
+# Pid because it is read-only or constant" before one assertion runs.
+function New-Agent {
+    param([string]$Status, [string]$WaitingFor = '', [int]$ProcId = 4242, [string]$Kind = 'interactive', [string]$Name)
+    return [PSCustomObject]@{
+        Status = $Status; WaitingFor = $WaitingFor
+        Needs  = (($WaitingFor -ne '') -or ($Status -eq 'blocked'))
+        Pid    = $ProcId; Kind = $Kind; Name = $Name; Cwd = 'C:\nowhere'; StartedAt = (Get-Date)
+    }
+}
+function New-Conv {
+    param([string]$State, [string]$Detail, [bool]$Stale = $false, [int]$AgeMin = 1)
+    return [PSCustomObject]@{
+        State = $State; Detail = $Detail; Stale = $Stale
+        LastActive = (Get-Date).AddMinutes(-$AgeMin)
+        LastPrompt = 'what I asked it'; Title = $null; Mode = 'default'
+    }
+}
+
+$A = @{}; $C2 = @{}; $S = @{}
+# 0: waiting on a permission dialog. Wants a click, not a sentence.
+$A[$ids[0].ToLower()] = New-Agent -Status 'waiting' -WaitingFor 'dialog open' -Name 'STAGE-DIALOG'
+$C2[$ids[0].ToLower()] = New-Conv -State 'waiting' -Detail 'a dialog is open, it wants an answer' -AgeMin 2
+$S[$ids[0].ToLower()] = [PSCustomObject]@{ Said = 'I need to run one command'; Pending = 'Bash(rm -rf /tmp/x)'; PendingTool = 'Bash'; At = (Get-Date).AddMinutes(-2) }
+
+# 1: a BLOCKED BACKGROUND AGENT. No pid, no terminal, cannot be typed into.
+$A[$ids[1].ToLower()] = New-Agent -Status 'blocked' -ProcId 0 -Kind 'background' -Name 'STAGE-AGENT'
+$C2[$ids[1].ToLower()] = New-Conv -State 'waiting' -Detail 'blocked, needs you' -AgeMin 30
+$S[$ids[1].ToLower()] = [PSCustomObject]@{ Said = ''; Pending = ''; PendingTool = ''; At = $null }
+
+# 2: busy.
+$A[$ids[2].ToLower()] = New-Agent -Status 'busy' -Name 'STAGE-BUSY'
+$C2[$ids[2].ToLower()] = New-Conv -State 'working' -Detail 'running' -AgeMin 1
+$S[$ids[2].ToLower()] = [PSCustomObject]@{ Said = 'Running the suite now'; Pending = 'Bash(pytest)'; PendingTool = 'Bash'; At = (Get-Date).AddMinutes(-1) }
+
+# 3: idle, and it HAS said something. This is the case a mtime-only gate lost:
+# held by a process, silent at its prompt, therefore "stale".
+$A[$ids[3].ToLower()] = New-Agent -Status 'idle' -Name 'STAGE-IDLE'
+$C2[$ids[3].ToLower()] = New-Conv -State 'idle' -Detail 'at its prompt, nothing pending' -Stale $true -AgeMin 20
+$S[$ids[3].ToLower()] = [PSCustomObject]@{ Said = 'Done and pushed.'; Pending = ''; PendingTool = ''; At = (Get-Date).AddMinutes(-20) }
+
+# 4: NOT RUNNING. Its transcript moved recently, so it is worth showing, but
+# nothing is holding it.
+#
+# The first version of this staged it with no agent and a 4000-minute-old
+# transcript and expected the 'quiet' band. It is not in the inbox at all, and
+# that is CORRECT: the inbox lists what is running or recently active, not all
+# 143 conversations in the registry. Reaching 'quiet' needs liveness evidence
+# ($script:live or $script:running) WITHOUT an agent entry -- a conversation
+# whose process has gone but whose transcript is still warm. Resolve-SRSession
+# State returns Stale=$true whenever there is no agent, which is what stops a
+# dead conversation ever being labelled 'working'.
+$C2[$ids[4].ToLower()] = New-Conv -State 'idle' -Detail 'was at its prompt' -Stale $true -AgeMin 5
+
+# 5: waiting for input, and NEWER than 0, so ordering inside the band is provable.
+$A[$ids[5].ToLower()] = New-Agent -Status 'waiting' -WaitingFor 'input needed' -Name 'STAGE-WAITING'
+$C2[$ids[5].ToLower()] = New-Conv -State 'waiting' -Detail 'input needed' -AgeMin 1
+$S[$ids[5].ToLower()] = [PSCustomObject]@{ Said = 'Which schema should I use?'; Pending = ''; PendingTool = ''; At = (Get-Date).AddMinutes(-1) }
+
+$script:agents = $A
+$script:conv   = $C2
+$script:said   = $S
+$script:running = @{}
+foreach ($k in @($A.Keys)) { if ($A[$k].Pid) { $script:running[$k] = $true } }
+# Transcript-moved-recently, which is inferred liveness and separate from a
+# process actually holding the id. Session 4 has this and nothing else.
+$script:live = @{ $ids[4].ToLower() = $true }
+
+# lastActive drives the sort inside a band, so stage it to match the states.
+$byId = @{}
+foreach ($d in $script:dirs) { foreach ($s in @($d.sessions)) { if ($s.sessionId) { $byId["$($s.sessionId)".ToLower()] = $s } }}
+$byId[$ids[0].ToLower()].lastActive = (Get-Date).AddMinutes(-2).ToString('o')
+$byId[$ids[5].ToLower()].lastActive = (Get-Date).AddMinutes(-1).ToString('o')
+
+# --- build it ---------------------------------------------------------------
+try { Update-List -ToTop } catch { Fail "Update-List threw: $($_.Exception.Message)" }
+
+# .ToArray(), not @(...). On PowerShell 5.1.26100.9168 the array subexpression
+# @() throws "Argument types do not match" against a List[object] -- which is
+# exactly what Build-InboxRows returns. Piping and .ToArray() both work.
+$rows = $script:inboxRows.ToArray()
+if (-not $rows.Count) { Fail 'the inbox built no rows at all'; }
+else { Pass "the inbox built $($rows.Count) row(s)" }
+
+function RowFor { param([string]$Id)
+    foreach ($r in $rows) { if ($r.Kind -eq 'session' -and "$($r.Session.sessionId)" -ieq $Id) { return $r } }
+    return $null
+}
+function BandOf { param([string]$Id) $r = RowFor $Id; if ($r) { return $r.Band } return '' }
+
+# --- 1. every conversation lands in exactly one band ------------------------
+$expect = @{ 0 = 'needs'; 1 = 'needs'; 2 = 'working'; 3 = 'idle'; 4 = 'quiet'; 5 = 'needs' }
+foreach ($i in @($expect.Keys | Sort-Object)) {
+    $got = BandOf $ids[$i]
+    if ($got -eq $expect[$i]) { Pass "staged session $i is in '$got'" }
+    else { Fail "staged session $i is in '$got', expected '$($expect[$i])'" }
+}
+
+# A partition: no id may appear twice.
+$seen = @{}
+$dupes = 0
+foreach ($r in $rows) {
+    if ($r.Kind -ne 'session') { continue }
+    $k = "$($r.Session.sessionId)".ToLower()
+    if ($seen[$k]) { $dupes++ }
+    $seen[$k] = $true
+}
+if ($dupes -eq 0) { Pass 'no conversation appears in two bands' }
+else { Fail "$dupes conversation(s) appear more than once" }
+
+# --- 2. NOTHING renders invisible -------------------------------------------
+# The guard inside Update-InboxList throws on a null brush, so reaching here
+# already proves a lot -- but assert it directly too, because a guard that stops
+# being reached is a guard that stops guarding.
+$nullBrush = 0
+foreach ($r in $rows) {
+    if ($r.Said -and $null -eq $r.SaidBrush) { $nullBrush++ }
+    if ($r.Name -and $null -eq $r.NameBrush) { $nullBrush++ }
+}
+if ($nullBrush -eq 0) { Pass 'every row with text has a brush to draw it with' }
+else { Fail "$nullBrush row(s) carry text with no brush - they would render blank" }
+
+# --- 3. the band headings ---------------------------------------------------
+$heads = @($rows | Where-Object { $_.Kind -eq 'band' })
+if ($heads.Count -ge 3) { Pass "$($heads.Count) band heading(s): $((@($heads | ForEach-Object { $_.Name })) -join ', ')" }
+else { Fail "only $($heads.Count) band heading(s)" }
+foreach ($h in $heads) {
+    if ("$($h.Counts)" -match '^\d+$') { } else { Fail "band '$($h.Name)' has a count of '$($h.Counts)'" }
+}
+$needsHead = @($heads | Where-Object { $_.Band -eq 'needs' })
+if ($needsHead.Count -eq 1 -and [int]$needsHead[0].Counts -eq 3) { Pass 'NEEDS YOU counts exactly the 3 staged' }
+elseif ($needsHead.Count -eq 1) { Fail "NEEDS YOU says $($needsHead[0].Counts), expected 3" }
+else { Fail 'no NEEDS YOU heading' }
+
+# --- 4. ordering inside a band ----------------------------------------------
+$needsRows = @($rows | Where-Object { $_.Kind -eq 'session' -and $_.Band -eq 'needs' })
+$firstId = "$($needsRows[0].Session.sessionId)".ToLower()
+if ($firstId -eq $ids[5].ToLower()) { Pass 'the newest waiting conversation is first in the band' }
+else { Fail "the band leads with $firstId, expected the newer $($ids[5].ToLower())" }
+
+# --- 5. a background agent offers nothing it cannot do ----------------------
+$agentRow = RowFor $ids[1]
+if (-not $agentRow) { Fail 'the background agent has no row' }
+elseif ($agentRow.CanJump) { Fail 'the background agent offers an action it cannot perform' }
+elseif ($agentRow.JumpLabel -ne 'agent') { Fail "the background agent's action reads '$($agentRow.JumpLabel)'" }
+else { Pass "the background agent is labelled '$($agentRow.JumpLabel)' and disabled" }
+
+# --- 6. a dialog says what it is asking about -------------------------------
+$dialogRow = RowFor $ids[0]
+if (-not $dialogRow) { Fail 'the dialog session has no row' }
+elseif ($dialogRow.Said -match 'rm -rf|wants to run|dialog') { Pass "the dialog row says: '$($dialogRow.Said)'" }
+else { Fail "the dialog row says '$($dialogRow.Said)', which does not name what it is asking" }
+
+# --- 7. an idle session still shows what it SAID ----------------------------
+$idleRow = RowFor $ids[3]
+if ($idleRow -and $idleRow.Said -eq 'Done and pushed.') { Pass 'an idle session shows its last reply, not a placeholder' }
+elseif ($idleRow) { Fail "the idle row says '$($idleRow.Said)'" }
+else { Fail 'the idle session has no row' }
+
+# --- 8. the project label is ONE lane, not all of them ----------------------
+# Get-Lanes returns ",@(...)"; wrapping it one step too far made every row read
+# "AlgoTrader / main I7 F2 AN2 I6 ..." with the whole repo concatenated.
+$badLabel = @($rows | Where-Object { $_.Kind -eq 'session' -and ("$($_.Project)" -split '\s+').Count -gt 4 })
+if ($badLabel.Count -eq 0) { Pass 'every project label names one project and one lane' }
+else { Fail "$($badLabel.Count) row(s) have a run-together project label, e.g. '$($badLabel[0].Project)'" }
+
+# --- 9. the views switch without throwing -----------------------------------
+foreach ($mode in @('tree', 'restore', 'inbox')) {
+    $threw = $null
+    try { Set-ViewMode $mode } catch { $threw = $_.Exception.Message }
+    if ($threw) { Fail "Set-ViewMode '$mode' threw: $threw"; continue }
+    $inbox = ($mode -eq 'inbox')
+    $listOk = ($ui.InboxList.Visibility -eq $(if ($inbox) { $V_Show } else { $V_Hide })) -and
+              ($ui.RowList.Visibility   -eq $(if ($inbox) { $V_Hide } else { $V_Show }))
+    if (-not $listOk) { Fail "'$mode' shows the wrong list"; continue }
+    # AND IT MUST HAVE CONTENT. Set-ViewMode swaps Visibility BEFORE it rebuilds,
+    # so a rebuild that throws still leaves the right list showing and empty.
+    $n = $(if ($inbox) { $script:inboxRows.Count } else { $script:rows.Count })
+    if ($n -lt 1) { Fail "'$mode' left an EMPTY list - the rebuild did not happen"; continue }
+    $restore = ($mode -eq 'restore')
+    if ($ui.LaunchTicked.Visibility -ne $(if ($restore) { $V_Show } else { $V_Hide })) {
+        Fail "'$mode' has the wrong idea about 'Launch everything ticked'"; continue
+    }
+    Pass "'$mode' shows the right list, with $n rows, and the right chrome"
+}
+
+# --- 10. the palette survived -----------------------------------------------
+# The $c/$C collision emptied this table and every brush afterwards was null.
+$missing = @('TextMax','TextHigh','TextMid','TextLow','TextDim') | Where-Object { -not $C[$_] }
+if ($missing.Count -eq 0) { Pass 'the palette is still a palette after switching views' }
+else { Fail "the palette lost: $($missing -join ', ')" }
+
+# --- 11. a band heading is not an action target -----------------------------
+$bandRow = @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'band' })[0]
+if ($bandRow) {
+    $ui.InboxList.SelectedItem = $bandRow
+    Update-Selection
+    if ("$($ui.SelName.Text)" -eq 'nothing selected') { Pass 'selecting a band heading arms no actions' }
+    else { Fail "selecting a band heading set the footer to '$($ui.SelName.Text)'" }
+}
+
+# --- 12. the pills announce their counts ------------------------------------
+# A Button whose Content is a panel has NO accessible name unless one is set.
+$nameProp = [System.Windows.Automation.AutomationProperties]::NameProperty
+foreach ($pair in @(@{B=$ui.LivePill;T=$ui.LiveSummary}, @{B=$ui.WaitPill;T=$ui.WaitSummary})) {
+    $an = "$($pair.B.GetValue($nameProp))"
+    if ($an -and $an -eq $pair.T.Text) { Pass "a pill announces exactly what it shows: '$an'" }
+    else { Fail "a pill announces '$an' but shows '$($pair.T.Text)'" }
+}
+
+# --- the picture, with no window on anyone's screen -------------------------
+# RenderTargetBitmap draws the visual tree straight to a bitmap. Measure and
+# Arrange by hand, because an unshown window has never been through a layout
+# pass and would otherwise render at zero size.
+if ($env:SR_TEST_SHOT) {
+    try {
+        Set-ViewMode 'inbox'
+        $w = 1480.0; $h = 980.0
+        $root = $window.Content
+
+        # PAINT THE BACKGROUND ONTO THE ROOT FIRST.
+        #
+        # RenderTargetBitmap draws the visual handed to it, and the dark ground
+        # belongs to the WINDOW, not to its content. Rendering $window.Content
+        # alone gives a transparent bitmap -- which every viewer shows as WHITE,
+        # so #F6F6F6 text lands on near-white and the screenshot reads as a
+        # broken, washed-out window that looks nothing like the real one.
+        $hadBg = $root.Background
+        if (-not $hadBg -or $hadBg -eq [System.Windows.Media.Brushes]::Transparent) {
+            $root.Background = $(if ($window.Background) { $window.Background } else { $C.Ink })
+        }
+        $root.Measure((New-Object System.Windows.Size $w, $h))
+        $root.Arrange((New-Object System.Windows.Rect 0, 0, $w, $h))
+        $root.UpdateLayout()
+        # A second pass: the ListBox realises its items during the first one, and
+        # what it realised has not been arranged yet.
+        $root.Measure((New-Object System.Windows.Size $w, $h))
+        $root.Arrange((New-Object System.Windows.Rect 0, 0, $w, $h))
+        $root.UpdateLayout()
+
+        $rtb = New-Object System.Windows.Media.Imaging.RenderTargetBitmap(
+            [int]$w, [int]$h, 96, 96, [System.Windows.Media.PixelFormats]::Pbgra32)
+        $rtb.Render($root)
+        $enc = New-Object System.Windows.Media.Imaging.PngBitmapEncoder
+        $enc.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($rtb))
+        $fs = [System.IO.File]::Create($env:SR_TEST_SHOT)
+        try { $enc.Save($fs) } finally { $fs.Dispose() }
+        $root.Background = $hadBg
+        $len = (Get-Item -LiteralPath $env:SR_TEST_SHOT).Length
+        if ($len -gt 5000) { Pass "rendered $([int]$w)x$([int]$h) off-screen to $($env:SR_TEST_SHOT) ($([int]($len/1024)) KB)" }
+        else { Fail "the render produced only $len bytes - probably a blank bitmap" }
+    } catch {
+        Fail "off-screen render failed: $($_.Exception.Message)"
+    }
+}
+
+Write-Host ''
+if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
+Write-Host 'the headless suite holds' -ForegroundColor Green
+exit 0

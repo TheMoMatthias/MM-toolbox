@@ -3223,8 +3223,19 @@ $ui.InboxList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.W
 # band it counts.
 function Show-InboxBand { param([string]$Band)
     if ($script:viewMode -ne 'inbox') { Set-ViewMode 'inbox'; $ui.ModeInbox.IsChecked = $true }
+    # $script:inboxRows.Count, NOT @($script:inboxRows).Count.
+    #
+    # MEASURED on PowerShell 5.1.26100.9168: the array subexpression @() throws
+    # "Argument types do not match" when applied to a System.Collections.Generic
+    # .List[object] -- an empty one, a full one, either way. List[string] is fine.
+    # ArrayList is fine. [object[]]$list, $list.ToArray() and piping are all
+    # fine. It is specific to List[object], and this file returns exactly that
+    # from Build-Rows and Build-InboxRows.
+    #
+    # It was silent here because the whole handler runs inside Invoke-Guarded:
+    # clicking a count pill reported "that did not work" and did nothing.
     $idx = -1
-    for ($i = 0; $i -lt @($script:inboxRows).Count; $i++) {
+    for ($i = 0; $i -lt $script:inboxRows.Count; $i++) {
         if ($script:inboxRows[$i].Band -eq $Band -and $script:inboxRows[$i].Kind -eq 'session') { $idx = $i; break }
     }
     if ($idx -lt 0) {

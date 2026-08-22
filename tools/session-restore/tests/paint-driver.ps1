@@ -126,11 +126,20 @@ $cpu = 0
 try { $cpu = [int]((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average) } catch { }
 $out.Add("machine load at the time: $cpu% CPU")
 if ($m.Min -gt 33) {
-    if ($cpu -ge 70) {
+    # 40%, not 70%. The old bar called 65% CPU "an idle machine" in its own
+    # failure message, which is a contradiction on the face of it -- and a frame
+    # budget measured against a machine that is two thirds busy is not measuring
+    # the code. Measured on this machine: 38.5 ms best at 65% load, 45.9 ms at
+    # 90%, 26.9 ms when actually idle. Between 40% and idle the budget still
+    # judges; above it, the number belongs to whatever else is running.
+    #
+    # The WRITE COUNT above is the real regression guard and it is load-blind;
+    # this is a budget, and a budget that cries wolf gets ignored.
+    if ($cpu -ge 40) {
         $out.Add(("  --    INCONCLUSIVE  best frame {0:N1} ms, over the 33 ms budget, but the machine is at {1}% CPU" -f $m.Min, $cpu))
         $script:inconclusive = $true
     } else {
-        Fail ("even the best frame costs {0:N1} ms on an idle machine ({1}% CPU), over the 33 ms key-repeat budget" -f $m.Min, $cpu)
+        Fail ("even the best frame costs {0:N1} ms with the machine only {1}% busy, over the 33 ms key-repeat budget" -f $m.Min, $cpu)
     }
 }
 else { Pass ("the best frame costs {0:N1} ms, inside the 33 ms key-repeat budget (median {1:N1})" -f $m.Min, $m.Med) }
