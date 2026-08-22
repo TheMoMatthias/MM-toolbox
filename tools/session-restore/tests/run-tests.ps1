@@ -5,7 +5,7 @@
     sessions-gui.ps1.
 
 .DESCRIPTION
-    Three suites, and each exists because something shipped broken.
+    Four suites, and each exists because something shipped broken.
 
       frame   pure geometry. Builds the panel's frame at seven window sizes with
               the filter line and the unattributed warning forced on, and checks
@@ -20,6 +20,11 @@
       keys    drives the GUI through UI Automation: HOME, END, PAGEUP, PAGEDOWN
               and the arrows. Needs a desktop session; skipped with -NoGui.
 
+      state   Get-SRConversationState. Hand-built transcripts force every state,
+              so the assertions can actually fail regardless of what the operator
+              happens to be running; then the same function over every real
+              conversation, guarding cost and the 'unknown' rate among LIVE ones.
+
     THE PANEL IS ONE SCRIPT THAT ENDS IN AN INTERACTIVE LOOP, so a harness is
     that script with the loop cut off and a driver bolted on in its place. This
     runner does the splicing, from the LIVE source every time -- the tests can
@@ -30,7 +35,7 @@
     Generated harnesses go to .state\ , which is gitignored.
 
 .PARAMETER Only
-    Run one suite: frame, paint or keys.
+    Run one suite: frame, state, paint or keys.
 
 .PARAMETER NoGui
     Skip the keys suite. Use on a machine with no interactive desktop.
@@ -42,7 +47,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('frame', 'paint', 'keys')]
+    [ValidateSet('frame', 'paint', 'keys', 'state')]
     [string]$Only,
     [switch]$NoGui
 )
@@ -100,6 +105,15 @@ if (-not $Only -or $Only -eq 'frame') {
     $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
     $out | ForEach-Object { Write-Host $_ }
     Record 'frame' $LASTEXITCODE @($out)
+}
+
+# --- state: no console needed --------------------------------------------
+if (-not $Only -or $Only -eq 'state') {
+    Write-Host "`n=== state (what a conversation is doing) ===" -ForegroundColor Cyan
+    $h = New-Harness -Driver 'state-driver.ps1' -OutFile 'state-test.ps1'
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'state' $LASTEXITCODE @($out)
 }
 
 # --- paint: needs a real console, so it gets its own window ------------------
