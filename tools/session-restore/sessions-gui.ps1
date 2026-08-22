@@ -947,7 +947,7 @@ foreach ($n in @(
     'FlLive','FlNot','FlGone',
     'FsWaiting','FsWorking','FsSumm','FsIdle','FsUnknown',
     'FtOn','FtOff','FpPin','FaRecent','FaStale',
-    'ListShift'
+    'ListShift','NeedsBand','NeedsLabel','NeedsList'
 )) { $ui[$n] = $window.FindName($n) }
 
 # A name in the markup that is not in the list above is $null here, and the
@@ -1380,7 +1380,128 @@ function Update-AllTicks {
 function Update-AllLive {
     foreach ($r in $script:rows) { Update-RowLive $r; Update-RowConv $r }
     Update-Header
+    Update-NeedsBand
     Update-Selection
+}
+
+# The taskbar button, flashed until the window is looked at. FLASHW_TIMERNOFG
+# keeps it flashing until the window comes to the FOREGROUND rather than for a
+# fixed count, so it is still flashing when the operator comes back from
+# somewhere else -- which is the only case where it is any use.
+#
+# It is a flash, not a foreground steal. Windows would refuse a foreground steal
+# from a background process anyway, and a window that jumps in front of what
+# somebody is typing into is a worse bug than the one it is solving.
+if (-not ('SRGui.Flash' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace SRGui
+{
+    public static class Flash
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FLASHWINFO
+        {
+            public uint cbSize; public IntPtr hwnd; public uint dwFlags;
+            public uint uCount; public uint dwTimeout;
+        }
+        [DllImport("user32.dll")] private static extern bool FlashWindowEx(ref FLASHWINFO pwfi);
+
+        private const uint FLASHW_TRAY = 2;          // the taskbar button only
+        private const uint FLASHW_TIMERNOFG = 12;    // until it comes to the foreground
+        private const uint FLASHW_STOP = 0;
+
+        public static void Start(IntPtr hwnd)
+        {
+            FLASHWINFO fi = new FLASHWINFO();
+            fi.cbSize = (uint)Marshal.SizeOf(typeof(FLASHWINFO));
+            fi.hwnd = hwnd;
+            fi.dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG;
+            fi.uCount = 0;
+            fi.dwTimeout = 0;
+            FlashWindowEx(ref fi);
+        }
+        public static void Stop(IntPtr hwnd)
+        {
+            FLASHWINFO fi = new FLASHWINFO();
+            fi.cbSize = (uint)Marshal.SizeOf(typeof(FLASHWINFO));
+            fi.hwnd = hwnd;
+            fi.dwFlags = FLASHW_STOP;
+            FlashWindowEx(ref fi);
+        }
+    }
+}
+'@
+}
+
+function Start-TaskbarFlash {
+    try {
+        $h = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
+        if ($h -ne [IntPtr]::Zero) { [SRGui.Flash]::Start($h) }
+    } catch { }
+}
+function Stop-TaskbarFlash {
+    try {
+        $h = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
+        if ($h -ne [IntPtr]::Zero) { [SRGui.Flash]::Stop($h) }
+    } catch { }
+}
+
+# --- NEEDS YOU -------------------------------------------------------------
+# Which conversations are at their prompt waiting for the operator RIGHT NOW --
+# state 'waiting' and not stale. The DOING column already says this per row, but
+# only if you happen to be looking at the right row: with ~127 conversations the
+# one that wants you is usually somewhere off screen. This is the same
+# information, gathered where it cannot be missed.
+#
+# Deliberately NOT a toast. The operator asked for the quiet version, and a
+# window that shouts is a window you end up closing.
+$script:needsPrev = @{}
+
+function Get-WaitingNow {
+    $out = @()
+    foreach ($d in @($script:dirs)) {
+        foreach ($s in @(Get-Visible $d)) {
+            if (-not $s.sessionId) { continue }
+            $cv = Get-Conv $s
+            if (-not $cv) { continue }
+            if ("$($cv.State)" -ne 'waiting' -or $cv.Stale) { continue }
+            $out += [PSCustomObject]@{
+                Id    = "$($s.sessionId)".ToLower()
+                Key   = "$($d.path)|$(Get-LaneName $s)|$($s.sessionId)"
+                Label = "$(Get-SessionTitle $s $d)"
+                Tip   = "$(Get-SessionTitle $s $d) is at its prompt in $($d.path).`n$($cv.Detail)." +
+                        $(if ($cv.LastPrompt) { "`nlast prompt: $($cv.LastPrompt)" } else { '' })
+            }
+        }
+    }
+    return ,@($out)
+}
+
+function Update-NeedsBand {
+    $now = Get-WaitingNow
+    $now = @($now)
+
+    if (-not $now.Count) {
+        $ui.NeedsBand.Visibility = $V_Hide
+        $ui.NeedsList.ItemsSource = $null
+        $script:needsPrev = @{}
+        return
+    }
+
+    $ui.NeedsLabel.Text = $(if ($now.Count -eq 1) { '1 waiting for you' } else { "$($now.Count) waiting for you" })
+    $ui.NeedsList.ItemsSource = $now
+    $ui.NeedsBand.Visibility = $V_Show
+
+    # Flash only for a conversation that has JUST started waiting. Flashing again
+    # for one that has been waiting since the window opened would train the
+    # operator to ignore the taskbar, which is the opposite of the point.
+    $fresh = @($now | Where-Object { -not $script:needsPrev[$_.Id] })
+    $next = @{}
+    foreach ($n in $now) { $next[$n.Id] = $true }
+    $script:needsPrev = $next
+    if ($fresh.Count -and -not $window.IsActive) { Start-TaskbarFlash }
 }
 
 # ---------------------------------------------------------------------------
@@ -1640,6 +1761,7 @@ function Update-List { param([string]$KeepKey, [switch]$ToTop)
         $ui.RowList.SelectedIndex = $idx
         $ui.RowList.ScrollIntoView($script:rows[$idx])
     }
+    Update-NeedsBand
     Update-Selection
 }
 
@@ -2013,6 +2135,41 @@ $ui.RowList.AddHandler([System.Windows.Controls.Primitives.ToggleButton]::Unchec
 
 # ONE handler for every button inside the list, told apart by its Tag.
 # OriginalSource for the same reason as the tick handler above.
+# A name in the NEEDS YOU band goes to its row. The band exists to shorten the
+# distance between "something wants you" and "you are looking at it"; making the
+# operator find the row by hand would leave most of that distance in place.
+#
+# OriginalSource, never Source: a routed event that crosses a template boundary
+# has its Source RETARGETED to the templated parent, so Source here is the
+# ItemsControl and the cast to Button yields $null. That mistake made every
+# control in a row silently dead once already.
+# The flash is set to run until the window reaches the foreground, so stopping it
+# on Activated is belt and braces -- and it also covers the case where the window
+# is brought up by something other than a click on the flashing button.
+$window.Add_Activated({ Stop-TaskbarFlash })
+
+$ui.NeedsList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.Windows.RoutedEventHandler]{
+    param($sender, $e)
+    $btn = $e.OriginalSource -as [System.Windows.Controls.Button]
+    if (-not $btn) { return }
+    $e.Handled = $true
+    Invoke-Guarded {
+        $key = "$($btn.Tag)"
+        if (-not $key) { return }
+        $idx = -1
+        for ($i = 0; $i -lt $script:rows.Count; $i++) { if ($script:rows[$i].Key -eq $key) { $idx = $i; break } }
+        if ($idx -lt 0) {
+            # Filtered or folded out of the list. Say so rather than doing nothing
+            # -- a button that silently declines is indistinguishable from broken.
+            Set-Status 'that conversation is not in the current view - clear the filters, or expand its project' 'warn'
+            return
+        }
+        $ui.RowList.SelectedIndex = $idx
+        $ui.RowList.ScrollIntoView($script:rows[$idx])
+        $null = $ui.RowList.Focus()
+    } 'go to the waiting conversation'
+})
+
 $ui.RowList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.Windows.RoutedEventHandler]{
     param($sender, $e)
     $btn = $e.OriginalSource -as [System.Windows.Controls.Button]

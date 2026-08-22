@@ -1085,7 +1085,52 @@
          scrolling keeps virtualization; the wheel itself is eased from
          sessions-gui.ps1 on top of it. -->
     <Grid Grid.Row="5">
-      <ListBox x:Name="RowList"
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
+
+      <!-- == NEEDS YOU ==
+           Pinned above the list, not injected into it: the tree is a project /
+           lane / conversation hierarchy and a flat band of conversations from
+           several projects is not a node in it. Injecting rows would also have
+           to survive folding, filtering and the keep-selection logic, for a
+           strip that is only ever a handful of names.
+
+           Collapsed unless something is actually waiting. A band that is always
+           there saying "0 waiting" is furniture; one that appears only when it
+           has something to say is a signal. -->
+      <Border x:Name="NeedsBand" Grid.Row="0" Visibility="Collapsed"
+              Background="{StaticResource Raised}"
+              BorderBrush="{StaticResource HairlineHi}" BorderThickness="0,0,0,1"
+              Padding="22,8,22,8">
+        <StackPanel Orientation="Horizontal">
+          <Path Width="9" Height="9" Stretch="None"
+                Data="M 0,0 L 4.5,4.5 L 0,9"
+                Stroke="{StaticResource TextMax}" StrokeThickness="1.6"
+                VerticalAlignment="Center" Margin="0,0,10,0"/>
+          <TextBlock x:Name="NeedsLabel" Text="" VerticalAlignment="Center"
+                     Foreground="{StaticResource TextMax}" FontWeight="SemiBold"
+                     FontSize="12.5" Margin="0,0,14,0"/>
+          <ItemsControl x:Name="NeedsList" VerticalAlignment="Center">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate><WrapPanel Orientation="Horizontal"/></ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <!-- A button, because the point of the band is to get you to the
+                     row. Tag carries the row key; the click handler selects and
+                     scrolls to it. -->
+                <Button Style="{StaticResource BtnBare}" Tag="{Binding Key}"
+                        Content="{Binding Label}" ToolTip="{Binding Tip}"
+                        Margin="0,0,8,0"/>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <ListBox x:Name="RowList" Grid.Row="1"
                Background="Transparent" BorderThickness="0" Foreground="{StaticResource TextHigh}"
                ItemContainerStyle="{StaticResource RowItem}"
                ItemTemplate="{StaticResource RowTemplate}"
@@ -1101,7 +1146,7 @@
           <TranslateTransform x:Name="ListShift" Y="0"/>
         </ListBox.RenderTransform>
       </ListBox>
-      <TextBlock x:Name="EmptyNote" Text="" Visibility="Collapsed"
+      <TextBlock x:Name="EmptyNote" Grid.Row="1" Text="" Visibility="Collapsed"
                  HorizontalAlignment="Center" VerticalAlignment="Center"
                  Foreground="{StaticResource TextMid}" FontSize="13.5" TextWrapping="Wrap"
                  MaxWidth="620" TextAlignment="Center"/>
