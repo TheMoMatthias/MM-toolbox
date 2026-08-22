@@ -234,7 +234,8 @@ foreach ($mode in @('tree', 'restore', 'inbox')) {
 
 # --- 10. the palette survived -----------------------------------------------
 # The $c/$C collision emptied this table and every brush afterwards was null.
-$missing = @('TextMax','TextHigh','TextMid','TextLow','TextDim') | Where-Object { -not $C[$_] }
+# The table is $Pal now precisely so no loop variable can shadow it again.
+$missing = @('TextMax','TextHigh','TextMid','TextLow','TextDim') | Where-Object { -not $Pal[$_] }
 if ($missing.Count -eq 0) { Pass 'the palette is still a palette after switching views' }
 else { Fail "the palette lost: $($missing -join ', ')" }
 
@@ -256,6 +257,86 @@ foreach ($pair in @(@{B=$ui.LivePill;T=$ui.LiveSummary}, @{B=$ui.WaitPill;T=$ui.
     else { Fail "a pill announces '$an' but shows '$($pair.T.Text)'" }
 }
 
+# --- 12b. the pill agrees with the rows underneath it -----------------------
+# "12 live now" over a list holding 14 live conversations is not a rounding
+# difference, it is two definitions of "live" on one screen -- and it reads as
+# the tool failing to recognise sessions, which is how it was reported.
+$bandLive = @($script:inboxRows.ToArray() | Where-Object {
+    $_.Kind -eq 'session' -and $_.Band -in @('needs','working','idle') }).Count
+$pillLive = 0
+if ("$($ui.LiveSummary.Text)" -match '^(\d+)') { $pillLive = [int]$Matches[1] }
+if ($pillLive -eq $bandLive) { Pass "the 'live now' pill ($pillLive) matches the live bands ($bandLive)" }
+else { Fail "the pill says $pillLive live but the bands hold $bandLive" }
+
+# ...and so must the waiting/working pill. Three numbers on one strip, all
+# claiming to describe the rows underneath.
+function BandCount { param([string]$B)
+    return @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'session' -and $_.Band -eq $B }).Count
+}
+$wt = "$($ui.WaitSummary.Text)"
+$pw = 0; $pk = 0
+if ($wt -match '^(\d+)\D+(\d+)') { $pw = [int]$Matches[1]; $pk = [int]$Matches[2] }
+if ($pw -eq (BandCount 'needs')) { Pass "the 'waiting for you' count ($pw) matches NEEDS YOU" }
+else { Fail "the pill says $pw waiting but NEEDS YOU holds $(BandCount 'needs')" }
+if ($pk -eq (BandCount 'working')) { Pass "the 'working' count ($pk) matches WORKING" }
+else { Fail "the pill says $pk working but WORKING holds $(BandCount 'working')" }
+
+# --- 13. THE FILTERS ACTUALLY FILTER ----------------------------------------
+# Every chip carried the right Tag and did nothing at all: the filter sets were
+# declared, read, counted, described and cleared -- and never written, because
+# no handler was ever attached. Lighting a chip changed the list by zero rows.
+Set-ViewMode 'inbox'
+$baseline = $script:inboxRows.Count
+
+function ChipSet { param($Chip, [bool]$On)
+    $Chip.IsChecked = $On          # raises Checked/Unchecked -> Invoke-ChipToggle
+    return $script:inboxRows.Count
+}
+
+# A DOING chip must cut the list down to that state.
+$n = ChipSet $ui.FsWorking $true
+$workRows = @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'session' })
+if ($n -eq $baseline) { Fail "ticking 'working' changed nothing ($n rows before and after)" }
+elseif (-not $workRows.Count) { Fail "ticking 'working' left no conversations at all" }
+else {
+    $wrong = @($workRows | Where-Object { $_.Band -ne 'working' })
+    if ($wrong.Count) { Fail "'working' let through $($wrong.Count) row(s) in other bands" }
+    else { Pass "'working' filters to $($workRows.Count) working conversation(s) (from $baseline rows)" }
+}
+
+# The readout has to agree with what is on screen.
+if ((Get-FilterDimensionCount) -eq 1) { Pass 'the readout counts exactly one dimension' }
+else { Fail "the readout counts $(Get-FilterDimensionCount) dimensions, expected 1" }
+
+# OR within a dimension: adding 'idle' must widen, not narrow.
+$n2 = ChipSet $ui.FsIdle $true
+if ($n2 -gt $n) { Pass "adding 'idle' widens the list ($n -> $n2), so a dimension ORs" }
+else { Fail "adding 'idle' did not widen the list ($n -> $n2)" }
+
+# Unticking must put it back.
+$null = ChipSet $ui.FsIdle $false
+$n3 = ChipSet $ui.FsWorking $false
+if ($n3 -eq $baseline) { Pass "unticking restores the full list ($n3 rows)" }
+else { Fail "unticking left $n3 rows, expected the original $baseline" }
+
+# A chip whose rows the inbox normally hides must still work. This is the case
+# that would look most broken: 'stale' conversations are excluded from the inbox
+# before any filter runs, so without widening, ticking it shows nothing.
+$n4 = ChipSet $ui.FaStale $true
+$staleRows = @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'session' })
+if ($staleRows.Count -ge 1) { Pass "'stale' widens the inbox to $($staleRows.Count) conversation(s) it normally hides" }
+else { Fail "'stale' matched nothing - the inbox is filtering rows out before the filter sees them" }
+$null = ChipSet $ui.FaStale $false
+
+# Clear-AllFilters was never wired either.
+$null = ChipSet $ui.FsWorking $true
+Clear-AllFilters
+if ($script:inboxRows.Count -eq $baseline -and (Get-FilterDimensionCount) -eq 0) {
+    Pass 'Clear all filters empties every dimension and restores the list'
+} else {
+    Fail "after clearing: $($script:inboxRows.Count) rows (expected $baseline), $(Get-FilterDimensionCount) dimension(s) still on"
+}
+
 # --- the picture, with no window on anyone's screen -------------------------
 # RenderTargetBitmap draws the visual tree straight to a bitmap. Measure and
 # Arrange by hand, because an unshown window has never been through a layout
@@ -275,7 +356,7 @@ if ($env:SR_TEST_SHOT) {
         # broken, washed-out window that looks nothing like the real one.
         $hadBg = $root.Background
         if (-not $hadBg -or $hadBg -eq [System.Windows.Media.Brushes]::Transparent) {
-            $root.Background = $(if ($window.Background) { $window.Background } else { $C.Ink })
+            $root.Background = $(if ($window.Background) { $window.Background } else { $Pal.Ink })
         }
         $root.Measure((New-Object System.Windows.Size $w, $h))
         $root.Arrange((New-Object System.Windows.Rect 0, 0, $w, $h))

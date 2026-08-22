@@ -458,9 +458,23 @@ namespace SRGui
 # The brushes are NOT defined here. They are read out of gui-window.xaml's
 # resource dictionary by key once the window has loaded, so the row colours and
 # the window chrome cannot drift apart and a palette change is one block in one
-# file. $C is filled in by Read-Palette, below the window load.
+# file. $Pal is filled in below the window load.
+#
+# IT IS CALLED $Pal AND NOT $C ON PURPOSE.
+#
+# PowerShell variable names are case-insensitive AND its scoping is dynamic: a
+# function reads a name by walking up the CALL STACK, so a `foreach ($c in ...)`
+# in any caller shadows a global $C for every function that caller invokes. That
+# is not a hazard you can avoid by being careful in new code -- three separate
+# times in this file a loop variable called $c silently replaced the brush table
+# with a Button or a state object, every $C.TextMax afterwards came back $null,
+# and the next repaint threw "has text ... with a null brush". The third one was
+# in Clear-AllFilters and lay dormant for weeks purely because the button that
+# calls it had never been wired up.
+#
+# A name nobody reaches for as a loop variable removes the whole class.
 # ---------------------------------------------------------------------------
-$C = @{}
+$Pal = @{}
 $Clear = [System.Windows.Media.Brushes]::Transparent
 $Strike = [System.Windows.TextDecorations]::Strikethrough
 
@@ -1069,7 +1083,7 @@ if (-not $script:UiFace -or -not $script:MonoFace) { throw 'gui-window.xaml is m
 foreach ($k in @('TextMax','TextHigh','TextMid','TextLow','TextDim','Hairline','HairlineHi','Ink','Panel','Raised')) {
     $b = $window.TryFindResource($k)
     if (-not $b) { throw "gui-window.xaml is missing the palette brush '$k'" }
-    $C[$k] = $b
+    $Pal[$k] = $b
 }
 
 $ui = @{}
@@ -1093,7 +1107,7 @@ foreach ($n in @(
     'ListShift','NeedsBand','NeedsLabel','NeedsList',
     'ReadPane','ReadName','ReadWhat','ReadView','ReadBack','ReadRefresh','ReadOpen',
     'LegendBox','LegendToggle','SendBox','SendBtn','SendNote',
-    'FilterBar','FilterBtn','BulkBtn',
+    'FilterBar','FilterBtn','BulkBtn','FilterChips',
     # The inbox: its own list, the view switch, and the three count pills that
     # are now buttons rather than decoration.
     'InboxList','ModeInbox','ModeTree','ModeRestore','LivePill','WaitPill','TickPill',
@@ -1133,10 +1147,10 @@ function Set-Busy { param([string]$What)
 #   info  neutral running commentary
 function Set-Status { param([string]$Message, [string]$Tone = 'info')
     switch ($Tone) {
-        'bad'  { $ui.StatusText.Text = $(if ($Message) { '!  ' + $Message } else { '' }); $ui.StatusText.Foreground = $C.TextMax }
-        'warn' { $ui.StatusText.Text = $Message; $ui.StatusText.Foreground = $C.TextHigh }
-        'ok'   { $ui.StatusText.Text = $Message; $ui.StatusText.Foreground = $C.TextHigh }
-        default { $ui.StatusText.Text = $Message; $ui.StatusText.Foreground = $C.TextMid }
+        'bad'  { $ui.StatusText.Text = $(if ($Message) { '!  ' + $Message } else { '' }); $ui.StatusText.Foreground = $Pal.TextMax }
+        'warn' { $ui.StatusText.Text = $Message; $ui.StatusText.Foreground = $Pal.TextHigh }
+        'ok'   { $ui.StatusText.Text = $Message; $ui.StatusText.Foreground = $Pal.TextHigh }
+        default { $ui.StatusText.Text = $Message; $ui.StatusText.Foreground = $Pal.TextMid }
     }
 }
 
@@ -1256,7 +1270,12 @@ function Get-InboxBand { param($Session)
 
 function Build-InboxRows {
     $out = New-Object System.Collections.Generic.List[object]
-    $searching = [bool]$script:filter
+    # ANY filter widens the inbox, not just the text box. The inbox normally
+    # shows only what is running or recently active -- but if you deliberately
+    # ask for "not live" or "stale", the honest answer is the conversations that
+    # match, not an empty list. Filtering on a dimension whose rows are excluded
+    # before the filter even runs is indistinguishable from a broken filter.
+    $searching = Test-AnyFilter
 
     # Collect first, band second. Sorting inside each band needs the whole set.
     $picked = New-Object System.Collections.Generic.List[object]
@@ -1318,12 +1337,12 @@ function Update-InboxRow { param($Row)
     if ($Row.Kind -eq 'band') {
         $Row.RowHeight = 30
         $Row.Indent = New-Object System.Windows.Thickness 22, 10, 0, 0
-        $Row.NameBrush = $C.TextMid
+        $Row.NameBrush = $Pal.TextMid
         $Row.NameWeight = $FW_Semi
         $Row.NameSize = 10.5
-        $Row.CountsBrush = $C.TextLow
+        $Row.CountsBrush = $Pal.TextLow
         $Row.CountsVisibility = $V_Show
-        $Row.StampBrush = $C.TextDim
+        $Row.StampBrush = $Pal.TextDim
         return
     }
 
@@ -1346,12 +1365,12 @@ function Update-InboxRow { param($Row)
 
     $needs = [bool]($cv -and $cv.Needs)
     $Row.NameWeight = $(if ($needs) { $FW_Semi } else { $FW_Normal })
-    $Row.NameBrush  = $(if ($needs) { $C.TextMax } elseif ($Row.Band -eq 'quiet') { $C.TextMid } else { $C.TextHigh })
+    $Row.NameBrush  = $(if ($needs) { $Pal.TextMax } elseif ($Row.Band -eq 'quiet') { $Pal.TextMid } else { $Pal.TextHigh })
 
     # The state glyph, from the same vocabulary the tree uses.
     $Row.ConvGeometry = $null
     $Row.ConvGlyphVisibility = $V_Hide
-    $Row.ConvBrush = $C.TextDim
+    $Row.ConvBrush = $Pal.TextDim
     if ($cv) {
         $geom = switch ("$($cv.State)") {
             'waiting'     { $GlyphWaiting }
@@ -1362,7 +1381,7 @@ function Update-InboxRow { param($Row)
         if ($geom) {
             $Row.ConvGeometry = $geom
             $Row.ConvGlyphVisibility = $V_Show
-            $Row.ConvBrush = $(if ($needs) { $C.TextMax } elseif ($cv.Stale) { $C.TextDim } else { $C.TextMid })
+            $Row.ConvBrush = $(if ($needs) { $Pal.TextMax } elseif ($cv.Stale) { $Pal.TextDim } else { $Pal.TextMid })
         }
         $Row.ConvTip = "$($cv.State)  -  $($cv.Detail)"
     }
@@ -1393,11 +1412,11 @@ function Update-InboxRow { param($Row)
     $Row.Said = $text
     $Row.SaidTip = $tip
     $Row.SaidVisibility = $(if ($text) { $V_Show } else { $V_Hide })
-    $Row.SaidBrush = $(if ($needs) { $C.TextHigh } elseif ($Row.Band -eq 'quiet') { $C.TextDim } else { $C.TextMid })
+    $Row.SaidBrush = $(if ($needs) { $Pal.TextHigh } elseif ($Row.Band -eq 'quiet') { $Pal.TextDim } else { $Pal.TextMid })
 
     $when = $(if ($sd -and $sd.At) { $sd.At } elseif ($cv -and $cv.LastActive) { $cv.LastActive } else { $s.lastActive })
     $Row.Stamp = Get-Stamp $when
-    $Row.StampBrush = $(if ($needs) { $C.TextMid } else { $C.TextDim })
+    $Row.StampBrush = $(if ($needs) { $Pal.TextMid } else { $Pal.TextDim })
 
     # The action. Increment 2 turns this into a real jump to the terminal tab;
     # until then it opens the conversation the way the tree's Open does, so the
@@ -1430,8 +1449,8 @@ function Update-RowTicks { param($Row)
             $n = @($v | Where-Object { $_.enabled }).Count
             $Row.Ticked  = [bool]$d.enabled -and -not $d.missing
             $Row.Counts  = "{0}/{1}" -f $n, $v.Count
-            $Row.CountsBrush = $(if ($d.enabled -and $n -gt 0) { $C.TextHigh } else { $C.TextDim })
-            $Row.NameBrush = $(if ($d.missing) { $C.TextDim } elseif ($d.enabled) { $C.TextMax } else { $C.TextLow })
+            $Row.CountsBrush = $(if ($d.enabled -and $n -gt 0) { $Pal.TextHigh } else { $Pal.TextDim })
+            $Row.NameBrush = $(if ($d.missing) { $Pal.TextDim } elseif ($d.enabled) { $Pal.TextMax } else { $Pal.TextLow })
             $Row.TickTip = "Project master tick. Untick it and nothing in this repo reopens at logon, whatever its conversations say."
         }
         'lane' {
@@ -1439,15 +1458,15 @@ function Update-RowTicks { param($Row)
             $n = @($g | Where-Object { $_.enabled }).Count
             $Row.Ticked = ($g.Count -gt 0 -and $n -eq $g.Count)
             $Row.Counts = "{0}/{1}" -f $n, $g.Count
-            $Row.CountsBrush = $(if ($n -gt 0) { $C.TextHigh } else { $C.TextDim })
+            $Row.CountsBrush = $(if ($n -gt 0) { $Pal.TextHigh } else { $Pal.TextDim })
             $Row.TickTip = "Tick or untick every conversation in this lane, and pin them."
         }
         'session' {
             $d = $Row.Dir; $s = $Row.Session
             $Row.Ticked = [bool]$s.enabled
             $Row.PinVisibility = $(if (Test-Pinned $s) { $V_Show } else { $V_Hide })
-            $Row.PinBrush = $C.TextHigh
-            $Row.AgeBrush = $(if (Test-Stale $s.lastActive) { $C.TextMid } else { $C.TextDim })
+            $Row.PinBrush = $Pal.TextHigh
+            $Row.AgeBrush = $(if (Test-Stale $s.lastActive) { $Pal.TextMid } else { $Pal.TextDim })
             $Row.TickTip = "Reopen this conversation at the next logon. Ticking pins it, so the hourly roll leaves it alone. It does NOT open anything now."
             Update-RowName $Row
         }
@@ -1470,17 +1489,17 @@ function Update-RowName { param($Row)
     $d = $Row.Dir; $s = $Row.Session
     $st = Get-SessionState $s
     if ($st -eq 'gone') {
-        $Row.NameBrush = $C.TextDim
+        $Row.NameBrush = $Pal.TextDim
         $Row.NameDecorations = $Strike
         return
     }
     $Row.NameDecorations = $null
     $Row.NameBrush =
-        if (-not $d.enabled)             { $C.TextDim }
-        elseif ($st -in @('run','act','new')) { $C.TextMax }
-        elseif (-not $s.enabled)         { $C.TextLow }
-        elseif (Test-Stale $s.lastActive){ $C.TextMid }
-        else                             { $C.TextHigh }
+        if (-not $d.enabled)             { $Pal.TextDim }
+        elseif ($st -in @('run','act','new')) { $Pal.TextMax }
+        elseif (-not $s.enabled)         { $Pal.TextLow }
+        elseif (Test-Stale $s.lastActive){ $Pal.TextMid }
+        else                             { $Pal.TextHigh }
 }
 
 # Everything about a row that depends on the PROBES and the clock: the live mark,
@@ -1492,7 +1511,7 @@ function Update-RowLive { param($Row)
             $v = @(Get-Visible $d)
             $liveN = @($v | Where-Object { (Get-SessionState $_) -in @('run','act','new') }).Count
             $Row.Note = $(if ($d.missing) { 'MISSING' } elseif ($liveN -gt 0) { "$liveN live" } else { '' })
-            $Row.NoteBrush = $(if ($d.missing) { $C.TextMid } else { $C.TextHigh })
+            $Row.NoteBrush = $(if ($d.missing) { $Pal.TextMid } else { $Pal.TextHigh })
             $Row.CanLaunch = (@($v | Where-Object { Test-RowLaunchable $_ }).Count -gt 0)
             $Row.LaunchTip = "Open every conversation in this project that is not already open. Confirmed by count first. Ticks are not consulted."
         }
@@ -1502,7 +1521,7 @@ function Update-RowLive { param($Row)
             # Two conversations in ONE tree share a git index. Main and each
             # worktree are DIFFERENT trees, so they are counted separately.
             $Row.Note = $(if ($Row.Dir.enabled -and $n -ge 2) { "$n in one tree" } else { '' })
-            $Row.NoteBrush = $C.TextMid
+            $Row.NoteBrush = $Pal.TextMid
             $Row.CanLaunch = (@($g | Where-Object { Test-RowLaunchable $_ }).Count -gt 0)
             $Row.LaunchTip = "Open every conversation in this lane that is not already open. Ticks are not consulted."
         }
@@ -1517,14 +1536,14 @@ function Update-RowLive { param($Row)
             $Row.DotVisibility = $V_Show
             $Row.GoneMarkVisibility = $V_Hide
             switch ($st) {
-                'run'  { $Row.State = 'LIVE'; $Row.StateBrush = $C.TextMax; $Row.StateWeight = $FW_Semi
-                         $Row.DotFill = $C.TextMax; $Row.DotStroke = $C.TextMax
+                'run'  { $Row.State = 'LIVE'; $Row.StateBrush = $Pal.TextMax; $Row.StateWeight = $FW_Semi
+                         $Row.DotFill = $Pal.TextMax; $Row.DotStroke = $Pal.TextMax
                          $Row.StateTip = 'A running claude.exe carries this id on its command line. Certain. Filled mark, upper case.' }
-                'act'  { $Row.State = 'live'; $Row.StateBrush = $C.TextLow; $Row.StateWeight = $FW_Normal
-                         $Row.DotFill = $Clear; $Row.DotStroke = $C.TextLow
+                'act'  { $Row.State = 'live'; $Row.StateBrush = $Pal.TextLow; $Row.StateWeight = $FW_Normal
+                         $Row.DotFill = $Clear; $Row.DotStroke = $Pal.TextLow
                          $Row.StateTip = "Its transcript was written in the last $SR_LiveWindowMinutes minutes. Inferred, not certain. Hollow mark, lower case." }
-                'new'  { $Row.State = '..';   $Row.StateBrush = $C.TextLow; $Row.StateWeight = $FW_Normal
-                         $Row.DotFill = $Clear; $Row.DotStroke = $C.TextDim
+                'new'  { $Row.State = '..';   $Row.StateBrush = $Pal.TextLow; $Row.StateWeight = $FW_Normal
+                         $Row.DotFill = $Clear; $Row.DotStroke = $Pal.TextDim
                          $Row.StateTip = 'Just launched from here. claude takes a few seconds to appear in the process table.' }
                 # Four independent signals, and the primary one is the drawn X,
                 # NOT a line: a struck-through word at 11px is exactly the mark a
@@ -1532,12 +1551,12 @@ function Update-RowLive { param($Row)
                 # the NAME stays - measured 100% contiguous across the whole run,
                 # unmistakable at 12.5px - but it is now corroboration, not the
                 # thing GONE rests on.
-                'gone' { $Row.State = 'GONE'; $Row.StateBrush = $C.TextMid; $Row.StateWeight = $FW_Semi
+                'gone' { $Row.State = 'GONE'; $Row.StateBrush = $Pal.TextMid; $Row.StateWeight = $FW_Semi
                          $Row.StateDecorations = $null
                          $Row.DotVisibility = $V_Hide
                          $Row.GoneMarkVisibility = $V_Show
                          $Row.StateTip = 'Its transcript is no longer on disk. It can NEVER be launched, and the roll will not spend a lane budget on it. Marked four ways: the X, the word GONE, the struck-through name, and a dead Open button.' }
-                default { $Row.State = ''; $Row.StateBrush = $C.TextDim; $Row.StateWeight = $FW_Normal
+                default { $Row.State = ''; $Row.StateBrush = $Pal.TextDim; $Row.StateWeight = $FW_Normal
                           $Row.DotVisibility = $V_Hide
                           $Row.StateTip = 'No evidence it is open - which is not the same as closed. A bare claude that resumed later carries no id, and an idle session writes nothing.' }
             }
@@ -1548,7 +1567,7 @@ function Update-RowLive { param($Row)
             elseif (-not $d.enabled) { $note = '(project off)' }
             elseif ($s.enabled -and (Test-Stale $s.lastActive)) { $note = 'STALE' }
             $Row.Note = $note
-            $Row.NoteBrush = $(if ($st -eq 'gone') { $C.TextMid } else { $C.TextLow })
+            $Row.NoteBrush = $(if ($st -eq 'gone') { $Pal.TextMid } else { $Pal.TextLow })
             $Row.CanLaunch = (Test-RowLaunchable $s)
             $Row.LaunchTip = $(if ($Row.CanLaunch) { 'Open this conversation NOW, in its own tab, whatever its tick says.' } else { 'Nothing to open: it already looks live, or its transcript is gone.' })
             Update-RowName $Row
@@ -1584,7 +1603,7 @@ function Update-RowConv { param($Row)
             # $cv, NOT $c. PowerShell variable names are CASE-INSENSITIVE, so a
             # local $c is the same variable as the palette $C -- assigning to it
             # here replaced the brush table with a conversation-state object for
-            # the rest of this function, every $C.TextHigh came back $null, and a
+            # the rest of this function, every $Pal.TextHigh came back $null, and a
             # TextBlock with a null Foreground draws NOTHING. The column was
             # populated and invisible: 'working' was in the row, correctly, and
             # the screen was blank. Only the rollup branch rendered, because it
@@ -1599,7 +1618,7 @@ function Update-RowConv { param($Row)
 
             if (-not $cv) {
                 $Row.Conv = ''
-                $Row.ConvBrush = $C.TextDim
+                $Row.ConvBrush = $Pal.TextDim
                 $Row.ConvTip = 'Not read yet. The state of every conversation is read on the background pass, alongside the liveness probe.'
                 return
             }
@@ -1641,10 +1660,10 @@ function Update-RowConv { param($Row)
                 # not a state, and inventing a word for it would be a lie with a
                 # glyph on it.
                 $Row.Conv = ''
-                $Row.ConvBrush = $C.TextDim
+                $Row.ConvBrush = $Pal.TextDim
             } elseif ($cv.Stale) {
                 $Row.Conv = 'was ' + $word
-                $Row.ConvBrush = $C.TextLow
+                $Row.ConvBrush = $Pal.TextLow
                 $Row.ConvGeometry = $geom
                 $Row.ConvGlyphVisibility = $V_Show
             } else {
@@ -1656,12 +1675,12 @@ function Update-RowConv { param($Row)
                 if ($cv.Needs) {
                     # It is asking for something RIGHT NOW -- input, or an answer
                     # to a dialog. Nothing else on this screen outranks that.
-                    $Row.ConvBrush = $C.TextMax; $Row.ConvWeight = $FW_Semi
+                    $Row.ConvBrush = $Pal.TextMax; $Row.ConvWeight = $FW_Semi
                 } elseif ("$($cv.State)" -eq 'idle') {
                     # At its prompt but not asking. Present, not urgent.
-                    $Row.ConvBrush = $C.TextMid
+                    $Row.ConvBrush = $Pal.TextMid
                 } else {
-                    $Row.ConvBrush = $C.TextHigh
+                    $Row.ConvBrush = $Pal.TextHigh
                 }
             }
 
@@ -1689,20 +1708,20 @@ function Update-RowConv { param($Row)
             $Row.ConvWeight = $FW_Normal
             if ($wait -gt 0) {
                 $Row.Conv = "{0} waiting" -f $wait
-                $Row.ConvBrush = $C.TextMax
+                $Row.ConvBrush = $Pal.TextMax
                 $Row.ConvWeight = $FW_Semi
                 $Row.ConvGeometry = $GlyphWaiting
                 $Row.ConvGlyphVisibility = $V_Show
                 $Row.ConvTip = "$wait conversation(s) under this row are asking you for something right now."
             } elseif ($work -gt 0) {
                 $Row.Conv = "{0} working" -f $work
-                $Row.ConvBrush = $C.TextHigh
+                $Row.ConvBrush = $Pal.TextHigh
                 $Row.ConvGeometry = $GlyphWorking
                 $Row.ConvGlyphVisibility = $V_Show
                 $Row.ConvTip = "$work conversation(s) under this row are running a tool or owe a reply right now."
             } else {
                 $Row.Conv = ''
-                $Row.ConvBrush = $C.TextDim
+                $Row.ConvBrush = $Pal.TextDim
                 $Row.ConvGeometry = $null
                 $Row.ConvGlyphVisibility = $V_Hide
                 $Row.ConvTip = 'Nothing under this row is doing anything right now.'
@@ -1736,7 +1755,7 @@ function Update-RowStatic { param($Row)
             # the colour ever was.
             $wt = ($Row.Lane.Name -ne 'main')
             $Row.Name = $(if ($wt) { 'worktree: ' + $Row.Lane.Name } else { 'main' })
-            $Row.NameBrush = $C.TextMid
+            $Row.NameBrush = $Pal.TextMid
             $Row.NameWeight = $FW_Normal
             $Row.NameSize = 13
             $Row.FoldVisibility = $V_Show
@@ -1939,13 +1958,13 @@ function Update-FilterReadout {
     $dims = Get-FilterDimensionCount
     if ($dims -eq 0) {
         $ui.FilterCount.Text = "all {0} conversations" -f $script:totalCount
-        $ui.FilterCount.Foreground = $C.TextDim
+        $ui.FilterCount.Foreground = $Pal.TextDim
     } else {
         $ui.FilterCount.Text = "{0} of {1} conversations   |   {2} filter{3} on" -f `
             $script:matchCount, $script:totalCount, $dims, $(if ($dims -eq 1) { '' } else { 's' })
         # A filter that matches nothing is the loudest thing on the strip, because
         # it is the one state the operator most needs to notice.
-        $ui.FilterCount.Foreground = $(if ($script:matchCount) { $C.TextHigh } else { $C.TextMax })
+        $ui.FilterCount.Foreground = $(if ($script:matchCount) { $Pal.TextHigh } else { $Pal.TextMax })
     }
     $ui.ClearFilters.IsEnabled = ($dims -gt 0)
 
@@ -1988,7 +2007,7 @@ function Clear-AllFilters {
     try {
         $script:suppress = $true
         $ui.SearchBox.Text = ''
-        foreach ($c in Get-ChipControls) { $c.IsChecked = $false }
+        foreach ($chip in Get-ChipControls) { $chip.IsChecked = $false }
         if ($ui.ProjectFilter.Items.Count) { $ui.ProjectFilter.SelectedIndex = 0 }
         if ($ui.LaneFilter.Items.Count)    { $ui.LaneFilter.SelectedIndex = 0 }
     } finally { $script:suppress = $false }
@@ -2067,18 +2086,34 @@ function Update-Header {
         $v = @(Get-Visible $d)
         $tot += $v.Count
         foreach ($s in $v) {
-            if ((Get-SessionState $s) -in @('run','act','new')) { $liveTotal++ }
+            # THE SAME PREDICATE THE BANDS USE, not merely similar evidence.
+            #
+            # Get-SessionState answers from the command line alone and put "12
+            # live now" over an inbox listing 14, because `claude agents --json`
+            # reports sessions whose id never appears on a command line. Trying
+            # to fix it by ORing the three liveness tables then over-counted the
+            # other way: a warm transcript with no process is NOT RUNNING to the
+            # bands but looked live to the pill.
+            #
+            # Asking Get-InboxBand makes the two agree by construction -- the
+            # pill is exactly the count of everything not in NOT RUNNING -- so
+            # they cannot drift apart again whatever the evidence looks like.
+            # It is hashtable lookups, no file or process access.
+            if ((Get-InboxBand $s) -ne 'quiet') { $liveTotal++ }
             if ($s.pinned) { $pinned++ }
-            # NEEDS, not last-known state. Counting every conversation whose
-            # last recorded state was 'waiting' put "98 waiting for you" in the
-            # header while the band said 2 -- because ~110 of them are not
-            # running and cannot be waiting for anything. A number that large is
-            # not a summary, it is noise, and it disagreed with the band six
-            # inches below it.
-            $cvh = Get-Conv $s
-            if ($cvh) {
-                if ($cvh.Needs) { $waiting++ }
-                elseif (-not $cvh.Stale -and "$($cvh.State)" -eq 'working') { $working++ }
+            # ALL THREE COUNTS COME FROM Get-InboxBand, for the same reason the
+            # live count does: a summary that is computed differently from the
+            # rows beneath it will eventually disagree with them, and when it
+            # does it reads as the tool failing to recognise sessions.
+            #
+            # An earlier version counted every conversation whose LAST KNOWN
+            # state was 'waiting' and put "98 waiting for you" over a band
+            # showing 2, because ~110 of them are not running and cannot be
+            # waiting for anything. Deriving from the band makes that class of
+            # disagreement impossible rather than merely fixed once.
+            switch (Get-InboxBand $s) {
+                'needs'   { $waiting++ }
+                'working' { $working++ }
             }
         }
         if ($d.enabled) {
@@ -2353,10 +2388,10 @@ function Add-ReadProse {
             $p = New-Object System.Windows.Documents.Paragraph
             $p.Margin = New-Object System.Windows.Thickness 0, 6, 0, 6
             $p.Padding = New-Object System.Windows.Thickness 12, 8, 12, 8
-            $p.Background = $C.Raised
-            $p.BorderBrush = $C.HairlineHi
+            $p.Background = $Pal.Raised
+            $p.BorderBrush = $Pal.HairlineHi
             $p.BorderThickness = New-Object System.Windows.Thickness 2, 0, 0, 0
-            $p.Inlines.Add((New-ReadRun -Text ($code -join "`n") -Brush $C.TextHigh -Size 12 -Mono))
+            $p.Inlines.Add((New-ReadRun -Text ($code -join "`n") -Brush $Pal.TextHigh -Size 12 -Mono))
             $Doc.Blocks.Add($p)
             continue
         }
@@ -2376,8 +2411,8 @@ function Add-ReadProse {
         while ($rest -match '^(.*?)(`([^`]+)`|\*\*([^*]+)\*\*)(.*)$') {
             $before = $Matches[1]; $codeTxt = $Matches[3]; $boldTxt = $Matches[4]; $rest = $Matches[5]
             if ($before) { $p.Inlines.Add((New-ReadRun -Text $before -Brush $Brush -Size $size -Weight $weight)) }
-            if ($codeTxt) { $p.Inlines.Add((New-ReadRun -Text $codeTxt -Brush $C.TextMax -Size ($size - 1) -Mono)) }
-            elseif ($boldTxt) { $p.Inlines.Add((New-ReadRun -Text $boldTxt -Brush $C.TextMax -Size $size -Weight 'SemiBold')) }
+            if ($codeTxt) { $p.Inlines.Add((New-ReadRun -Text $codeTxt -Brush $Pal.TextMax -Size ($size - 1) -Mono)) }
+            elseif ($boldTxt) { $p.Inlines.Add((New-ReadRun -Text $boldTxt -Brush $Pal.TextMax -Size $size -Weight 'SemiBold')) }
         }
         if ($rest) { $p.Inlines.Add((New-ReadRun -Text $rest -Brush $Brush -Size $size -Weight $weight)) }
         if ($p.Inlines.Count -eq 0) { $p.Inlines.Add((New-ReadRun -Text ' ' -Brush $Brush -Size $size)) }
@@ -2390,15 +2425,15 @@ function Build-ReadDocument {
     param($Blocks)
     $doc = New-Object System.Windows.Documents.FlowDocument
     $doc.FontFamily        = $script:UiFace
-    $doc.Background        = $C.Ink
-    $doc.Foreground        = $C.TextHigh
+    $doc.Background        = $Pal.Ink
+    $doc.Foreground        = $Pal.TextHigh
     $doc.PagePadding       = New-Object System.Windows.Thickness 26, 18, 26, 26
     $doc.ColumnWidth       = [double]::PositiveInfinity   # one column, never split
     $doc.IsOptimalParagraphEnabled = $false
 
     if (-not @($Blocks).Count) {
         $p = New-Object System.Windows.Documents.Paragraph
-        $p.Inlines.Add((New-ReadRun -Text 'Nothing readable in this transcript yet.' -Brush $C.TextMid -Size 13))
+        $p.Inlines.Add((New-ReadRun -Text 'Nothing readable in this transcript yet.' -Brush $Pal.TextMid -Size 13))
         $doc.Blocks.Add($p)
         return $doc
     }
@@ -2409,14 +2444,14 @@ function Build-ReadDocument {
                 $s = New-Object System.Windows.Documents.Section
                 $s.Margin = New-Object System.Windows.Thickness 0, 12, 0, 6
                 $s.Padding = New-Object System.Windows.Thickness 12, 2, 0, 2
-                $s.BorderBrush = $C.TextMax
+                $s.BorderBrush = $Pal.TextMax
                 $s.BorderThickness = New-Object System.Windows.Thickness 2, 0, 0, 0
                 $lab = New-Object System.Windows.Documents.Paragraph
                 $lab.Margin = New-Object System.Windows.Thickness 0, 0, 0, 3
-                $lab.Inlines.Add((New-ReadRun -Text 'YOU' -Brush $C.TextMax -Size 10.5 -Weight 'SemiBold'))
+                $lab.Inlines.Add((New-ReadRun -Text 'YOU' -Brush $Pal.TextMax -Size 10.5 -Weight 'SemiBold'))
                 $s.Blocks.Add($lab)
                 $inner = New-Object System.Windows.Documents.FlowDocument
-                Add-ReadProse -Doc $inner -Text $b.Body -Brush $C.TextMax
+                Add-ReadProse -Doc $inner -Text $b.Body -Brush $Pal.TextMax
                 # Blocks is a live collection: moving them while enumerating it
                 # silently drops every second one, hence the @() snapshot.
                 #
@@ -2431,11 +2466,11 @@ function Build-ReadDocument {
             }
             'said' {
                 $inner = New-Object System.Windows.Documents.FlowDocument
-                Add-ReadProse -Doc $inner -Text $b.Body -Brush $C.TextHigh
+                Add-ReadProse -Doc $inner -Text $b.Body -Brush $Pal.TextHigh
                 foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
                 $sp = New-Object System.Windows.Documents.Paragraph
                 $sp.Margin = New-Object System.Windows.Thickness 0, 0, 0, 8
-                $sp.Inlines.Add((New-ReadRun -Text ' ' -Brush $C.TextDim -Size 4))
+                $sp.Inlines.Add((New-ReadRun -Text ' ' -Brush $Pal.TextDim -Size 4))
                 $doc.Blocks.Add($sp)
             }
             'thinking' {
@@ -2443,16 +2478,16 @@ function Build-ReadDocument {
                 if ($head.Length -gt 170) { $head = $head.Substring(0, 167) + '...' }
                 $p = New-Object System.Windows.Documents.Paragraph
                 $p.Margin = New-Object System.Windows.Thickness 18, 3, 0, 6
-                $p.Inlines.Add((New-ReadRun -Text ('thinking  ' + $b.Meta + '   ') -Brush $C.TextDim -Size 10.5 -Weight 'SemiBold'))
-                $p.Inlines.Add((New-ReadRun -Text $head -Brush $C.TextDim -Size 12 -Italic))
+                $p.Inlines.Add((New-ReadRun -Text ('thinking  ' + $b.Meta + '   ') -Brush $Pal.TextDim -Size 10.5 -Weight 'SemiBold'))
+                $p.Inlines.Add((New-ReadRun -Text $head -Brush $Pal.TextDim -Size 12 -Italic))
                 $doc.Blocks.Add($p)
             }
             'tool' {
                 $p = New-Object System.Windows.Documents.Paragraph
                 $p.Margin = New-Object System.Windows.Thickness 4, 1, 0, 1
-                $p.Inlines.Add((New-ReadRun -Text ([char]0x203A + '  ') -Brush $C.TextLow -Size 12 -Mono))
-                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '  ') -Brush $C.TextMid -Size 11.5 -Weight 'SemiBold' -Mono))
-                $p.Inlines.Add((New-ReadRun -Text $b.Body -Brush $C.TextLow -Size 11.5 -Mono))
+                $p.Inlines.Add((New-ReadRun -Text ([char]0x203A + '  ') -Brush $Pal.TextLow -Size 12 -Mono))
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '  ') -Brush $Pal.TextMid -Size 11.5 -Weight 'SemiBold' -Mono))
+                $p.Inlines.Add((New-ReadRun -Text $b.Body -Brush $Pal.TextLow -Size 11.5 -Mono))
                 $doc.Blocks.Add($p)
             }
             'result' {
@@ -2461,8 +2496,8 @@ function Build-ReadDocument {
                 if ($first.Length -gt 120) { $first = $first.Substring(0, 117) + '...' }
                 $p = New-Object System.Windows.Documents.Paragraph
                 $p.Margin = New-Object System.Windows.Thickness 22, 0, 0, 4
-                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '  ' + $b.Meta + '   ') -Brush $C.TextDim -Size 10.5 -Mono))
-                $p.Inlines.Add((New-ReadRun -Text $first -Brush $C.TextDim -Size 11 -Mono))
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '  ' + $b.Meta + '   ') -Brush $Pal.TextDim -Size 10.5 -Mono))
+                $p.Inlines.Add((New-ReadRun -Text $first -Brush $Pal.TextDim -Size 11 -Mono))
                 $doc.Blocks.Add($p)
             }
         }
@@ -2636,7 +2671,7 @@ function Set-ViewMode { param([string]$Mode)
     # attention on the days you are not rebooting.
     # $ctl, NOT $c. PowerShell variable names are CASE-INSENSITIVE, so a loop
     # over "$c" IS the palette table $C -- these three loops replaced the whole
-    # brush table with a Button, every later $C.TextMax came back $null, and the
+    # brush table with a Button, every later $Pal.TextMax came back $null, and the
     # next repaint threw "has DOING text '2 waiting' with a null brush". Exactly
     # the collision already documented in Update-RowConv, walked into again in a
     # brand-new function. The guard that caught it is the one added the last time
@@ -3125,6 +3160,95 @@ $window.Add_Activated({ Stop-TaskbarFlash })
 # The legend is folded away by default -- three dense lines you read once and
 # then never again, which was costing a tenth of the window permanently. The
 # choice sticks for the session; it is not worth a config entry.
+# ---------------------------------------------------------------------------
+# THE FILTER BAR
+#
+# Every one of these controls existed, carried the right Tag, and did NOTHING.
+# $script:fState / fLive / fTick / fPin / fAge were declared, read by
+# Test-RowMatch, counted by Get-FilterDimensionCount, described by
+# Get-FilterDescription and emptied by Clear-AllFilters -- and never once
+# WRITTEN, because no handler was ever attached. Clicking a chip lit it up and
+# changed nothing, which is exactly what it looked like from the outside.
+# ---------------------------------------------------------------------------
+
+# The hashtable behind a chip's dimension. Returned by reference, so callers
+# mutate the real filter rather than a copy.
+function Get-FilterSet { param([string]$Dim)
+    switch ($Dim) {
+        'state' { return $script:fState }
+        'live'  { return $script:fLive }
+        'tick'  { return $script:fTick }
+        'age'   { return $script:fAge }
+        'pin'   { return $script:fPin }
+    }
+    return $null
+}
+
+function Invoke-ChipToggle { param($Chip)
+    if ($script:suppress -or -not $Chip) { return }
+    $tag = "$($Chip.Tag)"
+    if (-not $tag) { return }
+    $bits = $tag -split ':', 2
+    if ($bits.Count -ne 2) { return }
+    $set = Get-FilterSet $bits[0]
+    if ($null -eq $set) { Set-Status "unknown filter dimension '$($bits[0])'" 'warn'; return }
+
+    if ($Chip.IsChecked) { $set[$bits[1]] = $true } else { $set.Remove($bits[1]) }
+
+    # Rebuild NOW. The operator asked for the list to follow the filter without
+    # being told to; a filter that needs a separate refresh is a filter that
+    # looks broken.
+    Update-List -ToTop
+    Set-Status (Get-FilterSummary) 'info'
+}
+
+# One line saying what is applied, or that nothing is.
+function Get-FilterSummary {
+    $desc = @(Get-FilterDescription)
+    if (-not $desc.Count) { return "no filters - showing everything the view holds" }
+    return ("{0} of {1} match:  {2}" -f $script:matchCount, $script:totalCount, ($desc -join '   +   '))
+}
+
+# ONE handler on the container rather than one per chip: Checked and Unchecked
+# are routed events, so they bubble to the panel, and a chip added to the markup
+# later is wired the moment it exists.
+$ui.FilterChips.AddHandler(
+    [System.Windows.Controls.Primitives.ToggleButton]::CheckedEvent,
+    [System.Windows.RoutedEventHandler]{
+        param($sender, $e)
+        Invoke-Guarded { Invoke-ChipToggle ($e.OriginalSource -as [System.Windows.Controls.Primitives.ToggleButton]) } 'that filter'
+    })
+$ui.FilterChips.AddHandler(
+    [System.Windows.Controls.Primitives.ToggleButton]::UncheckedEvent,
+    [System.Windows.RoutedEventHandler]{
+        param($sender, $e)
+        Invoke-Guarded { Invoke-ChipToggle ($e.OriginalSource -as [System.Windows.Controls.Primitives.ToggleButton]) } 'that filter'
+    })
+
+# The two dimensions whose values come from the data. Their items are SRGui
+# .Choice objects carrying a Value; a null Value is the "(any ...)" row.
+$ui.ProjectFilter.Add_SelectionChanged({
+    if ($script:suppress) { return }
+    Invoke-Guarded {
+        $sel = $ui.ProjectFilter.SelectedItem
+        $script:fProject = $(if ($sel -and $sel.Value) { "$($sel.Value)" } else { $null })
+        Update-List -ToTop
+        Set-Status (Get-FilterSummary) 'info'
+    } 'the project filter'
+})
+$ui.LaneFilter.Add_SelectionChanged({
+    if ($script:suppress) { return }
+    Invoke-Guarded {
+        $sel = $ui.LaneFilter.SelectedItem
+        $script:fLane = $(if ($sel -and $sel.Value) { "$($sel.Value)" } else { $null })
+        Update-List -ToTop
+        Set-Status (Get-FilterSummary) 'info'
+    } 'the lane filter'
+})
+
+# Clear-AllFilters existed too, and nothing called it.
+$ui.ClearFilters.Add_Click({ Invoke-Guarded { Clear-AllFilters } 'clear the filters' })
+
 $ui.FilterBtn.Add_Click({
     Invoke-Guarded {
         $ui.FilterBar.Visibility = $(if ($ui.FilterBtn.IsChecked) { $V_Show } else { $V_Hide })
