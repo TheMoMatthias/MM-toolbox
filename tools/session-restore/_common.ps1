@@ -950,6 +950,140 @@ function Test-SRTranscriptLive {
     return (((Get-Date) - (Get-Item -LiteralPath $JsonlPath).LastWriteTime).TotalMinutes -lt $SR_LiveWindowMinutes)
 }
 
+# --- what a conversation is DOING ------------------------------------------
+# Liveness answers "is a process holding this conversation". This answers "what
+# is that process doing", which is a different question and must never be shown
+# as though it were the same one. A conversation can be LIVE and waiting, LIVE
+# and working, or long closed and still carry a last-known state.
+#
+# STATE AND STALENESS ARE SEPARATE, and the first version of this got that wrong:
+# it collapsed anything older than the live window into a single 'idle' state,
+# which threw away the waiting/working distinction for 110 of 119 conversations
+# -- the exact distinction this function exists to provide. State is now always
+# what the conversation was last doing, and `Stale` says whether that is current.
+# A caller renders "waiting" and "was waiting" from the same two fields.
+#
+# What the records actually carry, measured on 2026-08-22 across 25 transcripts
+# rather than assumed:
+#   stop_reason      'tool_use' 466, 'end_turn' 37. That is the whole distinction
+#                    between working and waiting: an assistant turn that stopped
+#                    to call a tool has not finished, one that stopped at
+#                    end_turn has handed back to the operator.
+#   isCompactSummary 3 records, alongside compactMetadata -- the compaction step.
+#   lastPrompt       on 'last-prompt' records: what the operator last asked.
+#   customTitle      operator-set; aiTitle is the generated one. Prefer the former.
+#   permission-mode  the mode the session is running under.
+#
+# It reads the transcript's TAIL and matches on it directly rather than parsing
+# every record: ConvertFrom-Json on 40 records per file cost 17 ms EACH, so all
+# 119 took 2.07 s -- too slow to sit anywhere near a repaint. Matching the last
+# few records instead is roughly twenty times cheaper for the same answer. The
+# fields wanted here are flat scalars, which is the one case where matching text
+# is defensible; anything structural would have to be parsed properly.
+# 15 records was not enough to reach an assistant turn: attachment records
+# outnumber assistant ones (658 to 503 in the sample), so a tail of 15 is often
+# all bookkeeping. Measured with 15: 23 of 119 came back 'unknown', including 4 of
+# the 10 LIVE conversations -- the ones the operator is actually looking at.
+$SR_StateTailBytes = 131072
+$SR_StateRecords   = 80
+
+function Get-SRConversationState {
+    param(
+        [Parameter(Mandatory)][string]$JsonlPath,
+        [int]$MaxTailBytes = $SR_StateTailBytes
+    )
+
+    $out = [PSCustomObject]@{
+        State      = 'unknown'
+        Detail     = 'no transcript'
+        Stale      = $true
+        LastActive = $null
+        LastPrompt = $null
+        Title      = $null
+        Mode       = $null
+    }
+    if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return $out }
+
+    try {
+        $fi = Get-Item -LiteralPath $JsonlPath
+        $out.LastActive = $fi.LastWriteTime
+        $out.Stale = (((Get-Date) - $fi.LastWriteTime).TotalMinutes -ge $SR_LiveWindowMinutes)
+        if ($fi.Length -eq 0) { $out.Detail = 'transcript empty'; return $out }
+
+        # ReadWrite sharing: a live session holds this file open for writing, and
+        # without it every conversation the operator actually cares about is the
+        # one that cannot be read.
+        $fs = [System.IO.File]::Open($JsonlPath, 'Open', 'Read', 'ReadWrite')
+        try {
+            $take = [int][Math]::Min($fi.Length, $MaxTailBytes)
+            $null = $fs.Seek(-$take, 'End')
+            $buf  = New-Object byte[] $take
+            $read = $fs.Read($buf, 0, $take)
+            $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        } finally { $fs.Dispose() }
+    } catch {
+        $out.Detail = 'transcript unreadable'
+        return $out
+    }
+
+    # Whole records only. A mid-file read almost always starts inside one.
+    $all = @($text -split "`n" | Where-Object { $_.Trim().StartsWith('{') })
+    if (-not $all.Count) { $out.Detail = 'no records in the tail'; return $out }
+    $recent = @($all[[Math]::Max(0, $all.Count - $SR_StateRecords)..($all.Count - 1)])
+    $blob   = $recent -join "`n"
+
+    if ($m = [regex]::Match($blob, '"customTitle"\s*:\s*"((?:[^"\\]|\\.)*)"')) { if ($m.Success) { $out.Title = $m.Groups[1].Value } }
+    if (-not $out.Title -and ($m = [regex]::Match($blob, '"aiTitle"\s*:\s*"((?:[^"\\]|\\.)*)"')) -and $m.Success) { $out.Title = $m.Groups[1].Value }
+    if (($m = [regex]::Match($blob, '"mode"\s*:\s*"([a-zA-Z]+)"')) -and $m.Success) { $out.Mode = $m.Groups[1].Value }
+
+    $pm = [regex]::Matches($blob, '"lastPrompt"\s*:\s*"((?:[^"\\]|\\.)*)"')
+    if ($pm.Count) {
+        $p = $pm[$pm.Count - 1].Groups[1].Value -replace '\\n', ' ' -replace '\\"', '"' -replace '\s+', ' '
+        if ($p.Length -gt 120) { $p = $p.Substring(0, 117) + '...' }
+        $out.LastPrompt = $p.Trim()
+    }
+
+    # Compaction counts only if it is what JUST happened, so look at the last few
+    # records rather than anywhere in the tail.
+    $tailFew = @($all[[Math]::Max(0, $all.Count - 6)..($all.Count - 1)]) -join "`n"
+    if ($tailFew -match '"isCompactSummary"\s*:\s*true' -or $tailFew -match '"compactMetadata"\s*:\s*\{') {
+        $out.State  = 'summarising'
+        $out.Detail = 'compacting the conversation'
+        return $out
+    }
+
+    # The last record that is a TURN, not the last line. Attachment, latch and
+    # title records are written after a turn ends, so the literal last line is
+    # usually bookkeeping and says nothing about who owes whom a reply.
+    $last = $null
+    for ($i = $recent.Count - 1; $i -ge 0; $i--) {
+        if ($recent[$i] -match '"type"\s*:\s*"(user|assistant)"') { $last = $recent[$i]; break }
+    }
+    if ($null -eq $last) { $last = $recent[$recent.Count - 1] }
+    $sm   = [regex]::Matches($blob, '"stop_reason"\s*:\s*"([a-z_]+)"')
+    $stop = if ($sm.Count) { $sm[$sm.Count - 1].Groups[1].Value } else { $null }
+
+    # A turn that stopped to call a tool has not finished; one that stopped at
+    # end_turn has handed back. If the very last record is the operator's, the
+    # session has been given something and has not answered yet.
+    if ($last -match '"type"\s*:\s*"user"') {
+        $out.State = 'working'; $out.Detail = 'given a prompt, no reply yet'
+    } elseif ($stop -eq 'tool_use') {
+        $out.State = 'working'; $out.Detail = 'running a tool'
+    } elseif ($stop -eq 'end_turn' -or $stop -eq 'stop_sequence') {
+        $out.State = 'waiting'; $out.Detail = 'waiting for you'
+    } elseif ($stop -eq 'max_tokens') {
+        $out.State = 'waiting'; $out.Detail = 'stopped at the token limit'
+    } else {
+        $out.State = 'unknown'; $out.Detail = 'no assistant turn in the tail'
+    }
+
+    # Say it in the past tense when nothing has moved for a while, so a state
+    # frozen an hour ago cannot read as something happening now.
+    if ($out.Stale -and $out.State -ne 'unknown') { $out.Detail = 'last seen ' + $out.Detail }
+    return $out
+}
+
 # 🪤 Claude Code files a transcript under the directory the session was CREATED in
 # and never moves it afterwards. Deriving the folder from the session's CURRENT cwd
 # is therefore wrong for any conversation that changed directory mid-life -- and
