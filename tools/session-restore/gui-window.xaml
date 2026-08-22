@@ -201,7 +201,9 @@
     </Style>
 
     <!-- Acts on the world NOW: the launch and spawn buttons, and nothing else.
-         Named for what it does, not for the green it used to be. -->
+         Named for what it does rather than for the fill it used to carry. A key
+         that describes an appearance outlives the appearance and then misleads
+         whoever reads it next. -->
     <Style x:Key="BtnNow" TargetType="Button" BasedOn="{StaticResource Btn}">
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
       <Setter Property="BorderBrush" Value="{StaticResource HairlineHi}"/>
