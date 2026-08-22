@@ -442,7 +442,8 @@ $script:exitMode     = $null
 $script:running      = @{}   # sessionId -> a claude.exe holds it (certain)
 $script:live         = @{}   # sessionId -> its transcript moved recently (inferred)
 $script:launching    = @{}   # sessionId -> when we launched it (optimistic, expires)
-$script:conv         = @{}   # sessionId -> what that conversation is DOING
+$script:conv         = @{}   # sessionId -> what the TRANSCRIPT implies it is doing
+$script:agents       = @{}   # sessionId -> what CLAUDE ITSELF says, for live ones
 $script:unattributed = 0
 $script:probedAt     = $null
 
@@ -660,9 +661,23 @@ function Resolve-SpawnName { param([string]$Dir, [string]$Name)
 
 # What _common.ps1 Get-SRConversationState last said about this conversation, or
 # $null before the first probe has landed.
+# claude's own answer where there is a process to ask, the transcript tail where
+# there is not. Measured 2026-08-22 across the 13 live sessions on this machine:
+# THE TRANSCRIPT DISAGREED WITH CLAUDE ON SEVEN OF THEM. It called four idle
+# sessions "working", one busy session "waiting", and it cannot see a permission
+# dialog at all -- a dialog writes nothing to a transcript, so a session sitting
+# on one is indistinguishable from a session mid-tool-call. That is the case the
+# operator most wants to see, which is why inference lost.
+#
+# The tail is still the right answer for a conversation that is NOT running:
+# there is no process to ask, and a last-known state beats nothing.
 function Get-Conv { param($Session)
     if (-not $Session -or -not $Session.sessionId) { return $null }
-    return $script:conv["$($Session.sessionId)".ToLower()]
+    $key = "$($Session.sessionId)".ToLower()
+    $a = $script:agents[$key]
+    $c = $script:conv[$key]
+    if (-not $a -and -not $c) { return $null }
+    return (Resolve-SRSessionState -Agent $a -Conv $c)
 }
 
 # The bucket a conversation falls in for the DOING dimension.
@@ -684,7 +699,10 @@ function Get-ConvBucket { param($Session)
     if (-not $cv) { return 'unknown' }
     $s = "$($cv.State)"
     if ($s -eq 'unknown' -or -not $s) { return 'unknown' }
-    if ($cv.Stale) { return 'idle' }
+    # 'idle' is claude's own word now -- at its prompt, nothing pending -- rather
+    # than the staleness collapse it used to be. A conversation that is NOT
+    # running is not idle, it is a last-known state, and it buckets as that.
+    if ($cv.Stale -and $s -ne 'idle') { return $s }
     return $s
 }
 
@@ -835,7 +853,10 @@ $script:ScanJob = {
             try { $conv[$key] = Get-SRConversationState -JsonlPath $j } catch { }
         }
     }
-    [PSCustomObject]@{ Registry = $r; Config = $cfg; Running = $running; Live = $live; Conv = $conv; Unattributed = $unattr; At = (Get-Date) }
+    # What claude itself says, which beats inference for anything still running.
+    # ~960 ms, so it belongs here on the background pass and nowhere near a repaint.
+    $agents = Get-SRAgentStatus -Refresh
+    [PSCustomObject]@{ Registry = $r; Config = $cfg; Running = $running; Live = $live; Conv = $conv; Agents = $agents; Unattributed = $unattr; At = (Get-Date) }
 }
 
 # Liveness only. No scan, nothing written, nothing launched.
@@ -854,7 +875,8 @@ $script:ProbeJob = {
         # "as of" stamp beside it kept moving. That reads as a lie.
         try { $conv[$key] = Get-SRConversationState -JsonlPath $j } catch { }
     }
-    [PSCustomObject]@{ Running = $running; Live = $live; Conv = $conv; Unattributed = $unattr; At = (Get-Date) }
+    $agents = Get-SRAgentStatus -Refresh
+    [PSCustomObject]@{ Running = $running; Live = $live; Conv = $conv; Agents = $agents; Unattributed = $unattr; At = (Get-Date) }
 }
 
 # Launching. Windows Terminal needs breathing room between tabs, and a launch
@@ -1233,16 +1255,21 @@ function Update-RowConv { param($Row)
             }
 
             $Row.LastPrompt = "$($cv.LastPrompt)"
+            # 'idle' now comes from claude and means something specific: at its
+            # prompt with nothing pending. That is NOT the same as 'waiting',
+            # which means it is actively asking you for something.
             $word = switch ("$($cv.State)") {
                 'waiting'     { 'waiting' }
                 'working'     { 'working' }
                 'summarising' { 'summarising' }
+                'idle'        { 'idle' }
                 default       { '' }
             }
             $geom = switch ("$($cv.State)") {
                 'waiting'     { $GlyphWaiting }
                 'working'     { $GlyphWorking }
                 'summarising' { $GlyphSummarising }
+                'idle'        { $null }
                 default       { $null }
             }
 
@@ -1263,8 +1290,13 @@ function Update-RowConv { param($Row)
                 $Row.ConvGlyphVisibility = $V_Show
                 # Waiting is the loudest thing this column can say: it is the one
                 # state that is asking the operator for something.
-                if ("$($cv.State)" -eq 'waiting') {
+                if ($cv.Needs) {
+                    # It is asking for something RIGHT NOW -- input, or an answer
+                    # to a dialog. Nothing else on this screen outranks that.
                     $Row.ConvBrush = $C.TextMax; $Row.ConvWeight = $FW_Semi
+                } elseif ("$($cv.State)" -eq 'idle') {
+                    # At its prompt but not asking. Present, not urgent.
+                    $Row.ConvBrush = $C.TextMid
                 } else {
                     $Row.ConvBrush = $C.TextHigh
                 }
@@ -1282,12 +1314,14 @@ function Update-RowConv { param($Row)
             # says that something underneath it wants attention. Waiting outranks
             # working: one is asking for you, the other is busy without you.
             $kids = $(if ($Row.Kind -eq 'lane') { @($Row.Lane.Group) } else { @(Get-Visible $Row.Dir) })
+            # Live demands only. A rollup counting last-known states said
+            # "9 waiting" for a project with nothing running in it.
             $wait = 0; $work = 0
             foreach ($s in $kids) {
-                switch (Get-ConvBucket $s) {
-                    'waiting' { $wait++ }
-                    'working' { $work++ }
-                }
+                $k = Get-Conv $s
+                if (-not $k) { continue }
+                if ($k.Needs) { $wait++ }
+                elseif (-not $k.Stale -and "$($k.State)" -eq 'working') { $work++ }
             }
             $Row.ConvWeight = $FW_Normal
             if ($wait -gt 0) {
@@ -1296,7 +1330,7 @@ function Update-RowConv { param($Row)
                 $Row.ConvWeight = $FW_Semi
                 $Row.ConvGeometry = $GlyphWaiting
                 $Row.ConvGlyphVisibility = $V_Show
-                $Row.ConvTip = "$wait conversation(s) under this row are at their prompt and waiting for you right now."
+                $Row.ConvTip = "$wait conversation(s) under this row are asking you for something right now."
             } elseif ($work -gt 0) {
                 $Row.Conv = "{0} working" -f $work
                 $Row.ConvBrush = $C.TextHigh
@@ -1466,7 +1500,10 @@ function Get-WaitingNow {
             if (-not $s.sessionId) { continue }
             $cv = Get-Conv $s
             if (-not $cv) { continue }
-            if ("$($cv.State)" -ne 'waiting' -or $cv.Stale) { continue }
+            # Needs, not merely 'waiting': claude distinguishes a session that
+            # is asking for something from one simply sitting at its prompt, and
+            # a band that lists all seven idle sessions is a band nobody reads.
+            if (-not $cv.Needs) { continue }
             $out += [PSCustomObject]@{
                 Id    = "$($s.sessionId)".ToLower()
                 Key   = "$($d.path)|$(Get-LaneName $s)|$($s.sessionId)"
@@ -1648,9 +1685,16 @@ function Update-Header {
         foreach ($s in $v) {
             if ((Get-SessionState $s) -in @('run','act','new')) { $liveTotal++ }
             if ($s.pinned) { $pinned++ }
-            switch (Get-ConvBucket $s) {
-                'waiting' { $waiting++ }
-                'working' { $working++ }
+            # NEEDS, not last-known state. Counting every conversation whose
+            # last recorded state was 'waiting' put "98 waiting for you" in the
+            # header while the band said 2 -- because ~110 of them are not
+            # running and cannot be waiting for anything. A number that large is
+            # not a summary, it is noise, and it disagreed with the band six
+            # inches below it.
+            $cvh = Get-Conv $s
+            if ($cvh) {
+                if ($cvh.Needs) { $waiting++ }
+                elseif (-not $cvh.Stale -and "$($cvh.State)" -eq 'working') { $working++ }
             }
         }
         if ($d.enabled) {
@@ -1801,6 +1845,7 @@ function Set-ProbeResult { param($Result)
     $script:running      = $Result.Running
     $script:live         = $Result.Live
     if ($Result.PSObject.Properties['Conv'] -and $Result.Conv) { $script:conv = $Result.Conv }
+    if ($Result.PSObject.Properties['Agents']) { $script:agents = $Result.Agents }
     $script:unattributed = [int]$Result.Unattributed
     $script:probedAt     = $Result.At
 }

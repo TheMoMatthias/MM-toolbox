@@ -950,6 +950,147 @@ function Test-SRTranscriptLive {
     return (((Get-Date) - (Get-Item -LiteralPath $JsonlPath).LastWriteTime).TotalMinutes -lt $SR_LiveWindowMinutes)
 }
 
+# --- what claude itself says about a session --------------------------------
+# `claude agents --json` is FIRST-PARTY session state: it needs no TTY, it is
+# documented for scripting, and it knows things no amount of transcript reading
+# can recover.
+#
+# It replaces inference for every session that is actually running. Measured on
+# 2026-08-22, this machine, 15 live sessions:
+#
+#   claude agents --json     status 'waiting' / 'idle' / 'busy', plus a
+#                            waitingFor of 'input needed' or 'DIALOG OPEN'
+#   Get-SRConversationState  called the same session "working, running a tool"
+#
+# The transcript one was WRONG, and it is wrong in a way it cannot fix: a
+# permission dialog writes nothing to the transcript, so a session sitting on a
+# dialog looks identical to one mid-tool-call. That is exactly the case the
+# operator most wants to see.
+#
+# The transcript reader stays for conversations that are NOT running -- there is
+# no process to ask, and a last-known state is better than nothing.
+$script:SR_AgentCache   = $null
+$script:SR_AgentCacheAt = $null
+
+function Get-SRAgentStatus {
+    [CmdletBinding()]
+    param(
+        [switch]$Refresh,
+        # A spawn plus JSON parse, so it is not free. Callers on a timer pass
+        # -Refresh; anything reading it repeatedly within one pass does not.
+        [int]$MaxAgeSeconds = 5
+    )
+
+    if (-not $Refresh -and $script:SR_AgentCache -and $script:SR_AgentCacheAt -and
+        ((Get-Date) - $script:SR_AgentCacheAt).TotalSeconds -lt $MaxAgeSeconds) {
+        return $script:SR_AgentCache
+    }
+
+    $map = @{}
+    try {
+        $exe = Get-Command claude -ErrorAction Stop
+        # 2>$null on the native call, NOT 2>&1: a stderr line merged into stdout
+        # would break ConvertFrom-Json, and the failure would look like "claude
+        # reports no sessions" rather than like an error.
+        $raw = & $exe.Source agents --json 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $raw) { throw "claude agents --json exited $LASTEXITCODE" }
+
+        # Two traps in three lines, both measured rather than reasoned about.
+        #
+        # 1. A native command's output arrives as an ARRAY OF LINES. Piping that
+        #    straight into ConvertFrom-Json parses each line on its own and every
+        #    one of them fails. Join it back into a document first.
+        # 2. ConvertFrom-Json in PowerShell 5.1 returns a JSON array as a SINGLE
+        #    object rather than enumerating it, so `@(... | ConvertFrom-Json)` is
+        #    an array of ONE element containing everything -- the same shape as
+        #    the ",@()" trap documented above, arrived at from a different
+        #    direction. Assign first, then wrap. The symptom was 15 sessions
+        #    reported as 0, with "Cannot convert System.Object[] to System.Int64"
+        #    in the log from the one iteration over the whole array at once.
+        $parsed = ($raw -join "`n") | ConvertFrom-Json
+        foreach ($e in @($parsed)) {
+            if (-not $e.sessionId) { continue }
+            # A background agent reports `state`, an interactive one `status`.
+            $st = if ($e.PSObject.Properties['status'] -and $e.status) { [string]$e.status }
+                  elseif ($e.PSObject.Properties['state'] -and $e.state) { [string]$e.state }
+                  else { '' }
+            $wf = if ($e.PSObject.Properties['waitingFor']) { [string]$e.waitingFor } else { '' }
+
+            # 'blocked' is a background agent that cannot proceed without you,
+            # which is the same demand on your attention as 'input needed'.
+            $needs = ($wf -ne '') -or ($st -eq 'blocked')
+
+            $map["$($e.sessionId)".ToLower()] = [PSCustomObject]@{
+                Status    = $st
+                WaitingFor= $wf
+                Needs     = $needs
+                Pid       = $(if ($e.PSObject.Properties['pid']) { [int]$e.pid } else { 0 })
+                Kind      = [string]$e.kind
+                Name      = [string]$e.name
+                Cwd       = [string]$e.cwd
+                StartedAt = $(if ($e.startedAt) { [DateTimeOffset]::FromUnixTimeMilliseconds([long]$e.startedAt).LocalDateTime } else { $null })
+            }
+        }
+    } catch {
+        # An empty map is honest: it means "claude could not be asked", and every
+        # caller falls back to the transcript rather than showing nothing.
+        Write-SRLog ("agents --json failed: " + $_.Exception.Message)
+        $map = @{}
+    }
+
+    $script:SR_AgentCache   = $map
+    $script:SR_AgentCacheAt = Get-Date
+    return $map
+}
+
+# One line of display for a session, preferring what claude says over what the
+# transcript implies. $Agent may be $null (not running, or claude unreachable),
+# in which case the transcript result is used as-is and marked stale.
+function Resolve-SRSessionState {
+    param($Agent, $Conv)
+
+    if ($Agent) {
+        $out = [PSCustomObject]@{
+            State = 'unknown'; Detail = ''; Stale = $false; Needs = [bool]$Agent.Needs
+            Source = 'agent'; Pid = $Agent.Pid; LastPrompt = $null; Title = $null; Mode = $null
+        }
+        if ($Conv) { $out.LastPrompt = $Conv.LastPrompt; $out.Title = $Conv.Title; $out.Mode = $Conv.Mode }
+        switch ($Agent.Status) {
+            'busy'    { $out.State = 'working'; $out.Detail = 'running' }
+            'blocked' { $out.State = 'waiting'; $out.Detail = 'blocked, needs you' }
+            'waiting' {
+                $out.State = 'waiting'
+                # The distinction the transcript can never make. A dialog wants a
+                # CLICK, not a sentence, and telling the two apart is the whole
+                # reason this source is better.
+                $out.Detail = $(if ($Agent.WaitingFor -match 'dialog') { 'a dialog is open, it wants an answer' }
+                                elseif ($Agent.WaitingFor) { $Agent.WaitingFor }
+                                else { 'waiting for you' })
+            }
+            'idle'    { $out.State = 'idle';    $out.Detail = 'at its prompt, nothing pending' }
+            default   {
+                # An unrecognised status is reported, not silently mapped: claude
+                # is free to add one and a guess here would be a lie.
+                $out.State = 'unknown'
+                $out.Detail = $(if ($Agent.Status) { "claude reports '$($Agent.Status)'" } else { 'running, status unknown' })
+            }
+        }
+        return $out
+    }
+
+    if ($Conv) {
+        return [PSCustomObject]@{
+            State = $Conv.State; Detail = $Conv.Detail; Stale = $true; Needs = $false
+            Source = 'transcript'; Pid = 0
+            LastPrompt = $Conv.LastPrompt; Title = $Conv.Title; Mode = $Conv.Mode
+        }
+    }
+    return [PSCustomObject]@{
+        State = 'unknown'; Detail = 'nothing known'; Stale = $true; Needs = $false
+        Source = 'none'; Pid = 0; LastPrompt = $null; Title = $null; Mode = $null
+    }
+}
+
 # --- what a conversation is DOING ------------------------------------------
 # Liveness answers "is a process holding this conversation". This answers "what
 # is that process doing", which is a different question and must never be shown
