@@ -1183,6 +1183,136 @@ function Get-SRTranscriptBlocks {
     return ,@($out.ToArray())
 }
 
+# --- what a conversation LAST SAID ------------------------------------------
+# The INBOX row's body. Deliberately a separate, much cheaper reader than
+# Get-SRTranscriptBlocks: that one parses a 2 MB tail into every block for the
+# reading pane, and running it for every row on a timer is not affordable.
+#
+# This walks the tail BACKWARDS and stops at the first assistant text it finds,
+# so the usual case reads a handful of records rather than sixty.
+#
+# Two fields, because they answer different questions:
+#   Said     the last prose the assistant produced -- "where this conversation
+#            got to". Survives the session then running twenty tools.
+#   Pending  the last tool_use that came AFTER that prose, i.e. what it is doing
+#            or asking for RIGHT NOW. This is what makes a permission dialog
+#            legible from the inbox: a dialog writes nothing to the transcript,
+#            but the tool_use it is asking about is already recorded.
+#
+# Only call this for live or recently-active conversations. Decided in the
+# 2026-08-22 grill: 117 conversations are tracked and re-reading all of them on
+# a timer buys nothing, because a conversation nobody has touched in a week
+# cannot have said anything new.
+function Get-SRLastSaid {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$JsonlPath,
+        [int]$MaxTailBytes = 262144,
+        # How many records back to look before giving up. A session that has run
+        # a long unbroken chain of tools may genuinely have no prose in the tail.
+        [int]$MaxRecords = 120
+    )
+
+    $out = [PSCustomObject]@{ Said = ''; Pending = ''; PendingTool = ''; At = $null }
+    if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return $out }
+
+    try {
+        $fi = Get-Item -LiteralPath $JsonlPath
+        if ($fi.Length -eq 0) { return $out }
+        $fs = [System.IO.File]::Open($JsonlPath, 'Open', 'Read', 'ReadWrite')
+        try {
+            $take = [int][Math]::Min($fi.Length, $MaxTailBytes)
+            $null = $fs.Seek(-$take, 'End')
+            $buf  = New-Object byte[] $take
+            $read = $fs.Read($buf, 0, $take)
+            $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        } finally { $fs.Dispose() }
+    } catch { return $out }
+
+    # TrimStart the BOM as well as whitespace. claude's own transcripts have no
+    # BOM, but PowerShell 5.1's `Set-Content -Encoding UTF8` writes one, so any
+    # fixture written that way loses its FIRST record to this filter -- silently,
+    # because a dropped line just looks like a conversation that said nothing.
+    # Cost is one extra character in a TrimStart; the confusion it prevents is
+    # an hour of reading the wrong function.
+    # Trim first, THEN filter, so the trimmed form is what gets parsed: a line
+    # that still carries a BOM fails ConvertFrom-Json just as surely as it fails
+    # the StartsWith test.
+    $lines = @($text -split "`n" |
+        ForEach-Object { $_.TrimStart([char]0xFEFF, ' ', "`t") } |
+        Where-Object { $_.StartsWith('{') })
+    if (-not $lines.Count) { return $out }
+
+    $seen = 0
+    for ($i = $lines.Count - 1; $i -ge 0 -and $seen -lt $MaxRecords; $i--) {
+        $seen++
+        $r = $null
+        try { $r = $lines[$i] | ConvertFrom-Json } catch { continue }
+        if ($r.type -ne 'assistant') { continue }
+        $m = $r.message
+        if (-not $m) { continue }
+
+        $content = $m.content
+        if ($content -is [string]) {
+            if ("$content".Trim()) {
+                $out.Said = (Get-SRFirstLine "$content")
+                if ($r.timestamp) { try { $out.At = [datetime]$r.timestamp } catch { } }
+                return $out
+            }
+            continue
+        }
+
+        # Walk this record's blocks in REVERSE too, so a text block followed by a
+        # tool_use in the same record reports the tool as pending rather than
+        # losing it.
+        $blocks = @($content)
+        for ($k = $blocks.Count - 1; $k -ge 0; $k--) {
+            $b = $blocks[$k]
+            if (-not $b -or -not $b.type) { continue }
+            if ($b.type -eq 'tool_use' -and -not $out.Pending) {
+                $name = "$($b.name)"
+                $arg  = ''
+                $inp  = $b.input
+                if ($inp) {
+                    foreach ($key in @('command','file_path','path','pattern','prompt','description','url','query')) {
+                        if ($inp.PSObject.Properties[$key] -and $inp.$key) { $arg = "$($inp.$key)"; break }
+                    }
+                }
+                $arg = ($arg -replace '\s+', ' ').Trim()
+                if ($arg.Length -gt 90) { $arg = $arg.Substring(0, 87) + '...' }
+                $out.PendingTool = $name
+                $out.Pending = $(if ($arg) { "$name($arg)" } else { $name })
+            }
+            elseif ($b.type -eq 'text' -and "$($b.text)".Trim()) {
+                $out.Said = (Get-SRFirstLine "$($b.text)")
+                if ($r.timestamp) { try { $out.At = [datetime]$r.timestamp } catch { } }
+                return $out
+            }
+        }
+    }
+    return $out
+}
+
+# One line out of prose that may be many paragraphs, markdown, or a code fence.
+# The FIRST meaningful line rather than the first N characters: a leading blank,
+# a heading marker or a bullet dash is not what the conversation said.
+function Get-SRFirstLine {
+    param([string]$Text, [int]$Max = 160)
+    $s = "$Text" -replace "`r", ''
+    foreach ($ln in ($s -split "`n")) {
+        $t = $ln.Trim()
+        if (-not $t) { continue }
+        if ($t -eq '```' -or $t.StartsWith('```')) { continue }
+        # Strip the markdown that carries emphasis rather than meaning.
+        $t = $t -replace '^#{1,6}\s+', '' -replace '^[-*]\s+', '' -replace '\*\*', '' -replace '`', ''
+        $t = ($t -replace '\s+', ' ').Trim()
+        if (-not $t) { continue }
+        if ($t.Length -gt $Max) { $t = $t.Substring(0, $Max - 3) + '...' }
+        return $t
+    }
+    return ''
+}
+
 # --- what claude itself says about a session --------------------------------
 # `claude agents --json` is FIRST-PARTY session state: it needs no TTY, it is
 # documented for scripting, and it knows things no amount of transcript reading

@@ -54,8 +54,17 @@ Start-Sleep -Seconds 6
 $listCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::List)
-$list = $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $listCond)
-if (-not $list) { Write-Host 'no list control'; Stop-Process -Id $guiPid -Force; exit 1 }
+
+# THE VISIBLE list, not the first one found. The window now carries two -- the
+# inbox and the project tree -- and only one is on screen at a time. FindFirst
+# returned the hidden one, and SetFocus on a Collapsed element throws "Target
+# element cannot receive focus", which reads like a broken window rather than
+# like a test pointed at something nobody can see.
+$list = $null
+foreach ($l in $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $listCond)) {
+    if (-not $l.Current.IsOffscreen) { $list = $l; break }
+}
+if (-not $list) { Write-Host 'no list control is on screen'; Stop-Process -Id $guiPid -Force; exit 1 }
 
 function SelId {
     try {

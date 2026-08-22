@@ -380,6 +380,66 @@ namespace SRGui
         public string Subtitle { get { return _subtitle; } set { if (_subtitle != value) { _subtitle = value; N("Subtitle"); } } }
         private Visibility _subtitleVisibility = Visibility.Collapsed;
         public Visibility SubtitleVisibility { get { return _subtitleVisibility; } set { if (_subtitleVisibility != value) { _subtitleVisibility = value; N("SubtitleVisibility"); } } }
+
+        // ------------------------------------------------------------------
+        // THE INBOX. Bound only by InboxTemplate; the tree template never sees
+        // these. Kept separate from the tree's properties rather than overloaded
+        // onto them so that a change to one view provably cannot alter the
+        // other -- the two lists are shown one at a time and share nothing but
+        // this class.
+        //
+        // Every one of these is a PROPERTY. WPF cannot bind to a public field:
+        // it resolves to nothing, renders blank, and reports no error at all.
+        // ------------------------------------------------------------------
+
+        // What the conversation last said. The body of the row.
+        private string _said = "";
+        public string Said { get { return _said; } set { if (_said != value) { _said = value; N("Said"); } } }
+
+        private Brush _saidBrush;
+        public Brush SaidBrush { get { return _saidBrush; } set { if (_saidBrush != value) { _saidBrush = value; N("SaidBrush"); } } }
+
+        private Visibility _saidVisibility = Visibility.Collapsed;
+        public Visibility SaidVisibility { get { return _saidVisibility; } set { if (_saidVisibility != value) { _saidVisibility = value; N("SaidVisibility"); } } }
+
+        private string _saidTip = "";
+        public string SaidTip { get { return _saidTip; } set { if (_saidTip != value) { _saidTip = value; N("SaidTip"); } } }
+
+        // Which project it belongs to. A label on the row, not a parent of it.
+        private string _project = "";
+        public string Project { get { return _project; } set { if (_project != value) { _project = value; N("Project"); } } }
+
+        private Visibility _projectVisibility = Visibility.Collapsed;
+        public Visibility ProjectVisibility { get { return _projectVisibility; } set { if (_projectVisibility != value) { _projectVisibility = value; N("ProjectVisibility"); } } }
+
+        // How long since it last moved.
+        private string _stamp = "";
+        public string Stamp { get { return _stamp; } set { if (_stamp != value) { _stamp = value; N("Stamp"); } } }
+
+        private Brush _stampBrush;
+        public Brush StampBrush { get { return _stampBrush; } set { if (_stampBrush != value) { _stampBrush = value; N("StampBrush"); } } }
+
+        // A band heading shows its count where a conversation shows its prose.
+        private Visibility _countsVisibility = Visibility.Collapsed;
+        public Visibility CountsVisibility { get { return _countsVisibility; } set { if (_countsVisibility != value) { _countsVisibility = value; N("CountsVisibility"); } } }
+
+        // The row's action. Present on conversations, never on a band.
+        private Visibility _actionVisibility = Visibility.Collapsed;
+        public Visibility ActionVisibility { get { return _actionVisibility; } set { if (_actionVisibility != value) { _actionVisibility = value; N("ActionVisibility"); } } }
+
+        private string _jumpLabel = "Open";
+        public string JumpLabel { get { return _jumpLabel; } set { if (_jumpLabel != value) { _jumpLabel = value; N("JumpLabel"); } } }
+
+        private bool _canJump = true;
+        public bool CanJump { get { return _canJump; } set { if (_canJump != value) { _canJump = value; N("CanJump"); } } }
+
+        private string _jumpTip = "";
+        public string JumpTip { get { return _jumpTip; } set { if (_jumpTip != value) { _jumpTip = value; N("JumpTip"); } } }
+
+        // Which band this row sits under. Used to scroll a pill to its band and
+        // to keep the selection when the list is rebuilt.
+        private string _band = "";
+        public string Band { get { return _band; } set { if (_band != value) { _band = value; N("Band"); } } }
     }
 }
 '@
@@ -456,9 +516,23 @@ $script:running      = @{}   # sessionId -> a claude.exe holds it (certain)
 $script:live         = @{}   # sessionId -> its transcript moved recently (inferred)
 $script:launching    = @{}   # sessionId -> when we launched it (optimistic, expires)
 $script:conv         = @{}   # sessionId -> what the TRANSCRIPT implies it is doing
+$script:said         = @{}   # sessionId -> what it LAST SAID, live/recent only
 $script:agents       = @{}   # sessionId -> what CLAUDE ITSELF says, for live ones
 $script:unattributed = 0
 $script:probedAt     = $null
+
+# THE VIEW: 'inbox' | 'tree' | 'restore'.
+#
+#   inbox    flat, cross-project, ordered by what each conversation needs from
+#            you. The default, because "who needs me" is why the window gets
+#            opened; the tree could only answer it by being read end to end.
+#   tree     project / lane / conversation, with folding and per-project counts.
+#   restore  the same tree, with the logon tick and its bulk actions in front.
+#
+# Restore is deliberately a MODE rather than a column now. It is a once-per-
+# reboot concern that was holding the leftmost column, a header pole and the
+# loudest button on the window.
+$script:viewMode = 'inbox'
 
 # ---------------------------------------------------------------------------
 # THE FILTERS. Every dimension the window shows, and one rule that has to hold
@@ -490,6 +564,7 @@ $script:totalCount = 0
 
 $script:visCache     = @{}
 $script:rows         = New-Object System.Collections.Generic.List[object]
+$script:inboxRows    = New-Object System.Collections.Generic.List[object]
 $script:pendingSpawn = $null
 $script:firstFill    = $true
 
@@ -853,6 +928,7 @@ $script:ScanJob = {
     $unattr  = Get-SRUnattributedCount
     $live    = @{}
     $conv    = @{}
+    $said    = @{}
     foreach ($d in @($r.directories)) {
         foreach ($s in @($d.sessions)) {
             if (-not $s.sessionId) { continue }
@@ -863,13 +939,20 @@ $script:ScanJob = {
             $j   = Get-SRTranscriptPath -Dir $cwd -SessionId $s.sessionId -Recorded $s.jsonl
             $key = "$($s.sessionId)".ToLower()
             if (Test-SRTranscriptLive -JsonlPath $j) { $live[$key] = $true }
-            try { $conv[$key] = Get-SRConversationState -JsonlPath $j } catch { }
+            $cs = $null
+            try { $cs = Get-SRConversationState -JsonlPath $j; $conv[$key] = $cs } catch { }
+            # Same gate as the probe pass, $running included: an idle session is
+            # held by a process but its transcript has not moved, so a mtime-only
+            # test would silently drop the very rows the inbox is for.
+            if ($live[$key] -or $running[$key] -or ($cs -and -not $cs.Stale)) {
+                try { $said[$key] = Get-SRLastSaid -JsonlPath $j } catch { }
+            }
         }
     }
     # What claude itself says, which beats inference for anything still running.
     # ~960 ms, so it belongs here on the background pass and nowhere near a repaint.
     $agents = Get-SRAgentStatus -Refresh
-    [PSCustomObject]@{ Registry = $r; Config = $cfg; Running = $running; Live = $live; Conv = $conv; Agents = $agents; Unattributed = $unattr; At = (Get-Date) }
+    [PSCustomObject]@{ Registry = $r; Config = $cfg; Running = $running; Live = $live; Conv = $conv; Said = $said; Agents = $agents; Unattributed = $unattr; At = (Get-Date) }
 }
 
 # Liveness only. No scan, nothing written, nothing launched.
@@ -879,6 +962,7 @@ $script:ProbeJob = {
     $unattr  = Get-SRUnattributedCount
     $live    = @{}
     $conv    = @{}
+    $said    = @{}
     foreach ($s in @($SRData.Sessions)) {
         $j   = Get-SRTranscriptPath -Dir $s.Cwd -SessionId $s.Id -Recorded $s.Jsonl
         $key = "$($s.Id)".ToLower()
@@ -886,10 +970,27 @@ $script:ProbeJob = {
         # DOING has to refresh on the same cadence as liveness or the column
         # would freeze at whatever it said when the window opened, while the
         # "as of" stamp beside it kept moving. That reads as a lie.
-        try { $conv[$key] = Get-SRConversationState -JsonlPath $j } catch { }
+        $cs = $null
+        try { $cs = Get-SRConversationState -JsonlPath $j; $conv[$key] = $cs } catch { }
+
+        # WHAT IT LAST SAID -- the inbox row's body, and the only genuinely new
+        # cost in this loop. Gated per the 2026-08-22 decision: the registry
+        # tracks 117 conversations and one nobody has touched in a week cannot
+        # have said anything new since the last pass. Measured 0-33 ms each on
+        # the ~14 that qualify.
+        #
+        # $running is part of the gate, not just $live. An IDLE session has been
+        # sitting at its prompt saying nothing, so its transcript has NOT moved
+        # recently and it reads as stale -- yet a process is holding it and it
+        # has a last reply, which is exactly what the inbox exists to show. With
+        # only the mtime test, every idle row said "at its prompt, nothing
+        # pending" and none of them said what it had actually done.
+        if ($live[$key] -or $running[$key] -or ($cs -and -not $cs.Stale)) {
+            try { $said[$key] = Get-SRLastSaid -JsonlPath $j } catch { }
+        }
     }
     $agents = Get-SRAgentStatus -Refresh
-    [PSCustomObject]@{ Running = $running; Live = $live; Conv = $conv; Agents = $agents; Unattributed = $unattr; At = (Get-Date) }
+    [PSCustomObject]@{ Running = $running; Live = $live; Conv = $conv; Said = $said; Agents = $agents; Unattributed = $unattr; At = (Get-Date) }
 }
 
 # Launching. Windows Terminal needs breathing room between tabs, and a launch
@@ -991,7 +1092,11 @@ foreach ($n in @(
     'ListShift','NeedsBand','NeedsLabel','NeedsList',
     'ReadPane','ReadName','ReadWhat','ReadView','ReadBack','ReadRefresh','ReadOpen',
     'LegendBox','LegendToggle','SendBox','SendBtn','SendNote',
-    'FilterBar','FilterBtn','BulkBtn'
+    'FilterBar','FilterBtn','BulkBtn',
+    # The inbox: its own list, the view switch, and the three count pills that
+    # are now buttons rather than decoration.
+    'InboxList','ModeInbox','ModeTree','ModeRestore','LivePill','WaitPill','TickPill',
+    'TreeHead','NowCaption','WorktreeCaption'
 )) { $ui[$n] = $window.FindName($n) }
 
 # A name in the markup that is not in the list above is $null here, and the
@@ -1091,6 +1196,226 @@ function Build-Rows {
     $script:matchCount = $matched
     $script:totalCount = $total
     return ,$out
+}
+
+# ---------------------------------------------------------------------------
+# THE INBOX
+#
+# A FLAT list across every project, ordered by what each conversation wants from
+# you. Not a second rendering of the tree: the tree answers "what is in this
+# project", and no amount of sorting makes a hierarchy answer "who needs me"
+# without being read end to end. That is precisely why the NEEDS YOU band had to
+# be bolted on beside the tree rather than built into it.
+#
+# FOUR BANDS, and every conversation is in exactly one:
+#
+#   NEEDS YOU   it has stopped and cannot continue without you: waiting for
+#               input, sitting on a permission dialog, or a blocked background
+#               agent. The only band that is an interruption.
+#   WORKING     busy. Nothing to do; shown so you can see progress exists.
+#   IDLE        at its prompt with nothing pending. You could pick it up.
+#   NOT RUNNING recently active but no longer held by a process.
+#
+# WHAT IS NOT HERE: the other ~100 conversations in the registry. An inbox of
+# 117 rows is a list, not an inbox. Stale conversations live in the Projects and
+# Restore views, and typing in the search box widens this list to reach them --
+# so nothing is unreachable, it is just not in your face.
+# ---------------------------------------------------------------------------
+$script:InboxBands = @(
+    @{ Key = 'needs';   Label = 'NEEDS YOU';   Tip = 'Stopped and waiting on you: a question, a permission dialog, or a blocked agent.' }
+    @{ Key = 'working'; Label = 'WORKING';     Tip = 'Busy right now. Nothing for you to do.' }
+    @{ Key = 'idle';    Label = 'IDLE';        Tip = 'At its prompt with nothing pending. Yours to pick up.' }
+    @{ Key = 'quiet';   Label = 'NOT RUNNING'; Tip = 'Active recently, but no process is holding it now.' }
+)
+
+# Minutes matter in an inbox. Get-Age tops out at hours and days because the tree
+# is about which conversations exist, not about what just happened.
+function Get-Stamp { param($When)
+    if (-not $When) { return '' }
+    try { $d = ((Get-Date) - [datetime]$When) } catch { return '' }
+    if ($d.TotalSeconds -lt 90)  { return 'now' }
+    if ($d.TotalMinutes -lt 60)  { return ("{0}m" -f [int]$d.TotalMinutes) }
+    if ($d.TotalHours   -lt 24)  { return ("{0}h" -f [int]$d.TotalHours) }
+    return ("{0}d" -f [int]$d.TotalDays)
+}
+
+# Which band a conversation belongs in. One function, so the bands provably
+# partition: every path returns exactly one key, and 'quiet' is the fallback.
+function Get-InboxBand { param($Session)
+    $cv = Get-Conv $Session
+    if (-not $cv) { return 'quiet' }
+    if ($cv.Needs) { return 'needs' }
+    $st = "$($cv.State)"
+    if ($cv.Stale) { return 'quiet' }
+    if ($st -eq 'working' -or $st -eq 'summarising') { return 'working' }
+    if ($st -eq 'idle') { return 'idle' }
+    if ($st -eq 'waiting') { return 'needs' }
+    return 'quiet'
+}
+
+function Build-InboxRows {
+    $out = New-Object System.Collections.Generic.List[object]
+    $searching = [bool]$script:filter
+
+    # Collect first, band second. Sorting inside each band needs the whole set.
+    $picked = New-Object System.Collections.Generic.List[object]
+    $total = 0
+    foreach ($d in $script:dirs) {
+        # ASSIGN, THEN WRAP. Get-Lanes returns ",@(...)", so @(Get-Lanes $d) is
+        # an array of ONE element containing every lane -- and $lane.Name then
+        # evaluates to all the lane names at once. The symptom is a row labelled
+        # "AlgoTrader / main I7 F2 AN2 I6 ..." with every worktree in the repo
+        # concatenated into one project label. Build-Rows does the same two-step
+        # for the same reason.
+        $lanes = Get-Lanes $d
+        foreach ($lane in @($lanes)) {
+            foreach ($s in @($lane.Group)) {
+                $total++
+                $key = "$($s.sessionId)".ToLower()
+                $cv  = Get-Conv $s
+                $isLive = [bool]($script:running[$key] -or $script:live[$key])
+                $fresh  = ($cv -and -not $cv.Stale)
+                # The inbox is about what is happening. A search widens it to
+                # everything that matches, so an old conversation is findable
+                # here rather than only in another view.
+                if (-not $isLive -and -not $fresh -and -not $searching) { continue }
+                if (-not (Test-RowMatch -Session $s -Dir $d -Lane $lane.Name)) { continue }
+                $picked.Add([PSCustomObject]@{
+                    S = $s; D = $d; L = $lane
+                    Band = (Get-InboxBand $s)
+                    At = $(if ($s.lastActive) { [datetime]$s.lastActive } else { [datetime]'1970-01-01' })
+                })
+            }
+        }
+    }
+
+    $script:matchCount = $picked.Count
+    $script:totalCount = $total
+
+    foreach ($band in $script:InboxBands) {
+        $inBand = @($picked | Where-Object { $_.Band -eq $band.Key } | Sort-Object At -Descending)
+        if (-not $inBand.Count) { continue }
+        $head = New-Row 'band' ("band|" + $band.Key) $null $null $null
+        $head.Band = $band.Key
+        $head.Name = $band.Label
+        $head.Counts = "$($inBand.Count)"
+        $head.ConvTip = $band.Tip
+        $out.Add($head)
+        foreach ($p in $inBand) {
+            $r = New-Row 'session' ("$($p.D.path)|$($p.L.Name)|$($p.S.sessionId)") $p.D $p.L $p.S
+            $r.Band = $band.Key
+            $out.Add($r)
+        }
+    }
+    return ,$out
+}
+
+# Everything an inbox row shows. Separate from Update-RowStatic / Update-RowConv
+# on purpose: those fill the TREE's cells, and the two views share no bound
+# property, so neither can silently redecorate the other.
+function Update-InboxRow { param($Row)
+    if ($Row.Kind -eq 'band') {
+        $Row.RowHeight = 30
+        $Row.Indent = New-Object System.Windows.Thickness 22, 10, 0, 0
+        $Row.NameBrush = $C.TextMid
+        $Row.NameWeight = $FW_Semi
+        $Row.NameSize = 10.5
+        $Row.CountsBrush = $C.TextLow
+        $Row.CountsVisibility = $V_Show
+        $Row.StampBrush = $C.TextDim
+        return
+    }
+
+    $s = $Row.Session
+    $key = "$($s.sessionId)".ToLower()
+    $cv = Get-Conv $s
+    $Row.RowHeight = 30
+    $Row.Indent = New-Object System.Windows.Thickness 22, 0, 0, 0
+    $Row.CountsVisibility = $V_Hide
+    $Row.NameSize = 12.5
+    $Row.Name = "$(Get-SessionTitle $s $Row.Dir)"
+
+    # The project as a LABEL. A worktree lane is named after the worktree, and
+    # that distinction matters more than the repo name when two lanes of the same
+    # repo are both live.
+    $proj = Split-Path $Row.Dir.path -Leaf
+    if ($Row.Lane -and $Row.Lane.Name -and $Row.Lane.Name -ne 'main') { $proj = "$proj / $($Row.Lane.Name)" }
+    $Row.Project = $proj
+    $Row.ProjectVisibility = $V_Show
+
+    $needs = [bool]($cv -and $cv.Needs)
+    $Row.NameWeight = $(if ($needs) { $FW_Semi } else { $FW_Normal })
+    $Row.NameBrush  = $(if ($needs) { $C.TextMax } elseif ($Row.Band -eq 'quiet') { $C.TextMid } else { $C.TextHigh })
+
+    # The state glyph, from the same vocabulary the tree uses.
+    $Row.ConvGeometry = $null
+    $Row.ConvGlyphVisibility = $V_Hide
+    $Row.ConvBrush = $C.TextDim
+    if ($cv) {
+        $geom = switch ("$($cv.State)") {
+            'waiting'     { $GlyphWaiting }
+            'working'     { $GlyphWorking }
+            'summarising' { $GlyphSummarising }
+            default       { $null }
+        }
+        if ($geom) {
+            $Row.ConvGeometry = $geom
+            $Row.ConvGlyphVisibility = $V_Show
+            $Row.ConvBrush = $(if ($needs) { $C.TextMax } elseif ($cv.Stale) { $C.TextDim } else { $C.TextMid })
+        }
+        $Row.ConvTip = "$($cv.State)  -  $($cv.Detail)"
+    }
+
+    # THE BODY: what it last said. Falling back, in order, to what it is doing
+    # right now, and then to why there is nothing to show -- never to a blank
+    # cell, which reads as a bug rather than as an absence.
+    $sd = $script:said[$key]
+    $text = ''; $tip = ''
+    if ($sd -and $sd.Said) {
+        $text = $sd.Said
+        $tip  = $sd.Said
+        if ($sd.Pending) { $tip = $sd.Said + "`n`nnow running:  " + $sd.Pending }
+    } elseif ($sd -and $sd.Pending) {
+        # Mid-tool-chain with no prose in the tail. What it is DOING is the
+        # honest answer, and for a session sitting on a permission dialog it is
+        # the thing being asked about.
+        $text = $sd.Pending
+        $tip  = "No prose in the recent tail. This is the tool call it is on."
+    } elseif ($cv -and $cv.Detail) {
+        $text = "$($cv.Detail)"
+        $tip  = 'Nothing read from the transcript yet.'
+    }
+    if ($needs -and $cv -and $cv.Detail -match 'dialog') {
+        $text = $(if ($sd -and $sd.Pending) { "wants to run:  $($sd.Pending)" } else { 'a dialog is open, it wants an answer' })
+        $tip  = 'Answer it in the terminal: a dialog wants a click, not a sentence.'
+    }
+    $Row.Said = $text
+    $Row.SaidTip = $tip
+    $Row.SaidVisibility = $(if ($text) { $V_Show } else { $V_Hide })
+    $Row.SaidBrush = $(if ($needs) { $C.TextHigh } elseif ($Row.Band -eq 'quiet') { $C.TextDim } else { $C.TextMid })
+
+    $when = $(if ($sd -and $sd.At) { $sd.At } elseif ($cv -and $cv.LastActive) { $cv.LastActive } else { $s.lastActive })
+    $Row.Stamp = Get-Stamp $when
+    $Row.StampBrush = $(if ($needs) { $C.TextMid } else { $C.TextDim })
+
+    # The action. Increment 2 turns this into a real jump to the terminal tab;
+    # until then it opens the conversation the way the tree's Open does, so the
+    # button is never a promise the tool cannot keep.
+    $a = $script:agents[$key]
+    $Row.ActionVisibility = $V_Show
+    if ($a -and $a.Kind -ne 'interactive') {
+        $Row.JumpLabel = 'agent'
+        $Row.CanJump = $false
+        $Row.JumpTip = 'A background agent has no terminal of its own, so there is nothing to jump to and nothing to type into.'
+    } elseif ($script:running[$key] -or $script:live[$key]) {
+        $Row.JumpLabel = 'Go to'
+        $Row.CanJump = $true
+        $Row.JumpTip = 'Bring this conversation''s terminal to the front.'
+    } else {
+        $Row.JumpLabel = 'Open'
+        $Row.CanJump = (Test-RowLaunchable $s)
+        $Row.JumpTip = 'Open this conversation in a new terminal tab.'
+    }
 }
 
 # Everything about a row that depends on the TICKS: the checkbox, the counts, the
@@ -1554,6 +1879,13 @@ function Get-WaitingNow {
 }
 
 function Update-NeedsBand {
+    # The inbox has NEEDS YOU as its first band, so the strip above the list
+    # would be the same names twice on one screen. It belongs to the tree, where
+    # a cross-project band genuinely cannot be a node.
+    if ($script:viewMode -eq 'inbox') {
+        $ui.NeedsBand.Visibility = $V_Hide
+        return
+    }
     $now = Get-WaitingNow
     $now = @($now)
 
@@ -1765,9 +2097,25 @@ function Update-Header {
     # to hold every action, and it pushed "Launch everything ticked" off the
     # window. It lives in the legend now, behind the "?", with the rest of the
     # things you read once.
-    $ui.ProbeStamp.Text  = $(if ($script:probedAt) {
-        "{0} pinned   |   as of {1}" -f $pinned, ([datetime]$script:probedAt).ToString('HH:mm:ss')
-    } else { '' })
+    # "pinned" is a restore concept -- it means the hourly auto-tick roll leaves
+    # this conversation alone -- so it only earns space in the view that owns the
+    # tick. Everywhere else the stamp is just how fresh this screen is.
+    $ui.ProbeStamp.Text  = $(if (-not $script:probedAt) { '' }
+        elseif ($script:viewMode -eq 'restore') {
+            "{0} pinned   |   as of {1}" -f $pinned, ([datetime]$script:probedAt).ToString('HH:mm:ss')
+        } else {
+            "as of {0}" -f ([datetime]$script:probedAt).ToString('HH:mm:ss')
+        })
+
+    # Keep each pill's ACCESSIBLE name equal to the text it is showing. A Button
+    # whose Content is a panel rather than a string has no name at all in the
+    # automation tree -- a screen reader announces nothing, and the button cannot
+    # be found by name. The markup carries a static fallback; this keeps the live
+    # counts in it, so what is announced and what is drawn cannot drift apart.
+    $nameProp = [System.Windows.Automation.AutomationProperties]::NameProperty
+    $ui.LivePill.SetValue($nameProp, $ui.LiveSummary.Text)
+    $ui.WaitPill.SetValue($nameProp, $ui.WaitSummary.Text)
+    $ui.TickPill.SetValue($nameProp, $ui.TickSummary.Text)
 
     Update-FilterReadout
 
@@ -1777,10 +2125,17 @@ function Update-Header {
         $ui.Unattributed.Visibility = $V_Show
     } else { $ui.Unattributed.Visibility = $V_Hide }
 
-    $ui.SubTitle.Text = $(if ($script:showWt) {
-        'the tick reopens it at logon   |   OPEN? is who holds it, DOING is what it is doing   |   press / to find'
-    } else {
-        'worktree lanes are OFF - hidden and never restored   |   press / to find'
+    # The subtitle explains the view you are in. Teaching the tick and the OPEN?
+    # column while looking at an inbox that has neither is how a tool reads as
+    # generic: the words on screen have to be about what is on screen.
+    $ui.SubTitle.Text = $(switch ($script:viewMode) {
+        'inbox' { 'what each one last said, and which are waiting on you   |   press / to find' }
+        'tree'  { $(if ($script:showWt) {
+                      'every conversation on this machine, by project and lane   |   press / to find'
+                  } else {
+                      'worktree lanes are OFF - hidden and never restored   |   press / to find'
+                  }) }
+        default { 'the tick reopens it at logon   |   pinned conversations are left alone by the hourly roll' }
     })
 }
 
@@ -1823,7 +2178,71 @@ function Start-ListSettle {
     $t.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $a)
 }
 
+# Which list the operator is actually looking at. Everything that reads a
+# selection goes through here, so a keyboard handler or a selection readout
+# cannot end up talking to the hidden list.
+function Get-ActiveList {
+    if ($script:viewMode -eq 'inbox') { return $ui.InboxList }
+    return $ui.RowList
+}
+
+# The inbox's own fill. Deliberately not a branch inside Update-List: the two
+# views build different rows, decorate different properties and live in
+# different controls, and interleaving them in one function is how a change to
+# one silently breaks the other.
+function Update-InboxList { param([string]$KeepKey, [switch]$ToTop)
+    if (-not $KeepKey -and -not $ToTop -and $ui.InboxList.SelectedItem) { $KeepKey = $ui.InboxList.SelectedItem.Key }
+    if ($ToTop) { $KeepKey = $null }
+
+    $script:inboxRows = Build-InboxRows
+    foreach ($r in $script:inboxRows) { Update-InboxRow $r }
+
+    # Same guard the tree carries, for the same reason: a row whose text has no
+    # brush renders as NOTHING, and a blank cell reads as "no data" rather than
+    # as a bug. That is exactly how a fully populated column once stayed
+    # invisible for an afternoon.
+    foreach ($r in $script:inboxRows) {
+        if ($r.Said -and $null -eq $r.SaidBrush) {
+            throw "inbox row '$($r.Name)' has text '$($r.Said)' with a null brush - it would render invisible"
+        }
+    }
+
+    $ui.InboxList.ItemsSource = $script:inboxRows
+    Update-Header
+    # Hides the strip. Called here as well as on the tree path so that switching
+    # INTO the inbox takes the band down with it, rather than leaving the same
+    # names on screen twice.
+    Update-NeedsBand
+
+    if ($script:inboxRows.Count -eq 0) {
+        $desc = Get-FilterDescription
+        $ui.EmptyNote.Text = $(if (@($desc).Count) {
+            "Nothing matches. {0} filter(s) on:  {1}.`n`nPress Clear all filters, or Esc." -f @($desc).Count, (@($desc) -join '   +   ')
+        } else {
+            "No conversation is running and none has been active recently.`n`nThe Projects view lists everything on this machine, or type to search."
+        })
+        $ui.EmptyNote.Visibility = $V_Show
+    } else {
+        $ui.EmptyNote.Visibility = $V_Hide
+        $idx = -1
+        if ($KeepKey) {
+            for ($i = 0; $i -lt $script:inboxRows.Count; $i++) { if ($script:inboxRows[$i].Key -eq $KeepKey) { $idx = $i; break } }
+        }
+        # Never land on a band heading: it is a label, not something you can act
+        # on, and a selection you cannot do anything with is a dead end.
+        if ($idx -lt 0) {
+            for ($i = 0; $i -lt $script:inboxRows.Count; $i++) { if ($script:inboxRows[$i].Kind -eq 'session') { $idx = $i; break } }
+        }
+        if ($idx -ge 0) {
+            $ui.InboxList.SelectedIndex = $idx
+            $ui.InboxList.ScrollIntoView($script:inboxRows[$idx])
+        }
+    }
+    Update-Selection
+}
+
 function Update-List { param([string]$KeepKey, [switch]$ToTop)
+    if ($script:viewMode -eq 'inbox') { Update-InboxList -KeepKey $KeepKey -ToTop:$ToTop; return }
     if (-not $KeepKey -and -not $ToTop -and $ui.RowList.SelectedItem) { $KeepKey = $ui.RowList.SelectedItem.Key }
     if ($ToTop) { $KeepKey = $null }
     $script:rows = Build-Rows
@@ -2177,7 +2596,10 @@ function Hide-ReadPane {
 }
 
 function Update-Selection {
-    $row = $ui.RowList.SelectedItem
+    $row = (Get-ActiveList).SelectedItem
+    # A band heading is a label. Selecting one must not light up actions that
+    # would then have nothing to act on.
+    if ($row -and $row.Kind -eq 'band') { $row = $null }
     if (-not $row) {
         $ui.SelName.Text = 'nothing selected'
         $ui.SelPath.Text = ''
@@ -2190,6 +2612,57 @@ function Update-Selection {
     $what = switch ($row.Kind) { 'dir' { 'project' } 'lane' { 'lane' } default { 'conversation' } }
     $ui.SelName.Text = "{0}   {1}" -f $row.Name, $what
     $ui.SelPath.Text = Get-RowPath $row
+}
+
+# ---------------------------------------------------------------------------
+# Switching view
+#
+# Restore is a MODE, not a column. What moves with it: the logon tick, the bulk
+# tick menu, the launch-everything-ticked button and the tick summary. What does
+# not move: the search box, the filters and the status line, which mean the same
+# thing wherever you are.
+# ---------------------------------------------------------------------------
+function Set-ViewMode { param([string]$Mode)
+    if ($Mode -ne 'inbox' -and $Mode -ne 'tree' -and $Mode -ne 'restore') { return }
+    $script:viewMode = $Mode
+    $inbox = ($Mode -eq 'inbox')
+
+    $ui.InboxList.Visibility = $(if ($inbox) { $V_Show } else { $V_Hide })
+    $ui.RowList.Visibility   = $(if ($inbox) { $V_Hide } else { $V_Show })
+
+    # Restore-only furniture. Hidden rather than disabled: a greyed-out control
+    # still asks to be read, and the whole point is to stop this competing for
+    # attention on the days you are not rebooting.
+    $restore = ($Mode -eq 'restore')
+    foreach ($c in @($ui.LaunchTicked, $ui.BulkBtn, $ui.TickPill, $ui.NowCaption)) {
+        if ($c) { $c.Visibility = $(if ($restore) { $V_Show } else { $V_Hide }) }
+    }
+
+    # The tree's column captions, and the worktree lane toggle. Both describe a
+    # hierarchy: LOGON / TICKED / ID / OPEN? name columns the inbox does not
+    # have, and "show a lane per worktree" means nothing in a flat list where the
+    # worktree is printed on the row itself.
+    foreach ($c in @($ui.TreeHead, $ui.WorktreeToggle, $ui.WorktreeCaption)) {
+        if ($c) { $c.Visibility = $(if ($inbox) { $V_Hide } else { $V_Show }) }
+    }
+
+    # The selection footer, same rule: Tick / untick and Unpin only mean anything
+    # where the tick is on screen.
+    foreach ($c in @($ui.SelTick, $ui.SelUnpin)) {
+        if ($c) { $c.Visibility = $(if ($restore) { $V_Show } else { $V_Hide }) }
+    }
+
+    # The reading pane belongs to no mode; leaving it open across a switch would
+    # show one conversation while the list behind it changed shape.
+    if ($ui.ReadPane.Visibility -eq $V_Show) { Hide-ReadPane }
+
+    Update-List -ToTop
+    $null = (Get-ActiveList).Focus()
+    Set-Status $(switch ($Mode) {
+        'inbox'   { 'Inbox: every conversation that is running or was, ordered by what it needs from you.' }
+        'tree'    { 'Projects: everything on this machine, grouped by project and lane.' }
+        'restore' { 'Restore: tick what should reopen automatically at the next logon.' }
+    }) 'info'
 }
 
 # ---------------------------------------------------------------------------
@@ -2212,6 +2685,11 @@ function Set-ProbeResult { param($Result)
     $script:running      = $Result.Running
     $script:live         = $Result.Live
     if ($Result.PSObject.Properties['Conv'] -and $Result.Conv) { $script:conv = $Result.Conv }
+    # NOT gated on being non-empty, unlike Conv above. An empty Said table is a
+    # real answer -- every live session was mid-tool-call and none had prose --
+    # and keeping the previous pass's text would show words no session has said
+    # for minutes, which is worse than showing none.
+    if ($Result.PSObject.Properties['Said']) { $script:said = $Result.Said }
     if ($Result.PSObject.Properties['Agents']) { $script:agents = $Result.Agents }
     $script:unattributed = [int]$Result.Unattributed
     $script:probedAt     = $Result.At
@@ -2622,6 +3100,70 @@ $ui.RowList.Add_MouseDoubleClick({
     } 'open the reading pane'
 })
 
+# ---------------------------------------------------------------------------
+# The inbox's own input. Kept beside the tree's rather than merged into it: the
+# two lists show different rows and answer to different keys.
+# ---------------------------------------------------------------------------
+$ui.InboxList.Add_SelectionChanged({ Invoke-Guarded { Update-Selection } 'the selection' })
+
+$ui.InboxList.Add_MouseDoubleClick({
+    param($sender, $e)
+    Invoke-Guarded {
+        $row = $ui.InboxList.SelectedItem
+        if ($row -and $row.Kind -eq 'session') { $e.Handled = $true; Show-ReadPane $row }
+    } 'open the reading pane'
+})
+
+# The row's own action button. One handler on the list rather than one per row:
+# the list is virtualised and recycles its containers, so per-row handlers would
+# be attached and detached as you scroll.
+$ui.InboxList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.Windows.RoutedEventHandler]{
+    param($sender, $e)
+    $btn = $e.OriginalSource -as [System.Windows.Controls.Button]
+    if (-not $btn) { return }
+    $e.Handled = $true
+    Invoke-Guarded {
+        $row = [System.Windows.Data.ItemsControl]::ContainerFromElement($ui.InboxList, $btn)
+        $item = $(if ($row) { $row.DataContext } else { $null })
+        if (-not $item -or $item.Kind -ne 'session') { return }
+        $ui.InboxList.SelectedItem = $item
+        # Increment 2 replaces this with a real jump to the terminal tab. Until
+        # then it does what the tree's Open does, so the button never promises
+        # something the tool cannot yet deliver.
+        Invoke-RowLaunch $item
+    } 'that row''s action'
+})
+
+# THE COUNT PILLS. They were Borders holding TextBlocks, which is exactly why
+# clicking "live now" did nothing and read as broken. Each now takes you to the
+# band it counts.
+function Show-InboxBand { param([string]$Band)
+    if ($script:viewMode -ne 'inbox') { Set-ViewMode 'inbox'; $ui.ModeInbox.IsChecked = $true }
+    $idx = -1
+    for ($i = 0; $i -lt @($script:inboxRows).Count; $i++) {
+        if ($script:inboxRows[$i].Band -eq $Band -and $script:inboxRows[$i].Kind -eq 'session') { $idx = $i; break }
+    }
+    if ($idx -lt 0) {
+        $label = @($script:InboxBands | Where-Object { $_.Key -eq $Band } | ForEach-Object { $_.Label })
+        Set-Status ("nothing is in {0} right now" -f $(if ($label.Count) { $label[0] } else { $Band })) 'info'
+        return
+    }
+    $ui.InboxList.SelectedIndex = $idx
+    $ui.InboxList.ScrollIntoView($script:inboxRows[$idx])
+    $null = $ui.InboxList.Focus()
+}
+
+$ui.LivePill.Add_Click({ Invoke-Guarded { Show-InboxBand 'working' } 'show what is running' })
+$ui.WaitPill.Add_Click({ Invoke-Guarded { Show-InboxBand 'needs' }   'show what is waiting' })
+$ui.TickPill.Add_Click({ Invoke-Guarded {
+    # The tick lives in Restore now, so the pill that counts it goes there.
+    $ui.ModeRestore.IsChecked = $true
+} 'show what reopens at logon' })
+
+$ui.ModeInbox.Add_Checked({   Invoke-Guarded { Set-ViewMode 'inbox' }   'switch to the inbox' })
+$ui.ModeTree.Add_Checked({    Invoke-Guarded { Set-ViewMode 'tree' }    'switch to projects' })
+$ui.ModeRestore.Add_Checked({ Invoke-Guarded { Set-ViewMode 'restore' } 'switch to restore' })
+
 $ui.NeedsList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.Windows.RoutedEventHandler]{
     param($sender, $e)
     $btn = $e.OriginalSource -as [System.Windows.Controls.Button]
@@ -2691,7 +3233,7 @@ $script:searchTimer.Add_Tick({
     } else { Set-Status '' 'info' }
 })
 $ui.SearchBox.Add_TextChanged({ $script:searchTimer.Stop(); $script:searchTimer.Start() })
-$ui.ClearSearch.Add_Click({ Invoke-Guarded { $ui.SearchBox.Text = ''; $null = $ui.RowList.Focus() } 'clear the filter' })
+$ui.ClearSearch.Add_Click({ Invoke-Guarded { $ui.SearchBox.Text = ''; $null = (Get-ActiveList).Focus() } 'clear the filter' })
 
 # --- toolbar ---
 $ui.RescanBtn.Add_Click({ Invoke-Guarded { Start-Rescan } 'rescan' })
@@ -2739,10 +3281,10 @@ $ui.WorktreeToggle.Add_Click({ Invoke-Guarded { Invoke-WorktreeToggle } 'the wor
 $ui.LaunchTicked.Add_Click({ Invoke-Guarded { Invoke-LaunchTicked } 'launch everything ticked' })
 
 # --- the selected row ---
-$ui.SelTick.Add_Click({ Invoke-Guarded { if ($ui.RowList.SelectedItem) { Set-RowTick -Row $ui.RowList.SelectedItem -Value $null } } 'the tick' })
-$ui.SelUnpin.Add_Click({ Invoke-Guarded { Set-RowUnpin $ui.RowList.SelectedItem } 'unpin' })
-$ui.SelLaunch.Add_Click({ Invoke-Guarded { Invoke-RowLaunch $ui.RowList.SelectedItem } 'open now' })
-$ui.SelSpawn.Add_Click({ Invoke-Guarded { Invoke-RowSpawn $ui.RowList.SelectedItem } 'new session here' })
+$ui.SelTick.Add_Click({ Invoke-Guarded { $r = (Get-ActiveList).SelectedItem; if ($r -and $r.Kind -ne 'band') { Set-RowTick -Row $r -Value $null } } 'the tick' })
+$ui.SelUnpin.Add_Click({ Invoke-Guarded { $r = (Get-ActiveList).SelectedItem; if ($r -and $r.Kind -ne 'band') { Set-RowUnpin $r } } 'unpin' })
+$ui.SelLaunch.Add_Click({ Invoke-Guarded { $r = (Get-ActiveList).SelectedItem; if ($r -and $r.Kind -ne 'band') { Invoke-RowLaunch $r } } 'open now' })
+$ui.SelSpawn.Add_Click({ Invoke-Guarded { $r = (Get-ActiveList).SelectedItem; if ($r -and $r.Kind -ne 'band') { Invoke-RowSpawn $r } } 'new session here' })
 
 # --- the spawn overlay ---
 # --- the launch confirmation ---
@@ -2801,7 +3343,7 @@ $window.Add_PreviewKeyDown({ param($s, $e)
     if ($e.OriginalSource -is [System.Windows.Controls.TextBox]) {
         if ($e.Key -eq 'Escape' -and $e.OriginalSource -eq $ui.SearchBox) {
             $e.Handled = $true
-            if ($ui.SearchBox.Text) { $ui.SearchBox.Text = '' } else { $null = $ui.RowList.Focus() }
+            if ($ui.SearchBox.Text) { $ui.SearchBox.Text = '' } else { $null = (Get-ActiveList).Focus() }
         }
         return
     }
@@ -2823,7 +3365,12 @@ $window.Add_PreviewKeyDown({ param($s, $e)
     }
 
     $ctrl = ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0
-    $row  = $ui.RowList.SelectedItem
+    # Whichever list is showing. Reading the tree's selection while the inbox is
+    # on screen would act on a row nobody can see.
+    $row  = (Get-ActiveList).SelectedItem
+    # A band heading is a label, not a target. Every shortcut below that takes a
+    # row would otherwise act on the heading, or on nothing, without saying so.
+    if ($row -and $row.Kind -eq 'band') { $row = $null }
     try {
         if ($ctrl) {
             switch ($e.Key) {
@@ -2834,6 +3381,10 @@ $window.Add_PreviewKeyDown({ param($s, $e)
         }
         switch ($e.Key) {
             'F3'     { $e.Handled = $true; $null = $ui.SearchBox.Focus(); $ui.SearchBox.SelectAll() }
+            # The three views, in the order they sit on screen.
+            'D1'     { $e.Handled = $true; $ui.ModeInbox.IsChecked = $true }
+            'D2'     { $e.Handled = $true; $ui.ModeTree.IsChecked = $true }
+            'D3'     { $e.Handled = $true; $ui.ModeRestore.IsChecked = $true }
             'Escape' {
                 $e.Handled = $true
                 if ($ui.SearchBox.Text) { $ui.SearchBox.Text = '' }
@@ -2927,12 +3478,16 @@ if ($script:liveIntervalSeconds -gt 0) {
 # ---------------------------------------------------------------------------
 Set-Registry -Registry (Get-SRRegistry) -Config $script:cfg
 try { $script:suppress = $true; $ui.WorktreeToggle.IsChecked = $script:showWt } finally { $script:suppress = $false }
-Update-List
-Set-Status 'the checkbox on the left decides what reopens at logon. Open, on the right, launches now - the two never touch.' 'info'
+# ModeInbox carries IsChecked="True" in the markup, but Add_Checked is attached
+# after the window loads, so that initial state raises nothing. Apply the mode
+# explicitly or the window opens claiming Inbox while showing the tree.
+Set-ViewMode $script:viewMode
+Set-Status 'Inbox: what each conversation last said, and which of them are waiting on you. Projects and Restore are the other two views.' 'info'
 
 $window.Add_ContentRendered({
-    $null = $ui.RowList.Focus()
-    if ($script:rows.Count) { $ui.RowList.SelectedIndex = 0 }
+    $list = Get-ActiveList
+    $null = $list.Focus()
+    if ($script:viewMode -ne 'inbox' -and $script:rows.Count) { $ui.RowList.SelectedIndex = 0 }
     if (-not $NoScan) { Start-Rescan } else { Start-Rescan -NoScanPass }
 })
 

@@ -20,6 +20,13 @@
       keys    drives the GUI through UI Automation: HOME, END, PAGEUP, PAGEDOWN
               and the arrows. Needs a desktop session; skipped with -NoGui.
 
+      inbox   drives the GUI's inbox: that it opens on the inbox, groups into
+              bands, does NOT show the tree's column captions, that the count
+              pills are real buttons, and that the view switch swaps lists.
+              Every "is not showing" assertion is paired with the inverse in
+              another view, so none of them can pass by finding nothing.
+              Needs a desktop session; skipped with -NoGui.
+
       state   Get-SRConversationState. Hand-built transcripts force every state,
               so the assertions can actually fail regardless of what the operator
               happens to be running; then the same function over every real
@@ -47,7 +54,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('frame', 'paint', 'keys', 'state')]
+    [ValidateSet('frame', 'paint', 'keys', 'state', 'inbox')]
     [string]$Only,
     [switch]$NoGui
 )
@@ -141,6 +148,15 @@ if ((-not $Only -or $Only -eq 'keys') -and -not $NoGui) {
     # 2 means it could not get keyboard focus, which is a statement about the
     # desktop and not about the GUI. Not a pass, and deliberately not a failure.
     Record 'keys' $LASTEXITCODE @($out)
+}
+
+# --- inbox: drives the GUI, needs a desktop ---------------------------------
+if ((-not $Only -or $Only -eq 'inbox') -and -not $NoGui) {
+    Write-Host "`n=== inbox (the orchestration view) ===" -ForegroundColor Cyan
+    $drv = Join-Path $here 'inbox-driver.ps1'
+    $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $drv 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'inbox' $LASTEXITCODE @($out)
 }
 
 # --- summary ----------------------------------------------------------------

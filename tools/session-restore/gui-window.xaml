@@ -448,6 +448,73 @@
          deliberate: the operator has to be able to see what is being filtered
          out at a glance, and a filled chip against four hollow ones does that
          without reading a word of it. -->
+    <!-- THE COUNT PILLS, as buttons.
+         They were plain TextBlocks inside Borders, which is exactly what made
+         the operator ask why clicking "live now" did nothing: it LOOKED like a
+         control and was not one. Anything shaped like a pill in this window is
+         now pressable, and each one takes you to its band in the inbox. -->
+    <Style x:Key="Pill" TargetType="Button">
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Padding" Value="11,4"/>
+      <Setter Property="Margin" Value="0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="shell"
+                    Background="{StaticResource Panel}"
+                    BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                    CornerRadius="6" Padding="{TemplateBinding Padding}"
+                    SnapsToDevicePixels="True">
+              <ContentPresenter VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="shell" Property="Background" Value="{StaticResource Raised}"/>
+                <Setter TargetName="shell" Property="BorderBrush" Value="{StaticResource HairlineHi}"/>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="shell" Property="Background" Value="{StaticResource PanelHi}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- THE VIEW SWITCH. Three exclusive modes, rendered as one segmented
+         control so it reads as "which of these am I looking at" rather than as
+         three unrelated buttons. The selected segment is FILLED, matching the
+         filled-means-on language the ticks and chips already use. -->
+    <Style x:Key="Seg" TargetType="RadioButton">
+      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontSize" Value="11.5"/>
+      <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Focusable" Value="True"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RadioButton">
+            <Border x:Name="seg" Background="Transparent" CornerRadius="5"
+                    Padding="12,5" SnapsToDevicePixels="True">
+              <TextBlock x:Name="lab" Text="{TemplateBinding Content}"
+                         Foreground="{TemplateBinding Foreground}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="seg" Property="Background" Value="{StaticResource Raised}"/>
+                <Setter TargetName="lab" Property="Foreground" Value="{StaticResource TextHigh}"/>
+              </Trigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="seg" Property="Background" Value="{StaticResource TextMax}"/>
+                <Setter TargetName="lab" Property="Foreground" Value="{StaticResource Ink}"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <Style x:Key="Chip" TargetType="ToggleButton">
       <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
       <Setter Property="FontSize" Value="11.5"/>
@@ -840,6 +907,93 @@
       </Grid>
     </DataTemplate>
 
+    <!-- == THE INBOX ROW ==
+         A SEPARATE template from RowTemplate above, and a separate list, on
+         purpose. The tree row answers "what is in this project and does it
+         reopen at logon"; the inbox row answers "who needs me and what did they
+         last say". Those want different columns, and forcing one template to do
+         both would mean eleven columns of which half are collapsed on every row.
+
+         Two row kinds share this template, told apart by which cells are
+         visible rather than by two near-identical copies:
+
+           band       a heading with a count. NEEDS YOU / WORKING / IDLE.
+           session    a conversation: state glyph, name, project, what it last
+                      said, and how long ago.
+
+         The BODY of the row is what it last said. That is the column that gets
+         the remaining width, because it is the thing you came to read. -->
+    <DataTemplate x:Key="InboxTemplate">
+      <Grid Height="{Binding RowHeight}" Background="Transparent" Margin="{Binding Indent}">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="30"/>
+          <ColumnDefinition Width="Auto" MinWidth="120"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*" MinWidth="120"/>
+          <ColumnDefinition Width="64"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- 0: the state mark. Same drawn geometry vocabulary as the tree view,
+             so a chevron means "waiting for you" in both places. -->
+        <Path Grid.Column="0" Data="{Binding ConvGeometry}"
+              Visibility="{Binding ConvGlyphVisibility}"
+              Stretch="None" HorizontalAlignment="Center" VerticalAlignment="Center"
+              Stroke="{Binding ConvBrush}" StrokeThickness="1.5"
+              StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+
+        <!-- 1: the name, or the band heading. -->
+        <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center"
+                   Foreground="{Binding NameBrush}"
+                   FontWeight="{Binding NameWeight}"
+                   FontSize="{Binding NameSize}"
+                   TextDecorations="{Binding NameDecorations}"
+                   TextTrimming="CharacterEllipsis"
+                   ToolTip="{Binding ConvTip}"/>
+
+        <!-- 2: which project this belongs to. A LABEL here, not a parent: the
+             inbox is deliberately cross-project, so the project is one more
+             attribute of the row rather than a node above it. -->
+        <TextBlock Grid.Column="2" Text="{Binding Project}"
+                   Visibility="{Binding ProjectVisibility}"
+                   VerticalAlignment="Center" Margin="12,0,0,0"
+                   FontFamily="{StaticResource FontSmall}" FontSize="11"
+                   Foreground="{StaticResource TextDim}"
+                   TextTrimming="CharacterEllipsis"/>
+
+        <!-- 3: what it last said. The point of the whole view. -->
+        <TextBlock Grid.Column="3" Text="{Binding Said}"
+                   Visibility="{Binding SaidVisibility}"
+                   VerticalAlignment="Center" Margin="16,0,10,0"
+                   FontSize="12" Foreground="{Binding SaidBrush}"
+                   TextTrimming="CharacterEllipsis"
+                   ToolTip="{Binding SaidTip}"/>
+
+        <!-- 3b: the band's count, in the same cell the prose would occupy.
+             A band never has prose, so the two can never collide. -->
+        <TextBlock Grid.Column="3" Text="{Binding Counts}"
+                   Visibility="{Binding CountsVisibility}"
+                   VerticalAlignment="Center" Margin="12,0,0,0"
+                   Style="{StaticResource Caption}"
+                   Foreground="{Binding CountsBrush}"/>
+
+        <!-- 4: how long ago, right-aligned so the numbers form a column. -->
+        <TextBlock Grid.Column="4" Text="{Binding Stamp}"
+                   VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,12,0"
+                   FontFamily="{StaticResource FontSmall}" FontSize="11"
+                   Foreground="{Binding StampBrush}"/>
+
+        <!-- 5: what you can do about it. -->
+        <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center"
+                    Visibility="{Binding ActionVisibility}" Margin="0,0,10,0">
+          <Button Style="{StaticResource BtnRow}" Tag="jump"
+                  Content="{Binding JumpLabel}"
+                  IsEnabled="{Binding CanJump}"
+                  ToolTip="{Binding JumpTip}"/>
+        </StackPanel>
+      </Grid>
+    </DataTemplate>
+
   </Window.Resources>
 
   <!-- =========================================================== -->
@@ -867,7 +1021,7 @@
         <StackPanel Grid.Column="0" VerticalAlignment="Center">
           <TextBlock Text="Claude sessions" FontFamily="{StaticResource FontDisplay}"
                      FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource TextMax}"/>
-          <TextBlock x:Name="SubTitle" Text="every conversation on this machine"
+          <TextBlock x:Name="SubTitle" Text="what each one last said, and which are waiting on you"
                      FontFamily="{StaticResource FontSmall}"
                      FontSize="11.5" Foreground="{StaticResource TextLow}" Margin="0,3,0,0"/>
         </StackPanel>
@@ -917,13 +1071,32 @@
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" Orientation="Horizontal" ClipToBounds="True">
-          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}" BorderThickness="1" CornerRadius="6" Padding="11,4">
+
+          <!-- WHICH VIEW. First thing on the row because it is the first thing
+               you need to know about what you are looking at. -->
+          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}"
+                  BorderThickness="1" CornerRadius="7" Padding="3" Margin="0,0,16,0">
+            <StackPanel Orientation="Horizontal">
+              <RadioButton x:Name="ModeInbox" Style="{StaticResource Seg}" Content="Inbox" IsChecked="True"
+                           ToolTip="Every conversation across every project, ordered by what it needs from you."/>
+              <RadioButton x:Name="ModeTree" Style="{StaticResource Seg}" Content="Projects"
+                           ToolTip="The project / lane / conversation tree, with folding and per-project counts."/>
+              <RadioButton x:Name="ModeRestore" Style="{StaticResource Seg}" Content="Restore"
+                           ToolTip="Choose what reopens automatically at the next logon."/>
+            </StackPanel>
+          </Border>
+
+          <Button x:Name="LivePill" Style="{StaticResource Pill}"
+                  AutomationProperties.Name="live now"
+                  ToolTip="Jump to the sessions that are running right now.">
             <StackPanel Orientation="Horizontal">
               <Ellipse Width="7" Height="7" Fill="{StaticResource TextMax}" VerticalAlignment="Center" Margin="0,0,8,0"/>
               <TextBlock x:Name="LiveSummary" Text="live now" Foreground="{StaticResource TextHigh}" FontSize="12"/>
             </StackPanel>
-          </Border>
-          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}" BorderThickness="1" CornerRadius="6" Padding="11,4" Margin="9,0,0,0">
+          </Button>
+          <Button x:Name="WaitPill" Style="{StaticResource Pill}" Margin="9,0,0,0"
+                  AutomationProperties.Name="waiting for you"
+                  ToolTip="Jump to whatever has stopped and is waiting on you.">
             <StackPanel Orientation="Horizontal">
               <Path Data="M 1,0 L 5.5,4.5 L 1,9" Width="6.5" Height="9" Stretch="None"
                     Stroke="{StaticResource TextMax}" StrokeThickness="1.5"
@@ -931,13 +1104,15 @@
                     VerticalAlignment="Center" Margin="0,0,8,0"/>
               <TextBlock x:Name="WaitSummary" Text="waiting for you" Foreground="{StaticResource TextHigh}" FontSize="12"/>
             </StackPanel>
-          </Border>
-          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}" BorderThickness="1" CornerRadius="6" Padding="11,4" Margin="9,0,0,0">
+          </Button>
+          <Button x:Name="TickPill" Style="{StaticResource Pill}" Margin="9,0,0,0"
+                  AutomationProperties.Name="ticked to reopen at logon"
+                  ToolTip="Show what is ticked to reopen at the next logon.">
             <StackPanel Orientation="Horizontal">
               <Rectangle Width="9" Height="9" RadiusX="2" RadiusY="2" Fill="{StaticResource TextMax}" VerticalAlignment="Center" Margin="0,0,8,0"/>
               <TextBlock x:Name="TickSummary" Text="ticked to reopen at logon" Foreground="{StaticResource TextHigh}" FontSize="12"/>
             </StackPanel>
-          </Border>
+          </Button>
           <TextBlock x:Name="ProbeStamp" Text="" Foreground="{StaticResource TextLow}" FontSize="11.5"
                      FontFamily="{StaticResource FontSmall}" TextTrimming="CharacterEllipsis"
                      VerticalAlignment="Center" Margin="14,0,0,0"/>
@@ -965,8 +1140,8 @@
           </Button>
           <CheckBox x:Name="WorktreeToggle" Style="{StaticResource TickBox}" Margin="0,0,8,0"
                     ToolTip="Show a lane for each git worktree. Writes includeWorktrees to the config and rescans."/>
-          <TextBlock Text="worktrees" VerticalAlignment="Center" Foreground="{StaticResource TextMid}" FontSize="12.5" Margin="0,0,18,0"/>
-          <TextBlock Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="0,0,12,0"/>
+          <TextBlock x:Name="WorktreeCaption" Text="worktrees" VerticalAlignment="Center" Foreground="{StaticResource TextMid}" FontSize="12.5" Margin="0,0,18,0"/>
+          <TextBlock x:Name="NowCaption" Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="0,0,12,0"/>
           <Button x:Name="LaunchTicked" Style="{StaticResource BtnNow}" Content="Launch everything ticked"
                   ToolTip="Open every ticked conversation that is not already open, up to the maxSessions cap"/>
         </StackPanel>
@@ -1058,7 +1233,11 @@
     </Border>
 
     <!-- == column headings. Widths and the rules mirror RowTemplate. == -->
-    <Border Grid.Row="4" Background="{StaticResource PanelHi}" BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="0,9,0,9">
+    <!-- The tree's column captions. Hidden in the inbox, which has different
+         columns and needs no captions at all: a name, a project, a sentence and
+         a time need no headings, and the bands already label the groups. That
+         is a whole row of chrome the list gets back. -->
+    <Border x:Name="TreeHead" Grid.Row="4" Background="{StaticResource PanelHi}" BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="0,9,0,9">
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="54"/>
@@ -1160,6 +1339,25 @@
           <TranslateTransform x:Name="ListShift" Y="0"/>
         </ListBox.RenderTransform>
       </ListBox>
+
+      <!-- The inbox is its OWN list occupying the same cell, shown instead of
+           the tree rather than beside it. Two lists rather than one list with a
+           template selector: the tree's rendering, folding, filtering and
+           keep-selection all work today, and a shared control would put every
+           one of them at risk for no gain. Only one is ever visible. -->
+      <ListBox x:Name="InboxList" Grid.Row="1" Visibility="Collapsed"
+               Background="Transparent" BorderThickness="0" Foreground="{StaticResource TextHigh}"
+               ItemContainerStyle="{StaticResource RowItem}"
+               ItemTemplate="{StaticResource InboxTemplate}"
+               SelectionMode="Single"
+               HorizontalContentAlignment="Stretch"
+               ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+               ScrollViewer.VerticalScrollBarVisibility="Auto"
+               VirtualizingPanel.IsVirtualizing="True"
+               VirtualizingPanel.VirtualizationMode="Recycling"
+               VirtualizingPanel.ScrollUnit="Pixel"
+               KeyboardNavigation.DirectionalNavigation="Contained"/>
+
       <!-- == READING ONE CONVERSATION ==
            Replaces the list rather than sitting beside it. At 1480px a side
            panel would leave neither the list nor the text enough width, and
