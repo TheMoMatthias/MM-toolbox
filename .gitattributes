@@ -19,3 +19,7 @@
 # Nothing else is constrained on purpose. Forcing an eol on the .ps1 files would
 # rewrite thousands of lines for no benefit, and PowerShell does not care.
 *.bat text eol=crlf
+
+# Same, for the same reason: a Windows Script Host file is a Windows file, and
+# "Sessions GUI.vbs" is now the normal way the GUI is opened.
+*.vbs text eol=crlf

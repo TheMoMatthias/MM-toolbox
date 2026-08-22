@@ -3,6 +3,18 @@ REM Double-click for the Claude session control panel as a WINDOW: every
 REM conversation across every repo, what is live right now, a button to open any
 REM of them, and the ticks that decide what comes back at logon.
 REM
+REM NOT THE NORMAL WAY IN ANY MORE -- use "Sessions GUI.vbs" for that.
+REM
+REM A batch file cannot open without a console: cmd.exe has to create one to
+REM run it at all, and the PowerShell it starts gets its own before
+REM -WindowStyle Hidden can take effect. Measured: three visible console
+REM windows before the app appears, which is what made it look broken.
+REM The .vbs is opened by wscript.exe, which has no console, and measures
+REM as NONE.
+REM
+REM This file is kept for the terminal: SR_GUI_SHOW=1 runs the GUI with a
+REM console attached so a startup error is on screen instead of in the log.
+REM
 REM Sessions.bat opens the same screen in a terminal. This one opens it in a
 REM window; they read and write the same registry, so either is fine.
 setlocal
