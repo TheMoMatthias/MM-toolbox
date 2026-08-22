@@ -1,0 +1,21 @@
+# Batch files check out with CRLF on every machine.
+#
+# Why, honestly: NOT because cmd.exe breaks without it. That was the reason I first
+# wrote here, and I tested it rather than assert it -- an LF-only .bat containing a
+# parenthesised multi-line block and `exit /b` ran identically to the CRLF one on
+# Windows 11, same output, same exit code. Modern cmd.exe tolerates LF fine.
+#
+# The real reason is that without this the repo produces a DIFFERENT working tree
+# depending on who clones it. There is no .gitattributes, core.autocrlf is true on
+# the author's machine, so the blobs are stored LF and handed back as CRLF here --
+# while a clone with autocrlf=false gets LF. That already showed up as drift: four
+# of the five launchers sat on disk as CRLF and one as LF, for no reason anybody
+# chose. eol=crlf makes the checkout deterministic and matches what a .bat is
+# conventionally expected to be.
+#
+# So: defensive and tidying, not a fix for an observed break. If that distinction
+# ever stops being recorded, someone will "fix" a bug that was never there.
+#
+# Nothing else is constrained on purpose. Forcing an eol on the .ps1 files would
+# rewrite thousands of lines for no benefit, and PowerShell does not care.
+*.bat text eol=crlf
