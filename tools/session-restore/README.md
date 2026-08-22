@@ -409,6 +409,26 @@ with the loop cut off and a driver bolted on. The runner splices from the **live
 source every time, and asserts every marker — if the script changes shape the run
 fails loudly instead of testing something that no longer exists.
 
+**The launch and spawn paths are exercised for real, not just reasoned about.**
+On 2026-08-22 both ran end to end against real conversations: a multi-tab launch
+opened two Anonymizer sessions (`claude.exe` 13 -> 15, both resuming the right ids,
+`launched 2 verified 2 skipped 1` — the skip being a genuinely missing transcript),
+and a spawn through the panel's own `Invoke-SpawnNew` started a named session with
+Remote Control attached (`15 -> 16`, `-n SPAWN-PROOF-… --remote-control SPAWN-PROOF-…`).
+Everything opened was closed again: `claude.exe` back to 13, the count it started at.
+
+That run also proved the `TrimEnd` fix against reality rather than in isolation.
+With two sessions genuinely live in `…\Anonymizer`, the guard returns 2 for both
+`…\Anonymizer` and `…\Anonymizer\`. Under the old `TrimEnd('')` the trailing-separator
+form returned 0 — the guard would have failed open and waved a third session into a
+tree that already had two running.
+
+🪤 **Launching a conversation makes it the newest in its lane, so the next scan
+auto-ticks it.** The test left `Anonymizer` and `ANONYMIZER` ticked. That is the roll
+working as designed, and it is inert here because the Anonymizer *project* tick is
+off — but it is a reminder that opening a conversation is an input to what reopens at
+logon, and that only pinning makes a tick stick.
+
 **They are calibrated, not merely written.** Reintroducing the viewport margin bug
 turns `frame` red (9 failures at 90x12). Removing the comma protection from
 `Build-Frame`'s return, however, left it **green** — that assertion never guarded the
