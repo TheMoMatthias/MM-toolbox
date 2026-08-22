@@ -990,7 +990,8 @@ foreach ($n in @(
     'FtOn','FtOff','FpPin','FaRecent','FaStale',
     'ListShift','NeedsBand','NeedsLabel','NeedsList',
     'ReadPane','ReadName','ReadWhat','ReadView','ReadBack','ReadRefresh','ReadOpen',
-    'LegendBox','LegendToggle','SendBox','SendBtn','SendNote'
+    'LegendBox','LegendToggle','SendBox','SendBtn','SendNote',
+    'FilterBar','FilterBtn','BulkBtn'
 )) { $ui[$n] = $window.FindName($n) }
 
 # A name in the markup that is not in the list above is $null here, and the
@@ -1614,6 +1615,20 @@ function Update-FilterReadout {
         $ui.FilterCount.Foreground = $(if ($script:matchCount) { $C.TextHigh } else { $C.TextMax })
     }
     $ui.ClearFilters.IsEnabled = ($dims -gt 0)
+
+    # The button that opens the bar carries the count, so folding the bar away
+    # can never hide the fact that something is being filtered out. A hidden
+    # filter with no readout is the one way this fold could do harm.
+    if ($ui.FilterBtn) {
+        $ui.FilterBtn.Content = $(if ($dims -eq 0) { 'Filters' } else { "Filters  $dims" })
+        # Open it on its own the moment a filter is applied from anywhere else --
+        # the search box, a keyboard shortcut. Being filtered without being able
+        # to see by what is worse than a row of chips.
+        if ($dims -gt 0 -and $ui.FilterBar.Visibility -ne $V_Show) {
+            $ui.FilterBtn.IsChecked = $true
+            $ui.FilterBar.Visibility = $V_Show
+        }
+    }
 }
 
 function Get-ChipControls {
@@ -1745,9 +1760,13 @@ function Update-Header {
     # different numbers and the whole point of the DOING column is that they are.
     $ui.WaitSummary.Text = "{0} waiting for you   |   {1} working" -f $waiting, $working
     $ui.TickSummary.Text = "{0} of {1} ticked to reopen at logon, in {2} project(s){3}" -f $on, $tot, $projOn, $(if ($script:dirty) { '  *unsaved*' } else { '' })
+    # Two facts, not three. The auto-tick rule is a standing rule that never
+    # changes -- it was a sentence of teaching text on the one line that also has
+    # to hold every action, and it pushed "Launch everything ticked" off the
+    # window. It lives in the legend now, behind the "?", with the rest of the
+    # things you read once.
     $ui.ProbeStamp.Text  = $(if ($script:probedAt) {
-        "{0} pinned   |   live + doing as of {1}   |   auto: newest {2} from main, {3} from each worktree" -f `
-            $pinned, ([datetime]$script:probedAt).ToString('HH:mm:ss'), $script:cfg.autoTickPerDirectory, $script:cfg.autoTickPerWorktree
+        "{0} pinned   |   as of {1}" -f $pinned, ([datetime]$script:probedAt).ToString('HH:mm:ss')
     } else { '' })
 
     Update-FilterReadout
@@ -1809,6 +1828,22 @@ function Update-List { param([string]$KeepKey, [switch]$ToTop)
     if ($ToTop) { $KeepKey = $null }
     $script:rows = Build-Rows
     foreach ($r in $script:rows) { Update-RowStatic $r; Update-RowTicks $r; Update-RowLive $r; Update-RowConv $r }
+    # Parallel agent runs share one prompt, so the subtitle that tells two
+    # untitled conversations apart becomes THIRTEEN IDENTICAL LINES that tell you
+    # nothing and read as if the rows were duplicates. Show it on the first of a
+    # run and blank the repeats: the information is still there, once, where it
+    # is actually information.
+    $prevSub = $null; $prevKey = $null
+    foreach ($r in $script:rows) {
+        if ($r.Kind -ne 'session') { $prevSub = $null; $prevKey = $r.Key; continue }
+        if ($r.Subtitle -and $r.Subtitle -eq $prevSub) {
+            $r.Subtitle = ''
+            $r.SubtitleVisibility = $V_Hide
+        } elseif ($r.Subtitle) {
+            $prevSub = $r.Subtitle
+        }
+    }
+
     # A row whose text has no brush renders as NOTHING, and a blank column reads
     # as "no data" rather than as a bug -- which is exactly how a case-insensitive
     # $c/$C collision hid a fully populated DOING column. Turn it into noise.
@@ -2528,6 +2563,22 @@ $window.Add_Activated({ Stop-TaskbarFlash })
 # The legend is folded away by default -- three dense lines you read once and
 # then never again, which was costing a tenth of the window permanently. The
 # choice sticks for the session; it is not worth a config entry.
+$ui.FilterBtn.Add_Click({
+    Invoke-Guarded {
+        $ui.FilterBar.Visibility = $(if ($ui.FilterBtn.IsChecked) { $V_Show } else { $V_Hide })
+    } 'toggle the filter bar'
+})
+
+# A menu, because these are occasional. Opening it from the button's own click
+# rather than a right-click: nobody right-clicks a button expecting a menu.
+$ui.BulkBtn.Add_Click({
+    Invoke-Guarded {
+        $ui.BulkBtn.ContextMenu.PlacementTarget = $ui.BulkBtn
+        $ui.BulkBtn.ContextMenu.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
+        $ui.BulkBtn.ContextMenu.IsOpen = $true
+    } 'open the bulk menu'
+})
+
 $ui.LegendToggle.Add_Click({
     Invoke-Guarded {
         $showing = ($ui.LegendBox.Visibility -eq $V_Show)
@@ -2589,7 +2640,15 @@ $ui.NeedsList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.W
         }
         $ui.RowList.SelectedIndex = $idx
         $ui.RowList.ScrollIntoView($script:rows[$idx])
-        $null = $ui.RowList.Focus()
+        # Straight into the conversation with the cursor in the reply box. The
+        # band exists because something is ASKING; landing on a highlighted row
+        # in a list and making the operator press ENTER, find the box and click
+        # it was three deliberate steps between "it wants you" and being able to
+        # type a character.
+        Show-ReadPane $script:rows[$idx]
+        $null = $window.Dispatcher.BeginInvoke(
+            [System.Windows.Threading.DispatcherPriority]::Input,
+            [action]{ if ($ui.SendBox.IsEnabled) { $null = $ui.SendBox.Focus() } })
     } 'go to the waiting conversation'
 })
 

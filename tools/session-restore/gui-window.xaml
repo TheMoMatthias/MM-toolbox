@@ -911,7 +911,12 @@
          for live, a chevron for waiting, a filled square for ticked. -->
     <Border Grid.Row="1" Background="{StaticResource Ink}" Padding="22,12,22,12">
       <StackPanel>
-        <StackPanel Orientation="Horizontal">
+        <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" MinWidth="220"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel Grid.Column="0" Orientation="Horizontal" ClipToBounds="True">
           <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}" BorderThickness="1" CornerRadius="6" Padding="11,4">
             <StackPanel Orientation="Horizontal">
               <Ellipse Width="7" Height="7" Fill="{StaticResource TextMax}" VerticalAlignment="Center" Margin="0,0,8,0"/>
@@ -934,49 +939,48 @@
             </StackPanel>
           </Border>
           <TextBlock x:Name="ProbeStamp" Text="" Foreground="{StaticResource TextLow}" FontSize="11.5"
-                     FontFamily="{StaticResource FontSmall}"
+                     FontFamily="{StaticResource FontSmall}" TextTrimming="CharacterEllipsis"
                      VerticalAlignment="Center" Margin="14,0,0,0"/>
         </StackPanel>
+
+        <!-- Everything that used to be its own toolbar row. The bulk tick
+             actions are occasional and now live behind one button; what stays
+             on screen is the thing you press often and the thing the whole
+             window is built around. -->
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
+          <ToggleButton x:Name="FilterBtn" Style="{StaticResource Chip}" Content="Filters" Margin="0,0,9,0"
+                        ToolTip="Filter by what a conversation is doing, whether it is open, its tick, its project or its age."/>
+          <Button x:Name="BulkBtn" Style="{StaticResource Btn}" Content="Bulk" Margin="0,0,9,0"
+                  ToolTip="Tick all, tick none, unpin all, collapse or expand the tree.">
+            <Button.ContextMenu>
+              <ContextMenu>
+                <MenuItem x:Name="TickAll"     Header="Tick all"     ToolTip="Tick every project and conversation, and pin them all"/>
+                <MenuItem x:Name="TickNone"    Header="Tick none"    ToolTip="Untick everything, and pin it so the hourly roll leaves it alone"/>
+                <MenuItem x:Name="UnpinAll"    Header="Unpin all"    ToolTip="Hand every conversation back to the rolling auto-tick"/>
+                <Separator/>
+                <MenuItem x:Name="CollapseAll" Header="Collapse all"/>
+                <MenuItem x:Name="ExpandAll"   Header="Expand all"/>
+              </ContextMenu>
+            </Button.ContextMenu>
+          </Button>
+          <CheckBox x:Name="WorktreeToggle" Style="{StaticResource TickBox}" Margin="0,0,8,0"
+                    ToolTip="Show a lane for each git worktree. Writes includeWorktrees to the config and rescans."/>
+          <TextBlock Text="worktrees" VerticalAlignment="Center" Foreground="{StaticResource TextMid}" FontSize="12.5" Margin="0,0,18,0"/>
+          <TextBlock Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="0,0,12,0"/>
+          <Button x:Name="LaunchTicked" Style="{StaticResource BtnNow}" Content="Launch everything ticked"
+                  ToolTip="Open every ticked conversation that is not already open, up to the maxSessions cap"/>
+        </StackPanel>
+        </Grid>
         <TextBlock x:Name="Unattributed" Text="" Foreground="{StaticResource TextMid}" FontSize="12"
                    Margin="1,10,0,0" Visibility="Collapsed" TextWrapping="Wrap"/>
       </StackPanel>
     </Border>
 
-    <!-- == toolbar == -->
-    <Border Grid.Row="2" Background="{StaticResource Ink}" Padding="22,0,22,14">
-      <Grid>
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
-
-        <StackPanel Grid.Column="0" Orientation="Horizontal">
-          <TextBlock Text="LOGON SET" Style="{StaticResource PoleCaption}" Margin="0,0,12,0"/>
-          <Button x:Name="TickAll"  Style="{StaticResource BtnTick}" Content="Tick all"  Margin="0,0,7,0"
-                  ToolTip="Tick every project and conversation, and pin them all"/>
-          <Button x:Name="TickNone" Style="{StaticResource BtnTick}" Content="Tick none" Margin="0,0,7,0"
-                  ToolTip="Untick everything, and pin it so the hourly roll leaves it alone"/>
-          <Button x:Name="UnpinAll" Style="{StaticResource Btn}" Content="Unpin all" Margin="0,0,18,0"
-                  ToolTip="Hand every conversation back to the rolling auto-tick"/>
-
-          <Border Width="1" Background="{StaticResource Hairline}" Margin="0,3,18,3"/>
-
-          <Button x:Name="CollapseAll" Style="{StaticResource Btn}" Content="Collapse all" Margin="0,0,7,0"/>
-          <Button x:Name="ExpandAll"   Style="{StaticResource Btn}" Content="Expand all"   Margin="0,0,18,0"/>
-
-          <CheckBox x:Name="WorktreeToggle" Style="{StaticResource TickBox}" Margin="0,0,8,0"
-                    ToolTip="Show a lane for each git worktree. Writes includeWorktrees to the config and rescans."/>
-          <TextBlock Text="worktree lanes" VerticalAlignment="Center" Foreground="{StaticResource TextMid}" FontSize="12.5"/>
-        </StackPanel>
-
-        <StackPanel Grid.Column="2" Orientation="Horizontal">
-          <TextBlock Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="0,0,12,0"/>
-          <Button x:Name="LaunchTicked" Style="{StaticResource BtnNow}" Content="Launch everything ticked"
-                  ToolTip="Open every ticked conversation that is not already open, up to the maxSessions cap"/>
-        </StackPanel>
-      </Grid>
-    </Border>
+    <!-- Grid.Row 2 is deliberately empty. The toolbar that lived here was
+         folded into the summary row above; the RowDefinition stays because an
+         Auto row with no content is zero pixels tall, and removing it would
+         mean renumbering every Grid.Row below plus the overlays' RowSpan, which
+         is a lot of risk to reclaim nothing. -->
 
     <!-- == THE FILTER BAR ==
          Every dimension this window shows, as chips, always visible. The rules,
@@ -986,7 +990,8 @@
          A lit chip is filled. The row of chips IS the readout of what is applied,
          which is why they are always on screen rather than behind a menu, and
          why the match count sits at the end of the same strip. -->
-    <Border Grid.Row="3" Background="{StaticResource Panel}"
+    <Border x:Name="FilterBar" Grid.Row="3" Visibility="Collapsed"
+            Background="{StaticResource Panel}"
             BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,1" Padding="22,10,22,10">
       <StackPanel x:Name="FilterChips">
 
@@ -1311,6 +1316,7 @@
             <Run Text="  summarising" Foreground="{StaticResource TextHigh}"/><Run Text=" compacting itself."/>
             <Run Text="  was ..." /><Run Text=" nothing has moved for minutes, so that is the LAST state, not a current one."/>
             <Run Text="  *" Foreground="{StaticResource TextHigh}"/><Run Text=" pinned, the roll leaves it alone."/>
+            <Run Text="  THE ROLL" FontWeight="Bold" Foreground="{StaticResource TextDim}"/><Run Text="  an hourly scan ticks the newest few conversations in each lane, unless you have pinned them. The exact counts are autoTickPerDirectory and autoTickPerWorktree in session-restore.config.json."/>
           </TextBlock>
           </StackPanel>
         </StackPanel>
