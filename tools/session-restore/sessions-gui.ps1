@@ -945,6 +945,12 @@ try {
 # PALETTE block of gui-window.xaml; nothing here invents a colour of its own.
 # A missing key is fatal rather than silently $null: a row with no brush renders
 # as invisible text, which is a bug that looks like a blank column.
+# The type system, read back the same way the palette is: one definition, in the
+# XAML, and nothing here invents a face of its own.
+$script:UiFace   = $window.TryFindResource('FontText')
+$script:MonoFace = $window.TryFindResource('FontMono')
+if (-not $script:UiFace -or -not $script:MonoFace) { throw 'gui-window.xaml is missing FontText or FontMono' }
+
 foreach ($k in @('TextMax','TextHigh','TextMid','TextLow','TextDim','Hairline','HairlineHi','Ink','Panel','Raised')) {
     $b = $window.TryFindResource($k)
     if (-not $b) { throw "gui-window.xaml is missing the palette brush '$k'" }
@@ -969,7 +975,8 @@ foreach ($n in @(
     'FlLive','FlNot','FlGone',
     'FsWaiting','FsWorking','FsSumm','FsIdle','FsUnknown',
     'FtOn','FtOff','FpPin','FaRecent','FaStale',
-    'ListShift','NeedsBand','NeedsLabel','NeedsList'
+    'ListShift','NeedsBand','NeedsLabel','NeedsList',
+    'ReadPane','ReadName','ReadWhat','ReadView','ReadBack','ReadRefresh','ReadOpen'
 )) { $ui[$n] = $window.FindName($n) }
 
 # A name in the markup that is not in the list above is $null here, and the
@@ -1809,6 +1816,241 @@ function Update-List { param([string]$KeepKey, [switch]$ToTop)
     Update-Selection
 }
 
+# ---------------------------------------------------------------------------
+# Reading one conversation
+#
+# Four kinds of block, told apart by FORM rather than by hue, because the window
+# has no hue to spend:
+#
+#   you        a bar down the left edge and the brightest text. It is the only
+#              thing on the page with a bar, so your own words are findable by
+#              shape while scrolling past everything else.
+#   said       plain prose at reading weight. The default, so it needs no mark.
+#   thinking   indented, dimmest, italic. Present but clearly not addressed to
+#              you -- and folded to a couple of lines unless you ask for it.
+#   tool       one mono line, dim, with a chevron. Tool traffic outnumbers prose
+#              five to one in a real transcript; giving each call more than a
+#              line would bury the conversation inside its own machinery.
+#
+# Code is monospaced on a lifted panel with its own left rule. No syntax colour
+# yet, by decision: structure first, polish once it has been used.
+# ---------------------------------------------------------------------------
+$script:readSession = $null
+$script:readDir     = $null
+
+function New-ReadRun {
+    param([string]$Text, $Brush, [double]$Size = 13, [string]$Weight = 'Normal', [switch]$Mono, [switch]$Italic)
+    $r = New-Object System.Windows.Documents.Run ([string]$Text)
+    if ($Brush) { $r.Foreground = $Brush }
+    $r.FontSize = $Size
+    if ($Mono)   { $r.FontFamily = $script:MonoFace }
+    if ($Italic) { $r.FontStyle = [System.Windows.FontStyles]::Italic }
+    $r.FontWeight = $(if ($Weight -eq 'SemiBold') { $FW_Semi } elseif ($Weight -eq 'Bold') { [System.Windows.FontWeights]::Bold } else { $FW_Normal })
+    return $r
+}
+
+# Markdown, but only the parts that change how a line READS: fenced code, a
+# heading, a bullet, and inline `code`. Anything more elaborate would be a
+# markdown engine, which is not what this needs to be.
+function Add-ReadProse {
+    param($Doc, [string]$Text, $Brush)
+    $lines = @($Text -replace "`r", '' -split "`n")
+    $i = 0
+    while ($i -lt $lines.Count) {
+        $ln = $lines[$i]
+
+        if ($ln.TrimStart().StartsWith('```')) {
+            $code = New-Object System.Collections.Generic.List[string]
+            $i++
+            while ($i -lt $lines.Count -and -not $lines[$i].TrimStart().StartsWith('```')) {
+                $code.Add($lines[$i]); $i++
+            }
+            $i++
+            $p = New-Object System.Windows.Documents.Paragraph
+            $p.Margin = New-Object System.Windows.Thickness 0, 6, 0, 6
+            $p.Padding = New-Object System.Windows.Thickness 12, 8, 12, 8
+            $p.Background = $C.Raised
+            $p.BorderBrush = $C.HairlineHi
+            $p.BorderThickness = New-Object System.Windows.Thickness 2, 0, 0, 0
+            $p.Inlines.Add((New-ReadRun -Text ($code -join "`n") -Brush $C.TextHigh -Size 12 -Mono))
+            $Doc.Blocks.Add($p)
+            continue
+        }
+
+        $p = New-Object System.Windows.Documents.Paragraph
+        $p.Margin = New-Object System.Windows.Thickness 0, 2, 0, 2
+        $body = $ln
+        $size = 13; $weight = 'Normal'; $indent = 0
+
+        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = 14 }
+        elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [char]0x2022 + '  ' + $Matches[1]; $indent = 14 }
+        elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.  ' + $Matches[2]; $indent = 14 }
+        if ($indent) { $p.Margin = New-Object System.Windows.Thickness $indent, 2, 0, 2 }
+
+        # Inline `code` and **bold**, split in one pass so a line can carry both.
+        $rest = $body
+        while ($rest -match '^(.*?)(`([^`]+)`|\*\*([^*]+)\*\*)(.*)$') {
+            $before = $Matches[1]; $codeTxt = $Matches[3]; $boldTxt = $Matches[4]; $rest = $Matches[5]
+            if ($before) { $p.Inlines.Add((New-ReadRun -Text $before -Brush $Brush -Size $size -Weight $weight)) }
+            if ($codeTxt) { $p.Inlines.Add((New-ReadRun -Text $codeTxt -Brush $C.TextMax -Size ($size - 1) -Mono)) }
+            elseif ($boldTxt) { $p.Inlines.Add((New-ReadRun -Text $boldTxt -Brush $C.TextMax -Size $size -Weight 'SemiBold')) }
+        }
+        if ($rest) { $p.Inlines.Add((New-ReadRun -Text $rest -Brush $Brush -Size $size -Weight $weight)) }
+        if ($p.Inlines.Count -eq 0) { $p.Inlines.Add((New-ReadRun -Text ' ' -Brush $Brush -Size $size)) }
+        $Doc.Blocks.Add($p)
+        $i++
+    }
+}
+
+function Build-ReadDocument {
+    param($Blocks)
+    $doc = New-Object System.Windows.Documents.FlowDocument
+    $doc.FontFamily        = $script:UiFace
+    $doc.Background        = $C.Ink
+    $doc.Foreground        = $C.TextHigh
+    $doc.PagePadding       = New-Object System.Windows.Thickness 26, 18, 26, 26
+    $doc.ColumnWidth       = [double]::PositiveInfinity   # one column, never split
+    $doc.IsOptimalParagraphEnabled = $false
+
+    if (-not @($Blocks).Count) {
+        $p = New-Object System.Windows.Documents.Paragraph
+        $p.Inlines.Add((New-ReadRun -Text 'Nothing readable in this transcript yet.' -Brush $C.TextMid -Size 13))
+        $doc.Blocks.Add($p)
+        return $doc
+    }
+
+    foreach ($b in @($Blocks)) {
+        switch ($b.Kind) {
+            'you' {
+                $s = New-Object System.Windows.Documents.Section
+                $s.Margin = New-Object System.Windows.Thickness 0, 12, 0, 6
+                $s.Padding = New-Object System.Windows.Thickness 12, 2, 0, 2
+                $s.BorderBrush = $C.TextMax
+                $s.BorderThickness = New-Object System.Windows.Thickness 2, 0, 0, 0
+                $lab = New-Object System.Windows.Documents.Paragraph
+                $lab.Margin = New-Object System.Windows.Thickness 0, 0, 0, 3
+                $lab.Inlines.Add((New-ReadRun -Text 'YOU' -Brush $C.TextMax -Size 10.5 -Weight 'SemiBold'))
+                $s.Blocks.Add($lab)
+                $inner = New-Object System.Windows.Documents.FlowDocument
+                Add-ReadProse -Doc $inner -Text $b.Body -Brush $C.TextMax
+                # Blocks is a live collection: moving them while enumerating it
+                # silently drops every second one, hence the @() snapshot.
+                #
+                # $null = on the Remove is NOT tidiness. BlockCollection.Remove
+                # returns a BOOL, PowerShell emits every uncaptured value, and a
+                # function that emits anything returns all of it -- so this
+                # returned an array of $true with the document buried inside, and
+                # the pane failed with "Cannot convert System.Object[] to
+                # FlowDocument". Void-looking methods are not all void.
+                foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $s.Blocks.Add($blk) }
+                $doc.Blocks.Add($s)
+            }
+            'said' {
+                $inner = New-Object System.Windows.Documents.FlowDocument
+                Add-ReadProse -Doc $inner -Text $b.Body -Brush $C.TextHigh
+                foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
+                $sp = New-Object System.Windows.Documents.Paragraph
+                $sp.Margin = New-Object System.Windows.Thickness 0, 0, 0, 8
+                $sp.Inlines.Add((New-ReadRun -Text ' ' -Brush $C.TextDim -Size 4))
+                $doc.Blocks.Add($sp)
+            }
+            'thinking' {
+                $head = @($b.Body -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 2) -join ' '
+                if ($head.Length -gt 170) { $head = $head.Substring(0, 167) + '...' }
+                $p = New-Object System.Windows.Documents.Paragraph
+                $p.Margin = New-Object System.Windows.Thickness 18, 3, 0, 6
+                $p.Inlines.Add((New-ReadRun -Text ('thinking  ' + $b.Meta + '   ') -Brush $C.TextDim -Size 10.5 -Weight 'SemiBold'))
+                $p.Inlines.Add((New-ReadRun -Text $head -Brush $C.TextDim -Size 12 -Italic))
+                $doc.Blocks.Add($p)
+            }
+            'tool' {
+                $p = New-Object System.Windows.Documents.Paragraph
+                $p.Margin = New-Object System.Windows.Thickness 4, 1, 0, 1
+                $p.Inlines.Add((New-ReadRun -Text ([char]0x203A + '  ') -Brush $C.TextLow -Size 12 -Mono))
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '  ') -Brush $C.TextMid -Size 11.5 -Weight 'SemiBold' -Mono))
+                $p.Inlines.Add((New-ReadRun -Text $b.Body -Brush $C.TextLow -Size 11.5 -Mono))
+                $doc.Blocks.Add($p)
+            }
+            'result' {
+                $first = @($b.Body -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
+                $first = "$first"
+                if ($first.Length -gt 120) { $first = $first.Substring(0, 117) + '...' }
+                $p = New-Object System.Windows.Documents.Paragraph
+                $p.Margin = New-Object System.Windows.Thickness 22, 0, 0, 4
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '  ' + $b.Meta + '   ') -Brush $C.TextDim -Size 10.5 -Mono))
+                $p.Inlines.Add((New-ReadRun -Text $first -Brush $C.TextDim -Size 11 -Mono))
+                $doc.Blocks.Add($p)
+            }
+        }
+    }
+    return $doc
+}
+
+# FlowDocumentScrollViewer has no ScrollToEnd of its own -- it OWNS a
+# ScrollViewer inside its template rather than being one. Walk the visual tree
+# for it. Guarded because the template is only realised once the control has been
+# laid out, so this is $null on the very first call.
+function Get-ReadScroller {
+    $q = New-Object System.Collections.Generic.Queue[object]
+    $q.Enqueue($ui.ReadView)
+    while ($q.Count) {
+        $n = $q.Dequeue()
+        if ($n -is [System.Windows.Controls.ScrollViewer]) { return $n }
+        $c = 0
+        try { $c = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($n) } catch { $c = 0 }
+        for ($i = 0; $i -lt $c; $i++) { $q.Enqueue([System.Windows.Media.VisualTreeHelper]::GetChild($n, $i)) }
+    }
+    return $null
+}
+
+function Show-ReadPane {
+    param($Row)
+    if (-not $Row -or $Row.Kind -ne 'session') {
+        Set-Status 'select a conversation to read it' 'warn'
+        return
+    }
+    $script:readSession = $Row.Session
+    $script:readDir     = $Row.Dir
+    $ui.ReadName.Text   = "$(Get-SessionTitle $Row.Session $Row.Dir)"
+    $cv = Get-Conv $Row.Session
+    $ui.ReadWhat.Text   = $(if ($cv) { "$($cv.State)  -  $($cv.Detail)" } else { '' })
+    $ui.ReadPane.Visibility = $V_Show
+    $ui.RowList.Visibility  = $V_Hide
+    $ui.NeedsBand.Visibility = $V_Hide
+    Update-ReadDocument
+}
+
+function Update-ReadDocument {
+    if (-not $script:readSession) { return }
+    $s = $script:readSession
+    $j = Get-SRTranscriptPath -Dir (Get-SessionCwd $s $script:readDir) -SessionId $s.sessionId -Recorded $s.jsonl
+    # ~680 ms on a 15 MB transcript, so it is announced rather than looking hung.
+    Set-Busy 'reading the conversation'
+    try {
+        $blocks = Get-SRTranscriptBlocks -JsonlPath $j
+        $docObj = Build-ReadDocument -Blocks $blocks
+        if ($docObj -isnot [System.Windows.Documents.FlowDocument]) {
+            throw ("Build-ReadDocument returned {0}, not a FlowDocument - something in it emitted to the pipeline" -f $docObj.GetType().Name)
+        }
+        $ui.ReadView.Document = $docObj
+        # Newest last, so the end is where the conversation is. Deferred to
+        # Loaded priority: the document has only just been set and the scroller
+        # does not know how tall it is until layout has run.
+        $null = $window.Dispatcher.BeginInvoke(
+            [System.Windows.Threading.DispatcherPriority]::Loaded,
+            [action]{ $sv = Get-ReadScroller; if ($sv) { $sv.ScrollToEnd() } })
+        Set-Status ("read {0} block(s) from the end of the transcript" -f @($blocks).Count) 'ok'
+    } finally { Set-Busy '' }
+}
+
+function Hide-ReadPane {
+    $script:readSession = $null
+    $ui.ReadPane.Visibility = $V_Hide
+    $ui.RowList.Visibility  = $V_Show
+    Update-NeedsBand
+    $null = $ui.RowList.Focus()
+}
+
 function Update-Selection {
     $row = $ui.RowList.SelectedItem
     if (-not $row) {
@@ -2193,6 +2435,31 @@ $ui.RowList.AddHandler([System.Windows.Controls.Primitives.ToggleButton]::Unchec
 # is brought up by something other than a click on the flashing button.
 $window.Add_Activated({ Stop-TaskbarFlash })
 
+# --- the reading pane's own controls ---------------------------------------
+$ui.ReadBack.Add_Click({    Invoke-Guarded { Hide-ReadPane }        'close the reading pane' })
+$ui.ReadRefresh.Add_Click({ Invoke-Guarded { Update-ReadDocument }  'reread the conversation' })
+$ui.ReadOpen.Add_Click({
+    Invoke-Guarded {
+        # The pane is for reading. Anything you want to DO still happens in the
+        # real session, so this is the handoff rather than a second front end.
+        if (-not $script:readSession) { return }
+        $row = $null
+        foreach ($r in $script:rows) {
+            if ($r.Kind -eq 'session' -and $r.Session.sessionId -eq $script:readSession.sessionId) { $row = $r; break }
+        }
+        if ($row) { Invoke-RowLaunch $row } else { Set-Status 'that conversation is no longer in the list' 'warn' }
+    } 'open the terminal for this conversation'
+})
+
+# Double-click a conversation to read it -- the gesture people already try.
+$ui.RowList.Add_MouseDoubleClick({
+    param($sender, $e)
+    Invoke-Guarded {
+        $row = $ui.RowList.SelectedItem
+        if ($row -and $row.Kind -eq 'session') { $e.Handled = $true; Show-ReadPane $row }
+    } 'open the reading pane'
+})
+
 $ui.NeedsList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.Windows.RoutedEventHandler]{
     param($sender, $e)
     $btn = $e.OriginalSource -as [System.Windows.Controls.Button]
@@ -2368,6 +2635,14 @@ $window.Add_PreviewKeyDown({ param($s, $e)
         }
         return
     }
+    # While the reading pane is up it owns the keyboard, except for the two keys
+    # that get you out of it. Letting L or SPACE through would act on a row that
+    # is not on screen -- the list is hidden, so there is nothing to aim at.
+    if ($ui.ReadPane.Visibility -eq $V_Show) {
+        if ($e.Key -eq 'Escape') { $e.Handled = $true; Hide-ReadPane }
+        elseif ($e.Key -eq 'R' -and -not $script:busy) { $e.Handled = $true; Update-ReadDocument }
+        return
+    }
     if ($ui.Overlay.Visibility -eq $V_Show) { return }
     if ($ui.ConfirmOverlay.Visibility -eq $V_Show) {
         # While a confirmation is up it is the only thing on the screen that can
@@ -2402,6 +2677,10 @@ $window.Add_PreviewKeyDown({ param($s, $e)
             'X'      { if (-not $script:busy) { $e.Handled = $true; Invoke-LaunchTicked } }
             'R'      { if (-not $script:busy) { $e.Handled = $true; Start-Rescan } }
             'U'      { if ($row -and -not $script:busy) { $e.Handled = $true; Set-RowUnpin $row } }
+            # ENTER reads the conversation. It is the one gesture with no other
+            # meaning on a list row, and reading is now the commonest thing to
+            # want to do with one.
+            'Return' { if ($row -and $row.Kind -eq 'session' -and -not $script:busy) { $e.Handled = $true; Show-ReadPane $row } }
             'A'      { if (-not $script:busy) { $e.Handled = $true; Set-AllTicks $true } }
             'N'      { if (-not $script:busy) { $e.Handled = $true; Set-AllTicks $false } }
             'W'      { if (-not $script:busy) {

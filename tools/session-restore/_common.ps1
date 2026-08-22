@@ -950,6 +950,121 @@ function Test-SRTranscriptLive {
     return (((Get-Date) - (Get-Item -LiteralPath $JsonlPath).LastWriteTime).TotalMinutes -lt $SR_LiveWindowMinutes)
 }
 
+# --- reading a conversation back out -----------------------------------------
+# The transcript is a JSONL of API records, not a conversation. Turning it into
+# something readable is mostly deciding what to LEAVE OUT.
+#
+# Measured across six recent transcripts: text 50, thinking 84, tool_use 129,
+# tool_result 130. TOOL TRAFFIC OUTNUMBERS PROSE FIVE TO ONE. Rendering it all
+# gives a wall of Bash output with the actual conversation buried in it, which is
+# why the terminal collapses tool calls too. Each one becomes a single line here,
+# and thinking is folded away, so what is left on screen is what was actually
+# said.
+#
+# ConvertFrom-Json costs ~17 ms a record, so this reads a bounded number of
+# records from the END rather than the whole file. A 6 MB transcript would
+# otherwise take a minute to open.
+function Get-SRTranscriptBlocks {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$JsonlPath,
+        # Records, not blocks: one record can carry several content blocks.
+        [int]$MaxRecords = 60,
+        [int]$MaxTailBytes = 2097152
+    )
+
+    $out = New-Object System.Collections.Generic.List[object]
+    if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return ,@($out.ToArray()) }
+
+    try {
+        $fi = Get-Item -LiteralPath $JsonlPath
+        if ($fi.Length -eq 0) { return ,@($out.ToArray()) }
+        # ReadWrite sharing: a live session holds this open for writing, and those
+        # are exactly the ones worth reading.
+        $fs = [System.IO.File]::Open($JsonlPath, 'Open', 'Read', 'ReadWrite')
+        try {
+            $take = [int][Math]::Min($fi.Length, $MaxTailBytes)
+            $null = $fs.Seek(-$take, 'End')
+            $buf  = New-Object byte[] $take
+            $read = $fs.Read($buf, 0, $take)
+            $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        } finally { $fs.Dispose() }
+    } catch {
+        return ,@($out.ToArray())
+    }
+
+    $lines = @($text -split "`n" | Where-Object { $_.Trim().StartsWith('{') })
+    if (-not $lines.Count) { return ,@($out.ToArray()) }
+    $lines = @($lines[[Math]::Max(0, $lines.Count - $MaxRecords)..($lines.Count - 1)])
+
+    function New-Block { param([string]$Kind, [string]$Head, [string]$Body, [string]$Meta)
+        return [PSCustomObject]@{ Kind = $Kind; Head = $Head; Body = $Body; Meta = $Meta }
+    }
+
+    foreach ($ln in $lines) {
+        $r = $null
+        try { $r = $ln | ConvertFrom-Json } catch { continue }
+        if ($r.type -ne 'user' -and $r.type -ne 'assistant') { continue }
+        $m = $r.message
+        if (-not $m) { continue }
+        $role = [string]$m.role
+
+        $content = $m.content
+        if ($content -is [string]) {
+            if ("$content".Trim()) { $out.Add((New-Block $(if ($role -eq 'user') { 'you' } else { 'said' }) '' "$content" '')) }
+            continue
+        }
+        foreach ($b in @($content)) {
+            if (-not $b -or -not $b.type) { continue }
+            switch ($b.type) {
+                'text' {
+                    $s = "$($b.text)"
+                    if ($s.Trim()) { $out.Add((New-Block $(if ($role -eq 'user') { 'you' } else { 'said' }) '' $s '')) }
+                }
+                'thinking' {
+                    $s = "$($b.thinking)"
+                    if ($s.Trim()) {
+                        $n = @($s -split "`n").Count
+                        $out.Add((New-Block 'thinking' "thinking" $s "$n lines"))
+                    }
+                }
+                'tool_use' {
+                    # One line. The first meaningful argument is what identifies a
+                    # call at a glance -- a command, a path, a pattern -- and the
+                    # rest is noise at this altitude.
+                    $name = "$($b.name)"
+                    $arg  = ''
+                    $i = $b.input
+                    if ($i) {
+                        foreach ($k in @('command','file_path','path','pattern','prompt','description','url','query')) {
+                            if ($i.PSObject.Properties[$k] -and $i.$k) { $arg = "$($i.$k)"; break }
+                        }
+                        if (-not $arg) {
+                            $p = @($i.PSObject.Properties | Select-Object -First 1)
+                            if ($p.Count) { $arg = "$($p[0].Value)" }
+                        }
+                    }
+                    $arg = ($arg -replace '\s+', ' ').Trim()
+                    if ($arg.Length -gt 150) { $arg = $arg.Substring(0, 147) + '...' }
+                    $out.Add((New-Block 'tool' $name $arg ''))
+                }
+                'tool_result' {
+                    $s = ''
+                    if ($b.content -is [string]) { $s = "$($b.content)" }
+                    else {
+                        foreach ($c in @($b.content)) { if ($c.type -eq 'text') { $s += "$($c.text)" } }
+                    }
+                    $s = "$s"
+                    $n = @($s -split "`n").Count
+                    $err = ($b.PSObject.Properties['is_error'] -and $b.is_error)
+                    $out.Add((New-Block 'result' $(if ($err) { 'failed' } else { 'result' }) $s "$n lines"))
+                }
+            }
+        }
+    }
+    return ,@($out.ToArray())
+}
+
 # --- what claude itself says about a session --------------------------------
 # `claude agents --json` is FIRST-PARTY session state: it needs no TTY, it is
 # documented for scripting, and it knows things no amount of transcript reading

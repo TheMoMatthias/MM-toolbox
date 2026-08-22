@@ -1146,6 +1146,48 @@
           <TranslateTransform x:Name="ListShift" Y="0"/>
         </ListBox.RenderTransform>
       </ListBox>
+      <!-- == READING ONE CONVERSATION ==
+           Replaces the list rather than sitting beside it. At 1480px a side
+           panel would leave neither the list nor the text enough width, and
+           long prose in a narrow column is the thing this view exists to make
+           readable.
+
+           A FlowDocument, not a stack of TextBlocks: it gives real text flow,
+           selection across blocks and copy for free, and every run's typography
+           is set from the same palette the rest of the window uses. -->
+      <Grid x:Name="ReadPane" Grid.Row="1" Visibility="Collapsed"
+            Background="{StaticResource Ink}">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="{StaticResource Panel}"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1"
+                Padding="22,10,22,10">
+          <Grid>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+              <TextBlock x:Name="ReadName" Text="" FontSize="14" FontWeight="SemiBold"
+                         Foreground="{StaticResource TextMax}" VerticalAlignment="Center"/>
+              <TextBlock x:Name="ReadWhat" Text="" FontSize="12" Margin="14,0,0,0"
+                         Foreground="{StaticResource TextMid}" VerticalAlignment="Center"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+              <Button x:Name="ReadRefresh" Content="Refresh" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
+              <Button x:Name="ReadOpen" Content="Open the terminal" Style="{StaticResource BtnNow}" Margin="0,0,8,0"/>
+              <Button x:Name="ReadBack" Content="Back to the list" Style="{StaticResource BtnPrimary}"/>
+            </StackPanel>
+          </Grid>
+        </Border>
+
+        <FlowDocumentScrollViewer x:Name="ReadView" Grid.Row="1"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  Background="{StaticResource Ink}"
+                                  Foreground="{StaticResource TextHigh}"
+                                  IsToolBarVisible="False" Padding="0"/>
+      </Grid>
+
       <TextBlock x:Name="EmptyNote" Grid.Row="1" Text="" Visibility="Collapsed"
                  HorizontalAlignment="Center" VerticalAlignment="Center"
                  Foreground="{StaticResource TextMid}" FontSize="13.5" TextWrapping="Wrap"
