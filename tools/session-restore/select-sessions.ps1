@@ -297,7 +297,15 @@ function Get-LiveInDirectory {
     foreach ($d in @($script:dirs)) {
         foreach ($s in @($d.sessions)) {
             $cwd = if ($s.cwd) { $s.cwd } else { $d.path }
-            if ($cwd -and ($cwd.TrimEnd('') -ieq $Dir.TrimEnd('')) -and ((Get-SessionState $s) -in @('run','act','new'))) {
+            # TrimEnd('\','/'), not TrimEnd(''). An EMPTY argument converts to an
+            # empty char array, which is the parameterless overload: it trims
+            # WHITESPACE and leaves the separator alone. Measured:
+            #   'C:\foo\'.TrimEnd('')  -ieq 'C:\foo'.TrimEnd('')   -> False
+            #   'C:\foo\'.TrimEnd('\') -ieq 'C:\foo'.TrimEnd('\')  -> True
+            # So a trailing separator on either side made one working tree read as
+            # two, and this is the guard that stops a second session being spawned
+            # into a tree somebody is already working -- the failure it exists for.
+            if ($cwd -and ($cwd.TrimEnd('\','/') -ieq $Dir.TrimEnd('\','/')) -and ((Get-SessionState $s) -in @('run','act','new'))) {
                 $out += $s
             }
         }
