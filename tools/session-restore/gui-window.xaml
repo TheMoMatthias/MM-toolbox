@@ -1169,6 +1169,7 @@
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="*"/>
+          <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <Border Grid.Row="0" Background="{StaticResource Panel}"
@@ -1189,12 +1190,50 @@
           </Grid>
         </Border>
 
+        <!-- == REPLYING ==
+             Typing here attaches to that session's console and writes the line
+             into it, targeted by PID from claude's own agents list, never by
+             window focus, so nothing depends on what is on top of the screen.
+
+             Disabled unless the session is actually running, because there is
+             no console to type into otherwise, and the reason is shown rather
+             than the box just being dead. -->
         <FlowDocumentScrollViewer x:Name="ReadView" Grid.Row="1"
                                   VerticalScrollBarVisibility="Auto"
                                   HorizontalScrollBarVisibility="Disabled"
                                   Background="{StaticResource Ink}"
                                   Foreground="{StaticResource TextHigh}"
                                   IsToolBarVisible="False" Padding="0"/>
+
+        <Border Grid.Row="2" Background="{StaticResource Panel}"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,0"
+                Padding="22,10,22,12">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="SendNote" Grid.Row="0" Grid.ColumnSpan="2" Text=""
+                       FontSize="11.5" FontFamily="{StaticResource FontSmall}"
+                       Foreground="{StaticResource TextDim}" TextWrapping="Wrap"
+                       Margin="0,0,0,7"/>
+
+            <TextBox x:Name="SendBox" Grid.Row="1" Grid.Column="0"
+                     Style="{StaticResource Search}"
+                     MinHeight="34" MaxHeight="110"
+                     AcceptsReturn="False" TextWrapping="Wrap"
+                     VerticalScrollBarVisibility="Auto"
+                     ToolTip="Types this into the running session and presses Enter. Ctrl+Enter sends."/>
+            <Button x:Name="SendBtn" Grid.Row="1" Grid.Column="1" Content="Send"
+                    Style="{StaticResource BtnNow}" Margin="10,0,0,0" MinWidth="92"
+                    ToolTip="Write this line into the session's console (Ctrl+Enter)."/>
+          </Grid>
+        </Border>
       </Grid>
 
       <TextBlock x:Name="EmptyNote" Grid.Row="1" Text="" Visibility="Collapsed"

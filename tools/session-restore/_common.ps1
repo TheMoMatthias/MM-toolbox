@@ -950,6 +950,124 @@ function Test-SRTranscriptLive {
     return (((Get-Date) - (Get-Item -LiteralPath $JsonlPath).LastWriteTime).TotalMinutes -lt $SR_LiveWindowMinutes)
 }
 
+# --- typing into a running session ------------------------------------------
+# Attach to the target's console and write input records into it. Proven against
+# a real claude session in a Windows Terminal tab on 2026-08-22: the injected
+# line arrived in that session's transcript as a genuine user message.
+#
+# This is KEYSTROKE-LEVEL. It lands wherever that session's input goes, which is
+# why every guard below exists rather than being defensive padding:
+#
+#   - the target is identified by PID from claude's own `agents --json`, never
+#     by window title or focus, so nothing depends on what is on top;
+#   - the pid is RE-VERIFIED as a live claude.exe immediately before writing,
+#     because a pid is reusable and a stale one would type into whatever
+#     process inherited the number;
+#   - a session with a DIALOG open is refused outright. Prose typed at a
+#     permission prompt answers the prompt, and that is a decision the operator
+#     has to make deliberately;
+#   - newlines are stripped. A multi-line paste would submit at the first one
+#     and leave the rest typing into whatever came next.
+#
+# CreateFileW is declared CharSet.Unicode ON PURPOSE. Without it the name
+# marshals as ANSI, "CONIN$" never arrives, and the call fails with error 2 --
+# which reads exactly like "the console cannot be opened" and cost an hour of
+# believing ConPTY was blocking it.
+if (-not ('SRCon' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class SRCon {
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint pid);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole();
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disp, uint flags, IntPtr tmpl);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool WriteConsoleInputW(IntPtr h, INPUT_RECORD[] buf, uint len, out uint written);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT_RECORD {
+        public ushort EventType; public ushort pad;
+        public bool bKeyDown; public ushort wRepeatCount; public ushort wVirtualKeyCode;
+        public ushort wVirtualScanCode; public char UnicodeChar; public uint dwControlKeyState;
+    }
+
+    public static IntPtr OpenConIn() {
+        return CreateFileW("CONIN$", 0x80000000u | 0x40000000u, 1u | 2u, IntPtr.Zero, 3u, 0u, IntPtr.Zero);
+    }
+
+    // Returns the number of records written, or -win32error.
+    public static int Send(uint pid, string text, bool enter) {
+        FreeConsole();
+        if (!AttachConsole(pid)) return -Marshal.GetLastWin32Error();
+        try {
+            IntPtr h = OpenConIn();
+            if (h == new IntPtr(-1)) return -Marshal.GetLastWin32Error();
+            try {
+                int n = text.Length + (enter ? 1 : 0);
+                INPUT_RECORD[] r = new INPUT_RECORD[n * 2];
+                int i = 0;
+                foreach (char c in text) {
+                    r[i].EventType = 1; r[i].bKeyDown = true;  r[i].wRepeatCount = 1; r[i].UnicodeChar = c; i++;
+                    r[i].EventType = 1; r[i].bKeyDown = false; r[i].wRepeatCount = 1; r[i].UnicodeChar = c; i++;
+                }
+                if (enter) {
+                    r[i].EventType = 1; r[i].bKeyDown = true;  r[i].wRepeatCount = 1; r[i].wVirtualKeyCode = 0x0D; r[i].UnicodeChar = '\r'; i++;
+                    r[i].EventType = 1; r[i].bKeyDown = false; r[i].wRepeatCount = 1; r[i].wVirtualKeyCode = 0x0D; r[i].UnicodeChar = '\r';
+                }
+                uint written;
+                if (!WriteConsoleInputW(h, r, (uint)r.Length, out written)) return -Marshal.GetLastWin32Error();
+                return (int)written;
+            } finally { CloseHandle(h); }
+        } finally { FreeConsole(); }
+    }
+}
+'@
+}
+
+# Returns $null when the line was delivered, or a reason string when it was not.
+# A reason is always a refusal to act, never a partial send.
+function Send-SRSessionInput {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SessionId,
+        [Parameter(Mandatory)][string]$Text,
+        # Skip the dialog refusal. The caller must have shown the operator what
+        # is open and been told to go ahead anyway.
+        [switch]$Force
+    )
+
+    $body = ($Text -replace "`r`n", ' ' -replace "`r", ' ' -replace "`n", ' ').Trim()
+    if (-not $body) { return 'nothing to send' }
+
+    $key = "$SessionId".ToLower()
+    $agents = Get-SRAgentStatus -Refresh
+    $a = $agents[$key]
+    if (-not $a)        { return 'that conversation is not running - open its terminal first' }
+    if (-not $a.Pid)    { return 'that session has no process to type into (it is a background agent)' }
+    if ($a.Kind -ne 'interactive') { return 'only an interactive session can be typed into' }
+    if (-not $Force -and $a.WaitingFor -match 'dialog') {
+        return 'a dialog is open in that session - answer it there, or send anyway to type into the dialog'
+    }
+
+    # A pid is reusable. Confirm THIS one is still the claude that owns the
+    # session before writing anything into its console.
+    $proc = $null
+    try { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($a.Pid)" -ErrorAction Stop } catch { }
+    if (-not $proc)                      { return 'that session has exited' }
+    if ($proc.Name -ne 'claude.exe')     { return "pid $($a.Pid) is $($proc.Name), not claude.exe - refusing to type into it" }
+
+    $n = [SRCon]::Send([uint32]$a.Pid, $body, $true)
+    if ($n -lt 0) {
+        $err = -$n
+        Write-SRLog ("send to {0} failed: win32 {1}" -f $a.Name, $err)
+        return "could not reach that session's console (win32 error $err)"
+    }
+    Write-SRLog ("  [ok]   sent {0} char(s) to {1} ({2})" -f $body.Length, $a.Name, $SessionId)
+    return $null
+}
+
 # --- reading a conversation back out -----------------------------------------
 # The transcript is a JSONL of API records, not a conversation. Turning it into
 # something readable is mostly deciding what to LEAVE OUT.

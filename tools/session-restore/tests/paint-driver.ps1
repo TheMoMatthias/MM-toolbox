@@ -9,6 +9,7 @@ $log = $env:SR_TEST_OUT
 if (-not $log) { $log = Join-Path $here '.state\paint-result.txt' }
 $out = New-Object System.Collections.Generic.List[string]
 $fails = 0
+$script:inconclusive = $false
 function Fail { param($m) $script:out.Add("  FAIL  $m"); $script:fails++ }
 function Pass { param($m) $script:out.Add("  ok    $m") }
 
@@ -115,8 +116,24 @@ $out.Add(("frame time: best {0:N1} ms   median {1:N1}   worst {2:N1}   ({3:N0} f
 # list runs away. That failure mode is guarded by the write-count assertion above
 # -- 4 writes per arrow key -- which is a property of the code and does not move
 # with machine load at all. That is the real regression guard; this is a budget.
-if ($m.Min -gt 33) { Fail ("even the best frame costs {0:N1} ms, over the 33 ms key-repeat budget" -f $m.Min) }
-else { Pass ("the best frame costs {0:N1} ms, inside the 33 ms key-repeat budget (median {1:N1} under load)" -f $m.Min, $m.Med) }
+# A BUDGET, and a budget can be missed for reasons that are nothing to do with
+# the code. Measured 2026-08-22: with a game holding the machine at 90% CPU the
+# best frame went from 18 ms to 62 ms while the WRITE COUNT -- the assertion that
+# actually guards the original defect -- stayed at 4 per arrow key. Reporting
+# that as a regression would be a lie, and reporting it as a pass would be
+# worse. So: say the machine was busy, and return INCONCLUSIVE.
+$cpu = 0
+try { $cpu = [int]((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average) } catch { }
+$out.Add("machine load at the time: $cpu% CPU")
+if ($m.Min -gt 33) {
+    if ($cpu -ge 70) {
+        $out.Add(("  --    INCONCLUSIVE  best frame {0:N1} ms, over the 33 ms budget, but the machine is at {1}% CPU" -f $m.Min, $cpu))
+        $script:inconclusive = $true
+    } else {
+        Fail ("even the best frame costs {0:N1} ms on an idle machine ({1}% CPU), over the 33 ms key-repeat budget" -f $m.Min, $cpu)
+    }
+}
+else { Pass ("the best frame costs {0:N1} ms, inside the 33 ms key-repeat budget (median {1:N1})" -f $m.Min, $m.Med) }
 
 # --- 4. a filter change must repaint the whole frame ------------------------
 $script:filter = 'algo'
@@ -178,7 +195,11 @@ if ((Move-Cursor -Cursor 5 -Max $max -Absolute 0) -ne 0)     { Fail 'Move-Cursor
 if ((Move-Cursor -Cursor 5 -Max (-1) -Delta 1) -ne 0)        { Fail 'Move-Cursor on an empty list did not return 0' } else { Pass 'Move-Cursor survives an empty list' }
 
 $out.Add('')
-$out.Add($(if ($fails) { "$fails FAILURE(S)" } else { 'all paint tests passed' }))
+$out.Add($(if ($fails) { "$fails FAILURE(S)" }
+           elseif ($script:inconclusive) { 'passed, except a timing budget the machine was too busy to judge' }
+           else { 'all paint tests passed' }))
 $out | Out-File -FilePath $log -Encoding utf8
 [Console]::Clear()
-exit $(if ($fails) { 1 } else { 0 })
+# 2 = inconclusive. The runner renders it as its own verdict rather than as a
+# pass or a failure, the same way the keys suite reports "could not get focus".
+exit $(if ($fails) { 1 } elseif ($script:inconclusive) { 2 } else { 0 })

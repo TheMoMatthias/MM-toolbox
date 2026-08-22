@@ -990,7 +990,7 @@ foreach ($n in @(
     'FtOn','FtOff','FpPin','FaRecent','FaStale',
     'ListShift','NeedsBand','NeedsLabel','NeedsList',
     'ReadPane','ReadName','ReadWhat','ReadView','ReadBack','ReadRefresh','ReadOpen',
-    'LegendBox','LegendToggle'
+    'LegendBox','LegendToggle','SendBox','SendBtn','SendNote'
 )) { $ui[$n] = $window.FindName($n) }
 
 # A name in the markup that is not in the list above is $null here, and the
@@ -2046,7 +2046,68 @@ function Show-ReadPane {
     $ui.ReadPane.Visibility = $V_Show
     $ui.RowList.Visibility  = $V_Hide
     $ui.NeedsBand.Visibility = $V_Hide
+    $ui.SendBox.Text = ''
+    Update-SendState
     Update-ReadDocument
+}
+
+# The composer is only usable when there is a console to type into, and it says
+# why rather than sitting there dead. A disabled control with no explanation is
+# indistinguishable from a broken one.
+function Update-SendState {
+    if (-not $script:readSession) { return }
+    $a = $script:agents["$($script:readSession.sessionId)".ToLower()]
+    if (-not $a -or -not $a.Pid -or $a.Kind -ne 'interactive') {
+        $ui.SendBox.IsEnabled = $false
+        $ui.SendBtn.IsEnabled = $false
+        $ui.SendNote.Text = 'Not running, so there is no console to type into. Open the terminal first.'
+        return
+    }
+    $ui.SendBox.IsEnabled = $true
+    $ui.SendBtn.IsEnabled = $true
+    if ($a.WaitingFor -match 'dialog') {
+        # The one case worth spelling out: prose typed at a permission prompt
+        # ANSWERS the prompt. That has to be a deliberate act, not a surprise.
+        $ui.SendNote.Text = 'A dialog is open in this session. Anything sent now answers the DIALOG, not the conversation.'
+    } elseif ($a.Status -eq 'busy') {
+        $ui.SendNote.Text = 'It is working. What you send will be read when it next comes up for air.'
+    } else {
+        $ui.SendNote.Text = "Types into $($a.Name) and presses Enter. Ctrl+Enter sends."
+    }
+}
+
+function Invoke-SendReply {
+    if (-not $script:readSession) { return }
+    $text = "$($ui.SendBox.Text)"
+    if (-not $text.Trim()) { return }
+    $sid = "$($script:readSession.sessionId)"
+    $a = $script:agents[$sid.ToLower()]
+
+    $force = $false
+    if ($a -and $a.WaitingFor -match 'dialog') {
+        # Show-Confirm, not the in-window overlay: that one cannot block, and this
+        # decision has to be answered BEFORE anything is typed into somebody
+        # else's permission prompt. Same reason the close prompt uses it.
+        $ans = Show-Confirm ("A dialog is open in that session.`n`nWhat you send will be typed AT THE DIALOG and will answer it, not go into the conversation.`n`n" + $text + "`n`nSend it anyway?") 'Answering a dialog'
+        if ($ans -ne [System.Windows.MessageBoxResult]::Yes) { Set-Status 'not sent' 'warn'; return }
+        $force = $true
+    }
+
+    Set-Busy 'sending'
+    try {
+        $why = $(if ($force) { Send-SRSessionInput -SessionId $sid -Text $text -Force }
+                 else        { Send-SRSessionInput -SessionId $sid -Text $text })
+    } finally { Set-Busy '' }
+
+    if ($why) { Set-Status "not sent - $why" 'bad'; return }
+    $ui.SendBox.Text = ''
+    Set-Status 'sent' 'ok'
+    # Give it a moment to record the message, then show it in place rather than
+    # leaving the operator wondering whether it landed.
+    $t = New-Object System.Windows.Threading.DispatcherTimer
+    $t.Interval = [TimeSpan]::FromSeconds(3)
+    $t.Add_Tick({ $this.Stop(); Invoke-Guarded { Update-ReadDocument } 'reread after sending' })
+    $t.Start()
 }
 
 function Update-ReadDocument {
@@ -2477,6 +2538,16 @@ $ui.LegendToggle.Add_Click({
 
 # --- the reading pane's own controls ---------------------------------------
 $ui.ReadBack.Add_Click({    Invoke-Guarded { Hide-ReadPane }        'close the reading pane' })
+$ui.SendBtn.Add_Click({     Invoke-Guarded { Invoke-SendReply }      'send that line to the session' })
+$ui.SendBox.Add_KeyDown({
+    param($s, $e)
+    # Ctrl+Enter sends. Plain Enter does not: a stray Enter typing into somebody
+    # else's session is not a mistake worth making easy.
+    if ($e.Key -eq 'Return' -and ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control)) {
+        $e.Handled = $true
+        Invoke-Guarded { Invoke-SendReply } 'send that line to the session'
+    }
+})
 $ui.ReadRefresh.Add_Click({ Invoke-Guarded { Update-ReadDocument }  'reread the conversation' })
 $ui.ReadOpen.Add_Click({
     Invoke-Guarded {
