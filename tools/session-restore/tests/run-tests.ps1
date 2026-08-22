@@ -27,6 +27,11 @@
               another view, so none of them can pass by finding nothing.
               Needs a desktop session; skipped with -NoGui.
 
+      jump    finding and activating a conversation's real Windows Terminal tab.
+              Runs against the live machine, since whether a real tab can be
+              found and switched to is not something a fixture can answer. It
+              restores whichever tab was active when it started.
+
       state   Get-SRConversationState. Hand-built transcripts force every state,
               so the assertions can actually fail regardless of what the operator
               happens to be running; then the same function over every real
@@ -54,9 +59,19 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('frame', 'paint', 'keys', 'state', 'inbox')]
+    [ValidateSet('frame', 'paint', 'keys', 'state', 'inbox', 'jump')]
     [string]$Only,
-    [switch]$NoGui
+    [switch]$NoGui,
+
+    # Keep every test window on a chosen screen and open it WITHOUT taking
+    # focus. "<left>,<top>" in virtual-screen coordinates, so a monitor to the
+    # left of the primary is negative -- e.g. -Place '-3440,0'.
+    [string]$Place,
+
+    # Skip the suites that cannot work without stealing the foreground: `keys`
+    # sends real keystrokes, and `jump` raises a terminal window on purpose.
+    # Use this while the machine is being used for something else.
+    [switch]$NoSteal
 )
 
 $ErrorActionPreference = 'Stop'
@@ -100,6 +115,16 @@ function New-Harness {
     return $path
 }
 
+# Passed to every GUI the drivers start. Set once, here, so no driver has to
+# know about it.
+if ($Place) {
+    $env:SR_GUI_PLACE = "$Place,noactivate"
+    Write-Host "test windows: placed at $Place, opened without focus" -ForegroundColor DarkGray
+} else {
+    Remove-Item Env:\SR_GUI_PLACE -ErrorAction SilentlyContinue
+}
+if ($NoSteal) { Write-Host "skipping the suites that need the foreground (keys, jump)" -ForegroundColor DarkGray }
+
 $results = @()
 function Record { param([string]$Name, [int]$Code, [string[]]$Output)
     $script:results += [PSCustomObject]@{ Name = $Name; Code = $Code; Output = $Output }
@@ -140,7 +165,7 @@ if (-not $Only -or $Only -eq 'paint') {
 }
 
 # --- keys: drives the GUI, needs a desktop ----------------------------------
-if ((-not $Only -or $Only -eq 'keys') -and -not $NoGui) {
+if ((-not $Only -or $Only -eq 'keys') -and -not $NoGui -and -not $NoSteal) {
     Write-Host "`n=== keys (GUI keyboard navigation) ===" -ForegroundColor Cyan
     $drv = Join-Path $here 'keys-driver.ps1'
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $drv 2>&1
@@ -157,6 +182,15 @@ if ((-not $Only -or $Only -eq 'inbox') -and -not $NoGui) {
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $drv 2>&1
     $out | ForEach-Object { Write-Host $_ }
     Record 'inbox' $LASTEXITCODE @($out)
+}
+
+# --- jump: needs a desktop and the operator's real terminals -----------------
+if ((-not $Only -or $Only -eq 'jump') -and -not $NoGui -and -not $NoSteal) {
+    Write-Host "`n=== jump (reaching a session's terminal tab) ===" -ForegroundColor Cyan
+    $drv = Join-Path $here 'jump-driver.ps1'
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $drv 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'jump' $LASTEXITCODE @($out)
 }
 
 # --- summary ----------------------------------------------------------------

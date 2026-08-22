@@ -51,6 +51,26 @@ $guiPid = $win.Current.ProcessId
 Write-Host "window: '$($win.Current.Name)'  pid $guiPid"
 Start-Sleep -Seconds 6
 
+# THIS SUITE TESTS THE PROJECT TREE, so put the window in the Projects view
+# before asserting anything. The window now opens on the INBOX, which lists only
+# what is running -- 17 rows that fit on screen without scrolling -- so every
+# scroll assertion below reported -1% and END "moved the selection but only
+# scrolled to -1%". The keys were fine; the suite was aimed at the wrong list.
+$modeCond = New-Object System.Windows.Automation.AndCondition(
+    (New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::NameProperty, 'Projects')),
+    (New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::RadioButton)))
+$modeBtn = $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $modeCond)
+if ($modeBtn) {
+    $modeBtn.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    Start-Sleep -Seconds 3
+    Write-Host "switched to the Projects view"
+} else {
+    Write-Host "no Projects view button found - testing whatever list is showing"
+}
+
 $listCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::List)

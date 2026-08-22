@@ -565,6 +565,7 @@ $script:totalCount = 0
 $script:visCache     = @{}
 $script:rows         = New-Object System.Collections.Generic.List[object]
 $script:inboxRows    = New-Object System.Collections.Generic.List[object]
+$script:tabIndexQueued = $false
 $script:pendingSpawn = $null
 $script:firstFill    = $true
 
@@ -2633,23 +2634,30 @@ function Set-ViewMode { param([string]$Mode)
     # Restore-only furniture. Hidden rather than disabled: a greyed-out control
     # still asks to be read, and the whole point is to stop this competing for
     # attention on the days you are not rebooting.
+    # $ctl, NOT $c. PowerShell variable names are CASE-INSENSITIVE, so a loop
+    # over "$c" IS the palette table $C -- these three loops replaced the whole
+    # brush table with a Button, every later $C.TextMax came back $null, and the
+    # next repaint threw "has DOING text '2 waiting' with a null brush". Exactly
+    # the collision already documented in Update-RowConv, walked into again in a
+    # brand-new function. The guard that caught it is the one added the last time
+    # this happened.
     $restore = ($Mode -eq 'restore')
-    foreach ($c in @($ui.LaunchTicked, $ui.BulkBtn, $ui.TickPill, $ui.NowCaption)) {
-        if ($c) { $c.Visibility = $(if ($restore) { $V_Show } else { $V_Hide }) }
+    foreach ($ctl in @($ui.LaunchTicked, $ui.BulkBtn, $ui.TickPill, $ui.NowCaption)) {
+        if ($ctl) { $ctl.Visibility = $(if ($restore) { $V_Show } else { $V_Hide }) }
     }
 
     # The tree's column captions, and the worktree lane toggle. Both describe a
     # hierarchy: LOGON / TICKED / ID / OPEN? name columns the inbox does not
     # have, and "show a lane per worktree" means nothing in a flat list where the
     # worktree is printed on the row itself.
-    foreach ($c in @($ui.TreeHead, $ui.WorktreeToggle, $ui.WorktreeCaption)) {
-        if ($c) { $c.Visibility = $(if ($inbox) { $V_Hide } else { $V_Show }) }
+    foreach ($ctl in @($ui.TreeHead, $ui.WorktreeToggle, $ui.WorktreeCaption)) {
+        if ($ctl) { $ctl.Visibility = $(if ($inbox) { $V_Hide } else { $V_Show }) }
     }
 
     # The selection footer, same rule: Tick / untick and Unpin only mean anything
     # where the tick is on screen.
-    foreach ($c in @($ui.SelTick, $ui.SelUnpin)) {
-        if ($c) { $c.Visibility = $(if ($restore) { $V_Show } else { $V_Hide }) }
+    foreach ($ctl in @($ui.SelTick, $ui.SelUnpin)) {
+        if ($ctl) { $ctl.Visibility = $(if ($restore) { $V_Show } else { $V_Hide }) }
     }
 
     # The reading pane belongs to no mode; leaving it open across a switch would
@@ -2691,8 +2699,48 @@ function Set-ProbeResult { param($Result)
     # for minutes, which is worse than showing none.
     if ($Result.PSObject.Properties['Said']) { $script:said = $Result.Said }
     if ($Result.PSObject.Properties['Agents']) { $script:agents = $Result.Agents }
+    Update-TabIndexSoon
     $script:unattributed = [int]$Result.Unattributed
     $script:probedAt     = $Result.At
+}
+
+# KEEP THE TAB INDEX WARM.
+#
+# A tab is found by its title, but a title is not stable: measured 2026-08-22, a
+# session's tab read "<glyph> RC-WORKFLOW" one minute and plain "claude" the
+# next, because the console title follows whatever child process is attached.
+# The drift happens exactly while a session is busy -- which is when you most
+# want to reach it.
+#
+# So the mapping is built WHILE the titles are right, after each background
+# pass, and the jump uses the remembered UIA element afterwards. Runtime ids
+# were verified stable across re-enumeration, so the element survives a rename.
+#
+# At Background dispatcher priority because enumerating 16 tabs across 6 windows
+# costs 250-500 ms measured, and that on a click is a visibly stuck window.
+# UI Automation must be called from the UI thread here -- the background runspace
+# cannot hand an AutomationElement back across a job boundary.
+function Update-TabIndexSoon {
+    if ($script:tabIndexQueued) { return }
+    $script:tabIndexQueued = $true
+    $null = $window.Dispatcher.BeginInvoke(
+        [System.Windows.Threading.DispatcherPriority]::Background,
+        [action]{
+            try {
+                $titles = @{}
+                foreach ($k in @($script:agents.Keys)) {
+                    $a = $script:agents[$k]
+                    if ($a -and $a.Name -and $a.Kind -eq 'interactive') { $titles[$k] = $a.Name }
+                }
+                if ($titles.Count) {
+                    $n = Update-SRTabIndex -Titles $titles
+                    Write-SRLog ("tab index: {0} of {1} interactive session(s) located" -f $n, $titles.Count)
+                }
+            } catch {
+                # Never fatal. A missing tab index costs a fallback, not the window.
+                Write-SRLog "tab index failed: $($_.Exception.Message)"
+            } finally { $script:tabIndexQueued = $false }
+        })
 }
 
 function Get-ProbeSnapshot {
@@ -2880,6 +2928,42 @@ function Invoke-LaunchTicked {
 
 # S. The same refusal spawn-claude-session makes, for the same reason: a session
 # was once spawned onto a lane a live one had held for 73 minutes.
+# GO TO: bring this conversation's real terminal tab to the front. The whole
+# point of the inbox is to be the index into 13 tabs spread over 6 terminal
+# windows, so the row's action has to actually land you in the conversation --
+# not open a rendering of it.
+#
+# A row whose session is NOT running has no tab, so the same button launches it
+# instead. One button, two situations, and the label says which: "Go to" when
+# there is something to go to, "Open" when there is not.
+function Invoke-RowJump { param($Row)
+    if (-not $Row -or $Row.Kind -ne 'session') { return }
+    $s = $Row.Session
+    $key = "$($s.sessionId)".ToLower()
+    $a = $script:agents[$key]
+
+    if ($a -and $a.Kind -and $a.Kind -ne 'interactive') {
+        Set-Status 'that is a background agent - it has no terminal of its own to jump to' 'warn'
+        return
+    }
+    if (-not $a) {
+        # Not running, so there is no tab. Launching it IS how you get to it.
+        Invoke-RowLaunch $Row
+        return
+    }
+
+    Set-Busy 'finding its tab'
+    $why = $null
+    # The title comes from the agent table the background pass already refreshed,
+    # so the jump never has to ask claude and never blocks the click.
+    try { $why = Invoke-SRJumpToSession -SessionId $s.sessionId -Title $a.Name -RaiseAnyway } finally { Set-Busy '' }
+
+    if ($why) { Set-Status $why 'warn'; return }
+    $note = $script:SR_JumpNote
+    if ($note) { Set-Status $note 'warn' }
+    else { Set-Status ("went to {0} - its terminal is in front" -f (Get-SessionTitle $s $Row.Dir)) 'ok' }
+}
+
 function Invoke-RowSpawn { param($Row)
     if (-not $Row) { return }
     $path = Get-RowPath $Row
@@ -3123,14 +3207,14 @@ $ui.InboxList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.W
     if (-not $btn) { return }
     $e.Handled = $true
     Invoke-Guarded {
-        $row = [System.Windows.Data.ItemsControl]::ContainerFromElement($ui.InboxList, $btn)
+        # System.Windows.CONTROLS.ItemsControl. The Data namespace has no such
+        # type, and the failure surfaces only as "that row's action failed" in
+        # the log while the button silently does nothing.
+        $row = [System.Windows.Controls.ItemsControl]::ContainerFromElement($ui.InboxList, $btn)
         $item = $(if ($row) { $row.DataContext } else { $null })
         if (-not $item -or $item.Kind -ne 'session') { return }
         $ui.InboxList.SelectedItem = $item
-        # Increment 2 replaces this with a real jump to the terminal tab. Until
-        # then it does what the tree's Open does, so the button never promises
-        # something the tool cannot yet deliver.
-        Invoke-RowLaunch $item
+        Invoke-RowJump $item
     } 'that row''s action'
 })
 
@@ -3394,6 +3478,9 @@ $window.Add_PreviewKeyDown({ param($s, $e)
             'Left'   { if ($row -and $row.Kind -ne 'session') { $e.Handled = $true; $script:collapsed[$row.Key] = $true;  Update-List -KeepKey $row.Key } }
             'Right'  { if ($row -and $row.Kind -ne 'session') { $e.Handled = $true; $script:collapsed[$row.Key] = $false; Update-List -KeepKey $row.Key } }
             'L'      { if ($row -and -not $script:busy) { $e.Handled = $true; Invoke-RowLaunch $row } }
+            # G for "go to": the terminal itself, as opposed to ENTER, which
+            # reads the conversation inside this window.
+            'G'      { if ($row -and $row.Kind -eq 'session' -and -not $script:busy) { $e.Handled = $true; Invoke-RowJump $row } }
             'S'      { if ($row -and -not $script:busy) { $e.Handled = $true; Invoke-RowSpawn $row } }
             'X'      { if (-not $script:busy) { $e.Handled = $true; Invoke-LaunchTicked } }
             'R'      { if (-not $script:busy) { $e.Handled = $true; Start-Rescan } }
@@ -3416,6 +3503,38 @@ $window.Add_PreviewKeyDown({ param($s, $e)
         Set-Status "that did not work: $($_.Exception.Message)" 'bad'
     }
 })
+
+# --- TEST PLACEMENT ---------------------------------------------------------
+# SR_GUI_PLACE lets a test run put this window somewhere harmless and, more
+# importantly, open it WITHOUT taking focus. The suites launch the GUI several
+# times per run; on a machine someone is actually using, each launch yanks the
+# foreground away mid-keystroke or mid-game.
+#
+# Format: "<left>,<top>[,noactivate]" in virtual-screen coordinates, so a
+# monitor to the left of the primary is a negative X.
+#
+# Deliberately an environment variable rather than a parameter: the drivers
+# start this script through Start-Process with a fixed argument list, and an env
+# var needs no change to any of them.
+if ($env:SR_GUI_PLACE) {
+    try {
+        $bits = @("$env:SR_GUI_PLACE" -split ',')
+        if ($bits.Count -ge 2) {
+            $window.WindowStartupLocation = 'Manual'
+            $window.Left = [double]$bits[0]
+            $window.Top  = [double]$bits[1]
+        }
+        if ($bits -contains 'noactivate') {
+            # The window appears without stealing the foreground. It still
+            # renders, still answers UI Automation, and can still be given focus
+            # deliberately by a suite that needs it.
+            $window.ShowActivated = $false
+        }
+        Write-SRLog "gui placed for testing: $env:SR_GUI_PLACE"
+    } catch {
+        Write-SRLog "SR_GUI_PLACE ignored: $($_.Exception.Message)"
+    }
+}
 
 $window.Add_SourceInitialized({
     try {

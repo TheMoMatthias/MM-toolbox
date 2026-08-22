@@ -143,6 +143,23 @@ try {
         Pass 'pressing it did not throw'
     }
 
+    # --- 4b. the row action, and what it says it will do --------------------
+    # A background agent has no terminal, so its button must be DISABLED rather
+    # than present-and-failing. An offer the tool cannot keep is worse than no
+    # offer: you press it, nothing happens, and you learn to distrust the row.
+    $goTo = 0; $agentBtn = 0; $agentEnabled = 0
+    foreach ($b in $btns) {
+        $n = "$($b.Current.Name)"
+        if ($b.Current.IsOffscreen) { continue }
+        if ($n -eq 'Go to' -or $n -eq 'Open') { $goTo++ }
+        if ($n -eq 'agent') { $agentBtn++; if ($b.Current.IsEnabled) { $agentEnabled++ } }
+    }
+    if ($goTo -ge 1) { Pass "$goTo row action button(s) on screen" }
+    else { Fail 'no row has an action button' }
+    if ($agentBtn -eq 0) { Note 'no background agent is running, so the disabled case is untested here' }
+    elseif ($agentEnabled -eq 0) { Pass "$agentBtn background-agent row(s), all with the action disabled" }
+    else { Fail "$agentEnabled background-agent row(s) offer an action that cannot work" }
+
     # --- 5. the view switch actually switches ------------------------------
     $tree = ByName 'Projects' ([System.Windows.Automation.ControlType]::RadioButton)
     $inbox = ByName 'Inbox' ([System.Windows.Automation.ControlType]::RadioButton)
@@ -171,6 +188,29 @@ try {
             Fail "switching to Projects did not change which list is showing (before=$before after=$after)"
         }
 
+        # AND IT MUST HAVE CONTENT. Set-ViewMode swaps Visibility BEFORE it
+        # rebuilds, so a rebuild that throws still passes the swap check and
+        # leaves an empty list on screen. That is not hypothetical: a $c/$C
+        # collision wiped the palette, every repaint threw on a null brush, and
+        # this suite went green over a window showing nothing.
+        $treeRows = RowsOf (ShownList)
+        if ($treeRows.Count -ge 1) { Pass "the Projects list actually built ($($treeRows.Count) rows)" }
+        else { Fail 'switched to Projects and the list is EMPTY - the rebuild threw' }
+
+        # The status line is where a caught exception surfaces. If it is
+        # reporting a failure, something threw whatever the rows look like.
+        $bad = $false
+        $texts2 = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Text)))
+        foreach ($t in $texts2) {
+            if ("$($t.Current.Name)" -match 'failed|null brush|Unable to find type' -and -not $t.Current.IsOffscreen) {
+                Fail "the status line is reporting an error: '$($t.Current.Name)'"; $bad = $true
+            }
+        }
+        if (-not $bad) { Pass 'nothing on screen is reporting an error' }
+
         # In Projects the tree's captions come BACK. This is the same assertion
         # as 3 with the answer inverted, which is what proves 3 was measuring
         # something real rather than looking for text that is never there.
@@ -193,6 +233,12 @@ try {
         if ($launch -and $launch.Current.IsOffscreen) { Pass 'the inbox hides "Launch everything ticked"' }
         elseif (-not $launch) { Note 'no launch button to re-check' }
         else { Fail 'the inbox is still showing "Launch everything ticked"' }
+
+        # Back in the inbox, it must have rebuilt too -- the same trap in the
+        # other direction.
+        $backRows = RowsOf (ShownList)
+        if ($backRows.Count -ge 1) { Pass "the inbox rebuilt on the way back ($($backRows.Count) rows)" }
+        else { Fail 'switched back to the inbox and the list is EMPTY' }
     }
 } finally {
     if (-not $KeepOpen) { Stop-Gui }
