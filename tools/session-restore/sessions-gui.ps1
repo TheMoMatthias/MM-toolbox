@@ -366,7 +366,20 @@ namespace SRGui
 
         // The operator's last prompt, shown under the selected row. Not bound in
         // the list: it is far too long for a cell and would wreck the row rhythm.
-        public string LastPrompt = "";
+        // A PROPERTY, not a field. WPF cannot bind to a field at all: the
+        // binding resolves to nothing and the cell renders blank with no error,
+        // which is how an entire populated column stayed invisible once already.
+        private string _lastPrompt = "";
+        public string LastPrompt { get { return _lastPrompt; } set { if (_lastPrompt != value) { _lastPrompt = value; N("LastPrompt"); } } }
+
+        // What the conversation is ABOUT, shown after its name. Ten rows all
+        // called "(untitled)" are indistinguishable from each other; the last
+        // prompt is the cheapest thing that tells them apart, and the name
+        // column is mostly empty anyway.
+        private string _subtitle = "";
+        public string Subtitle { get { return _subtitle; } set { if (_subtitle != value) { _subtitle = value; N("Subtitle"); } } }
+        private Visibility _subtitleVisibility = Visibility.Collapsed;
+        public Visibility SubtitleVisibility { get { return _subtitleVisibility; } set { if (_subtitleVisibility != value) { _subtitleVisibility = value; N("SubtitleVisibility"); } } }
     }
 }
 '@
@@ -976,7 +989,8 @@ foreach ($n in @(
     'FsWaiting','FsWorking','FsSumm','FsIdle','FsUnknown',
     'FtOn','FtOff','FpPin','FaRecent','FaStale',
     'ListShift','NeedsBand','NeedsLabel','NeedsList',
-    'ReadPane','ReadName','ReadWhat','ReadView','ReadBack','ReadRefresh','ReadOpen'
+    'ReadPane','ReadName','ReadWhat','ReadView','ReadBack','ReadRefresh','ReadOpen',
+    'LegendBox','LegendToggle'
 )) { $ui[$n] = $window.FindName($n) }
 
 # A name in the markup that is not in the list above is $null here, and the
@@ -1253,6 +1267,8 @@ function Update-RowConv { param($Row)
             $Row.ConvGeometry = $null
             $Row.ConvGlyphVisibility = $V_Hide
             $Row.LastPrompt = ''
+            $Row.Subtitle = ''
+            $Row.SubtitleVisibility = $V_Hide
 
             if (-not $cv) {
                 $Row.Conv = ''
@@ -1262,6 +1278,19 @@ function Update-RowConv { param($Row)
             }
 
             $Row.LastPrompt = "$($cv.LastPrompt)"
+            # Only where it earns its place: a conversation with a real title
+            # already says what it is, and repeating the prompt beside it is
+            # noise. An untitled one says nothing at all without this.
+            $named = ("$($Row.Name)".Trim() -and "$($Row.Name)" -notmatch '^\(untitled\)$')
+            if (-not $named -and $cv.LastPrompt) {
+                $sub = ($cv.LastPrompt -replace '\s+', ' ').Trim()
+                if ($sub.Length -gt 96) { $sub = $sub.Substring(0, 93) + '...' }
+                $Row.Subtitle = $sub
+                $Row.SubtitleVisibility = $V_Show
+            } else {
+                $Row.Subtitle = ''
+                $Row.SubtitleVisibility = $V_Hide
+            }
             # 'idle' now comes from claude and means something specific: at its
             # prompt with nothing pending. That is NOT the same as 'waiting',
             # which means it is actively asking you for something.
@@ -2434,6 +2463,17 @@ $ui.RowList.AddHandler([System.Windows.Controls.Primitives.ToggleButton]::Unchec
 # on Activated is belt and braces -- and it also covers the case where the window
 # is brought up by something other than a click on the flashing button.
 $window.Add_Activated({ Stop-TaskbarFlash })
+
+# The legend is folded away by default -- three dense lines you read once and
+# then never again, which was costing a tenth of the window permanently. The
+# choice sticks for the session; it is not worth a config entry.
+$ui.LegendToggle.Add_Click({
+    Invoke-Guarded {
+        $showing = ($ui.LegendBox.Visibility -eq $V_Show)
+        $ui.LegendBox.Visibility = $(if ($showing) { $V_Hide } else { $V_Show })
+        $ui.LegendToggle.Content = $(if ($showing) { '?' } else { 'x' })
+    } 'toggle the legend'
+})
 
 # --- the reading pane's own controls ---------------------------------------
 $ui.ReadBack.Add_Click({    Invoke-Guarded { Hide-ReadPane }        'close the reading pane' })

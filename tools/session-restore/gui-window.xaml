@@ -747,6 +747,15 @@
           <TextBlock Text="{Binding Note}" Margin="12,0,0,0" FontSize="11.5"
                      FontFamily="{StaticResource FontSmall}"
                      Foreground="{Binding NoteBrush}" VerticalAlignment="Center"/>
+          <!-- What an UNTITLED conversation is about. Ten rows all reading
+               "(untitled)" cannot be told apart, and this column is mostly
+               empty, so the last prompt goes here. Dim and small: it identifies
+               the row, it does not compete with the name. -->
+          <TextBlock Text="{Binding Subtitle}" Visibility="{Binding SubtitleVisibility}"
+                     Margin="10,0,0,0" FontSize="11.5"
+                     FontFamily="{StaticResource FontSmall}"
+                     Foreground="{StaticResource TextDim}"
+                     TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
         </StackPanel>
 
         <!-- 4: how many of this row's conversations are ticked -->
@@ -1232,7 +1241,12 @@
          to be guessed at is a mark that does not work. It is split in two
          because the marks answer two different questions, and running them
          together as one paragraph is exactly the confusion this window is built
-         to avoid. -->
+         to avoid.
+
+         FOLDED AWAY BY DEFAULT. It is three dense lines you read once and then
+         never again, and it was taking a tenth of the window permanently to
+         teach something already learned. The "?" brings it back, and the choice
+         is remembered for the session. -->
     <Border Grid.Row="7" Background="{StaticResource Ink}" BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,0" Padding="22,11,22,13">
       <Grid>
         <Grid.ColumnDefinitions>
@@ -1240,7 +1254,8 @@
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" VerticalAlignment="Center">
-          <TextBlock x:Name="StatusText" Text="" Foreground="{StaticResource TextMid}" FontSize="12.5" TextWrapping="Wrap" Margin="0,0,0,7"/>
+          <TextBlock x:Name="StatusText" Text="" Foreground="{StaticResource TextMid}" FontSize="12.5" TextWrapping="Wrap"/>
+          <StackPanel x:Name="LegendBox" Visibility="Collapsed" Margin="0,7,0,0">
           <TextBlock FontSize="11.5" Foreground="{StaticResource TextLow}" TextWrapping="Wrap" LineHeight="19"
                      FontFamily="{StaticResource FontSmall}">
             <Run Text="OPEN?" FontWeight="Bold" Foreground="{StaticResource TextDim}"/><Run Text="  is anyone holding it."/>
@@ -1258,8 +1273,11 @@
             <Run Text="  was ..." /><Run Text=" nothing has moved for minutes, so that is the LAST state, not a current one."/>
             <Run Text="  *" Foreground="{StaticResource TextHigh}"/><Run Text=" pinned, the roll leaves it alone."/>
           </TextBlock>
+          </StackPanel>
         </StackPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="18,0,0,0">
+          <Button x:Name="LegendToggle" Style="{StaticResource Btn}" Content="?" Width="34" Margin="0,0,9,0"
+                  ToolTip="What every mark on this screen means. Folded away because it is three lines you read once."/>
           <Button x:Name="CancelBtn" Style="{StaticResource Btn}" Content="Close" Margin="0,0,9,0"
                   ToolTip="Close the window. If any tick has been changed and not saved, it asks first."/>
           <Button x:Name="SaveBtn" Style="{StaticResource BtnPrimary}" Content="Save"
