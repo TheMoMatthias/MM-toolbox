@@ -62,6 +62,7 @@ ticking something does not launch it. Nothing launches until you press `L` or `X
 | `U` | unpin — hand the row back to the roll |
 | `←` `→` | fold a project or lane away |
 | `PGUP` `PGDN` | move by a full page; `HOME` `END` jump to the ends |
+| the selected row | carries a full-width band, not just a `>`. A brighter foreground is not enough to find yourself in a 47-row list |
 | `A` `N` | tick all / none |
 | `W` | show or hide git-worktree lanes, and write it to the config |
 | `/` or `F` | **find** — narrow the list by title, id, worktree or project. `ESC` clears it. Also advertised on the title line, because a key nobody can see is a key nobody presses |
@@ -71,16 +72,28 @@ ticking something does not launch it. Nothing launches until you press `L` or `X
 Launching never consults the ticks, and ticking never launches. That is the
 separation the whole screen is built around.
 
-**The screen repaints in place.** It used to `Clear-Host` on every keystroke, which
-in Windows Terminal pushes the old frame into scrollback instead of repainting — so
-every arrow key read as the whole list jumping and reloading, and it really was
-scrolling, because the chrome around the list was measured by a constant that
-under-counted it by up to four lines. Now the frame is built as lines first, its
-height is derived from the chrome actually built, and it is stamped over the previous
-frame from row 0. The viewport is **sticky**: it holds still while the marker walks
-down it and only scrolls when the cursor nears an edge. Measured on a real console:
-**two screen lines change per arrow key** — the row you left and the row you moved
-to — against a full clear and redraw before.
+**The screen repaints in place, and only the lines that changed.** Getting this
+right took two passes, and the second one is the interesting half.
+
+The first pass stopped the panel calling `Clear-Host` on every keystroke (which in
+Windows Terminal pushes the old frame into scrollback instead of repainting), fixed
+a chrome height that was hardcoded to 14 against a chrome that reaches 18, and made
+the viewport **sticky** rather than recentring on the cursor. Two screen lines then
+changed per arrow key instead of the whole frame.
+
+It still felt like the list flew to the end on its own. It was not a positioning
+bug at all — it was **latency**. Painting all 47 lines cost **89 ms**, about 190
+`Write-Host` calls, so the panel managed 13 frames a second while Windows repeats a
+held key **30 times a second**. Every repeat past the first sat in the console input
+buffer and was drained one frame at a time *after* the finger came off the key: a
+one-second press on `↓` kept the list moving for nearly three seconds. So:
+
+- **only the changed lines are repainted** — measured **4 writes per arrow key**,
+  down from ~190, and an identical frame writes nothing at all;
+- **movement keys are coalesced** — everything already queued is applied, and the
+  result is drawn once;
+- frame time went **89 ms → ~20 ms**, inside the 33 ms key-repeat interval, so
+  presses stop outrunning the screen.
 
 ### What "live" means
 
@@ -385,7 +398,7 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
 | `sessions-registry.json` | **your selections** (gitignored — the paths are local) |
 | `.state/` | log + generated boot scripts (gitignored, regenerated) |
 
-## Eight traps worth knowing
+## Ten traps worth knowing
 
 1. **`$PSScriptRoot` is empty while a `param()` default is evaluated** under
    `powershell.exe -File`, which is how the tasks run. Resolve the script directory
@@ -425,7 +438,24 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
    row's tick verbatim rather than OR-ing the ticks together, because a pinned row
    is an operator decision and the other is just whatever the roll last computed.
 
-7. **A frame measured by a constant is a frame that scrolls.** The panel reserved a
+7. **A frame slower than the key-repeat interval is indistinguishable from the list
+   moving on its own.** Windows repeats a held key about every 33 ms; painting a
+   frame cost 89 ms. Every repeat queued and drained *after* the key came up, so a
+   one-second press kept the list scrolling for three seconds and read as "it jumped
+   to the end by itself" — and as the page moving rather than the cursor. Neither a
+   positioning bug nor a rendering bug: a throughput one. 🔑 The tell is that the
+   movement **continues after you stop pressing**. Fixed by repainting only changed
+   lines (190 writes → 4) and coalescing queued movement keys.
+8. **This console has no scrollback: buffer 118x48, window 118x48.** So a prompt
+   printed on the row just below the panel scrolls the *entire buffer* up by one and
+   leaves the cursor on the same row it started on — which means a "has the cursor
+   moved?" check sees nothing while the panel has silently drifted up a line, and the
+   diff then repaints nothing because it believes the screen still matches. It fired
+   on every `/`, `S`, `L` and `X`. Detected now by re-reading a row that was painted
+   and comparing it with what was painted there, plus a deterministic invalidation on
+   every key that can print. The probe has to land on a row with **text** on it: a
+   blank row still matches itself after a scroll and would vote that nothing happened.
+9. **A frame measured by a constant is a frame that scrolls.** The panel reserved a
    flat 14 lines for chrome that reaches 18 once the filter line and the
    unattributed-processes warning are both up — so it wrote more lines than the
    window held and the terminal scrolled the whole picture. Together with a
@@ -437,7 +467,7 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
    first test written against the fix **caught the fix's own bug** — a `Max(3, …)`
    floor on the list height guaranteed an 18-line frame in a 14-line window. Chrome
    now sheds itself, worst line first, rather than overrunning.
-8. **A `List` returned bare is unrolled by PowerShell's output stream — and an empty
+10. **A `List` returned bare is unrolled by PowerShell's output stream — and an empty
    element is unrolled a second time and vanishes.** Building the frame as a list of
    lines, where a blank line is an empty array, means every blank silently
    disappears on return and the whole frame shifts up. Same family as the `,@()`

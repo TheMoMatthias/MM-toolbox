@@ -574,6 +574,21 @@ function Build-Rows {
 $script:paintedLines = 0
 $script:frameEndRow  = -1
 $script:frameSize    = ''
+# The frame as last painted, so the next one can rewrite only what differs.
+$script:lastFrame    = $null
+# One painted row, remembered so a scroll that leaves the cursor alone can
+# still be detected. See the note in Paint.
+$script:probeRow     = -1
+$script:probeText    = $null
+# Re-reading a row off the screen costs a marshalled GetBufferContents. Only a key
+# that can PRINT can scroll the panel out from under us, so the arrow keys skip the
+# check and it runs on the frame after everything else. (Timing the two paths apart
+# was inconclusive on a loaded machine -- this is doing less work on the hot path,
+# not a measured speed-up.)
+$script:verifyScreen = $true
+# One key of push-back. The movement coalescer has to read a key to find out it is
+# not a movement key, and there is no peek on a console.
+$script:pendingKey   = $null
 # Rows that fit on screen, set by the frame builder and read by PGUP/PGDN. A sane
 # value before the first frame, because a key can arrive before one is drawn.
 $script:pageSize     = 10
@@ -586,7 +601,7 @@ function Show-Caret { try { [Console]::CursorVisible = $true  } catch { } }
 
 # A line is an array of segments so LIVE can keep its own colour inside a row that
 # is otherwise written as one piece.
-function New-Seg { param([string]$T, [string]$C = 'Gray') return [PSCustomObject]@{ T = $T; C = $C } }
+function New-Seg { param([string]$T, [string]$C = 'Gray', [string]$B = '') return [PSCustomObject]@{ T = $T; C = $C; B = $B } }
 $script:blankLine = @((New-Seg '' 'Gray'))
 
 function Get-WinSize {
@@ -598,6 +613,46 @@ function Get-WinSize {
     return [PSCustomObject]@{ W = [Math]::Max(24, [int]$w); H = [Math]::Max(4, [int]$h) }
 }
 
+# One row of the visible screen, as text. Used to catch a scroll that left the
+# cursor where it was -- see the note in Paint.
+function Read-BufferRow {
+    param([int]$Row, [int]$Len)
+    if ($Row -lt 0 -or $Len -le 0) { return $null }
+    try {
+        $rui  = $Host.UI.RawUI
+        $top  = $rui.WindowPosition.Y
+        $rect = New-Object System.Management.Automation.Host.Rectangle 0, ($top + $Row), ($Len - 1), ($top + $Row)
+        $buf  = $rui.GetBufferContents($rect)
+        $s = ''
+        for ($x = 0; $x -lt $buf.GetLength(1); $x++) { $s += $buf[0, $x].Character }
+        return $s
+    } catch { return $null }
+}
+
+# Throw the frame away, so the next paint clears and redraws from scratch. Called
+# by anything that prints below the panel.
+function Reset-Frame {
+    $script:lastFrame    = $null
+    $script:frameEndRow  = -1
+    $script:paintedLines = 0
+    $script:probeText    = $null
+}
+
+# Two lines are the same when they would paint the same. Cheap string compares
+# against a Write-Host that costs about half a millisecond each.
+function Test-SameLine {
+    param($A, $B)
+    if ($null -eq $A -or $null -eq $B) { return $false }
+    $a = @($A); $b = @($B)
+    if ($a.Count -ne $b.Count) { return $false }
+    for ($k = 0; $k -lt $a.Count; $k++) {
+        if ($a[$k].T -ne $b[$k].T)  { return $false }
+        if ($a[$k].C -ne $b[$k].C)  { return $false }
+        if ($a[$k].B -ne $b[$k].B)  { return $false }
+    }
+    return $true
+}
+
 function Paint {
     param([object[]]$Lines)
     $sz = Get-WinSize
@@ -607,37 +662,93 @@ function Paint {
 
     # If the cursor is not where the last frame left it, something printed under the
     # panel. If the window changed shape, the old frame is the wrong size. Either
-    # way a stamp-over would leave debris, so clear once and repaint clean.
+    # way the previous frame can no longer be trusted as a baseline for the diff.
     $moved = $true
     try { $moved = ([Console]::CursorTop -ne $script:frameEndRow) } catch { }
-    if ($moved -or $script:frameSize -ne ("{0}x{1}" -f $sz.W, $sz.H)) {
+    $full = $moved -or ($script:frameSize -ne ("{0}x{1}" -f $sz.W, $sz.H))
+
+    # A scroll the cursor position cannot reveal. Measured on this machine: buffer
+    # 118x48, window 118x48 -- NO SCROLLBACK. A prompt printed on the parked row
+    # therefore scrolls the entire buffer up by one line and leaves the cursor on
+    # the same row it started on, so the check above sees nothing while the panel
+    # has silently moved up and the diff then repaints nothing. That is the "the
+    # whole page goes up" symptom, and it fired on every /, S, L and X. So re-read
+    # a row we painted and compare it with what we painted there.
+    if (-not $full -and $script:verifyScreen -and $null -ne $script:probeText) {
+        if ((Read-BufferRow -Row $script:probeRow -Len $script:probeText.Length) -ne $script:probeText) { $full = $true }
+    }
+    $script:verifyScreen = $false
+
+    if ($full) {
         Clear-Host
         $script:paintedLines = 0
+        $script:lastFrame    = $null
     }
     $script:frameSize = "{0}x{1}" -f $sz.W, $sz.H
 
     Hide-Caret
-    try { [Console]::SetCursorPosition(0, 0) } catch { Clear-Host }
+    $n    = [Math]::Min($Lines.Count, $sz.H - 1)
+    $prev = $script:lastFrame
 
-    $n = [Math]::Min($Lines.Count, $sz.H - 1)
+    # ONLY THE LINES THAT CHANGED. Measured before this: painting all 47 lines cost
+    # 89 ms, about 190 Write-Host calls, so the panel drew 13 frames a second while
+    # Windows repeats a held key 30 times a second. Every repeat queued, and the
+    # list carried on moving for seconds after the finger came off the key -- which
+    # is what "it jumps to the end of the page on its own" actually was. An arrow
+    # key changes exactly two lines: the row left and the row arrived at.
     for ($i = 0; $i -lt $n; $i++) {
+        if ($null -ne $prev -and $i -lt $prev.Count -and (Test-SameLine $prev[$i] $Lines[$i])) { continue }
+        try { [Console]::SetCursorPosition(0, $i) } catch { }
         $used = 0
+        $rowBg = ''
         foreach ($seg in $Lines[$i]) {
             if ($used -ge $w) { break }
             $t = [string]$seg.T
             if ($used + $t.Length -gt $w) { $t = $t.Substring(0, $w - $used) }
-            if ($t.Length -gt 0) { Write-Host $t -ForegroundColor $seg.C -NoNewline; $used += $t.Length }
+            if ($t.Length -gt 0) {
+                if ($seg.B) { $rowBg = $seg.B; Write-Host $t -ForegroundColor $seg.C -BackgroundColor $seg.B -NoNewline }
+                else        { Write-Host $t -ForegroundColor $seg.C -NoNewline }
+                $used += $t.Length
+            }
         }
         # The padding IS the erase. Without it the tail of a longer previous line
-        # survives underneath the new one.
-        if ($used -lt $w) { Write-Host (' ' * ($w - $used)) -NoNewline }
-        Write-Host ''
+        # survives underneath the new one. No newline: the cursor is placed
+        # explicitly for every line, so painting can never push the buffer up --
+        # and this console has no scrollback at all (measured: buffer 118x48,
+        # window 118x48), where one stray newline on the last row would scroll the
+        # whole panel and lose the top of it for good.
+        if ($used -lt $w) {
+            if ($rowBg) { Write-Host (' ' * ($w - $used)) -BackgroundColor $rowBg -NoNewline }
+            else        { Write-Host (' ' * ($w - $used)) -NoNewline }
+        }
     }
     # A frame that shrank would otherwise leave the bottom of the taller one behind.
-    for ($i = $n; $i -lt $script:paintedLines; $i++) { Write-Host (' ' * $w) }
-    if ($script:paintedLines -gt $n) { try { [Console]::SetCursorPosition(0, $n) } catch { } }
+    for ($i = $n; $i -lt $script:paintedLines; $i++) {
+        try { [Console]::SetCursorPosition(0, $i) } catch { }
+        Write-Host (' ' * $w) -NoNewline
+    }
     $script:paintedLines = $n
-    try { $script:frameEndRow = [Console]::CursorTop } catch { $script:frameEndRow = -1 }
+    $script:lastFrame    = $Lines
+
+    # Remember one painted row so the next paint can tell whether the screen still
+    # holds what we put there. It has to be a row with real text on it: a blank row
+    # still matches itself after the buffer has scrolled, which would make the probe
+    # agree that nothing happened.
+    $script:probeRow = -1; $script:probeText = $null
+    for ($i = 0; $i -lt $n; $i++) {
+        $t = ''
+        foreach ($seg in $Lines[$i]) { $t += [string]$seg.T }
+        if ($t.Trim().Length -ge 8) {
+            $script:probeRow  = $i
+            $script:probeText = $t.Substring(0, [Math]::Min(24, $t.Length))
+            break
+        }
+    }
+
+    # Park just under the frame. Anything that prints below the panel starts here.
+    $park = [Math]::Min($n, $sz.H - 1)
+    try { [Console]::SetCursorPosition(0, $park); $script:frameEndRow = [Console]::CursorTop }
+    catch { $script:frameEndRow = -1 }
 }
 
 # Builds the whole frame, chrome included, and returns it as lines. Nothing here
@@ -744,9 +855,18 @@ function Build-Frame {
     if ($total -le $height) {
         $script:first = 0
     } else {
-        $m = 2
+        # The margin has to fit inside the page. At a page of one row a margin of
+        # two makes the arithmetic aim BEYOND the cursor: measured at 90x12, the
+        # viewport settled on cursor+2 and the selected row was not on screen at
+        # all. Test 4 only ever checked a full-size window and missed it.
+        $m = [Math]::Min(2, [Math]::Max(0, [int](($height - 1) / 2)))
         if ($Cursor -lt $script:first + $m)               { $script:first = $Cursor - $m }
         if ($Cursor -gt $script:first + $height - 1 - $m) { $script:first = $Cursor - $height + 1 + $m }
+        $script:first = [Math]::Max(0, [Math]::Min($script:first, $total - $height))
+        # Hard invariant, whatever the margin arithmetic decided: the cursor is on
+        # screen. Losing the selected row is the one thing this panel must never do.
+        if ($Cursor -lt $script:first)               { $script:first = $Cursor }
+        if ($Cursor -gt $script:first + $height - 1) { $script:first = $Cursor - $height + 1 }
         $script:first = [Math]::Max(0, [Math]::Min($script:first, $total - $height))
     }
     $first = $script:first
@@ -758,6 +878,7 @@ function Build-Frame {
     for ($i = $first; $i -le $last; $i++) {
         $r   = $Rows[$i]
         $sel = if ($i -eq $Cursor) { '>' } else { ' ' }
+        $bg  = if ($i -eq $Cursor) { 'DarkBlue' } else { '' }
 
         switch ($r.Kind) {
             'dir' {
@@ -770,7 +891,7 @@ function Build-Frame {
                 $live = @(@($v) | Where-Object { (Get-SessionState $_) -in @('run','act','new') }).Count
                 $note = if ($d.missing) { '  MISSING' } elseif ($live -gt 0) { "  $live live" } else { '' }
                 $col  = if ($i -eq $Cursor) { 'White' } elseif ($d.missing) { 'DarkGray' } elseif ($d.enabled) { 'Cyan' } else { 'Gray' }
-                $lines.Add(@((New-Seg ("  {0} {1} {2} {3,-26} {4,2}/{5,-3}{6}" -f $sel, $mark, $fold, (Split-Path $d.path -Leaf), $n, $v.Count, $note) $col)))
+                $lines.Add(@((New-Seg ("  {0} {1} {2} {3,-26} {4,2}/{5,-3}{6}" -f $sel, $mark, $fold, (Split-Path $d.path -Leaf), $n, $v.Count, $note) $col $bg)))
             }
             'lane' {
                 $ln   = @(@($r.Lane.Group) | Where-Object { $_.enabled }).Count
@@ -778,7 +899,7 @@ function Build-Frame {
                 $tag  = if ($r.Lane.Name -eq 'main') { 'main' } else { 'worktree: ' + $r.Lane.Name }
                 $warn = if ($r.Dir.enabled -and $ln -ge 2) { "  $ln in one tree" } else { '' }
                 $col  = if ($i -eq $Cursor) { 'White' } elseif ($r.Lane.Name -eq 'main') { 'DarkCyan' } else { 'Magenta' }
-                $lines.Add(@((New-Seg ("  {0}     {1} {2,-30} {3,2}/{4,-3}{5}" -f $sel, $fold, $tag, $ln, @($r.Lane.Group).Count, $warn) $col)))
+                $lines.Add(@((New-Seg ("  {0}     {1} {2,-30} {3,2}/{4,-3}{5}" -f $sel, $fold, $tag, $ln, @($r.Lane.Group).Count, $warn) $col $bg)))
             }
             'session' {
                 $d = $r.Dir; $s = $r.Session
@@ -795,16 +916,16 @@ function Build-Frame {
                 # same word twice: one is a process holding the id, the other is a
                 # file that moved recently.
                 $stateSeg = switch (Get-SessionState $s) {
-                    'run'   { New-Seg 'LIVE' 'Cyan' }
-                    'act'   { New-Seg 'live' 'DarkCyan' }
-                    'new'   { New-Seg '..  ' 'DarkCyan' }
-                    'gone'  { New-Seg 'GONE' 'Red' }
-                    default { New-Seg '    ' 'Gray' }
+                    'run'   { New-Seg 'LIVE' 'Cyan'     $bg }
+                    'act'   { New-Seg 'live' 'DarkCyan' $bg }
+                    'new'   { New-Seg '..  ' 'DarkCyan' $bg }
+                    'gone'  { New-Seg 'GONE' 'Red'      $bg }
+                    default { New-Seg '    ' 'Gray'     $bg }
                 }
                 $lines.Add(@(
-                    (New-Seg ("  {0}        {1}{2} {3,-30} {4,5}  " -f $sel, $pin, $mark, $s.title, (Get-Age $s.lastActive)) $col),
+                    (New-Seg ("  {0}        {1}{2} {3,-30} {4,5}  " -f $sel, $pin, $mark, $s.title, (Get-Age $s.lastActive)) $col $bg),
                     $stateSeg,
-                    (New-Seg $note $col)
+                    (New-Seg $note $col $bg)
                 ))
             }
         }
@@ -845,8 +966,17 @@ function Invoke-Rescan {
 
 # ReadKey rather than Read-Host: the panel is already in raw-key mode, and a
 # stray Enter should not be able to confirm twelve tabs.
+# Anything still queued from a held arrow key belongs to the list, not to this
+# prompt. Without it, leaning on DOWN and then pressing S types the leftovers into
+# the session name, and a queued key could answer a y/N for you.
+function Clear-InputBuffer {
+    $script:pendingKey = $null
+    try { while ([Console]::KeyAvailable) { $null = [Console]::ReadKey($true) } } catch { }
+}
+
 function Read-YesNo {
     param([Parameter(Mandatory)][string]$Prompt)
+    Clear-InputBuffer
     Write-Host ""
     Write-Host ("  " + $Prompt + "  [y/N] ") -ForegroundColor Yellow -NoNewline
     $k = [Console]::ReadKey($true)
@@ -910,6 +1040,46 @@ function Invoke-LaunchMany {
     }
 }
 
+# Windows repeats a held key about 30 times a second. Drawing a frame used to cost
+# 89 ms, so the panel managed 13 -- every repeat past the first landed in the
+# console input buffer and was drained one frame at a time AFTER the finger came
+# off the key. A one-second press on DOWN kept the list moving for nearly three
+# seconds, which reads exactly like "it jumped to the end of the page on its own"
+# and like the page moving rather than the cursor. So movement is COALESCED: take
+# everything already queued, apply all of it, and draw the result once. Anything
+# that is not a movement key is pushed back for the main loop to handle.
+function Move-Cursor {
+    param([int]$Cursor, [int]$Max, [int]$Delta = 0, [int]$Absolute = -1)
+    $c = if ($Absolute -ge 0) { $Absolute } else { $Cursor + $Delta }
+    # No switch in here on purpose: PowerShell's switch is itself a loop, so a
+    # `break` would bind to the switch and not to this while.
+    $stop = $false
+    while (-not $stop) {
+        $avail = $false
+        try { $avail = [Console]::KeyAvailable } catch { $avail = $false }
+        if (-not $avail) { $stop = $true; continue }
+        $nk = [Console]::ReadKey($true)
+        if     ($nk.Key -eq 'DownArrow') { $c++ }
+        elseif ($nk.Key -eq 'UpArrow')   { $c-- }
+        elseif ($nk.Key -eq 'PageDown')  { $c += $script:pageSize }
+        elseif ($nk.Key -eq 'PageUp')    { $c -= $script:pageSize }
+        elseif ($nk.Key -eq 'Home')      { $c = 0 }
+        elseif ($nk.Key -eq 'End')       { $c = $Max }
+        else   { $script:pendingKey = $nk; $stop = $true }
+    }
+    if ($Max -lt 0) { return 0 }
+    return [Math]::Max(0, [Math]::Min($Max, $c))
+}
+
+function Read-PanelKey {
+    if ($null -ne $script:pendingKey) {
+        $k = $script:pendingKey
+        $script:pendingKey = $null
+        return $k
+    }
+    return [Console]::ReadKey($true)
+}
+
 $rows = Build-Rows
 # The caret is hidden for the whole run so it does not flicker around the frame as
 # it repaints. Ctrl+C would otherwise leave it invisible in a console the launching
@@ -918,7 +1088,7 @@ try {
 while ($true) {
     if ($cursor -ge $rows.Count) { $cursor = [Math]::Max(0, $rows.Count - 1) }
     Render -Rows $rows -Cursor $cursor
-    $key = [Console]::ReadKey($true)
+    $key = Read-PanelKey
     $row = $rows[$cursor]
     # A filter that matches nothing leaves NO rows, so there is no row under the
     # cursor. Everything that acts on one has to bow out here -- without this, S
@@ -932,12 +1102,12 @@ while ($true) {
     switch ($key.Key) {
         # Moving clears the last result line: a "launched 1" left hanging over a
         # different row reads as if THAT row was launched.
-        'UpArrow'    { if ($cursor -gt 0) { $cursor-- }; $script:status = $null }
-        'DownArrow'  { if ($cursor -lt $rows.Count - 1) { $cursor++ }; $script:status = $null }
-        'Home'       { $cursor = 0; $script:status = $null }
-        'End'        { $cursor = $rows.Count - 1; $script:status = $null }
-        'PageUp'     { $cursor = [Math]::Max(0, $cursor - $script:pageSize); $script:status = $null }
-        'PageDown'   { $cursor = [Math]::Min($rows.Count - 1, $cursor + $script:pageSize); $script:status = $null }
+        'UpArrow'    { $cursor = Move-Cursor -Cursor $cursor -Max ($rows.Count - 1) -Delta (-1); $script:status = $null }
+        'DownArrow'  { $cursor = Move-Cursor -Cursor $cursor -Max ($rows.Count - 1) -Delta 1;    $script:status = $null }
+        'Home'       { $cursor = Move-Cursor -Cursor $cursor -Max ($rows.Count - 1) -Absolute 0; $script:status = $null }
+        'End'        { $cursor = Move-Cursor -Cursor $cursor -Max ($rows.Count - 1) -Absolute ([Math]::Max(0, $rows.Count - 1)); $script:status = $null }
+        'PageUp'     { $cursor = Move-Cursor -Cursor $cursor -Max ($rows.Count - 1) -Delta (-$script:pageSize); $script:status = $null }
+        'PageDown'   { $cursor = Move-Cursor -Cursor $cursor -Max ($rows.Count - 1) -Delta $script:pageSize;    $script:status = $null }
         'LeftArrow'  { $collapsed[$row.Key] = $true;  $rows = Build-Rows }
         'RightArrow' { $collapsed[$row.Key] = $false; $rows = Build-Rows }
         'Spacebar'   {
@@ -1057,6 +1227,7 @@ while ($true) {
                         }
                     }
                     Write-Host "  Name it, or press ENTER for an automatic one: " -ForegroundColor Cyan -NoNewline
+                    Clear-InputBuffer
                     Show-Caret
                     $nm  = Read-Host
                     $why = Invoke-SpawnNew -Dir $path -Name $nm
@@ -1101,6 +1272,7 @@ while ($true) {
                 '[/fF]' {
                     Write-Host ""
                     Write-Host ("  Find (title, id, worktree or project){0}: " -f $(if ($script:filter) { " - now '$($script:filter)', ENTER clears" } else { ', ENTER cancels' })) -ForegroundColor Cyan -NoNewline
+                    Clear-InputBuffer
                     Show-Caret
                     $f = Read-Host
                     $script:filter = if ([string]::IsNullOrWhiteSpace($f)) { $null } else { $f.Trim() }
@@ -1118,6 +1290,16 @@ while ($true) {
             }
         }
     }
-    if ($key.Key -notin @('UpArrow','DownArrow','Home','End','PageUp','PageDown')) { $rows = Build-Rows }
+    # Deterministic backstop for the probe above: every key that can print below
+    # the panel throws the frame away, so the next paint clears and redraws
+    # rather than trusting a diff against a screen that has moved.
+    if ("$($key.KeyChar)" -match '[lLsSxX/fFrR]') { Reset-Frame }
+    if ($key.Key -notin @('UpArrow','DownArrow','Home','End','PageUp','PageDown')) {
+        $rows = Build-Rows
+        # Only a key that can print can scroll the panel out from under us, so the
+        # screen check is armed here and nowhere else. The arrow keys stay on the
+        # fast path.
+        $script:verifyScreen = $true
+    }
 }
 } finally { Show-Caret }
