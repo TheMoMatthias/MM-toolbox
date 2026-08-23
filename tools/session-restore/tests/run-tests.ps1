@@ -169,8 +169,16 @@ function New-GuiHarness {
     #
     # Three of them were in this suite: $live, $rows and $said. Caught by hand;
     # caught by construction from here on.
+    # EVERY FILE THE HARNESS WILL LOAD, not just this one. sessions-gui.ps1 was
+    # split into gui\*.ps1, and half the script state moved with it - a guard
+    # that only read the main file would have stopped seeing most of the names
+    # it exists to protect, silently, on the day of the split.
+    $allSrc = ($src -join "`n")
+    foreach ($part in @(Get-ChildItem -LiteralPath (Join-Path $tool 'gui') -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
+        $allSrc += "`n" + (Get-Content -LiteralPath $part.FullName -Raw)
+    }
     $scriptNames = @{}
-    foreach ($m in [regex]::Matches(($src -join "`n"), '\$script:([A-Za-z_]\w*)')) {
+    foreach ($m in [regex]::Matches($allSrc, '\$script:([A-Za-z_]\w*)')) {
         $scriptNames[$m.Groups[1].Value.ToLower()] = $true
     }
     $clash = @{}
