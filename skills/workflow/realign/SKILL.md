@@ -9,7 +9,7 @@ argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 **The deliverable is work resumed correctly** — the direction checked, and nothing quietly
 written off. Used at the end of a report, summary, update, or a claim of being finished.
 Account for what is open, settle the approach yourself, **put the picture up and check the
-direction**, then **keep going and break what is in the way**. Step 4 is the point; 1–3
+direction**, then **keep going and break what is in the way**. Step 5 is the point; 1–4
 make it safe.
 
 ## 1. Sweep — on evidence, not recollection
@@ -49,22 +49,26 @@ job is the failure this step exists to catch, and doing it to yourself mid-run c
 
 Settle each item from the code, the repo's conventions, the plan, or a defensible default.
 This is the default path, not the exception: most items need nobody. It covers **HOW**
-things get done — **WHERE** the work is headed belongs to step 3.
+things get done — **WHERE** the work is headed belongs to step 4.
 
 🔴 **Every item leaves this step with an approach, the hard ones included.** "Too hard",
 "blocked", "not feasible" are **not available verdicts here** — nothing has been tried yet,
 and a feasibility call made at the desk is a guess wearing a conclusion's clothes. The hard
-item gets an approach *and the first thing to try*. Only step 4, after an attempt that
+item gets an approach *and the first thing to try*. Only step 5, after an attempt that
 actually failed, can produce a deferral.
 
-## 3. Show the board, then ask about direction
+## 3. Put the board up
 
-🔴 **Put the picture up before the questions**, compact and in one place: what step 1 found
-still open, what you settled yourself, what stood in the way, and **the order you propose to
-take the rest in**. Questions with no board in front of them are an interrogation — they ask
-the user to choose between consequences they cannot see. This is also the one moment the
-plan can be redirected before the effort is spent. The closing block is the account of what
-happened; this is the proposal.
+🔴 **Show the picture, compact and in one place**: what step 1 found still open, what you
+settled yourself, what stood in the way, and **the order you propose to take the rest in**.
+
+**This happens every time — whether or not you have a question.** It is the status update
+the skill exists to produce, and it is the one moment the plan can still be redirected
+before the effort is spent. Questions with no board in front of them are an interrogation:
+they ask the user to choose between consequences they cannot see. The closing block at the
+end is the account of what happened; this is the proposal of what is about to.
+
+## 4. Ask about direction
 
 - **HOW — decide it.** Implementation, tooling, structure, ordering within a step. Report
   under DEFAULTS; do not spend a question on it.
@@ -81,7 +85,7 @@ happened; this is the proposal.
 5. Is anything now **not worth doing at all**?
 
 Ask about every probe that returns something, plus anything whose answer changes what you
-do next, plus the unfinished work — finish, drop, hand off — and any wall from step 4.
+do next, plus the unfinished work — finish, drop, hand off — and any wall from step 5.
 Usually 1–3 questions. **If all five come back empty — rarer than it feels — say in one
 line that you ran them and found nothing, then go.** "There was no real question" is a
 conclusion you reach by looking, not by not looking.
@@ -95,7 +99,7 @@ consequence. 🪤 **Frame it well — a wrong frame steers harder than a wrong d
 - **Keep the options wide enough that "Other" is not the only true answer**, and include one
   that genuinely challenges the current course. Decisions others depend on come first.
 
-## 4. Carry on — and break what is in the way
+## 5. Carry on — and break what is in the way
 
 **Decisions are now locked** for the rest of the session: do not re-ask, do not
 re-litigate, do not seek confirmation to begin.
@@ -105,7 +109,7 @@ re-litigate, do not seek confirmation to begin.
 2. **Then take the next item.** With a plan (see `to-execution-plan`) that is its next
    step, and its DONE-WHEN is your stop condition. Without one, what the objective implies.
 3. **Keep going** until the objective is met **on evidence**, a wall survives the ladder
-   below, or a new decision clears the step-3 bar.
+   below, or a new decision clears the step-4 bar.
 
 ### When something stands in the way
 

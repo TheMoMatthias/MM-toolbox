@@ -1,6 +1,6 @@
 # Walls and quiet write-offs
 
-Reached from step 4 of `realign` — whenever something looks like it cannot be done, or is
+Reached from step 5 of `realign` — whenever something looks like it cannot be done, or is
 about to simply not get done.
 
 🔴 **A false "blocked" is more expensive than a false "done".** A false "done" gets caught
