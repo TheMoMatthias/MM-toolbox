@@ -57,6 +57,13 @@ function Get-Stamp { param($When)
 function Get-InboxBand { param($Session)
     $cv = Get-Conv $Session
     if (-not $cv) { return 'quiet' }
+    # 🪤 SAY THIS OUT LOUD RATHER THAN LETTING THE STALE TEST CATCH IT BELOW.
+    # An agent whose needs-claim could not be corroborated is marked stuck AND
+    # stale by Resolve-SRSessionState, so the next line would already send it to
+    # quiet -- by accident, and only for as long as those two stay coupled. The
+    # band that means ACT ON THIS held a 33-day-dead background agent for exactly
+    # this kind of implicit reasoning; the guard is worth its two lines.
+    if ($cv.Stuck) { return 'quiet' }
     if ($cv.Needs) { return 'needs' }
     $st = "$($cv.State)"
     if ($cv.Stale) { return 'quiet' }

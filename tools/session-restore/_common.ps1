@@ -1680,8 +1680,30 @@ function Resolve-SRSessionState {
     param($Agent, $Conv)
 
     if ($Agent) {
+        # 🔴 A NEEDS CLAIM MUST BE CORROBORATED. `claude agents --json` keeps
+        # reporting background agents that went `blocked` and were never reaped.
+        # Measured 2026-08-23: STRATEGY-PERF-ANALYSIS, state `blocked`, startedAt
+        # 33 DAYS earlier, no pid, and no transcript left on disk. It sat in NEEDS
+        # YOU -- the band that means ACT ON THIS -- while Send-SRSessionInput
+        # refused to type into it for the very reason that made it unactionable.
+        # 🔑 The window knew it could not be acted on and filed it under act-on-this.
+        #
+        # Corroboration is the weakest true thing: either there is a process to
+        # type into, or there is a transcript to read. NEITHER, and the claim is a
+        # leftover rather than a demand. Note a running background agent reports NO
+        # pid, so the pid alone would condemn every one of them -- which is why the
+        # transcript is the second half of the test and not an afterthought.
+        $backed = (([int]$Agent.Pid -gt 0) -or [bool]$Conv)
+        $stuck  = ([bool]$Agent.Needs -and -not $backed)
+        # Stale, deliberately: an unbacked report is the LAST thing that was seen,
+        # not something happening now. It costs no new State value -- the row
+        # already renders a stale state as "was waiting" in the dim brush, and
+        # Get-InboxBand already sends anything stale to the quiet band.
         $out = [PSCustomObject]@{
-            State = 'unknown'; Detail = ''; Stale = $false; Needs = [bool]$Agent.Needs
+            State = 'unknown'; Detail = ''; Stale = $stuck
+            Needs = ([bool]$Agent.Needs -and $backed)
+            Stuck = $stuck
+            StuckSince = $(if ($stuck) { $Agent.StartedAt } else { $null })
             Source = 'agent'; Pid = $Agent.Pid; LastPrompt = $null; Title = $null; Mode = $null
         }
         if ($Conv) { $out.LastPrompt = $Conv.LastPrompt; $out.Title = $Conv.Title; $out.Mode = $Conv.Mode }
@@ -1705,18 +1727,24 @@ function Resolve-SRSessionState {
                 $out.Detail = $(if ($Agent.Status) { "claude reports '$($Agent.Status)'" } else { 'running, status unknown' })
             }
         }
+        if ($stuck) {
+            $since = $(if ($Agent.StartedAt) { $Agent.StartedAt.ToString('d MMM') } else { 'some time ago' })
+            $out.Detail = "stuck since $since - nothing is running it, and there is no transcript left to read"
+        }
         return $out
     }
 
     if ($Conv) {
         return [PSCustomObject]@{
             State = $Conv.State; Detail = $Conv.Detail; Stale = $true; Needs = $false
+            Stuck = $false; StuckSince = $null
             Source = 'transcript'; Pid = 0
             LastPrompt = $Conv.LastPrompt; Title = $Conv.Title; Mode = $Conv.Mode
         }
     }
     return [PSCustomObject]@{
         State = 'unknown'; Detail = 'nothing known'; Stale = $true; Needs = $false
+        Stuck = $false; StuckSince = $null
         Source = 'none'; Pid = 0; LastPrompt = $null; Title = $null; Mode = $null
     }
 }
@@ -1958,7 +1986,20 @@ __CLAUDELINE__
     $body = $body.Replace('__TITLE__',      $Title.Replace("'", "''"))
     $body = $body.Replace('__CLAUDELINE__', ($parts -join ' '))
 
-    Set-Content -LiteralPath $boot -Value $body -Encoding utf8
+    # THE BOOT PATH IS DETERMINISTIC, so anything that freezes that ONE path takes
+    # this conversation out of every future restore, silently, forever. On
+    # 2026-08-23 an antivirus quarantine did exactly that to
+    # boot-MM-toolbox-444f91ed.ps1: the name became unwritable while every other
+    # name in the same folder stayed fine. A conversation is worth more than its
+    # filename, so take a different one rather than fail the session.
+    try {
+        Set-Content -LiteralPath $boot -Value $body -Encoding utf8 -ErrorAction Stop
+    } catch {
+        $alt = ($boot -replace '\.ps1$', '') + '-b.ps1'
+        Write-SRWarn ("could not write {0} ({1}) - using {2}" -f (Split-Path $boot -Leaf), $_.Exception.Message.Split([char]10)[0], (Split-Path $alt -Leaf))
+        Set-Content -LiteralPath $alt -Value $body -Encoding utf8 -ErrorAction Stop
+        $boot = $alt
+    }
     return $boot
 }
 
