@@ -556,6 +556,13 @@ $script:tickAnchor   = $null
 # is open so closing and reopening it does not throw the split away.
 $script:readHeight   = 340.0
 $script:readOpen     = $false
+# THE SEEN GATE. What the pane is currently showing, and how far into the
+# transcript it had read when it drew it. A reply typed against a stale document
+# is a reply to something the session has already moved past, which is exactly
+# the failure a tool that can type into thirteen consoles must not make easy.
+$script:readShownFor = $null    # sessionId the document belongs to
+$script:readShownAt  = $null    # transcript LastWriteTime when it was read
+$script:castTargets  = @()
 
 # ---------------------------------------------------------------------------
 # THE SORT KEY STACK
@@ -1160,6 +1167,7 @@ foreach ($n in @(
     'SelUnpin','SelLaunch','SelSpawn','StatusText','CancelBtn','SaveBtn','Overlay','OvTitle',
     'OvPath','OvWarnBox','OvWarn','OvName','OvCancel','OvOk',
     'ConfirmOverlay','CfTitle','CfMessage','CfNoteBox','CfNote','CfCancel','CfOk',
+    'CastOverlay','CastLead','CastList','CastBox','CastWho','CastCancel','CastSend','CastBtn',
     # The filter row and the state summary. Every one of these exists in the XAML;
     # they were simply never added here, so $ui.<name> was $null and the first
     # assignment to one of them took the whole window down at startup with
@@ -1994,6 +2002,11 @@ function Update-AllLive {
     Update-Header
     Update-NeedsBand
     Update-Selection
+    # A probe means something may have moved. The seen gate is only worth having
+    # if it SHUTS BY ITSELF the moment a session speaks - nobody is going to
+    # reselect a row to find out whether their half-typed reply is still aimed
+    # at the right thing.
+    if ($script:readOpen -and $script:readSession) { Update-SendState }
 }
 
 # The taskbar button, flashed until the window is looked at. FLASHW_TIMERNOFG
@@ -2875,6 +2888,10 @@ function Show-ReadPane {
         Set-Status 'select a conversation to read it' 'warn'
         return
     }
+    # Cleared BEFORE the read, so a pane that is mid-read is never mistaken for
+    # one that is current.
+    $script:readShownFor = $null
+    $script:readShownAt  = $null
     $script:readSession = $Row.Session
     $script:readDir     = $Row.Dir
     $ui.ReadName.Text   = "$(Get-SessionTitle $Row.Session $Row.Dir)"
@@ -2888,8 +2905,12 @@ function Show-ReadPane {
     $ui.ReadRow.Height  = New-Object System.Windows.GridLength $script:readHeight
     $script:readOpen = $true
     $ui.SendBox.Text = ''
-    Update-SendState
+    # ORDER MATTERS, AND IT WAS WRONG. Update-SendState asks whether the document
+    # on screen is current; running it BEFORE the document is read means the
+    # answer is always no, so the composer opened for nobody, ever. It is the
+    # read that stamps what the gate checks, so the gate is checked after it.
     Update-ReadDocument
+    Update-SendState
 }
 
 # Follow the selection while the pane is open, so arrowing down the list reads
@@ -2917,6 +2938,26 @@ function Update-ReadFollow {
 # The composer is only usable when there is a console to type into, and it says
 # why rather than sitting there dead. A disabled control with no explanation is
 # indistinguishable from a broken one.
+# Has the pane read this conversation, and has it moved since? Returns $null
+# when the composer may be used, otherwise the reason it may not.
+function Get-SendBlock {
+    if (-not $script:readSession) { return 'nothing is open' }
+    $sid = "$($script:readSession.sessionId)"
+    if ("$script:readShownFor" -ne $sid) {
+        return 'still reading this conversation'
+    }
+    try {
+        $j = Get-SRTranscriptPath -Dir (Get-SessionCwd $script:readSession $script:readDir) -SessionId $sid -Recorded $script:readSession.jsonl
+        if (Test-Path -LiteralPath $j) {
+            $mt = (Get-Item -LiteralPath $j).LastWriteTime
+            if ($script:readShownAt -and $mt -gt $script:readShownAt) {
+                return 'it has said something since this was drawn'
+            }
+        }
+    } catch { }
+    return $null
+}
+
 function Update-SendState {
     if (-not $script:readSession) { return }
     $a = $script:agents["$($script:readSession.sessionId)".ToLower()]
@@ -2924,6 +2965,19 @@ function Update-SendState {
         $ui.SendBox.IsEnabled = $false
         $ui.SendBtn.IsEnabled = $false
         $ui.SendNote.Text = 'Not running, so there is no console to type into. Open the terminal first.'
+        return
+    }
+    # THE SEEN GATE, and it is a real gate rather than a warning: the box is dead
+    # until what is on screen is what the session last said. Anything else is a
+    # reply written against a conversation that has moved on, and the operator
+    # cannot tell by looking - the document renders identically either way.
+    $blocked = Get-SendBlock
+    if ($blocked) {
+        $ui.SendBox.IsEnabled = $false
+        $ui.SendBtn.IsEnabled = $false
+        $ui.SendNote.Text = $(if ($blocked -match 'said something') {
+            'It has said something since this was drawn. Press Refresh to read the rest before replying.'
+        } else { 'Reading it first - the composer opens once what is on screen is what it last said.' })
         return
     }
     $ui.SendBox.IsEnabled = $true
@@ -2986,6 +3040,11 @@ function Update-ReadDocument {
             throw ("Build-ReadDocument returned {0}, not a FlowDocument - something in it emitted to the pipeline" -f $docObj.GetType().Name)
         }
         $ui.ReadView.Document = $docObj
+        # STAMP WHAT WAS READ, AND WHEN. This is the whole of the seen gate:
+        # without it "the pane is open" and "the pane is current" are the same
+        # thing to the code and different things on screen.
+        $script:readShownFor = "$($s.sessionId)"
+        $script:readShownAt  = $(try { if (Test-Path -LiteralPath $j) { (Get-Item -LiteralPath $j).LastWriteTime } else { Get-Date } } catch { Get-Date })
         # Newest last, so the end is where the conversation is. Deferred to
         # Loaded priority: the document has only just been set and the scroller
         # does not know how tall it is until layout has run.
@@ -3313,6 +3372,142 @@ function Invoke-RowLaunch { param($Row)
 # needs a BLOCKING answer to decide whether to stay open at all -- which an
 # in-window overlay cannot give. Everything the operator meets routinely goes
 # through Request-Confirm instead.
+# ---------------------------------------------------------------------------
+# BROADCAST. One message, several sessions.
+#
+# The recipients are chosen HERE and nowhere else. The obvious shortcut would be
+# "send to everything ticked", and it is wrong: the tick means "reopen this at
+# logon", most ticked conversations are not running, and a set whose name
+# describes a different set is how a message ends up in the wrong console.
+#
+# Two structural guards, both of which are about the fact that this types into
+# somebody else's terminal:
+#   - only sessions that can actually receive input are offered at all;
+#   - a session sitting on a permission dialog is offered but starts UNTICKED
+#     and says so, because prose typed at a dialog ANSWERS the dialog.
+# ---------------------------------------------------------------------------
+function Get-CastCandidates {
+    $out = @()
+    foreach ($d in $script:dirs) {
+        foreach ($sn in @(Get-Visible $d)) {
+            if (-not $sn.sessionId) { continue }
+            $a = $script:agents["$($sn.sessionId)".ToLower()]
+            if (-not $a -or -not $a.Pid -or $a.Kind -ne 'interactive') { continue }
+            $cv = Get-Conv $sn
+            $out += [PSCustomObject]@{
+                Session = $sn
+                Name    = (Get-SessionTitle $sn $d)
+                Project = (Split-Path $d.path -Leaf)
+                Dialog  = [bool]($a.WaitingFor -match 'dialog')
+                What    = $(if ($cv) { "$($cv.State)" } else { '' })
+            }
+        }
+    }
+    return $out
+}
+
+function Update-CastState {
+    $chosen = @()
+    foreach ($cb in @($ui.CastList.Children)) {
+        $box = $cb -as [System.Windows.Controls.CheckBox]
+        if ($box -and $box.IsChecked) { $chosen += $box.Tag }
+    }
+    $script:castTargets = @($chosen)
+    $has = ($chosen.Count -gt 0 -and "$($ui.CastBox.Text)".Trim())
+    $ui.CastSend.IsEnabled = [bool]$has
+    $ui.CastSend.Content = $(if ($chosen.Count) { "Send to $($chosen.Count)" } else { 'Send' })
+    # NAME EVERY RECIPIENT. A count is not a confirmation: "send to 6" and
+    # "send to these six" are different promises, and only one of them can be
+    # checked before the message goes.
+    if ($chosen.Count) {
+        $names = @($chosen | ForEach-Object { $_.Name })
+        $ui.CastWho.Text = "Will be typed into: " + ($names -join ',  ')
+    } else {
+        $ui.CastWho.Text = 'Nothing ticked, so nothing will be sent.'
+    }
+}
+
+function Show-Cast {
+    $cands = @(Get-CastCandidates)
+    $ui.CastList.Children.Clear()
+    foreach ($c in $cands) {
+        $cb = New-Object System.Windows.Controls.CheckBox
+        $cb.Tag = $c
+        $cb.Margin = New-Object System.Windows.Thickness 10, 5, 10, 5
+        $cb.Foreground = $Pal.TextHigh
+        $cb.IsChecked = $false
+        $sp = New-Object System.Windows.Controls.StackPanel
+        $sp.Orientation = 'Horizontal'
+        foreach ($bit in @(
+            @{ T = $c.Name;    F = $Pal.TextHigh; S = 12.5 }
+            @{ T = $c.Project; F = $Pal.TextDim;  S = 11.5 }
+            @{ T = $(if ($c.Dialog) { 'a dialog is open - typing here ANSWERS it' } else { $c.What }); F = $(if ($c.Dialog) { $Pal.TextMax } else { $Pal.TextLow }); S = 11.5 }
+        )) {
+            if (-not "$($bit.T)") { continue }
+            $tb = New-Object System.Windows.Controls.TextBlock
+            $tb.Text = "$($bit.T)"
+            $tb.Foreground = $bit.F
+            $tb.FontSize = $bit.S
+            $tb.Margin = New-Object System.Windows.Thickness 0, 0, 14, 0
+            $tb.VerticalAlignment = 'Center'
+            $null = $sp.Children.Add($tb)
+        }
+        $cb.Content = $sp
+        $cb.SetValue([System.Windows.Automation.AutomationProperties]::NameProperty, "$($c.Name) in $($c.Project)")
+        $null = $ui.CastList.Children.Add($cb)
+    }
+    $ui.CastLead.Text = $(if ($cands.Count) {
+        "$($cands.Count) session(s) are running and can be typed into. Tick the ones this should go to."
+    } else {
+        'Nothing is running that can be typed into. Open a session first.'
+    })
+    $ui.CastBox.Text = ''
+    Update-CastState
+    $ui.CastOverlay.Visibility = $V_Show
+    $null = $ui.CastBox.Focus()
+}
+
+function Close-Cast {
+    $ui.CastOverlay.Visibility = $V_Hide
+    $script:castTargets = @()
+    $null = (Get-ActiveList).Focus()
+}
+
+function Invoke-Cast {
+    $text = "$($ui.CastBox.Text)".Trim()
+    $targets = @($script:castTargets)
+    if (-not $text -or -not $targets.Count) { return }
+
+    $names = @($targets | ForEach-Object { $_.Name })
+    $dialogs = @($targets | Where-Object { $_.Dialog })
+    $warn = ''
+    if ($dialogs.Count) {
+        $warn = "`n`n$($dialogs.Count) of them are sitting on a permission dialog. What you send ANSWERS THE DIALOG in those, it does not go into the conversation:  " + (@($dialogs | ForEach-Object { $_.Name }) -join ', ')
+    }
+    $ans = Show-Confirm ("This will be typed into $($targets.Count) session(s):`n`n  " + ($names -join "`n  ") + "`n`nMessage:`n" + $text + $warn) 'Send to several sessions'
+    if ($ans -ne [System.Windows.MessageBoxResult]::Yes) { Set-Status 'not sent' 'warn'; return }
+
+    $sent = 0; $failed = @()
+    Set-Busy 'sending'
+    try {
+        foreach ($t in $targets) {
+            $sid = "$($t.Session.sessionId)"
+            $why = $(if ($t.Dialog) { Send-SRSessionInput -SessionId $sid -Text $text -Force }
+                     else           { Send-SRSessionInput -SessionId $sid -Text $text })
+            if ($why) { $failed += "$($t.Name): $why" } else { $sent++ }
+        }
+    } finally { Set-Busy '' }
+
+    Close-Cast
+    # PARTIAL FAILURE IS REPORTED, not rounded off. "Sent to 6" when two of them
+    # bounced is the kind of quiet lie that costs an afternoon.
+    if ($failed.Count) {
+        Set-Status ("sent to {0}, FAILED for {1}: {2}" -f $sent, $failed.Count, ($failed -join '; ')) 'bad'
+    } else {
+        Set-Status ("sent to {0} session(s): {1}" -f $sent, ($names -join ', ')) 'ok'
+    }
+}
+
 function Show-Confirm { param([string]$Message, [string]$Title)
     return [System.Windows.MessageBox]::Show($window, $Message, $Title,
         [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
@@ -3713,6 +3908,19 @@ $ui.ActiveTokens.AddHandler(
 
 # A menu, because these are occasional. Opening it from the button's own click
 # rather than a right-click: nobody right-clicks a button expecting a menu.
+$ui.CastBtn.Add_Click({ Invoke-Guarded { Show-Cast } 'open the broadcast' })
+$ui.CastCancel.Add_Click({ Invoke-Guarded { Close-Cast } 'close the broadcast' })
+$ui.CastSend.Add_Click({ Invoke-Guarded { Invoke-Cast } 'send to several sessions' })
+$ui.CastBox.Add_TextChanged({ Invoke-Guarded { Update-CastState } 'the broadcast' })
+# One handler for every recipient tick, on the strip: the list is rebuilt each
+# time the overlay opens, so per-box handlers would be re-attached every time.
+foreach ($ev in @([System.Windows.Controls.Primitives.ToggleButton]::CheckedEvent,
+                  [System.Windows.Controls.Primitives.ToggleButton]::UncheckedEvent)) {
+    $ui.CastList.AddHandler($ev, [System.Windows.RoutedEventHandler]{
+        param($sender, $e) Invoke-Guarded { Update-CastState } 'the recipients'
+    })
+}
+
 $ui.BulkBtn.Add_Click({
     Invoke-Guarded {
         $ui.BulkBtn.ContextMenu.PlacementTarget = $ui.BulkBtn

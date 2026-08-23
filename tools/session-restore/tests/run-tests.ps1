@@ -158,6 +158,34 @@ function New-GuiHarness {
     }
 
     $body = Get-Content -LiteralPath (Join-Path $here $Driver) -Raw
+
+    # A DRIVER MUST NOT SHADOW THE GUI'S OWN STATE.
+    #
+    # The driver is APPENDED to the script, not called as a function, so every
+    # "$x = ..." at its top level writes the SAME scope the GUI keeps its state
+    # in. "$live = $rows[0]" in a test is $script:live - the liveness table -
+    # and the symptom is a staged conversation quietly vanishing from the list
+    # four hundred lines later with every assertion still green.
+    #
+    # Three of them were in this suite: $live, $rows and $said. Caught by hand;
+    # caught by construction from here on.
+    $scriptNames = @{}
+    foreach ($m in [regex]::Matches(($src -join "`n"), '\$script:([A-Za-z_]\w*)')) {
+        $scriptNames[$m.Groups[1].Value.ToLower()] = $true
+    }
+    $clash = @{}
+    foreach ($pat in @('(?m)^\s*\$([A-Za-z_]\w*)\s*=', 'foreach \(\$([A-Za-z_]\w*) in')) {
+        foreach ($m in [regex]::Matches($body, $pat)) {
+            $nm = $m.Groups[1].Value
+            if ($scriptNames[$nm.ToLower()]) { $clash[$nm] = $true }
+        }
+    }
+    if ($clash.Count) {
+        throw ("$Driver assigns $(@($clash.Keys).Count) name(s) the GUI keeps script state in, and the driver runs in that same scope: " +
+               (@($clash.Keys | Sort-Object) -join ', ') +
+               ". Rename them in the driver - a test that overwrites `$script:live cannot fail honestly.")
+    }
+
     $path = Join-Path $state $OutFile
     [System.IO.File]::WriteAllText($path, (($prefix -join "`n") + $body), (New-Object System.Text.UTF8Encoding($false)))
     return $path

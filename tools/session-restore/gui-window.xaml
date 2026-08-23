@@ -1177,6 +1177,8 @@
              on screen is the thing you press often and the thing the whole
              window is built around. -->
         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
+          <Button x:Name="CastBtn" Style="{StaticResource Btn}" Content="Send to many" Margin="0,0,9,0"
+                  ToolTip="One message, typed into several running sessions. You pick the recipients and they are named back to you before anything is sent."/>
           <Button x:Name="BulkBtn" Style="{StaticResource Btn}" Content="Bulk" Margin="0,0,9,0"
                   ToolTip="Tick all, tick none, unpin all, collapse or expand the tree.">
             <Button.ContextMenu>
@@ -1690,6 +1692,56 @@
             <Button x:Name="CfOk" Style="{StaticResource BtnPrimary}" Content="Open them"/>
           </StackPanel>
         </StackPanel>
+      </Border>
+    </Border>
+
+    <!-- == modal overlay: one message, several sessions ==
+         RECIPIENTS ARE CHOSEN HERE, not taken from the logon ticks. The tick
+         means "reopen this at logon" and most ticked conversations are not
+         running at all, so sending to "everything ticked" would be a different
+         set from the one the words describe. Ticking a box in this overlay is
+         the only way to become a recipient, and the confirmation names every
+         one of them before anything is typed anywhere. -->
+    <Border x:Name="CastOverlay" Grid.Row="0" Grid.RowSpan="8" Background="{StaticResource Scrim}" Visibility="Collapsed">
+      <Border Background="{StaticResource Raised}" BorderBrush="{StaticResource HairlineHi}" BorderThickness="1" CornerRadius="12"
+              Width="700" MaxHeight="640" VerticalAlignment="Center" HorizontalAlignment="Center" Padding="28">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+
+          <TextBlock Grid.Row="0" Text="Send to several sessions" FontFamily="{StaticResource FontDisplay}"
+                     FontSize="17" FontWeight="SemiBold" Foreground="{StaticResource TextMax}"/>
+          <TextBlock x:Name="CastLead" Grid.Row="1" Text="" FontSize="12" Foreground="{StaticResource TextMid}"
+                     Margin="0,6,0,0" TextWrapping="Wrap"/>
+
+          <Border Grid.Row="2" Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}"
+                  BorderThickness="1" CornerRadius="8" Margin="0,16,0,0" MinHeight="120">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="4,6">
+              <StackPanel x:Name="CastList"/>
+            </ScrollViewer>
+          </Border>
+
+          <TextBox x:Name="CastBox" Grid.Row="3" Style="{StaticResource Search}"
+                   MinHeight="60" MaxHeight="140" Margin="0,14,0,0"
+                   AcceptsReturn="True" TextWrapping="Wrap"
+                   VerticalScrollBarVisibility="Auto"
+                   ToolTip="Typed into every ticked session above, one at a time."/>
+
+          <TextBlock x:Name="CastWho" Grid.Row="4" Text="" FontSize="11.5"
+                     FontFamily="{StaticResource FontSmall}" Foreground="{StaticResource TextHigh}"
+                     Margin="0,12,0,0" TextWrapping="Wrap"/>
+
+          <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button x:Name="CastCancel" Style="{StaticResource Btn}" Content="Cancel" Margin="0,0,9,0"/>
+            <Button x:Name="CastSend" Style="{StaticResource BtnNow}" Content="Send" MinWidth="150" IsEnabled="False"/>
+          </StackPanel>
+        </Grid>
       </Border>
     </Border>
 

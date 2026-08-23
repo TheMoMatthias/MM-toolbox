@@ -26,6 +26,22 @@
 
 $ErrorActionPreference = 'Stop'
 
+# STOP THE CLOCKS BEFORE STAGING ANYTHING.
+#
+# The prefix starts a 60-second liveTimer and a poll timer. The comment at the
+# top of this file says the state is exactly what this driver puts there - and
+# that was true only while the suite ran in under a minute. It grew past that,
+# a real probe fired mid-run, Set-ProbeResult replaced $script:agents,
+# $script:live and $script:running wholesale, and the staged NOT RUNNING
+# conversation vanished from the inbox: 10 rows became 8, silently, with every
+# assertion still green because each one re-measured the moved baseline.
+#
+# A fixture that decays on a wall clock is worse than no fixture: it fails
+# differently on a slow machine.
+foreach ($t in @($script:liveTimer, $script:pollTimer, $script:searchTimer, $script:readTimer)) {
+    if ($t) { $t.Stop() }
+}
+
 $fails = 0
 function Fail { param($m) Write-Host "  FAIL  $m" -ForegroundColor Red; $script:fails++ }
 function Pass { param($m) Write-Host "  ok    $m" -ForegroundColor Green }
@@ -65,27 +81,33 @@ function New-Conv {
     }
 }
 
-$A = @{}; $C2 = @{}; $S = @{}
+# NAMED, NOT LETTERED. These were $A, $C2 and $S. PowerShell variable names are
+# case-insensitive and its scoping walks the CALL STACK, so a "$a" in any loop
+# anywhere below is the same variable as $A - and one in a sort assertion
+# replaced the whole staged agent table with a row object, 400 lines away, with
+# an error that named neither. The same collision class as the $c/$C one that
+# emptied the palette; killing it by naming rather than by care.
+$StagedAgents = @{}; $StagedConv = @{}; $StagedSaid = @{}
 # 0: waiting on a permission dialog. Wants a click, not a sentence.
-$A[$ids[0].ToLower()] = New-Agent -Status 'waiting' -WaitingFor 'dialog open' -Name 'STAGE-DIALOG'
-$C2[$ids[0].ToLower()] = New-Conv -State 'waiting' -Detail 'a dialog is open, it wants an answer' -AgeMin 2
-$S[$ids[0].ToLower()] = [PSCustomObject]@{ Said = 'I need to run one command'; Pending = 'Bash(rm -rf /tmp/x)'; PendingTool = 'Bash'; At = (Get-Date).AddMinutes(-2) }
+$StagedAgents[$ids[0].ToLower()] = New-Agent -Status 'waiting' -WaitingFor 'dialog open' -Name 'STAGE-DIALOG'
+$StagedConv[$ids[0].ToLower()] = New-Conv -State 'waiting' -Detail 'a dialog is open, it wants an answer' -AgeMin 2
+$StagedSaid[$ids[0].ToLower()] = [PSCustomObject]@{ Said = 'I need to run one command'; Pending = 'Bash(rm -rf /tmp/x)'; PendingTool = 'Bash'; At = (Get-Date).AddMinutes(-2) }
 
 # 1: a BLOCKED BACKGROUND AGENT. No pid, no terminal, cannot be typed into.
-$A[$ids[1].ToLower()] = New-Agent -Status 'blocked' -ProcId 0 -Kind 'background' -Name 'STAGE-AGENT'
-$C2[$ids[1].ToLower()] = New-Conv -State 'waiting' -Detail 'blocked, needs you' -AgeMin 30
-$S[$ids[1].ToLower()] = [PSCustomObject]@{ Said = ''; Pending = ''; PendingTool = ''; At = $null }
+$StagedAgents[$ids[1].ToLower()] = New-Agent -Status 'blocked' -ProcId 0 -Kind 'background' -Name 'STAGE-AGENT'
+$StagedConv[$ids[1].ToLower()] = New-Conv -State 'waiting' -Detail 'blocked, needs you' -AgeMin 30
+$StagedSaid[$ids[1].ToLower()] = [PSCustomObject]@{ Said = ''; Pending = ''; PendingTool = ''; At = $null }
 
 # 2: busy.
-$A[$ids[2].ToLower()] = New-Agent -Status 'busy' -Name 'STAGE-BUSY'
-$C2[$ids[2].ToLower()] = New-Conv -State 'working' -Detail 'running' -AgeMin 1
-$S[$ids[2].ToLower()] = [PSCustomObject]@{ Said = 'Running the suite now'; Pending = 'Bash(pytest)'; PendingTool = 'Bash'; At = (Get-Date).AddMinutes(-1) }
+$StagedAgents[$ids[2].ToLower()] = New-Agent -Status 'busy' -Name 'STAGE-BUSY'
+$StagedConv[$ids[2].ToLower()] = New-Conv -State 'working' -Detail 'running' -AgeMin 1
+$StagedSaid[$ids[2].ToLower()] = [PSCustomObject]@{ Said = 'Running the suite now'; Pending = 'Bash(pytest)'; PendingTool = 'Bash'; At = (Get-Date).AddMinutes(-1) }
 
 # 3: idle, and it HAS said something. This is the case a mtime-only gate lost:
 # held by a process, silent at its prompt, therefore "stale".
-$A[$ids[3].ToLower()] = New-Agent -Status 'idle' -Name 'STAGE-IDLE'
-$C2[$ids[3].ToLower()] = New-Conv -State 'idle' -Detail 'at its prompt, nothing pending' -Stale $true -AgeMin 20
-$S[$ids[3].ToLower()] = [PSCustomObject]@{ Said = 'Done and pushed.'; Pending = ''; PendingTool = ''; At = (Get-Date).AddMinutes(-20) }
+$StagedAgents[$ids[3].ToLower()] = New-Agent -Status 'idle' -Name 'STAGE-IDLE'
+$StagedConv[$ids[3].ToLower()] = New-Conv -State 'idle' -Detail 'at its prompt, nothing pending' -Stale $true -AgeMin 20
+$StagedSaid[$ids[3].ToLower()] = [PSCustomObject]@{ Said = 'Done and pushed.'; Pending = ''; PendingTool = ''; At = (Get-Date).AddMinutes(-20) }
 
 # 4: NOT RUNNING. Its transcript moved recently, so it is worth showing, but
 # nothing is holding it.
@@ -98,18 +120,18 @@ $S[$ids[3].ToLower()] = [PSCustomObject]@{ Said = 'Done and pushed.'; Pending = 
 # whose process has gone but whose transcript is still warm. Resolve-SRSession
 # State returns Stale=$true whenever there is no agent, which is what stops a
 # dead conversation ever being labelled 'working'.
-$C2[$ids[4].ToLower()] = New-Conv -State 'idle' -Detail 'was at its prompt' -Stale $true -AgeMin 5
+$StagedConv[$ids[4].ToLower()] = New-Conv -State 'idle' -Detail 'was at its prompt' -Stale $true -AgeMin 5
 
 # 5: waiting for input, and NEWER than 0, so ordering inside the band is provable.
-$A[$ids[5].ToLower()] = New-Agent -Status 'waiting' -WaitingFor 'input needed' -Name 'STAGE-WAITING'
-$C2[$ids[5].ToLower()] = New-Conv -State 'waiting' -Detail 'input needed' -AgeMin 1
-$S[$ids[5].ToLower()] = [PSCustomObject]@{ Said = 'Which schema should I use?'; Pending = ''; PendingTool = ''; At = (Get-Date).AddMinutes(-1) }
+$StagedAgents[$ids[5].ToLower()] = New-Agent -Status 'waiting' -WaitingFor 'input needed' -Name 'STAGE-WAITING'
+$StagedConv[$ids[5].ToLower()] = New-Conv -State 'waiting' -Detail 'input needed' -AgeMin 1
+$StagedSaid[$ids[5].ToLower()] = [PSCustomObject]@{ Said = 'Which schema should I use?'; Pending = ''; PendingTool = ''; At = (Get-Date).AddMinutes(-1) }
 
-$script:agents = $A
-$script:conv   = $C2
-$script:said   = $S
+$script:agents = $StagedAgents
+$script:conv   = $StagedConv
+$script:said   = $StagedSaid
 $script:running = @{}
-foreach ($k in @($A.Keys)) { if ($A[$k].Pid) { $script:running[$k] = $true } }
+foreach ($k in @($StagedAgents.Keys)) { if ($StagedAgents[$k].Pid) { $script:running[$k] = $true } }
 # Transcript-moved-recently, which is inferred liveness and separate from a
 # process actually holding the id. Session 4 has this and nothing else.
 $script:live = @{ $ids[4].ToLower() = $true }
@@ -126,12 +148,12 @@ try { Update-List -ToTop } catch { Fail "Update-List threw: $($_.Exception.Messa
 # .ToArray(), not @(...). On PowerShell 5.1.26100.9168 the array subexpression
 # @() throws "Argument types do not match" against a List[object] -- which is
 # exactly what Build-InboxRows returns. Piping and .ToArray() both work.
-$rows = $script:inboxRows.ToArray()
-if (-not $rows.Count) { Fail 'the inbox built no rows at all'; }
-else { Pass "the inbox built $($rows.Count) row(s)" }
+$builtRows = $script:inboxRows.ToArray()
+if (-not $builtRows.Count) { Fail 'the inbox built no rows at all'; }
+else { Pass "the inbox built $($builtRows.Count) row(s)" }
 
 function RowFor { param([string]$Id)
-    foreach ($r in $rows) { if ($r.Kind -eq 'session' -and "$($r.Session.sessionId)" -ieq $Id) { return $r } }
+    foreach ($r in $builtRows) { if ($r.Kind -eq 'session' -and "$($r.Session.sessionId)" -ieq $Id) { return $r } }
     return $null
 }
 function BandOf { param([string]$Id) $r = RowFor $Id; if ($r) { return $r.Band } return '' }
@@ -147,7 +169,7 @@ foreach ($i in @($expect.Keys | Sort-Object)) {
 # A partition: no id may appear twice.
 $seen = @{}
 $dupes = 0
-foreach ($r in $rows) {
+foreach ($r in $builtRows) {
     if ($r.Kind -ne 'session') { continue }
     $k = "$($r.Session.sessionId)".ToLower()
     if ($seen[$k]) { $dupes++ }
@@ -161,7 +183,7 @@ else { Fail "$dupes conversation(s) appear more than once" }
 # already proves a lot -- but assert it directly too, because a guard that stops
 # being reached is a guard that stops guarding.
 $nullBrush = 0
-foreach ($r in $rows) {
+foreach ($r in $builtRows) {
     if ($r.Said -and $null -eq $r.SaidBrush) { $nullBrush++ }
     if ($r.Name -and $null -eq $r.NameBrush) { $nullBrush++ }
 }
@@ -169,7 +191,7 @@ if ($nullBrush -eq 0) { Pass 'every row with text has a brush to draw it with' }
 else { Fail "$nullBrush row(s) carry text with no brush - they would render blank" }
 
 # --- 3. the band headings ---------------------------------------------------
-$heads = @($rows | Where-Object { $_.Kind -eq 'band' })
+$heads = @($builtRows | Where-Object { $_.Kind -eq 'band' })
 if ($heads.Count -ge 3) { Pass "$($heads.Count) band heading(s): $((@($heads | ForEach-Object { $_.Name })) -join ', ')" }
 else { Fail "only $($heads.Count) band heading(s)" }
 foreach ($h in $heads) {
@@ -181,7 +203,7 @@ elseif ($needsHead.Count -eq 1) { Fail "NEEDS YOU says $($needsHead[0].Counts), 
 else { Fail 'no NEEDS YOU heading' }
 
 # --- 4. ordering inside a band ----------------------------------------------
-$needsRows = @($rows | Where-Object { $_.Kind -eq 'session' -and $_.Band -eq 'needs' })
+$needsRows = @($builtRows | Where-Object { $_.Kind -eq 'session' -and $_.Band -eq 'needs' })
 $firstId = "$($needsRows[0].Session.sessionId)".ToLower()
 if ($firstId -eq $ids[5].ToLower()) { Pass 'the newest waiting conversation is first in the band' }
 else { Fail "the band leads with $firstId, expected the newer $($ids[5].ToLower())" }
@@ -208,7 +230,7 @@ else { Fail 'the idle session has no row' }
 # --- 8. the project label is ONE lane, not all of them ----------------------
 # Get-Lanes returns ",@(...)"; wrapping it one step too far made every row read
 # "AlgoTrader / main I7 F2 AN2 I6 ..." with the whole repo concatenated.
-$badLabel = @($rows | Where-Object { $_.Kind -eq 'session' -and ("$($_.Project)" -split '\s+').Count -gt 4 })
+$badLabel = @($builtRows | Where-Object { $_.Kind -eq 'session' -and ("$($_.Project)" -split '\s+').Count -gt 4 })
 if ($badLabel.Count -eq 0) { Pass 'every project label names one project and one lane' }
 else { Fail "$($badLabel.Count) row(s) have a run-together project label, e.g. '$($badLabel[0].Project)'" }
 
@@ -466,6 +488,141 @@ else {
     if ($ui.RowList.Visibility -eq $V_Show) { Fail 'closing the pane from the inbox turned the All list back on' }
     else { Pass 'closing the pane leaves the view switch in charge of which list is up' }
 }
+
+# --- 10d. THE SEEN GATE -----------------------------------------------------
+# A tool that can type into thirteen consoles must not make it easy to reply to
+# something the session has already moved past. The composer is DEAD until what
+# is on screen is what that conversation last said - a warning would not do,
+# because a stale document renders identically to a current one.
+Set-ViewMode 'inbox'
+$liveRow = @($script:inboxRows.ToArray() | Where-Object {
+    $_.Kind -eq 'session' -and $script:agents["$($_.Session.sessionId)".ToLower()] -and
+    $script:agents["$($_.Session.sessionId)".ToLower()].Pid -and
+    $script:agents["$($_.Session.sessionId)".ToLower()].Kind -eq 'interactive'
+})[0]
+if (-not $liveRow) { Fail 'no running interactive conversation staged to test the composer' }
+else {
+    $script:readSession = $liveRow.Session
+    $script:readDir     = $liveRow.Dir
+    # Nothing read yet.
+    $script:readShownFor = $null
+    $script:readShownAt  = $null
+    Update-SendState
+    if ($ui.SendBox.IsEnabled) { Fail 'the composer is live before the conversation has been read' }
+    else { Pass "the composer is closed until it has been read: '$($ui.SendNote.Text)'" }
+
+    # READ IT THE WAY THE TOOL DOES. Setting the stamp by hand proved the gate's
+    # arithmetic and nothing about the path the operator actually takes - and
+    # the real path was broken: Show-ReadPane judged the gate BEFORE the read
+    # that stamps it, so the composer opened for nobody, ever, and this
+    # assertion was green throughout.
+    Show-ReadPane $liveRow
+    if (-not $ui.SendBox.IsEnabled) { Fail "opening a conversation left the composer shut: '$($ui.SendNote.Text)'" }
+    else { Pass 'opening a conversation opens its composer' }
+
+    # And the arithmetic, separately.
+    $script:readShownFor = "$($liveRow.Session.sessionId)"
+    $script:readShownAt  = (Get-Date).AddSeconds(5)   # newer than the file
+    Update-SendState
+    if (-not $ui.SendBox.IsEnabled) { Fail "the composer stayed closed after reading: '$($ui.SendNote.Text)'" }
+    else { Pass 'the composer opens once what is on screen is what it last said' }
+
+    # Now the transcript moves under it.
+    $script:readShownAt = (Get-Date).AddDays(-30)
+    Update-SendState
+    if ($ui.SendBox.IsEnabled) { Fail 'the composer stayed open after the conversation moved on' }
+    elseif ("$($ui.SendNote.Text)" -notmatch 'said something') { Fail "it closed but did not say why: '$($ui.SendNote.Text)'" }
+    else { Pass 'it closes again the moment the conversation says something new' }
+
+    # A conversation with no console cannot be typed into at all, gate or no gate.
+    $dead = @($script:inboxRows.ToArray() | Where-Object {
+        $_.Kind -eq 'session' -and -not $script:agents["$($_.Session.sessionId)".ToLower()]
+    })[0]
+    if ($dead) {
+        $script:readSession = $dead.Session; $script:readDir = $dead.Dir
+        $script:readShownFor = "$($dead.Session.sessionId)"; $script:readShownAt = (Get-Date).AddSeconds(5)
+        Update-SendState
+        if ($ui.SendBox.IsEnabled) { Fail 'the composer is live for a conversation with no console' }
+        else { Pass 'no console, no composer' }
+    }
+    $script:readSession = $null
+}
+
+# --- 10e. BROADCAST ---------------------------------------------------------
+# Recipients are chosen in the overlay, never taken from the logon ticks: the
+# tick means "reopen at logon", most ticked conversations are not running, and a
+# set whose name describes a different set is how a message reaches the wrong
+# console.
+$cands = @(Get-CastCandidates)
+$unreachable = @($cands | Where-Object {
+    $a = $script:agents["$($_.Session.sessionId)".ToLower()]
+    -not $a -or -not $a.Pid -or $a.Kind -ne 'interactive'
+})
+if ($unreachable.Count) { Fail "$($unreachable.Count) candidate(s) cannot actually be typed into" }
+elseif (-not $cands.Count) { Fail 'no broadcast candidates at all' }
+else { Pass "broadcast offers only the $($cands.Count) session(s) that can receive input" }
+
+# The blocked BACKGROUND agent has no console and must not be offered, however
+# much it looks like a live session in the list.
+$bg = @($cands | Where-Object { $_.Name -eq 'STAGE-AGENT' })
+if ($bg.Count) { Fail 'the background agent is offered as a broadcast recipient' }
+else { Pass 'a background agent is not offered - there is nothing to type into' }
+
+Show-Cast
+$boxes = @($ui.CastList.Children)
+if ($boxes.Count -ne $cands.Count) { Fail "the overlay lists $($boxes.Count) recipient(s) for $($cands.Count) candidate(s)" }
+elseif (@($boxes | Where-Object { $_.IsChecked }).Count) { Fail 'a recipient is ticked before anyone chose it' }
+else { Pass "the overlay opens with $($boxes.Count) recipients and NONE of them ticked" }
+
+if ($ui.CastSend.IsEnabled) { Fail 'Send is live with no recipients and no message' }
+else { Pass 'Send is dead until there is both a message and a recipient' }
+
+# Message but no recipient: still dead.
+$ui.CastBox.Text = 'status?'
+Update-CastState
+if ($ui.CastSend.IsEnabled) { Fail 'Send is live with a message but no recipients' }
+else { Pass 'a message with nobody to send it to does not arm Send' }
+
+# Two recipients: armed, and NAMED. A count is not a confirmation.
+$boxes[0].IsChecked = $true
+$boxes[1].IsChecked = $true
+Update-CastState
+$want = @($boxes[0].Tag.Name, $boxes[1].Tag.Name)
+$missing = @($want | Where-Object { "$($ui.CastWho.Text)" -notmatch [regex]::Escape($_) })
+if (-not $ui.CastSend.IsEnabled) { Fail 'Send stayed dead with two recipients and a message' }
+elseif ($missing.Count) { Fail "the confirmation does not name: $($missing -join ', ')" }
+elseif ("$($ui.CastSend.Content)" -notmatch '2') { Fail "the button says '$($ui.CastSend.Content)' for two recipients" }
+else { Pass "every recipient is named before anything is sent: '$($ui.CastWho.Text)'" }
+
+# A session sitting on a permission dialog is offered but starts UNTICKED and
+# says what typing there would do, because prose at a dialog ANSWERS the dialog.
+$dlg = @($boxes | Where-Object { $_.Tag.Dialog })
+if (-not $dlg.Count) { Fail 'no dialog-blocked session staged among the candidates' }
+else {
+    $saidText = ''
+    foreach ($t in $dlg[0].Content.Children) { $saidText += "$($t.Text) " }
+    if ($saidText -notmatch 'ANSWERS') { Fail "the dialog recipient does not say what typing there would do: '$saidText'" }
+    else { Pass 'a dialog-blocked recipient says that typing there answers the dialog' }
+}
+Close-Cast
+
+# --- 10f. THE FIXTURE IS STILL THE FIXTURE ----------------------------------
+# Everything above asserts against staged state. If a background probe replaced
+# it half way through, those assertions were measuring the machine rather than
+# the fixture - and would still pass, because each one re-reads the list it is
+# about to check. This is the guard that makes the rest of the file mean what it
+# says.
+$stagedStill = 0
+foreach ($k in @($StagedAgents.Keys)) { if ($script:agents[$k] -and "$($script:agents[$k].Name)" -eq "$($StagedAgents[$k].Name)") { $stagedStill++ } }
+if ($stagedStill -ne $StagedAgents.Count) {
+    Fail "the staged agents were replaced during the run ($stagedStill of $($StagedAgents.Count) survived) - a background probe fired and every assertion above was measuring the real machine"
+} elseif (-not $script:live[$ids[4].ToLower()]) {
+    Fail "the staged inferred-live conversation is gone from `$script:live (now holds: $((@($script:live.Keys) -join ', ')))"
+} elseif ($script:running.Count -ne 4) {
+    Fail "the staged running table changed during the run ($($script:running.Count) entries, expected 4)"
+} elseif ($script:conv.Count -ne $StagedConv.Count) {
+    Fail "the staged conversation states changed during the run ($($script:conv.Count) entries, expected $($StagedConv.Count))"
+} else { Pass "the fixture survived the whole run ($($StagedAgents.Count) agents, $($script:running.Count) running, $($script:live.Count) inferred-live, $($script:conv.Count) states)" }
 
 # --- 11. a band heading is not an action target -----------------------------
 # Back to the inbox first: Update-Selection reads whichever list is SHOWING, and
