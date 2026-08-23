@@ -552,6 +552,10 @@ $script:olderCount   = 0
 # The anchor for shift-click ticking: the last conversation whose tick was
 # changed by hand, so a shift-click has something to draw a range from.
 $script:tickAnchor   = $null
+# The reading pane's share of the window, in pixels, remembered while the tool
+# is open so closing and reopening it does not throw the split away.
+$script:readHeight   = 340.0
+$script:readOpen     = $false
 
 # ---------------------------------------------------------------------------
 # THE SORT KEY STACK
@@ -1168,6 +1172,7 @@ foreach ($n in @(
     'FtOn','FtOff','FpPin','FpFree','FaRecent','FaStale',
     'ListShift','NeedsBand','NeedsLabel','NeedsList',
     'ReadPane','ReadName','ReadWhat','ReadView','ReadBack','ReadRefresh','ReadOpen',
+    'ReadSplit','SplitRow','ReadRow',
     'LegendBox','LegendToggle','SendBox','SendBtn','SendNote',
     'FilterBar','BulkBtn','FilterChips','FilterMain','FilterMore',
     'MoreFilters','ActiveTokens',
@@ -2875,12 +2880,38 @@ function Show-ReadPane {
     $ui.ReadName.Text   = "$(Get-SessionTitle $Row.Session $Row.Dir)"
     $cv = Get-Conv $Row.Session
     $ui.ReadWhat.Text   = $(if ($cv) { "$($cv.State)  -  $($cv.Detail)" } else { '' })
+    # THE LIST STAYS UP. This used to hide RowList and the NEEDS YOU strip, so
+    # reading anything cost you your place in the list you were reading it from.
     $ui.ReadPane.Visibility = $V_Show
-    $ui.RowList.Visibility  = $V_Hide
-    $ui.NeedsBand.Visibility = $V_Hide
+    $ui.ReadSplit.Visibility = $V_Show
+    $ui.SplitRow.Height = New-Object System.Windows.GridLength 5
+    $ui.ReadRow.Height  = New-Object System.Windows.GridLength $script:readHeight
+    $script:readOpen = $true
     $ui.SendBox.Text = ''
     Update-SendState
     Update-ReadDocument
+}
+
+# Follow the selection while the pane is open, so arrowing down the list reads
+# each conversation in turn -- but DEBOUNCED, because Update-ReadDocument parses
+# a transcript (measured at ~680 ms on a 15 MB one) and holding an arrow key
+# would queue one parse per row.
+$script:readTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:readTimer.Interval = [TimeSpan]::FromMilliseconds(220)
+$script:readTimer.Add_Tick({
+    $script:readTimer.Stop()
+    Invoke-Guarded {
+        if (-not $script:readOpen) { return }
+        $row = (Get-ActiveList).SelectedItem
+        if (-not $row -or $row.Kind -ne 'session') { return }
+        if ($script:readSession -and "$($script:readSession.sessionId)" -eq "$($row.Session.sessionId)") { return }
+        Show-ReadPane $row
+    } 'the reading pane'
+})
+function Update-ReadFollow {
+    if (-not $script:readOpen) { return }
+    $script:readTimer.Stop()
+    $script:readTimer.Start()
 }
 
 # The composer is only usable when there is a console to type into, and it says
@@ -2967,10 +2998,22 @@ function Update-ReadDocument {
 
 function Hide-ReadPane {
     $script:readSession = $null
+    $script:readOpen = $false
+    if ($script:readTimer) { $script:readTimer.Stop() }
+    # Keep whatever split the operator dragged to, so reopening lands where they
+    # left it rather than snapping back to the default every time.
+    if ($ui.ReadRow.Height.IsAbsolute -and $ui.ReadRow.Height.Value -gt 80) {
+        $script:readHeight = [double]$ui.ReadRow.Height.Value
+    }
     $ui.ReadPane.Visibility = $V_Hide
-    $ui.RowList.Visibility  = $V_Show
+    $ui.ReadSplit.Visibility = $V_Hide
+    $ui.SplitRow.Height = New-Object System.Windows.GridLength 0
+    $ui.ReadRow.Height  = New-Object System.Windows.GridLength 0
+    # WHICH LIST IS SHOWING IS Set-ViewMode'S BUSINESS, not this function's. It
+    # used to force RowList visible on the way out, which in the inbox left the
+    # All view's list realised underneath the inbox's own.
     Update-NeedsBand
-    $null = $ui.RowList.Focus()
+    $null = (Get-ActiveList).Focus()
 }
 
 function Update-Selection {
@@ -2991,6 +3034,8 @@ function Update-Selection {
     }
     $ui.SelName.Text = "{0}   conversation" -f $row.Name
     $ui.SelPath.Text = Get-RowPath $row
+    # ONE CLICK. Selecting a row IS opening it, whenever the pane is open.
+    Update-ReadFollow
 }
 
 # ---------------------------------------------------------------------------

@@ -1390,10 +1390,28 @@
          scrolling keeps virtualization; the wheel itself is eased from
          sessions-gui.ps1 on top of it. -->
     <Grid Grid.Row="5">
+      <!-- LIST ON TOP, CONVERSATION UNDERNEATH.
+           The reading pane used to sit in the SAME grid row as the list and
+           replace it: opening a conversation took the list off screen, so you
+           lost your place every time you looked at anything. "It is hard to
+           remember where we are" was half about that.
+
+           SplitRow and ReadRow are both 0 while the pane is closed, which is
+           what makes a GridSplitter safe to leave in the tree - it has nothing
+           to drag until there is something below it. -->
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
-        <RowDefinition Height="*"/>
+        <RowDefinition Height="*" MinHeight="90"/>
+        <RowDefinition x:Name="SplitRow" Height="0"/>
+        <RowDefinition x:Name="ReadRow" Height="0"/>
       </Grid.RowDefinitions>
+
+      <GridSplitter x:Name="ReadSplit" Grid.Row="2" Height="5"
+                    HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                    Background="{StaticResource Hairline}"
+                    ResizeBehavior="PreviousAndNext" ResizeDirection="Rows"
+                    Visibility="Collapsed"
+                    ToolTip="Drag to give the conversation more or less room"/>
 
       <!-- == NEEDS YOU ==
            Pinned above the list, not injected into it: the tree is a project /
@@ -1479,7 +1497,7 @@
            A FlowDocument, not a stack of TextBlocks: it gives real text flow,
            selection across blocks and copy for free, and every run's typography
            is set from the same palette the rest of the window uses. -->
-      <Grid x:Name="ReadPane" Grid.Row="1" Visibility="Collapsed"
+      <Grid x:Name="ReadPane" Grid.Row="3" Visibility="Collapsed"
             Background="{StaticResource Ink}">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
@@ -1500,7 +1518,11 @@
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
               <Button x:Name="ReadRefresh" Content="Refresh" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
               <Button x:Name="ReadOpen" Content="Open the terminal" Style="{StaticResource BtnNow}" Margin="0,0,8,0"/>
-              <Button x:Name="ReadBack" Content="Back to the list" Style="{StaticResource BtnPrimary}"/>
+              <!-- "Back to the list" was true when this pane REPLACED the list.
+                   The list is six inches above it now, so the button closes the
+                   pane rather than going anywhere. -->
+              <Button x:Name="ReadBack" Content="Close" Style="{StaticResource Btn}"
+                      ToolTip="Give the room back to the list (Esc)"/>
             </StackPanel>
           </Grid>
         </Border>

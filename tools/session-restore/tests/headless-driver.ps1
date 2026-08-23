@@ -431,6 +431,42 @@ else { Pass 'sorting the inbox reorders within the bands and NEEDS YOU stays fir
 $script:sortKeys = @($script:SortDefault | ForEach-Object { @{ Key = $_.Key; Desc = $_.Desc } })
 Update-List -ToTop
 
+# --- 10c. THE READING PANE IS A SPLIT, NOT A REPLACEMENT --------------------
+# It used to live in the SAME grid row as the list and hide it, so opening a
+# conversation cost you your place in the list you opened it from. These check
+# the LIST IS STILL UP, which is the whole point, rather than merely that the
+# pane appeared.
+Set-ViewMode 'inbox'
+$readable = @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'session' })[0]
+if (-not $readable) { Fail 'no conversation to read' }
+else {
+    $listWas = $ui.InboxList.Visibility
+    Show-ReadPane $readable
+    if ($ui.ReadPane.Visibility -ne $V_Show) { Fail 'the reading pane did not open' }
+    elseif ($ui.InboxList.Visibility -ne $listWas) { Fail 'opening the pane took the list off screen' }
+    elseif ($ui.ReadRow.Height.Value -le 0) { Fail 'the pane opened into a row with no height' }
+    elseif ($ui.ReadSplit.Visibility -ne $V_Show) { Fail 'the pane is open with no splitter to resize it' }
+    else { Pass "the pane opens BESIDE the list, $([int]$ui.ReadRow.Height.Value)px tall, list still up" }
+
+    # A dragged split is remembered. Snapping back to the default on every open
+    # is the thing that makes a resizable pane not worth resizing.
+    $ui.ReadRow.Height = New-Object System.Windows.GridLength 260
+    Hide-ReadPane
+    if ($ui.ReadRow.Height.Value -ne 0) { Fail 'closing the pane left the row taking up space' }
+    elseif ($ui.ReadSplit.Visibility -ne $V_Hide) { Fail 'the splitter is still there with nothing to split' }
+    else { Pass 'closing gives the room back to the list' }
+    Show-ReadPane $readable
+    if ([int]$ui.ReadRow.Height.Value -eq 260) { Pass 'it reopens at the size you dragged it to' }
+    else { Fail "it reopened at $([int]$ui.ReadRow.Height.Value)px, not the 260 it was left at" }
+
+    # Hide-ReadPane used to force RowList visible on the way out. In the inbox
+    # that leaves the All view's list realised underneath the inbox's own - two
+    # lists in one grid row, one of them invisible only because of z-order.
+    Hide-ReadPane
+    if ($ui.RowList.Visibility -eq $V_Show) { Fail 'closing the pane from the inbox turned the All list back on' }
+    else { Pass 'closing the pane leaves the view switch in charge of which list is up' }
+}
+
 # --- 11. a band heading is not an action target -----------------------------
 # Back to the inbox first: Update-Selection reads whichever list is SHOWING, and
 # the block above leaves the All view up.
