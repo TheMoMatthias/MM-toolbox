@@ -158,6 +158,61 @@
       <Setter Property="FontWeight" Value="Bold"/>
     </Style>
 
+    <!-- A ROW'S OWN ACTIONS, ON THE ROW YOU ARE POINTING AT.
+         Eighteen identical "Open  +" pairs stacked down the right edge is a
+         column of noise that says the same word eighteen times. They belong to
+         whichever row you are pointing at, plus the SELECTED row - which is
+         always exactly one, so the affordance is never entirely absent and
+         never has to be discovered by accident.
+
+         Hidden, not Collapsed: the space stays reserved so rows do not reflow
+         under the pointer, and a Hidden element is not hit-testable, so there
+         is nothing to click by mistake either. -->
+    <Style x:Key="RowActions" TargetType="Grid">
+      <Setter Property="Visibility" Value="Hidden"/>
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+          <Setter Property="Visibility" Value="Visible"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+          <Setter Property="Visibility" Value="Visible"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+
+    <!-- A COLUMN HEADING YOU CAN SORT BY.
+         Looks like a caption and behaves like a button: no chrome at rest, a
+         rule underneath on hover so it is discoverable by pointing at it, and
+         the arrow the code appends is the only permanent difference between a
+         sorted column and an unsorted one. -->
+    <Style x:Key="SortCap" TargetType="Button">
+      <Setter Property="FontFamily" Value="{StaticResource FontSmall}"/>
+      <Setter Property="FontSize" Value="10.5"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Foreground" Value="{StaticResource TextDim}"/>
+      <Setter Property="HorizontalAlignment" Value="Left"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Padding" Value="0,1"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="Transparent" BorderBrush="Transparent"
+                    BorderThickness="0,0,0,1" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalAlignment}"
+                                VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource TextDim}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <!-- The label in front of a group of filter chips. Quieter than a pole
          caption: it names a dimension, it is not one of the two poles. -->
     <Style x:Key="GroupCaption" TargetType="TextBlock" BasedOn="{StaticResource Caption}">
@@ -448,6 +503,73 @@
          deliberate: the operator has to be able to see what is being filtered
          out at a glance, and a filled chip against four hollow ones does that
          without reading a word of it. -->
+    <!-- THE COUNT PILLS, as buttons.
+         They were plain TextBlocks inside Borders, which is exactly what made
+         the operator ask why clicking "live now" did nothing: it LOOKED like a
+         control and was not one. Anything shaped like a pill in this window is
+         now pressable, and each one takes you to its band in the inbox. -->
+    <Style x:Key="Pill" TargetType="Button">
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Padding" Value="11,4"/>
+      <Setter Property="Margin" Value="0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="shell"
+                    Background="{StaticResource Panel}"
+                    BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                    CornerRadius="6" Padding="{TemplateBinding Padding}"
+                    SnapsToDevicePixels="True">
+              <ContentPresenter VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="shell" Property="Background" Value="{StaticResource Raised}"/>
+                <Setter TargetName="shell" Property="BorderBrush" Value="{StaticResource HairlineHi}"/>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="shell" Property="Background" Value="{StaticResource PanelHi}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- THE VIEW SWITCH. Three exclusive modes, rendered as one segmented
+         control so it reads as "which of these am I looking at" rather than as
+         three unrelated buttons. The selected segment is FILLED, matching the
+         filled-means-on language the ticks and chips already use. -->
+    <Style x:Key="Seg" TargetType="RadioButton">
+      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontSize" Value="11.5"/>
+      <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Focusable" Value="True"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RadioButton">
+            <Border x:Name="seg" Background="Transparent" CornerRadius="5"
+                    Padding="12,5" SnapsToDevicePixels="True">
+              <TextBlock x:Name="lab" Text="{TemplateBinding Content}"
+                         Foreground="{TemplateBinding Foreground}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="seg" Property="Background" Value="{StaticResource Raised}"/>
+                <Setter TargetName="lab" Property="Foreground" Value="{StaticResource TextHigh}"/>
+              </Trigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="seg" Property="Background" Value="{StaticResource TextMax}"/>
+                <Setter TargetName="lab" Property="Foreground" Value="{StaticResource Ink}"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <Style x:Key="Chip" TargetType="ToggleButton">
       <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
       <Setter Property="FontSize" Value="11.5"/>
@@ -471,21 +593,38 @@
                 <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource TextDim}"/>
                 <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
               </Trigger>
+              <!-- A LIT CHIP IS DARK TEXT ON A PALE FILL, and the fill is set
+                   here as a plain Setter rather than left to the animation.
+
+                   It used to be the animation alone. That put a chip's whole
+                   legibility on the clock: Foreground flips to Ink (#0C0C0C)
+                   the instant IsChecked goes true, while fill.Opacity was still
+                   0 until a Storyboard had run - so anywhere the clock does not
+                   tick, a lit chip is near-black text on a near-black panel and
+                   the label simply is not there. Measured in the off-screen
+                   render, where nothing animates: fill at Opacity 0, TextBlock
+                   at #FF0C0C0C, chip blank.
+
+                   From="0" on the enter animation is what lets both be true at
+                   once: the Setter owns the resting state, so the chip is legible
+                   with no clock at all, and the animation still starts from
+                   transparent so the fade is not flattened out of existence. -->
               <Trigger Property="IsChecked" Value="True">
                 <Setter Property="Foreground" Value="{StaticResource Ink}"/>
                 <Setter Property="FontWeight" Value="SemiBold"/>
                 <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource TextHigh}"/>
+                <Setter TargetName="fill" Property="Opacity" Value="1"/>
                 <Trigger.EnterActions>
                   <BeginStoryboard>
                     <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="fill" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.13"/>
+                      <DoubleAnimation Storyboard.TargetName="fill" Storyboard.TargetProperty="Opacity" From="0" To="1" Duration="0:0:0.13"/>
                     </Storyboard>
                   </BeginStoryboard>
                 </Trigger.EnterActions>
                 <Trigger.ExitActions>
                   <BeginStoryboard>
                     <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="fill" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.16"/>
+                      <DoubleAnimation Storyboard.TargetName="fill" Storyboard.TargetProperty="Opacity" From="1" To="0" Duration="0:0:0.16"/>
                     </Storyboard>
                   </BeginStoryboard>
                 </Trigger.ExitActions>
@@ -682,24 +821,40 @@
          lane and a conversation is carried by the view model (brush, weight,
          indent, strikethrough, which cells are visible), not by three
          near-identical copies. -->
+    <!-- == ONE CONVERSATION, ONE ROW ==
+         This was a project / lane / conversation TREE. It is a flat table now,
+         and the reason is the sort: a hierarchy cannot answer "the ten youngest
+         across every project" at all, however it is ordered, and every column
+         here is meant to be clickable. Project and lane became COLUMNS, which
+         also removed 52 header rows - 195 rows for 143 conversations, and
+         eleven of the fifteen projects had exactly one lane, called "main".
+
+         Six columns became five. ID is gone from the row: eight hex characters
+         nobody types, carried in the name's tooltip and the footer instead.
+         OPEN? and DOING have merged, because "LIVE" and "working" were one fact
+         said twice in two columns; they keep their separate marks inside the one
+         column, so the two questions are still told apart. -->
     <DataTemplate x:Key="RowTemplate">
       <Grid Height="{Binding RowHeight}" Background="Transparent">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="54"/>
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="20"/>
-          <ColumnDefinition Width="*" MinWidth="260"/>
-          <ColumnDefinition Width="66"/>
-          <ColumnDefinition Width="88"/>
-          <ColumnDefinition Width="54"/>
-          <ColumnDefinition Width="86"/>
-          <ColumnDefinition Width="164"/>
+          <ColumnDefinition Width="*" MinWidth="240"/>
+          <ColumnDefinition Width="196"/>
+          <ColumnDefinition Width="212"/>
+          <ColumnDefinition Width="64"/>
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="140"/>
         </Grid.ColumnDefinitions>
 
-        <!-- 0: THE TICK. Reopens at logon. Never launches. -->
+        <!-- 0: THE TICK. Reopens at logon. Never launches.
+             ONLY ON CONVERSATIONS now. It used to sit on project and lane rows
+             as well, so a fifteen-project list carried some fifty checkboxes of
+             which only a third were about a conversation - "we always have to
+             tick all boxes on the left". Shift-click ticks a range instead. -->
         <CheckBox Grid.Column="0" Style="{StaticResource TickBox}" Tag="tick"
+                  Visibility="{Binding TickVisibility}"
                   IsChecked="{Binding Ticked, Mode=TwoWay}"
                   ToolTip="{Binding TickTip}"/>
 
@@ -708,49 +863,45 @@
         <Rectangle Grid.Column="1" Width="1" Fill="{StaticResource HairlineHi}"
                    HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
 
-        <!-- 2: pinned marker; click hands the row back to the rolling auto-tick.
+        <!-- 2: pinned marker, ON HOVER ONLY.
+             128 of 143 conversations are pinned, because touching one pins it.
+             A mark that is on nine rows in ten is texture, not information - it
+             cost a column and told you nothing. The state is still reachable
+             three ways: the pinned / not pinned chips, the footer's Unpin, and
+             Bulk. What is gone is printing it on every row.
              A drawn asterisk, not the character: six strokes through one centre,
              which cannot be confused with the chevron or the bars beside it. -->
-        <Button Grid.Column="2" Style="{StaticResource BtnBare}" Tag="unpin"
-                Width="18" Height="20"
-                Visibility="{Binding PinVisibility}"
-                ToolTip="Pinned - the hourly roll leaves this alone. Click to hand it back.">
-          <Path Data="M 4,0 L 4,8 M 0.5,2 L 7.5,6 M 0.5,6 L 7.5,2"
-                Width="8" Height="8" Stretch="None"
-                Stroke="{Binding PinBrush}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-        </Button>
+        <Grid Grid.Column="2" Style="{StaticResource RowActions}">
+          <Button Style="{StaticResource BtnBare}" Tag="unpin"
+                  Width="18" Height="20"
+                  Visibility="{Binding PinVisibility}"
+                  ToolTip="Pinned - the hourly roll leaves this alone. Click to hand it back.">
+            <Path Data="M 4,0 L 4,8 M 0.5,2 L 7.5,6 M 0.5,6 L 7.5,2"
+                  Width="8" Height="8" Stretch="None"
+                  Stroke="{Binding PinBrush}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+          </Button>
+        </Grid>
 
-        <!-- 3: fold chevron + name + note. The chevron is ONE drawn path rotated
-             into place rather than two different characters, so the expanded and
-             folded states are provably the same mark at two angles.
+        <!-- 3: name, and what an untitled conversation was about.
              A struck-through name is a conversation whose transcript is gone and
              that can never open. -->
         <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center"
                     Margin="{Binding Indent}">
-          <Button Style="{StaticResource BtnBare}" Tag="fold" Width="20" Height="20"
-                  Visibility="{Binding FoldVisibility}">
-            <Path Data="M 2.4,0 L 6.9,4.5 L 2.4,9" Width="9.3" Height="9" Stretch="None"
-                  Stroke="{StaticResource TextMid}" StrokeThickness="1.5"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                  RenderTransformOrigin="0.5,0.5">
-              <Path.RenderTransform>
-                <RotateTransform Angle="{Binding FoldAngle}"/>
-              </Path.RenderTransform>
-            </Path>
-          </Button>
-          <TextBlock Text="{Binding Name}" Margin="6,0,0,0"
+          <Grid Width="13">
+            <Ellipse Width="6" Height="6" HorizontalAlignment="Left" VerticalAlignment="Center"
+                     Fill="{StaticResource TextMax}" Visibility="{Binding MovedVisibility}"
+                     ToolTip="It has said something since you last opened it."/>
+          </Grid>
+          <TextBlock Text="{Binding Name}"
                      Foreground="{Binding NameBrush}"
                      FontWeight="{Binding NameWeight}"
                      FontSize="{Binding NameSize}"
                      TextDecorations="{Binding NameDecorations}"
+                     ToolTip="{Binding NameTip}"
                      TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
           <TextBlock Text="{Binding Note}" Margin="12,0,0,0" FontSize="11.5"
                      FontFamily="{StaticResource FontSmall}"
                      Foreground="{Binding NoteBrush}" VerticalAlignment="Center"/>
-          <!-- What an UNTITLED conversation is about. Ten rows all reading
-               "(untitled)" cannot be told apart, and this column is mostly
-               empty, so the last prompt goes here. Dim and small: it identifies
-               the row, it does not compete with the name. -->
           <TextBlock Text="{Binding Subtitle}" Visibility="{Binding SubtitleVisibility}"
                      Margin="10,0,0,0" FontSize="11.5"
                      FontFamily="{StaticResource FontSmall}"
@@ -758,30 +909,24 @@
                      TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
         </StackPanel>
 
-        <!-- 4: how many of this row's conversations are ticked -->
-        <TextBlock Grid.Column="4" Text="{Binding Counts}" Margin="0,0,12,0"
-                   HorizontalAlignment="Right" VerticalAlignment="Center"
-                   FontFamily="{StaticResource FontMono}"
-                   FontSize="11.5" Foreground="{Binding CountsBrush}"/>
+        <!-- 4: PROJECT / LANE. Was two levels of hierarchy; one column says the
+             same thing on every row without spending a row to say it. -->
+        <TextBlock Grid.Column="4" Text="{Binding Project}" Margin="0,0,12,0"
+                   VerticalAlignment="Center"
+                   FontFamily="{StaticResource FontSmall}" FontSize="11.5"
+                   Foreground="{StaticResource TextDim}"
+                   TextTrimming="CharacterEllipsis"/>
 
-        <!-- 5: id, so what the search finds can also be read off the row. -->
-        <TextBlock Grid.Column="5" Text="{Binding IdShort}" VerticalAlignment="Center"
-                   FontFamily="{StaticResource FontMono}" FontSize="11.5"
-                   Foreground="{StaticResource TextDim}"/>
-
-        <!-- 6: age -->
-        <TextBlock Grid.Column="6" Text="{Binding Age}" Margin="0,0,12,0"
-                   HorizontalAlignment="Right" VerticalAlignment="Center"
-                   FontFamily="{StaticResource FontMono}"
-                   FontSize="11.5" Foreground="{Binding AgeBrush}"/>
-
-        <!-- 7: OPEN? - LIVENESS. Is a process holding this conversation.
-             A filled dot plus bold LIVE is a process holding the id; a hollow dot
-             plus lower-case live is inferred from a transcript that just moved; a
-             drawn X plus the word GONE is a transcript that is off disk for good.
-             Mono type, upper case for the certain one. This column answers
-             "is anyone holding it", NOT "what is it doing" - that is column 8. -->
-        <StackPanel Grid.Column="7" Orientation="Horizontal" VerticalAlignment="Center">
+        <!-- 5: STATE - two questions in one column, still told apart.
+             LEFT of the middot: is anyone HOLDING it. A filled dot and bold LIVE
+             is a process carrying the id; a hollow dot and lower-case live is
+             inferred from a transcript that just moved; a drawn X and GONE is a
+             transcript off disk for good. Mono type.
+             RIGHT of it: what that process is DOING, in proportional type, lower
+             case, with its own stroke glyphs. Nothing on the left is a stroke
+             figure and nothing on the right is round, so the halves cannot be
+             read as one another even sharing a column. -->
+        <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
           <Ellipse Width="7" Height="7" Margin="0,0,7,0" VerticalAlignment="Center"
                    Fill="{Binding DotFill}" Stroke="{Binding DotStroke}" StrokeThickness="1.2"
                    Visibility="{Binding DotVisibility}"/>
@@ -796,47 +941,161 @@
                      Foreground="{Binding StateBrush}"
                      TextDecorations="{Binding StateDecorations}"
                      ToolTip="{Binding StateTip}"/>
+          <TextBlock Text="&#183;" Margin="8,0,8,0" VerticalAlignment="Center"
+                     FontSize="11.5" Foreground="{StaticResource Hairline}"
+                     Visibility="{Binding ConvGlyphVisibility}"/>
+          <Path Width="10" Height="10" Margin="0,0,7,0" VerticalAlignment="Center"
+                Stretch="None" Data="{Binding ConvGeometry}"
+                Stroke="{Binding ConvBrush}" StrokeThickness="1.4"
+                StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                Visibility="{Binding ConvGlyphVisibility}"/>
+          <TextBlock Text="{Binding Conv}" VerticalAlignment="Center"
+                     FontFamily="{StaticResource FontText}" FontSize="12"
+                     FontWeight="{Binding ConvWeight}"
+                     Foreground="{Binding ConvBrush}"
+                     ToolTip="{Binding ConvTip}"
+                     TextTrimming="CharacterEllipsis"/>
         </StackPanel>
 
-        <!-- 8: DOING - STATE. What the conversation is actually doing.
-             A DIFFERENT QUESTION from column 7 and told apart from it four ways:
-             its own short rule on the left, proportional type instead of mono,
-             always lower case, and its own vocabulary of drawn glyphs (a chevron
-             at the prompt, rising bars working, shrinking rules compacting).
-             The word says the last state it was seen in; "was" and a drop to
-             TextLow say that state is no longer current. Bright means now. -->
-        <Grid Grid.Column="8">
-          <Rectangle Width="1" Height="15" Fill="{StaticResource Hairline}"
-                     HorizontalAlignment="Left" VerticalAlignment="Center"/>
-          <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0"
-                      ToolTip="{Binding ConvTip}">
-            <Path Width="10" Height="10" Margin="0,0,7,0" VerticalAlignment="Center"
-                  Stretch="None" Data="{Binding ConvGeometry}"
-                  Stroke="{Binding ConvBrush}" StrokeThickness="1.4"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                  Visibility="{Binding ConvGlyphVisibility}"/>
-            <TextBlock Text="{Binding Conv}" VerticalAlignment="Center"
-                       FontFamily="{StaticResource FontText}" FontSize="12"
-                       FontWeight="{Binding ConvWeight}"
-                       Foreground="{Binding ConvBrush}"
-                       TextTrimming="CharacterEllipsis"/>
-          </StackPanel>
-        </Grid>
+        <!-- 6: WHEN -->
+        <TextBlock Grid.Column="6" Text="{Binding Age}" Margin="0,0,12,0"
+                   HorizontalAlignment="Right" VerticalAlignment="Center"
+                   FontFamily="{StaticResource FontMono}"
+                   FontSize="11.5" Foreground="{Binding AgeBrush}"/>
 
-        <!-- 9: the rule that fences RIGHT NOW off from everything else -->
-        <Rectangle Grid.Column="9" Width="1" Fill="{StaticResource HairlineHi}"
+        <!-- 7: the rule that fences the actions off from everything else -->
+        <Rectangle Grid.Column="7" Width="1" Fill="{StaticResource HairlineHi}"
                    HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
 
-        <!-- 10: RIGHT NOW. Opens it this second, tick or no tick. -->
-        <StackPanel Grid.Column="10" Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
+        <!-- 8: actions. Opens it this second, tick or no tick. On the row you
+             are pointing at, and on the selected one. -->
+        <Grid Grid.Column="8" Style="{StaticResource RowActions}">
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
           <Button Style="{StaticResource BtnRow}" Tag="launch"
+                  Visibility="{Binding ActionVisibility}"
                   Content="{Binding LaunchLabel}"
                   IsEnabled="{Binding CanLaunch}"
                   ToolTip="{Binding LaunchTip}"/>
           <Button Style="{StaticResource BtnRowQuiet}" Tag="spawn" Content="+"
+                  Visibility="{Binding ActionVisibility}"
                   Margin="7,0,0,0"
                   ToolTip="Spawn a brand-new named session in this row's directory"/>
+          <!-- The one row that is not a conversation: what the age window left
+               out. Nothing is ever hidden silently, so the count that was cut
+               is on screen and one click brings it back. -->
         </StackPanel>
+        </Grid>
+        <!-- OUTSIDE the hover style: the age window's own row is the one thing
+             on the list that must be visible without being pointed at, or the
+             58 conversations it is hiding stay hidden. -->
+        <Button Grid.Column="8" Style="{StaticResource BtnRow}" Tag="more"
+                Visibility="{Binding MoreVisibility}"
+                Content="{Binding MoreLabel}"
+                HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0"
+                ToolTip="{Binding MoreTip}"/>
+      </Grid>
+    </DataTemplate>
+
+    <!-- == THE INBOX ROW ==
+         A SEPARATE template from RowTemplate above, and a separate list, on
+         purpose. The tree row answers "what is in this project and does it
+         reopen at logon"; the inbox row answers "who needs me and what did they
+         last say". Those want different columns, and forcing one template to do
+         both would mean eleven columns of which half are collapsed on every row.
+
+         Two row kinds share this template, told apart by which cells are
+         visible rather than by two near-identical copies:
+
+           band       a heading with a count. NEEDS YOU / WORKING / IDLE.
+           session    a conversation: state glyph, name, project, what it last
+                      said, and how long ago.
+
+         The BODY of the row is what it last said. That is the column that gets
+         the remaining width, because it is the thing you came to read. -->
+    <DataTemplate x:Key="InboxTemplate">
+      <Grid Height="{Binding RowHeight}" Background="Transparent" Margin="{Binding Indent}">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="30"/>
+          <ColumnDefinition Width="Auto" MinWidth="120"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*" MinWidth="120"/>
+          <ColumnDefinition Width="64"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- 0: the state mark. Same drawn geometry vocabulary as the tree view,
+             so a chevron means "waiting for you" in both places. -->
+        <Path Grid.Column="0" Data="{Binding ConvGeometry}"
+              Visibility="{Binding ConvGlyphVisibility}"
+              Stretch="None" HorizontalAlignment="Center" VerticalAlignment="Center"
+              Stroke="{Binding ConvBrush}" StrokeThickness="1.5"
+              StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+
+        <!-- 1: the name, or the band heading. The MOVED mark sits in front of
+             it: something has been said here since you last looked. It is the
+             unread dot every mail client uses, and it is the answer to
+             "clicking through the tabs to see if there has been any progress". -->
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+        <Grid Width="13">
+          <Ellipse Width="6" Height="6" HorizontalAlignment="Left" VerticalAlignment="Center"
+                   Fill="{StaticResource TextMax}" Visibility="{Binding MovedVisibility}"
+                   ToolTip="It has said something since you last opened it."/>
+        </Grid>
+        <TextBlock Text="{Binding Name}" VerticalAlignment="Center"
+                   Foreground="{Binding NameBrush}"
+                   FontWeight="{Binding NameWeight}"
+                   FontSize="{Binding NameSize}"
+                   TextDecorations="{Binding NameDecorations}"
+                   TextTrimming="CharacterEllipsis"
+                   ToolTip="{Binding ConvTip}"/>
+        </StackPanel>
+
+        <!-- 2: which project this belongs to. A LABEL here, not a parent: the
+             inbox is deliberately cross-project, so the project is one more
+             attribute of the row rather than a node above it. -->
+        <!-- 2b: the band's count, NEXT TO THE HEADING IT COUNTS. It used to sit
+             in the column where a conversation's prose goes, which put "3" a
+             third of the way across the window from "NEEDS YOU" and made it
+             read as if 3 were the project. A band never has a project, so the
+             two can never collide here. -->
+        <TextBlock Grid.Column="2" Text="{Binding Counts}"
+                   Visibility="{Binding CountsVisibility}"
+                   VerticalAlignment="Center" Margin="10,0,0,0"
+                   FontFamily="{StaticResource FontSmall}" FontSize="11"
+                   Foreground="{Binding CountsBrush}"/>
+        <TextBlock Grid.Column="2" Text="{Binding Project}"
+                   Visibility="{Binding ProjectVisibility}"
+                   VerticalAlignment="Center" Margin="12,0,0,0"
+                   FontFamily="{StaticResource FontSmall}" FontSize="11"
+                   Foreground="{StaticResource TextDim}"
+                   TextTrimming="CharacterEllipsis"/>
+
+        <!-- 3: what it last said. The point of the whole view. -->
+        <TextBlock Grid.Column="3" Text="{Binding Said}"
+                   Visibility="{Binding SaidVisibility}"
+                   VerticalAlignment="Center" Margin="16,0,10,0"
+                   FontSize="12" Foreground="{Binding SaidBrush}"
+                   TextTrimming="CharacterEllipsis"
+                   ToolTip="{Binding SaidTip}"/>
+
+        <!-- 4: how long ago, right-aligned so the numbers form a column. -->
+        <TextBlock Grid.Column="4" Text="{Binding Stamp}"
+                   VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,12,0"
+                   FontFamily="{StaticResource FontSmall}" FontSize="11"
+                   Foreground="{Binding StampBrush}"/>
+
+        <!-- 5: what you can do about it, on the row you are pointing at and on
+             the selected one. Eleven identical "Go to" buttons in a column say
+             the same word eleven times. -->
+        <Grid Grid.Column="5" Style="{StaticResource RowActions}">
+          <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                      Visibility="{Binding ActionVisibility}" Margin="0,0,10,0">
+            <Button Style="{StaticResource BtnRow}" Tag="jump"
+                    Content="{Binding JumpLabel}"
+                    IsEnabled="{Binding CanJump}"
+                    ToolTip="{Binding JumpTip}"/>
+          </StackPanel>
+        </Grid>
       </Grid>
     </DataTemplate>
 
@@ -867,7 +1126,7 @@
         <StackPanel Grid.Column="0" VerticalAlignment="Center">
           <TextBlock Text="Claude sessions" FontFamily="{StaticResource FontDisplay}"
                      FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource TextMax}"/>
-          <TextBlock x:Name="SubTitle" Text="every conversation on this machine"
+          <TextBlock x:Name="SubTitle" Text="what each one last said, and which are waiting on you"
                      FontFamily="{StaticResource FontSmall}"
                      FontSize="11.5" Foreground="{StaticResource TextLow}" Margin="0,3,0,0"/>
         </StackPanel>
@@ -917,13 +1176,37 @@
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" Orientation="Horizontal" ClipToBounds="True">
-          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}" BorderThickness="1" CornerRadius="6" Padding="11,4">
+
+          <!-- WHICH VIEW. First thing on the row because it is the first thing
+               you need to know about what you are looking at. -->
+          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}"
+                  BorderThickness="1" CornerRadius="7" Padding="3" Margin="0,0,16,0">
+            <StackPanel Orientation="Horizontal">
+              <RadioButton x:Name="ModeInbox" Style="{StaticResource Seg}" Content="Inbox" IsChecked="True"
+                           ToolTip="Every conversation across every project, ordered by what it needs from you."/>
+              <!-- RESTORE WAS A THIRD SEGMENT AND RENDERED THE SAME 195 ROWS AS
+                   PROJECTS, in the same order, with the same keys. Compared row
+                   for row: identical. All that differed was a caption, a count
+                   pill and three buttons. One of the three views was a duplicate
+                   of another, which is most of why the tool read as having more
+                   places than it has ideas. The tick column and the launch
+                   button live in All now. -->
+              <RadioButton x:Name="ModeAll" Style="{StaticResource Seg}" Content="All"
+                           ToolTip="Every conversation on this machine as one sortable list, with the logon tick."/>
+            </StackPanel>
+          </Border>
+
+          <Button x:Name="LivePill" Style="{StaticResource Pill}"
+                  AutomationProperties.Name="live now"
+                  ToolTip="Jump to the sessions that are running right now.">
             <StackPanel Orientation="Horizontal">
               <Ellipse Width="7" Height="7" Fill="{StaticResource TextMax}" VerticalAlignment="Center" Margin="0,0,8,0"/>
               <TextBlock x:Name="LiveSummary" Text="live now" Foreground="{StaticResource TextHigh}" FontSize="12"/>
             </StackPanel>
-          </Border>
-          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}" BorderThickness="1" CornerRadius="6" Padding="11,4" Margin="9,0,0,0">
+          </Button>
+          <Button x:Name="WaitPill" Style="{StaticResource Pill}" Margin="9,0,0,0"
+                  AutomationProperties.Name="waiting for you"
+                  ToolTip="Jump to whatever has stopped and is waiting on you.">
             <StackPanel Orientation="Horizontal">
               <Path Data="M 1,0 L 5.5,4.5 L 1,9" Width="6.5" Height="9" Stretch="None"
                     Stroke="{StaticResource TextMax}" StrokeThickness="1.5"
@@ -931,13 +1214,15 @@
                     VerticalAlignment="Center" Margin="0,0,8,0"/>
               <TextBlock x:Name="WaitSummary" Text="waiting for you" Foreground="{StaticResource TextHigh}" FontSize="12"/>
             </StackPanel>
-          </Border>
-          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}" BorderThickness="1" CornerRadius="6" Padding="11,4" Margin="9,0,0,0">
+          </Button>
+          <Button x:Name="TickPill" Style="{StaticResource Pill}" Margin="9,0,0,0"
+                  AutomationProperties.Name="ticked to reopen at logon"
+                  ToolTip="Show what is ticked to reopen at the next logon.">
             <StackPanel Orientation="Horizontal">
               <Rectangle Width="9" Height="9" RadiusX="2" RadiusY="2" Fill="{StaticResource TextMax}" VerticalAlignment="Center" Margin="0,0,8,0"/>
               <TextBlock x:Name="TickSummary" Text="ticked to reopen at logon" Foreground="{StaticResource TextHigh}" FontSize="12"/>
             </StackPanel>
-          </Border>
+          </Button>
           <TextBlock x:Name="ProbeStamp" Text="" Foreground="{StaticResource TextLow}" FontSize="11.5"
                      FontFamily="{StaticResource FontSmall}" TextTrimming="CharacterEllipsis"
                      VerticalAlignment="Center" Margin="14,0,0,0"/>
@@ -948,25 +1233,28 @@
              on screen is the thing you press often and the thing the whole
              window is built around. -->
         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
-          <ToggleButton x:Name="FilterBtn" Style="{StaticResource Chip}" Content="Filters" Margin="0,0,9,0"
-                        ToolTip="Filter by what a conversation is doing, whether it is open, its tick, its project or its age."/>
+          <Button x:Name="CastBtn" Style="{StaticResource Btn}" Content="Send to many" Margin="0,0,9,0"
+                  ToolTip="One message, typed into several running sessions. You pick the recipients and they are named back to you before anything is sent."/>
           <Button x:Name="BulkBtn" Style="{StaticResource Btn}" Content="Bulk" Margin="0,0,9,0"
                   ToolTip="Tick all, tick none, unpin all, collapse or expand the tree.">
             <Button.ContextMenu>
               <ContextMenu>
-                <MenuItem x:Name="TickAll"     Header="Tick all"     ToolTip="Tick every project and conversation, and pin them all"/>
-                <MenuItem x:Name="TickNone"    Header="Tick none"    ToolTip="Untick everything, and pin it so the hourly roll leaves it alone"/>
-                <MenuItem x:Name="UnpinAll"    Header="Unpin all"    ToolTip="Hand every conversation back to the rolling auto-tick"/>
+                <!-- ON WHAT IS SHOWN, not on the whole registry. "Tick all"
+                     used to reach every conversation in every project including
+                     the ones filtered off screen, which is a promise nobody can
+                     check by looking. Collapse/Expand are gone with the tree. -->
+                <MenuItem x:Name="TickAll"     Header="Tick all shown"   ToolTip="Tick every conversation currently in the list, and pin them"/>
+                <MenuItem x:Name="TickNone"    Header="Untick all shown" ToolTip="Untick every conversation currently in the list, and pin them so the hourly roll leaves them alone"/>
+                <MenuItem x:Name="UnpinAll"    Header="Unpin all shown"  ToolTip="Hand every conversation in the list back to the rolling auto-tick"/>
                 <Separator/>
-                <MenuItem x:Name="CollapseAll" Header="Collapse all"/>
-                <MenuItem x:Name="ExpandAll"   Header="Expand all"/>
+                <MenuItem x:Name="SeenAll"     Header="Mark all shown seen" ToolTip="Clear the moved marks on everything in the list"/>
               </ContextMenu>
             </Button.ContextMenu>
           </Button>
           <CheckBox x:Name="WorktreeToggle" Style="{StaticResource TickBox}" Margin="0,0,8,0"
                     ToolTip="Show a lane for each git worktree. Writes includeWorktrees to the config and rescans."/>
-          <TextBlock Text="worktrees" VerticalAlignment="Center" Foreground="{StaticResource TextMid}" FontSize="12.5" Margin="0,0,18,0"/>
-          <TextBlock Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="0,0,12,0"/>
+          <TextBlock x:Name="WorktreeCaption" Text="worktrees" VerticalAlignment="Center" Foreground="{StaticResource TextMid}" FontSize="12.5" Margin="0,0,18,0"/>
+          <TextBlock x:Name="NowCaption" Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="0,0,12,0"/>
           <Button x:Name="LaunchTicked" Style="{StaticResource BtnNow}" Content="Launch everything ticked"
                   ToolTip="Open every ticked conversation that is not already open, up to the maxSessions cap"/>
         </StackPanel>
@@ -990,26 +1278,82 @@
          A lit chip is filled. The row of chips IS the readout of what is applied,
          which is why they are always on screen rather than behind a menu, and
          why the match count sits at the end of the same strip. -->
-    <Border x:Name="FilterBar" Grid.Row="3" Visibility="Collapsed"
+    <Border x:Name="FilterBar" Grid.Row="3"
             Background="{StaticResource Panel}"
-            BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,1" Padding="22,10,22,10">
+            BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,1" Padding="22,9,22,9">
       <StackPanel x:Name="FilterChips">
 
-        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-          <TextBlock Text="DOING" Style="{StaticResource GroupCaption}"/>
-          <ToggleButton x:Name="FsWaiting" Style="{StaticResource Chip}" Tag="state:waiting" Content="waiting"
-                        ToolTip="At its prompt and waiting for you, right now."/>
-          <ToggleButton x:Name="FsWorking" Style="{StaticResource Chip}" Tag="state:working" Content="working"
-                        ToolTip="Running a tool, or holding a prompt it has not answered yet. Right now."/>
-          <ToggleButton x:Name="FsSumm" Style="{StaticResource Chip}" Tag="state:summarising" Content="summarising"
-                        ToolTip="Compacting its own context, right now."/>
-          <ToggleButton x:Name="FsIdle" Style="{StaticResource Chip}" Tag="state:idle" Content="idle"
-                        ToolTip="Nothing has moved for minutes. These are the rows that read 'was ...' - the state shown is the last one it was seen in, not a current one."/>
-          <ToggleButton x:Name="FsUnknown" Style="{StaticResource Chip}" Tag="state:unknown" Content="unknown"
-                        ToolTip="No assistant turn in the tail of the transcript, or no transcript at all."/>
+        <!-- == THE PERMANENT LINE ==
+             The four BANDS, and nothing else that needs explaining. These are
+             the same four groups the inbox heads its list with and the same four
+             the summary pills count, so a chip, a band heading and a pill can
+             never again mean three different things.
 
-          <Border Width="1" Background="{StaticResource Hairline}" Margin="10,2,16,2"/>
+             They were "waiting / working / summarising / idle / unknown", which
+             came from Get-ConvBucket: the LAST KNOWN state of a transcript,
+             ignoring whether anything is still running. Measured over the real
+             registry: that made "waiting" select 110 of 143 conversations while
+             the band called NEEDS YOU held 6. One word, two meanings, on one
+             screen. Filtering on the band is what makes a chip's count and a
+             band's count the same number by construction.
 
+             They carry live counts, which is why they earn permanent space: the
+             line answers "how much is waiting on me" before it is clicked. -->
+        <Grid x:Name="FilterMain">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*" MinWidth="40"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+
+          <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+            <TextBlock Text="SHOW" Style="{StaticResource GroupCaption}"/>
+            <ToggleButton x:Name="FbNeeds" Style="{StaticResource Chip}" Tag="band:needs" Content="Needs you"
+                          ToolTip="Stopped and waiting on you: a question, a permission dialog, or a blocked agent."/>
+            <ToggleButton x:Name="FbWorking" Style="{StaticResource Chip}" Tag="band:working" Content="Working"
+                          ToolTip="Busy right now. Nothing for you to do."/>
+            <ToggleButton x:Name="FbIdle" Style="{StaticResource Chip}" Tag="band:idle" Content="Idle"
+                          ToolTip="At its prompt with nothing pending. Yours to pick up."/>
+            <ToggleButton x:Name="FbQuiet" Style="{StaticResource Chip}" Tag="band:quiet" Content="Not running"
+                          ToolTip="No process is holding it. Ticking this widens the inbox to reach conversations it normally leaves out."/>
+          </StackPanel>
+
+          <Border Grid.Column="1" Width="1" Background="{StaticResource Hairline}" Margin="12,2,14,2"/>
+
+          <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+            <TextBlock Text="PROJECT" Style="{StaticResource GroupCaption}"/>
+            <ComboBox x:Name="ProjectFilter" Style="{StaticResource Drop}" Width="196"/>
+            <TextBlock Text="LANE" Style="{StaticResource GroupCaption}" Margin="14,0,8,0"/>
+            <ComboBox x:Name="LaneFilter" Style="{StaticResource Drop}" Width="140"/>
+          </StackPanel>
+
+          <ToggleButton x:Name="MoreFilters" Grid.Column="3" Style="{StaticResource Chip}"
+                        Content="More" Margin="14,0,0,0" VerticalAlignment="Center"
+                        ToolTip="Open? / logon tick / age. The filters you reach for less often."/>
+
+          <!-- WHAT IS APPLIED, as tokens you can take off one at a time. The
+               chips above only cover one dimension; the text box and the two
+               dropdowns filter invisibly, and an invisible filter reads as
+               missing data. Every one of them shows up here with an x. -->
+          <StackPanel x:Name="ActiveTokens" Grid.Column="4" Orientation="Horizontal"
+                      VerticalAlignment="Center" Margin="16,0,10,0" ClipToBounds="True"/>
+
+          <TextBlock x:Name="FilterCount" Grid.Column="5" Text="" VerticalAlignment="Center"
+                     FontFamily="{StaticResource FontText}" FontSize="12"
+                     Foreground="{StaticResource TextMid}"/>
+          <Button x:Name="ClearFilters" Grid.Column="6" Style="{StaticResource Btn}" Content="Clear"
+                  Margin="14,0,0,0" Padding="11,4" FontSize="11.5" VerticalAlignment="Center"
+                  ToolTip="Drop every chip, both dropdowns and the text box in one go (Esc)"/>
+        </Grid>
+
+        <!-- == THE REST, behind More ==
+             Still inside FilterChips, so the one container handler wires these
+             exactly like the permanent ones. -->
+        <StackPanel x:Name="FilterMore" Orientation="Horizontal" Margin="0,11,0,1" Visibility="Collapsed">
           <TextBlock Text="OPEN?" Style="{StaticResource GroupCaption}"/>
           <ToggleButton x:Name="FlLive" Style="{StaticResource Chip}" Tag="live:live" Content="live"
                         ToolTip="A process is holding it, certainly or inferred. LIVE or live in the OPEN? column."/>
@@ -1027,7 +1371,9 @@
                         ToolTip="Does not reopen at the next logon."/>
           <ToggleButton x:Name="FpPin" Style="{StaticResource Chip}" Tag="pin:pinned" Content="pinned"
                         Margin="10,0,5,0"
-                        ToolTip="Held by hand, so the hourly roll leaves it alone."/>
+                        ToolTip="Held by hand, so the hourly roll leaves it alone. Measured: 128 of 143 conversations are pinned, so this alone barely narrows anything - it is the inverse that is worth reaching for."/>
+          <ToggleButton x:Name="FpFree" Style="{StaticResource Chip}" Tag="pin:unpinned" Content="not pinned"
+                        ToolTip="Still handed to the hourly auto-tick roll."/>
 
           <Border Width="1" Background="{StaticResource Hairline}" Margin="10,2,16,2"/>
 
@@ -1038,58 +1384,63 @@
                         ToolTip="Not touched inside the recencyDays window. These are the rows marked STALE."/>
         </StackPanel>
 
-        <StackPanel Orientation="Horizontal">
-          <TextBlock Text="PROJECT" Style="{StaticResource GroupCaption}"/>
-          <ComboBox x:Name="ProjectFilter" Style="{StaticResource Drop}" Width="230"/>
-          <TextBlock Text="LANE" Style="{StaticResource GroupCaption}" Margin="18,0,8,0"/>
-          <ComboBox x:Name="LaneFilter" Style="{StaticResource Drop}" Width="180"/>
-
-          <Border Width="1" Background="{StaticResource Hairline}" Margin="18,2,18,2"/>
-
-          <TextBlock x:Name="FilterCount" Text="" VerticalAlignment="Center"
-                     FontFamily="{StaticResource FontText}" FontSize="12"
-                     Foreground="{StaticResource TextMid}"/>
-          <Button x:Name="ClearFilters" Style="{StaticResource Btn}" Content="Clear all filters"
-                  Margin="18,0,0,0" Padding="11,4" FontSize="11.5"
-                  ToolTip="Drop every chip, both dropdowns and the text box in one go (Esc)"/>
-        </StackPanel>
-
       </StackPanel>
     </Border>
 
     <!-- == column headings. Widths and the rules mirror RowTemplate. == -->
-    <Border Grid.Row="4" Background="{StaticResource PanelHi}" BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="0,9,0,9">
+    <!-- The tree's column captions. Hidden in the inbox, which has different
+         columns and needs no captions at all: a name, a project, a sentence and
+         a time need no headings, and the bands already label the groups. That
+         is a whole row of chrome the list gets back. -->
+    <!-- == column captions. Widths and the rules mirror RowTemplate. ==
+         Hidden in the inbox, which has no columns and needs no captions: a name,
+         a project, a sentence and a time need no headings, and the bands already
+         label the groups. That is a whole row of chrome the inbox gets back. -->
+    <!-- THE INBOX'S OWN HEADING ROW, so there is ONE sorting mechanic in the
+         tool rather than a sortable table beside an unsortable list. Its columns
+         mirror InboxTemplate.
+
+         The BANDS are not a sort key and cannot be sorted away: they are what
+         the inbox IS. A sort reorders WITHIN each band, which is why WHEN can be
+         flipped here without NEEDS YOU stopping being first. -->
+    <Border x:Name="InboxHead" Grid.Row="4" Visibility="Collapsed"
+            Background="{StaticResource PanelHi}" BorderBrush="{StaticResource Hairline}"
+            BorderThickness="0,0,0,1" Padding="22,9,22,9">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="30"/>
+          <ColumnDefinition Width="Auto" MinWidth="120"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*" MinWidth="120"/>
+          <ColumnDefinition Width="64"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <Button Grid.Column="1" Tag="name"    Style="{StaticResource SortCap}" Content="CONVERSATION"/>
+        <Button Grid.Column="2" Tag="project" Style="{StaticResource SortCap}" Margin="12,0,0,0" Content="PROJECT"/>
+        <TextBlock Grid.Column="3" Text="WHAT IT LAST SAID" Style="{StaticResource Caption}" Margin="14,0,0,0"/>
+        <Button Grid.Column="4" Tag="when"    Style="{StaticResource SortCap}" HorizontalAlignment="Right" Margin="0,0,10,0" Content="WHEN"/>
+      </Grid>
+    </Border>
+
+    <Border x:Name="ListHead" Grid.Row="4" Background="{StaticResource PanelHi}" BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="0,9,0,9">
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="54"/>
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="20"/>
-          <ColumnDefinition Width="*" MinWidth="260"/>
-          <ColumnDefinition Width="66"/>
-          <ColumnDefinition Width="88"/>
-          <ColumnDefinition Width="54"/>
-          <ColumnDefinition Width="86"/>
-          <ColumnDefinition Width="164"/>
+          <ColumnDefinition Width="*" MinWidth="240"/>
+          <ColumnDefinition Width="196"/>
+          <ColumnDefinition Width="212"/>
+          <ColumnDefinition Width="64"/>
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="140"/>
         </Grid.ColumnDefinitions>
-        <TextBlock Grid.Column="0" Text="LOGON" Style="{StaticResource PoleCaption}"
-                   HorizontalAlignment="Center" ToolTip="Does this reopen automatically at the next logon?"/>
-        <Rectangle Grid.Column="1" Width="1" Fill="{StaticResource HairlineHi}" HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
-        <TextBlock Grid.Column="3" Text="PROJECT  /  LANE  /  CONVERSATION" Style="{StaticResource Caption}" Margin="10,0,0,0"/>
-        <TextBlock Grid.Column="4" Text="TICKED" Style="{StaticResource Caption}" HorizontalAlignment="Right" Margin="0,0,12,0"/>
-        <TextBlock Grid.Column="5" Text="ID" Style="{StaticResource Caption}"/>
-        <TextBlock Grid.Column="6" Text="AGE" Style="{StaticResource Caption}" HorizontalAlignment="Right" Margin="0,0,12,0"/>
-        <TextBlock Grid.Column="7" Text="OPEN?" Style="{StaticResource Caption}"
-                   ToolTip="LIVENESS. Is a process holding this conversation."/>
-        <Grid Grid.Column="8">
-          <Rectangle Width="1" Height="15" Fill="{StaticResource Hairline}" HorizontalAlignment="Left" VerticalAlignment="Center"/>
-          <TextBlock Text="DOING" Style="{StaticResource Caption}" Margin="14,0,0,0"
-                     ToolTip="STATE. What that conversation is actually doing. A different question from OPEN? - a conversation can be live and waiting, live and working, or not live at all and still carry the last state it was seen in."/>
-        </Grid>
-        <Rectangle Grid.Column="9" Width="1" Fill="{StaticResource HairlineHi}" HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
-        <TextBlock Grid.Column="10" Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="10,0,0,0"
-                   ToolTip="Opens it this second, whatever the tick says"/>
+        <Button Grid.Column="0" Tag="logon"   Style="{StaticResource SortCap}" HorizontalAlignment="Center" Content="LOGON"/>
+        <Button Grid.Column="3" Tag="name"    Style="{StaticResource SortCap}" Content="CONVERSATION"/>
+        <Button Grid.Column="4" Tag="project" Style="{StaticResource SortCap}" Content="PROJECT / LANE"/>
+        <Button Grid.Column="5" Tag="state"   Style="{StaticResource SortCap}" Content="STATE"/>
+        <Button Grid.Column="6" Tag="when"    Style="{StaticResource SortCap}" HorizontalAlignment="Right" Margin="0,0,12,0" Content="WHEN"/>
+        <TextBlock Grid.Column="8" Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="10,0,0,0"/>
       </Grid>
     </Border>
 
@@ -1099,10 +1450,28 @@
          scrolling keeps virtualization; the wheel itself is eased from
          sessions-gui.ps1 on top of it. -->
     <Grid Grid.Row="5">
+      <!-- LIST ON TOP, CONVERSATION UNDERNEATH.
+           The reading pane used to sit in the SAME grid row as the list and
+           replace it: opening a conversation took the list off screen, so you
+           lost your place every time you looked at anything. "It is hard to
+           remember where we are" was half about that.
+
+           SplitRow and ReadRow are both 0 while the pane is closed, which is
+           what makes a GridSplitter safe to leave in the tree - it has nothing
+           to drag until there is something below it. -->
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
-        <RowDefinition Height="*"/>
+        <RowDefinition Height="*" MinHeight="90"/>
+        <RowDefinition x:Name="SplitRow" Height="0"/>
+        <RowDefinition x:Name="ReadRow" Height="0"/>
       </Grid.RowDefinitions>
+
+      <GridSplitter x:Name="ReadSplit" Grid.Row="2" Height="5"
+                    HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                    Background="{StaticResource Hairline}"
+                    ResizeBehavior="PreviousAndNext" ResizeDirection="Rows"
+                    Visibility="Collapsed"
+                    ToolTip="Drag to give the conversation more or less room"/>
 
       <!-- == NEEDS YOU ==
            Pinned above the list, not injected into it: the tree is a project /
@@ -1160,6 +1529,25 @@
           <TranslateTransform x:Name="ListShift" Y="0"/>
         </ListBox.RenderTransform>
       </ListBox>
+
+      <!-- The inbox is its OWN list occupying the same cell, shown instead of
+           the tree rather than beside it. Two lists rather than one list with a
+           template selector: the tree's rendering, folding, filtering and
+           keep-selection all work today, and a shared control would put every
+           one of them at risk for no gain. Only one is ever visible. -->
+      <ListBox x:Name="InboxList" Grid.Row="1" Visibility="Collapsed"
+               Background="Transparent" BorderThickness="0" Foreground="{StaticResource TextHigh}"
+               ItemContainerStyle="{StaticResource RowItem}"
+               ItemTemplate="{StaticResource InboxTemplate}"
+               SelectionMode="Single"
+               HorizontalContentAlignment="Stretch"
+               ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+               ScrollViewer.VerticalScrollBarVisibility="Auto"
+               VirtualizingPanel.IsVirtualizing="True"
+               VirtualizingPanel.VirtualizationMode="Recycling"
+               VirtualizingPanel.ScrollUnit="Pixel"
+               KeyboardNavigation.DirectionalNavigation="Contained"/>
+
       <!-- == READING ONE CONVERSATION ==
            Replaces the list rather than sitting beside it. At 1480px a side
            panel would leave neither the list nor the text enough width, and
@@ -1169,7 +1557,7 @@
            A FlowDocument, not a stack of TextBlocks: it gives real text flow,
            selection across blocks and copy for free, and every run's typography
            is set from the same palette the rest of the window uses. -->
-      <Grid x:Name="ReadPane" Grid.Row="1" Visibility="Collapsed"
+      <Grid x:Name="ReadPane" Grid.Row="3" Visibility="Collapsed"
             Background="{StaticResource Ink}">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
@@ -1186,11 +1574,26 @@
                          Foreground="{StaticResource TextMax}" VerticalAlignment="Center"/>
               <TextBlock x:Name="ReadWhat" Text="" FontSize="12" Margin="14,0,0,0"
                          Foreground="{StaticResource TextMid}" VerticalAlignment="Center"/>
+              <!-- WHERE WE ARE, IN YOUR WORDS.
+                   The transcript says what was said; it does not say why it
+                   matters or what you meant to do next, and that is the thing
+                   that is actually gone when you come back three days later.
+                   Saved on the conversation, shown on its row, and it OUTRANKS
+                   the machine-extracted last line there - a summary you wrote
+                   is worth more than the tail of a transcript. -->
+              <TextBlock Text="NOTE" Style="{StaticResource GroupCaption}" Margin="22,0,8,0"/>
+              <TextBox x:Name="ReadNote" Style="{StaticResource Search}" Width="320"
+                       MinHeight="26" VerticalContentAlignment="Center"
+                       ToolTip="Where this one is up to, in your words. Saved as you type; shown on the row instead of what it last said."/>
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
               <Button x:Name="ReadRefresh" Content="Refresh" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
               <Button x:Name="ReadOpen" Content="Open the terminal" Style="{StaticResource BtnNow}" Margin="0,0,8,0"/>
-              <Button x:Name="ReadBack" Content="Back to the list" Style="{StaticResource BtnPrimary}"/>
+              <!-- "Back to the list" was true when this pane REPLACED the list.
+                   The list is six inches above it now, so the button closes the
+                   pane rather than going anywhere. -->
+              <Button x:Name="ReadBack" Content="Close" Style="{StaticResource Btn}"
+                      ToolTip="Give the room back to the list (Esc)"/>
             </StackPanel>
           </Grid>
         </Border>
@@ -1358,6 +1761,56 @@
             <Button x:Name="CfOk" Style="{StaticResource BtnPrimary}" Content="Open them"/>
           </StackPanel>
         </StackPanel>
+      </Border>
+    </Border>
+
+    <!-- == modal overlay: one message, several sessions ==
+         RECIPIENTS ARE CHOSEN HERE, not taken from the logon ticks. The tick
+         means "reopen this at logon" and most ticked conversations are not
+         running at all, so sending to "everything ticked" would be a different
+         set from the one the words describe. Ticking a box in this overlay is
+         the only way to become a recipient, and the confirmation names every
+         one of them before anything is typed anywhere. -->
+    <Border x:Name="CastOverlay" Grid.Row="0" Grid.RowSpan="8" Background="{StaticResource Scrim}" Visibility="Collapsed">
+      <Border Background="{StaticResource Raised}" BorderBrush="{StaticResource HairlineHi}" BorderThickness="1" CornerRadius="12"
+              Width="700" MaxHeight="640" VerticalAlignment="Center" HorizontalAlignment="Center" Padding="28">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+
+          <TextBlock Grid.Row="0" Text="Send to several sessions" FontFamily="{StaticResource FontDisplay}"
+                     FontSize="17" FontWeight="SemiBold" Foreground="{StaticResource TextMax}"/>
+          <TextBlock x:Name="CastLead" Grid.Row="1" Text="" FontSize="12" Foreground="{StaticResource TextMid}"
+                     Margin="0,6,0,0" TextWrapping="Wrap"/>
+
+          <Border Grid.Row="2" Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}"
+                  BorderThickness="1" CornerRadius="8" Margin="0,16,0,0" MinHeight="120">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="4,6">
+              <StackPanel x:Name="CastList"/>
+            </ScrollViewer>
+          </Border>
+
+          <TextBox x:Name="CastBox" Grid.Row="3" Style="{StaticResource Search}"
+                   MinHeight="60" MaxHeight="140" Margin="0,14,0,0"
+                   AcceptsReturn="True" TextWrapping="Wrap"
+                   VerticalScrollBarVisibility="Auto"
+                   ToolTip="Typed into every ticked session above, one at a time."/>
+
+          <TextBlock x:Name="CastWho" Grid.Row="4" Text="" FontSize="11.5"
+                     FontFamily="{StaticResource FontSmall}" Foreground="{StaticResource TextHigh}"
+                     Margin="0,12,0,0" TextWrapping="Wrap"/>
+
+          <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button x:Name="CastCancel" Style="{StaticResource Btn}" Content="Cancel" Margin="0,0,9,0"/>
+            <Button x:Name="CastSend" Style="{StaticResource BtnNow}" Content="Send" MinWidth="150" IsEnabled="False"/>
+          </StackPanel>
+        </Grid>
       </Border>
     </Border>
 

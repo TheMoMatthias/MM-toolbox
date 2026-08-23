@@ -36,7 +36,11 @@ numbered `R1…Rn` and each testable; the **constraints** it must respect; the e
 
 **Where the source is silent on something load-bearing, that is a gap — list it rather
 than inventing an answer.** If a gap would change the architecture, stop and ask before
-designing. Everything else gets a stated assumption and carries on.
+designing. Everything else gets a stated assumption and carries on — each one labelled with
+**how far it can be trusted** (`measured` · `documented` · `inferred`) and **the trigger
+that retires it**. 🪤 An assumption becomes load-bearing across every step derived from it,
+and by then nothing in the plan records that it was ever a guess. An `inferred` assumption
+under a whole phase is a cheap investigation step now, or an expensive rewrite later.
 
 ## A2. Design the optimal system
 

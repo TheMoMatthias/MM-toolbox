@@ -51,11 +51,46 @@ $guiPid = $win.Current.ProcessId
 Write-Host "window: '$($win.Current.Name)'  pid $guiPid"
 Start-Sleep -Seconds 6
 
+# THIS SUITE NEEDS A LIST THAT SCROLLS, so put the window in the All view
+# before asserting anything. The window now opens on the INBOX, which lists only
+# what is running -- 17 rows that fit on screen without scrolling -- so every
+# scroll assertion below reported -1% and END "moved the selection but only
+# scrolled to -1%". The keys were fine; the suite was aimed at the wrong list.
+$modeCond = New-Object System.Windows.Automation.AndCondition(
+    (New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::NameProperty, 'All')),
+    (New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::RadioButton)))
+$modeBtn = $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $modeCond)
+if ($modeBtn) {
+    $modeBtn.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    Start-Sleep -Seconds 3
+    Write-Host "switched to the All view"
+} else {
+        # NOT A WARNING - A FAILURE. The button was renamed Projects -> All and this
+    # fell back to the inbox, which fits on screen and therefore reports -1% for
+    # every scroll assertion. That is EXACTLY the symptom the comment above
+    # already describes, reproduced by a silent fallback, and it read as three
+    # broken keyboard shortcuts for a day.
+    Write-Host "FAIL  no 'All' view button - this suite cannot test scrolling against a list that fits" -ForegroundColor Red
+    exit 1
+}
+
 $listCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::List)
-$list = $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $listCond)
-if (-not $list) { Write-Host 'no list control'; Stop-Process -Id $guiPid -Force; exit 1 }
+
+# THE VISIBLE list, not the first one found. The window now carries two -- the
+# inbox and the project tree -- and only one is on screen at a time. FindFirst
+# returned the hidden one, and SetFocus on a Collapsed element throws "Target
+# element cannot receive focus", which reads like a broken window rather than
+# like a test pointed at something nobody can see.
+$list = $null
+foreach ($l in $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $listCond)) {
+    if (-not $l.Current.IsOffscreen) { $list = $l; break }
+}
+if (-not $list) { Write-Host 'no list control is on screen'; Stop-Process -Id $guiPid -Force; exit 1 }
 
 function SelId {
     try {

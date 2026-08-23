@@ -6,7 +6,7 @@
 #
 #   cc  [name] [claude flags...]   start a NEW correctly-named session, here
 #   ccr [-DryRun] [-All]           restore the conversations you have selected
-#   ccs [-List]                    choose which directories reopen at logon
+#   ccs                            open the session console (the window)
 #
 # 🪤 These wrappers must NOT forward with `& script @args`. ARRAY splatting does not
 # reliably bind switches: measured 2026-08-17, `cc -DryRun --model opus` bound
@@ -51,35 +51,21 @@ function cc {
     & (Join-Path $Global:MMSessionRestoreRoot 'restore-sessions.ps1') @p
 }
 
-# ccs                      the picker
-# ccs -List                print the current selection
-# ccs -Enable  <match>     tick   by project path, worktree name, title or id
-# ccs -Disable <match>     untick the same way
-# ccs -Worktrees on|off    show or hide git-worktree lanes (writes the config)
+# ccs   open the session console (the window)
+#
+# It used to take -List / -Enable / -Disable / -Worktrees and drive a terminal
+# panel. The panel is gone - the window replaced it, and does all four of those
+# things on screen where you can see what you are changing. Anything that has
+# to be scripted goes through restore-sessions.ps1, which is the one that
+# actually restores.
 function ccs {
-    $p = @{}
-    $lists = @{}
-    $pendingList   = $null
-    $pendingScalar = $null
-
-    foreach ($a in $args) {
-        $s = [string]$a
-        if ($pendingList)   { $lists[$pendingList] += $s;  $pendingList   = $null; continue }
-        if ($pendingScalar) { $p[$pendingScalar]    = $s;  $pendingScalar = $null; continue }
-        switch -regex ($s) {
-            '^-+List$'      { $p['List']   = $true }
-            '^-+NoScan$'    { $p['NoScan'] = $true }
-            '^-+Enable$'    { $pendingList = 'Enable';  if (-not $lists.ContainsKey('Enable'))  { $lists['Enable']  = @() } }
-            '^-+Disable$'   { $pendingList = 'Disable'; if (-not $lists.ContainsKey('Disable')) { $lists['Disable'] = @() } }
-            '^-+Worktrees$' { $pendingScalar = 'Worktrees' }
-            # `ccs -Worktrees off` is the long form; `ccs worktrees off` is not, so a
-            # bare on/off with nothing pending is a mistake worth naming.
-            default { Write-Warning "ccs: ignoring unrecognised argument '$a' (try -List, -Enable <match>, -Disable <match>, -Worktrees on|off)" }
-        }
+    if ($args.Count) {
+        Write-Warning "ccs takes no arguments now - the window does the ticking. Ignoring: $($args -join ' ')"
     }
-    if ($pendingList -or $pendingScalar) {
-        Write-Warning "ccs: -$($pendingList)$($pendingScalar) was given no value - ignored"
-    }
-    foreach ($k in $lists.Keys) { if (@($lists[$k]).Count -gt 0) { $p[$k] = $lists[$k] } }
-    & (Join-Path $Global:MMSessionRestoreRoot 'select-sessions.ps1') @p
+    $gui = Join-Path $Global:MMSessionRestoreRoot 'sessions-gui.ps1'
+    # -STA because WPF requires it, Start-Process because the window should not
+    # hold the shell you launched it from.
+    Start-Process powershell.exe -ArgumentList @(
+        '-STA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $gui
+    ) | Out-Null
 }

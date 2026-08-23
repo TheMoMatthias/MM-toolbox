@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
     Shared internals for session-restore. Dot-sourced by restore-sessions.ps1 and
-    select-sessions.ps1 so discovery, the registry and the guards exist ONCE.
+    sessions-gui.ps1 so discovery, the registry and the guards exist ONCE.
 
     Defines functions and paths only -- it must never do work on load.
 
@@ -135,6 +135,12 @@ function Get-SRConfig {
     # keeps working instead of silently behaving as if the value were zero.
     foreach ($kv in @(
         @{ k = 'recencyDays';          v = 14 },
+        # HOW MANY DAYS THE GUI'S "All" LIST SHOWS. registryWindowDays bounds
+        # what is TRACKED (30); nothing bounded what was SHOWN, so the list ran
+        # to 143 conversations of which 51 were between a week and a month old.
+        # Nothing is hidden silently: what falls outside is counted on a row at
+        # the end of the list, and a search reaches past it regardless.
+        @{ k = 'listDays';             v = 7  },
         @{ k = 'sessionWindowDays';    v = 3  },
         @{ k = 'autoTickPerDirectory'; v = 3  },
         @{ k = 'autoTickPerWorktree';  v = 3  },
@@ -950,6 +956,267 @@ function Test-SRTranscriptLive {
     return (((Get-Date) - (Get-Item -LiteralPath $JsonlPath).LastWriteTime).TotalMinutes -lt $SR_LiveWindowMinutes)
 }
 
+# --- jumping to a session's terminal tab ------------------------------------
+# Every session this tool launches is a TAB, because Start-SRSession uses
+# "-w 0 new-tab". Measured 2026-08-22: 13 live claude.exe, every one of them a
+# descendant of a single WindowsTerminal.exe -- which is precisely the "clicking
+# through the tabs to see if anything moved" that this view exists to end.
+#
+# HOW THE TAB IS FOUND, and one correction worth recording because it changed
+# the design twice:
+#
+#   A first probe concluded "Windows Terminal exposes only the ACTIVE tab to UI
+#   Automation" -- 13 tabs open, ControlType.TabItem x1 -- and an entire
+#   focus-by-index-then-verify scheme was designed around that. IT WAS WRONG.
+#   The probe used RootElement.FindFirst(Children, <pid>), which returns the
+#   FIRST window belonging to that process, and one process hosts MANY windows:
+#   there are 6 here, with 2, 6, 5, 1, 1 and 1 tabs. It had found a one-tab
+#   window and generalised from it.
+#
+#   Enumerate the windows properly and UIA lists every tab in each, with a
+#   working SelectionItemPattern. Selecting a non-active tab switches to it in
+#   ~400 ms, measured. So there is no index arithmetic, no `wt focus-tab`, and
+#   nothing to guess: find the tab by name, select it, raise its window.
+#
+# The tab title is what Start-SRSession passed to --title, with a status glyph
+# prepended by claude ("*", a half-circle, and so on), so the comparison strips
+# leading non-alphanumerics and then matches exactly. Exactly, not "contains":
+# "I6" is a prefix of "I6b", and landing in the wrong conversation is the one
+# outcome worth writing extra code to avoid.
+if (-not ('SRWin' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public static class SRWin {
+    public delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+
+    // Visible, titled, top-level windows owned by a process. A single
+    // WindowsTerminal.exe owns one per terminal window, which is the fact the
+    // first probe missed.
+    public static IntPtr[] WindowsOf(uint want) {
+        List<IntPtr> o = new List<IntPtr>();
+        EnumWindows(delegate(IntPtr h, IntPtr l) {
+            uint pid; GetWindowThreadProcessId(h, out pid);
+            if (pid == want && IsWindowVisible(h) && GetWindowTextLength(h) > 0) o.Add(h);
+            return true;
+        }, IntPtr.Zero);
+        return o.ToArray();
+    }
+
+    public static void Raise(IntPtr h) {
+        if (IsIconic(h)) ShowWindow(h, 9);   // SW_RESTORE
+        SetForegroundWindow(h);
+    }
+}
+'@
+}
+
+# Strip the status glyph claude puts in front of a tab title, and any stray
+# whitespace, leaving the name the tab was created with.
+function Get-SRTabName {
+    param([string]$Raw)
+    $s = "$Raw"
+    # Leading run of anything that is not a letter, digit, '(' or '['. The glyphs
+    # vary with what the session is doing and are not a fixed set.
+    $s = [regex]::Replace($s, '^[^\p{L}\p{N}\(\[]+', '')
+    return $s.Trim()
+}
+
+# A TAB TITLE IS NOT STABLE, which is why the cache below exists.
+#
+# Measured 2026-08-22: this session's tab read '<glyph> RC-WORKFLOW' at one
+# moment and plain 'claude' a minute later. A console title belongs to whatever
+# is currently attached to the console, so while a session runs a child process
+# the tab can be named after that process instead of the conversation. That is
+# precisely when you want to jump to it.
+#
+# So the name is only the way the tab is FOUND THE FIRST TIME. What is kept is
+# the UIA element, whose identity survives a rename -- verified by runtime id
+# across a re-enumeration. A jump then goes to the tab itself rather than to
+# whatever currently happens to carry the right label.
+$script:SR_TabIndex = @{}
+
+# Match live tabs against a table of sessionId -> title and remember the
+# ELEMENT for each one matched. Cheap to call, ~250-500 ms measured for 16 tabs
+# across 6 windows, so it belongs on a slow refresh and never on a click.
+function Update-SRTabIndex {
+    param([Parameter(Mandatory)][hashtable]$Titles)
+    $tabs = Get-SRTerminalTabs
+    $tabs = @($tabs)
+    if (-not $tabs.Count) { return 0 }
+    $n = 0
+    foreach ($id in @($Titles.Keys)) {
+        $want = "$($Titles[$id])".Trim()
+        if (-not $want) { continue }
+        $hit = @($tabs | Where-Object { $_.Name -eq $want })
+        if (-not $hit.Count) { $hit = @($tabs | Where-Object { $_.Name -ieq $want }) }
+        # Exactly one, or it is not an identification. Two tabs sharing a title
+        # were measured on this machine, and guessing between two live
+        # conversations is the one thing this must not do quietly.
+        if ($hit.Count -eq 1) {
+            $script:SR_TabIndex["$id".ToLower()] = $hit[0]
+            $n++
+        }
+    }
+    return $n
+}
+
+# Every Windows Terminal tab on this machine, as {Hwnd, Name, Element}.
+# RETURNS ",@(...)": assign it, then wrap. Writing "@(Get-SRTerminalTabs)" in one
+# step yields an array of ONE element holding all sixteen tabs, whose .Name is
+# then every tab name at once. That is not hypothetical -- it is how the first
+# version of jump-driver.ps1 came to report all 16 tabs as the active one.
+function Get-SRTerminalTabs {
+    $out = New-Object System.Collections.Generic.List[object]
+    try {
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop
+    } catch {
+        Write-SRLog "jump: UI Automation is unavailable - $($_.Exception.Message)"
+        return ,@($out.ToArray())
+    }
+    $procs = @(Get-Process WindowsTerminal -ErrorAction SilentlyContinue)
+    foreach ($p in $procs) {
+        foreach ($h in [SRWin]::WindowsOf([uint32]$p.Id)) {
+            $el = $null
+            try { $el = [System.Windows.Automation.AutomationElement]::FromHandle($h) } catch { }
+            if (-not $el) { continue }
+            $cond = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::TabItem)
+            $tabs = $null
+            try { $tabs = $el.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond) } catch { continue }
+            foreach ($t in $tabs) {
+                $out.Add([PSCustomObject]@{
+                    Hwnd    = $h
+                    Raw     = "$($t.Current.Name)"
+                    Name    = (Get-SRTabName "$($t.Current.Name)")
+                    Element = $t
+                })
+            }
+        }
+    }
+    return ,@($out.ToArray())
+}
+
+# Bring a conversation's terminal tab to the front.
+# Returns $null when it landed, or a reason string when it did not. A reason is
+# always "nothing happened", never "something happened somewhere else".
+function Invoke-SRJumpToSession {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SessionId,
+        # The tab title to look for. Pass it when the caller ALREADY knows it --
+        # the GUI holds a refreshed agent table from its background pass. Without
+        # this the function asks claude itself, and that call is 653 ms measured;
+        # on a click handler that is a visibly frozen window.
+        [string]$Title,
+        # When the tab cannot be identified, still raise the terminal window if
+        # exactly one is running, rather than doing nothing at all.
+        [switch]$RaiseAnyway
+    )
+
+    $want = "$Title".Trim()
+    if (-not $want) {
+        $key = "$SessionId".ToLower()
+        $agents = Get-SRAgentStatus
+        $a = $agents[$key]
+        if (-not $a) { return 'that conversation is not running - there is no terminal to jump to' }
+        if ($a.Kind -and $a.Kind -ne 'interactive') {
+            return 'a background agent has no terminal of its own'
+        }
+        $want = "$($a.Name)".Trim()
+    }
+    if (-not $want) { return 'that session has no title, so its tab cannot be identified' }
+
+    $script:SR_JumpNote = $null
+
+    $tabs = Get-SRTerminalTabs
+    $tabs = @($tabs)
+    if (-not $tabs.Count) { return 'no Windows Terminal tabs are visible to the accessibility layer' }
+
+    $hits = @($tabs | Where-Object { $_.Name -eq $want })
+    if (-not $hits.Count) {
+        # Case-insensitive second pass before giving up: a title is cosmetic and
+        # nothing guarantees its case survived a round trip.
+        $hits = @($tabs | Where-Object { $_.Name -ieq $want })
+    }
+
+    $hit = $null
+    if ($hits.Count -eq 1) {
+        $hit = $hits[0]
+        # Remember it while the title is right, so a jump still works later when
+        # a running child process has renamed the tab out from under us.
+        $script:SR_TabIndex["$SessionId".ToLower()] = $hit
+    }
+    elseif ($hits.Count -gt 1) {
+        # Two tabs can carry one title: measured, two both called OWN-WEBPAGE.
+        # Prefer a remembered element for THIS session, which is unambiguous;
+        # only fall back to "the first one, and say so".
+        $cached = $script:SR_TabIndex["$SessionId".ToLower()]
+        if ($cached -and (@($hits | Where-Object { ($_.Element.GetRuntimeId() -join '-') -eq ($cached.Element.GetRuntimeId() -join '-') }).Count)) {
+            $hit = $cached
+        } else {
+            $hit = $hits[0]
+            $script:SR_JumpNote = "$($hits.Count) tabs are called '$want' - went to the first one"
+        }
+    }
+    else {
+        # No tab carries that name right now. The title has probably drifted to
+        # whatever the session is currently running; the remembered element is
+        # still the right tab.
+        $cached = $script:SR_TabIndex["$SessionId".ToLower()]
+        $alive = $false
+        if ($cached) {
+            try { $null = $cached.Element.Current.Name; $alive = $true } catch { }
+        }
+        if ($alive) {
+            $hit = $cached
+            $script:SR_JumpNote = "no tab is called '$want' just now - went to the tab it was last seen in"
+        } else {
+            if ($cached) { $script:SR_TabIndex.Remove("$SessionId".ToLower()) }
+            if ($RaiseAnyway) {
+                $wins = @($tabs | Select-Object -ExpandProperty Hwnd -Unique)
+                if ($wins.Count -eq 1) {
+                    [SRWin]::Raise($wins[0])
+                    return "could not find a tab called '$want' - brought the terminal window forward instead"
+                }
+            }
+            return "no terminal tab is called '$want' - it may be running somewhere other than Windows Terminal"
+        }
+    }
+
+    try {
+        $hit.Element.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    } catch {
+        # A dead element throws here. Drop it so the next attempt re-finds by name.
+        $script:SR_TabIndex.Remove("$SessionId".ToLower())
+        return "that tab refused to activate: $($_.Exception.Message)"
+    }
+    [SRWin]::Raise($hit.Hwnd)
+
+    # VERIFY. Selecting is a request, and a request that quietly failed would
+    # leave the operator typing into whatever tab happened to be in front.
+    Start-Sleep -Milliseconds 220
+    $ok = $false
+    try {
+        $sp = $hit.Element.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+        $ok = [bool]$sp.Current.IsSelected
+    } catch { }
+    if (-not $ok) { return "asked for '$want' but the terminal did not switch to it" }
+
+    Write-SRLog ("  [ok]   jumped to {0} ({1})" -f $want, $SessionId)
+    return $null
+}
+
 # --- typing into a running session ------------------------------------------
 # Attach to the target's console and write input records into it. Proven against
 # a real claude session in a Windows Terminal tab on 2026-08-22: the injected
@@ -1181,6 +1448,136 @@ function Get-SRTranscriptBlocks {
         }
     }
     return ,@($out.ToArray())
+}
+
+# --- what a conversation LAST SAID ------------------------------------------
+# The INBOX row's body. Deliberately a separate, much cheaper reader than
+# Get-SRTranscriptBlocks: that one parses a 2 MB tail into every block for the
+# reading pane, and running it for every row on a timer is not affordable.
+#
+# This walks the tail BACKWARDS and stops at the first assistant text it finds,
+# so the usual case reads a handful of records rather than sixty.
+#
+# Two fields, because they answer different questions:
+#   Said     the last prose the assistant produced -- "where this conversation
+#            got to". Survives the session then running twenty tools.
+#   Pending  the last tool_use that came AFTER that prose, i.e. what it is doing
+#            or asking for RIGHT NOW. This is what makes a permission dialog
+#            legible from the inbox: a dialog writes nothing to the transcript,
+#            but the tool_use it is asking about is already recorded.
+#
+# Only call this for live or recently-active conversations. Decided in the
+# 2026-08-22 grill: 117 conversations are tracked and re-reading all of them on
+# a timer buys nothing, because a conversation nobody has touched in a week
+# cannot have said anything new.
+function Get-SRLastSaid {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$JsonlPath,
+        [int]$MaxTailBytes = 262144,
+        # How many records back to look before giving up. A session that has run
+        # a long unbroken chain of tools may genuinely have no prose in the tail.
+        [int]$MaxRecords = 120
+    )
+
+    $out = [PSCustomObject]@{ Said = ''; Pending = ''; PendingTool = ''; At = $null }
+    if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return $out }
+
+    try {
+        $fi = Get-Item -LiteralPath $JsonlPath
+        if ($fi.Length -eq 0) { return $out }
+        $fs = [System.IO.File]::Open($JsonlPath, 'Open', 'Read', 'ReadWrite')
+        try {
+            $take = [int][Math]::Min($fi.Length, $MaxTailBytes)
+            $null = $fs.Seek(-$take, 'End')
+            $buf  = New-Object byte[] $take
+            $read = $fs.Read($buf, 0, $take)
+            $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        } finally { $fs.Dispose() }
+    } catch { return $out }
+
+    # TrimStart the BOM as well as whitespace. claude's own transcripts have no
+    # BOM, but PowerShell 5.1's `Set-Content -Encoding UTF8` writes one, so any
+    # fixture written that way loses its FIRST record to this filter -- silently,
+    # because a dropped line just looks like a conversation that said nothing.
+    # Cost is one extra character in a TrimStart; the confusion it prevents is
+    # an hour of reading the wrong function.
+    # Trim first, THEN filter, so the trimmed form is what gets parsed: a line
+    # that still carries a BOM fails ConvertFrom-Json just as surely as it fails
+    # the StartsWith test.
+    $lines = @($text -split "`n" |
+        ForEach-Object { $_.TrimStart([char]0xFEFF, ' ', "`t") } |
+        Where-Object { $_.StartsWith('{') })
+    if (-not $lines.Count) { return $out }
+
+    $seen = 0
+    for ($i = $lines.Count - 1; $i -ge 0 -and $seen -lt $MaxRecords; $i--) {
+        $seen++
+        $r = $null
+        try { $r = $lines[$i] | ConvertFrom-Json } catch { continue }
+        if ($r.type -ne 'assistant') { continue }
+        $m = $r.message
+        if (-not $m) { continue }
+
+        $content = $m.content
+        if ($content -is [string]) {
+            if ("$content".Trim()) {
+                $out.Said = (Get-SRFirstLine "$content")
+                if ($r.timestamp) { try { $out.At = [datetime]$r.timestamp } catch { } }
+                return $out
+            }
+            continue
+        }
+
+        # Walk this record's blocks in REVERSE too, so a text block followed by a
+        # tool_use in the same record reports the tool as pending rather than
+        # losing it.
+        $blocks = @($content)
+        for ($k = $blocks.Count - 1; $k -ge 0; $k--) {
+            $b = $blocks[$k]
+            if (-not $b -or -not $b.type) { continue }
+            if ($b.type -eq 'tool_use' -and -not $out.Pending) {
+                $name = "$($b.name)"
+                $arg  = ''
+                $inp  = $b.input
+                if ($inp) {
+                    foreach ($key in @('command','file_path','path','pattern','prompt','description','url','query')) {
+                        if ($inp.PSObject.Properties[$key] -and $inp.$key) { $arg = "$($inp.$key)"; break }
+                    }
+                }
+                $arg = ($arg -replace '\s+', ' ').Trim()
+                if ($arg.Length -gt 90) { $arg = $arg.Substring(0, 87) + '...' }
+                $out.PendingTool = $name
+                $out.Pending = $(if ($arg) { "$name($arg)" } else { $name })
+            }
+            elseif ($b.type -eq 'text' -and "$($b.text)".Trim()) {
+                $out.Said = (Get-SRFirstLine "$($b.text)")
+                if ($r.timestamp) { try { $out.At = [datetime]$r.timestamp } catch { } }
+                return $out
+            }
+        }
+    }
+    return $out
+}
+
+# One line out of prose that may be many paragraphs, markdown, or a code fence.
+# The FIRST meaningful line rather than the first N characters: a leading blank,
+# a heading marker or a bullet dash is not what the conversation said.
+function Get-SRFirstLine {
+    param([string]$Text, [int]$Max = 160)
+    $s = "$Text" -replace "`r", ''
+    foreach ($ln in ($s -split "`n")) {
+        $t = $ln.Trim()
+        if (-not $t) { continue }
+        if ($t -eq '```' -or $t.StartsWith('```')) { continue }
+        # Strip the markdown that carries emphasis rather than meaning.
+        $t = $t -replace '^#{1,6}\s+', '' -replace '^[-*]\s+', '' -replace '\*\*', '' -replace '`', ''
+        $t = ($t -replace '\s+', ' ').Trim()
+        if (-not $t) { continue }
+        if ($t.Length -gt $Max) { $t = $t.Substring(0, $Max - 3) + '...' }
+        return $t
+    }
+    return ''
 }
 
 # --- what claude itself says about a session --------------------------------

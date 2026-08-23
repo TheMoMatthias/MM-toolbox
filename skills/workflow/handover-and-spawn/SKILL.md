@@ -23,8 +23,16 @@ work that deserves its own clean context.
 
    - **The objective** — one sentence, and the DONE-WHEN that ends it.
    - **What is already true** — what is built, tested, committed, and what is not.
+   - **Everything still open** — reconciled against this session's open list, not against
+     memory of it. Every unfinished item either lands in the brief or is explicitly closed
+     in it. 🔴 A thing never done and never written down disappears at the boundary: the
+     new session cannot miss what it never heard of.
    - **Decisions already made, and why** — so they are not silently relitigated. Include
-     anything ruled *out*; a rejected approach that is not recorded gets rebuilt.
+     anything ruled *out*, **and how firmly** — `measured` · `documented` · `inferred`,
+     the labels the rest of the toolbox uses. Rejected on a tested result is settled;
+     rejected on an `inferred` reading is reopenable and must say so. A brief that does not
+     distinguish them promotes a guess into a constraint the new session cannot question —
+     and it will not think to, because it was not there when you guessed.
    - **Constraints and pre-authorized defaults** — what it may decide alone, and what it
      must stop and ask about.
    - **Where the work lives** — files, branch, run-file, tests to run.
