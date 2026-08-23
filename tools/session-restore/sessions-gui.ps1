@@ -589,11 +589,36 @@ $script:castTargets  = @()
 # In the INBOX the bands sit outside this entirely: they are what the inbox IS,
 # so a sort reorders within a band and NEEDS YOU never stops being first.
 # ---------------------------------------------------------------------------
-$script:SortDefault = @(
-    @{ Key = 'project'; Desc = $false }
-    @{ Key = 'when';    Desc = $true  }
-)
-$script:sortKeys = @($script:SortDefault | ForEach-Object { @{ Key = $_.Key; Desc = $_.Desc } })
+# ONE STACK PER VIEW, and it is not a nicety.
+#
+# The two lists do not have the same columns. Sorting All by STATE and then WHEN
+# and switching to the inbox showed "WHEN v2" with no "^1" anywhere, because the
+# inbox has no STATE heading to put it on - a rank digit pointing at a key the
+# operator cannot see or unset. Each list keeps its own stack, which is also
+# what anyone expects: a sort belongs to the list you set it on.
+$script:SortDefault = @{
+    # The inbox is already grouped by band; within a band the only question is
+    # what happened most recently.
+    inbox = @( @{ Key = 'when'; Desc = $true } )
+    # All reads like the tree it replaced - a project's conversations together,
+    # newest at the top - and both keys have a heading, so the mechanic is
+    # visible from the first frame.
+    all   = @( @{ Key = 'project'; Desc = $false }, @{ Key = 'when'; Desc = $true } )
+}
+$script:sortKeysByView = @{}
+foreach ($v in @($script:SortDefault.Keys)) {
+    $script:sortKeysByView[$v] = @($script:SortDefault[$v] | ForEach-Object { @{ Key = $_.Key; Desc = $_.Desc } })
+}
+
+function Get-SortKeys { param([string]$View)
+    if (-not $View) { $View = $script:viewMode }
+    if (-not $script:sortKeysByView.ContainsKey($View)) { $View = 'all' }
+    return @($script:sortKeysByView[$View])
+}
+function Set-SortKeys { param([string]$View, $Keys)
+    if (-not $View) { $View = $script:viewMode }
+    $script:sortKeysByView[$View] = @($Keys)
+}
 # Where each band sits when STATE is the key: the same order the inbox lists
 # them in, so sorting by state and reading the inbox give the same sequence.
 $script:BandOrder = @{ needs = 0; working = 1; idle = 2; quiet = 3 }
@@ -1084,7 +1109,7 @@ function Sort-Picked { param($Picked)
     foreach ($x in $Picked) { $null = $items.Add($x) }
     if (-not $items.Count) { return @() }
     $props = @()
-    foreach ($k in @($script:sortKeys)) {
+    foreach ($k in @(Get-SortKeys)) {
         $key = $k.Key
         $props += @{ Expression = [scriptblock]::Create("Get-SortValue `$_ '$key'"); Descending = [bool]$k.Desc }
     }
@@ -1094,17 +1119,19 @@ function Sort-Picked { param($Picked)
 
 # Click: this column alone, and clicking the column that is already the only key
 # flips it. Shift-click: add to the end of the stack, or flip it where it is.
-function Invoke-SortHead { param([string]$Key, [bool]$Add)
+function Invoke-SortHead { param([string]$Key, [bool]$Add, [string]$View)
     if (-not $Key) { return }
+    if (-not $View) { $View = $script:viewMode }
+    $cur = @(Get-SortKeys $View)
     $existing = $null
-    foreach ($k in @($script:sortKeys)) { if ($k.Key -eq $Key) { $existing = $k; break } }
+    foreach ($k in $cur) { if ($k.Key -eq $Key) { $existing = $k; break } }
     if ($Add) {
         if ($existing) { $existing.Desc = -not $existing.Desc }
-        else { $script:sortKeys = @(@($script:sortKeys) + @{ Key = $Key; Desc = $(if ($Key -eq 'when') { $true } else { $false }) }) }
+        else { Set-SortKeys $View (@($cur) + @{ Key = $Key; Desc = $(if ($Key -eq 'when') { $true } else { $false }) }) }
     } else {
-        $wasOnly = (@($script:sortKeys).Count -eq 1 -and $existing)
+        $wasOnly = ($cur.Count -eq 1 -and $existing)
         $desc = $(if ($wasOnly) { -not $existing.Desc } else { ($Key -eq 'when') })
-        $script:sortKeys = @(@{ Key = $Key; Desc = $desc })
+        Set-SortKeys $View @(@{ Key = $Key; Desc = $desc })
     }
     Update-List -ToTop
     Set-Status ("sorted by " + (Get-SortSummary)) 'info'
@@ -1113,7 +1140,7 @@ function Invoke-SortHead { param([string]$Key, [bool]$Add)
 function Get-SortSummary {
     $words = @{ when = 'newest'; name = 'name'; project = 'project'; state = 'what it needs'; logon = 'the logon tick' }
     $bits = @()
-    foreach ($k in @($script:sortKeys)) {
+    foreach ($k in @(Get-SortKeys)) {
         $w = $words[$k.Key]; if (-not $w) { $w = $k.Key }
         if ($k.Key -eq 'when') { $bits += $(if ($k.Desc) { 'newest first' } else { 'oldest first' }) }
         else { $bits += ("$w" + $(if ($k.Desc) { ' (reversed)' } else { '' })) }
@@ -1149,23 +1176,28 @@ function Update-SortHeads {
         $key = "$($btn.Tag)"
         $base = "$($btn.Tag)"
         if ($btn.Tag -and $script:SortCaptions.ContainsKey($key)) { $base = $script:SortCaptions[$key] }
+        # WHICH BAR THIS BUTTON IS IN decides both the caption and the stack it
+        # is reporting on - the two lists have different columns and each keeps
+        # its own sort.
+        $inInbox = ($ui.InboxHead -and $btn.Parent -eq $ui.InboxHead.Child)
+        $keys = @(Get-SortKeys $(if ($inInbox) { 'inbox' } else { 'all' }))
         # The inbox's project column is narrower and carries no lane, so it says
-        # the shorter word. Told apart by which bar the button is in.
-        if ($key -eq 'project' -and $ui.InboxHead -and $btn.Parent -eq $ui.InboxHead.Child) { $base = 'PROJECT' }
+        # the shorter word.
+        if ($key -eq 'project' -and $inInbox) { $base = 'PROJECT' }
         $idx = -1
-        for ($i = 0; $i -lt @($script:sortKeys).Count; $i++) { if ($script:sortKeys[$i].Key -eq $key) { $idx = $i; break } }
+        for ($i = 0; $i -lt $keys.Count; $i++) { if ($keys[$i].Key -eq $key) { $idx = $i; break } }
         if ($idx -lt 0) {
             $btn.Content = $base
             $btn.Foreground = $Pal.TextDim
         } else {
-            $arrow = $(if ($script:sortKeys[$idx].Desc) { $script:SortDown } else { $script:SortUp })
-            $rank = $(if (@($script:sortKeys).Count -gt 1) { [string]($idx + 1) } else { '' })
+            $arrow = $(if ($keys[$idx].Desc) { $script:SortDown } else { $script:SortUp })
+            $rank = $(if ($keys.Count -gt 1) { [string]($idx + 1) } else { '' })
             $btn.Content = "$base  $arrow$rank"
             # The PRIMARY key is the brightest thing on the row; a secondary key
             # is present but is not what you are reading the list by.
             $btn.Foreground = $(if ($idx -eq 0) { $Pal.TextMax } else { $Pal.TextMid })
         }
-        $btn.ToolTip = "Sort by $base. Shift-click to add it after the keys already set, or to flip one. Now: $(Get-SortSummary)."
+        $btn.ToolTip = "Sort by $base. Shift-click to add it after the keys already set, or to flip one. This list is sorted by $(Get-SortSummary)."
     }
 }
 
@@ -2556,7 +2588,8 @@ $sortHandler = [System.Windows.RoutedEventHandler]{
         $b = $e.OriginalSource -as [System.Windows.Controls.Button]
         if (-not $b -or -not $b.Tag) { return }
         $shift = [bool]([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Shift)
-        Invoke-SortHead -Key "$($b.Tag)" -Add $shift
+        $view = $(if ($ui.InboxHead -and $b.Parent -eq $ui.InboxHead.Child) { 'inbox' } else { 'all' })
+        Invoke-SortHead -Key "$($b.Tag)" -Add $shift -View $view
     } 'that sort'
 }
 $ui.ListHead.AddHandler([System.Windows.Controls.Button]::ClickEvent,  $sortHandler)

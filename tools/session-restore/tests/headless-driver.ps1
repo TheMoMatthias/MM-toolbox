@@ -357,7 +357,7 @@ function AllSessions { $o = @(); foreach ($r in $script:rows) { if ($r.Kind -eq 
 
 # The default has to be what the tree showed, or the flattening moved the list
 # under the operator for no reason.
-$script:sortKeys = @($script:SortDefault | ForEach-Object { @{ Key = $_.Key; Desc = $_.Desc } })
+Set-SortKeys 'all' @($script:SortDefault['all'] | ForEach-Object { @{ Key = $_.Key; Desc = $_.Desc } })
 Update-List -ToTop
 $def = AllSessions
 # Grouped by the STRING THE COLUMN SHOWS, which is what a heading called
@@ -406,7 +406,7 @@ else { Pass 'clicking the same heading again reverses it' }
 # newest" is the case the whole mechanic exists for.
 Invoke-SortHead -Key 'state' -Add $false
 Invoke-SortHead -Key 'when'  -Add $true
-if (@($script:sortKeys).Count -ne 2) { Fail "shift-click produced $(@($script:sortKeys).Count) key(s), expected 2" }
+if (@(Get-SortKeys 'all').Count -ne 2) { Fail "shift-click produced $(@(Get-SortKeys 'all').Count) key(s), expected 2" }
 else {
     $two = AllSessions
     $bad = 0
@@ -438,6 +438,31 @@ if ($plain.Count -and ("$($plain[0].Content)" -match [regex]::Escape($script:Sor
     Fail "an unsorted heading carries an arrow: '$($plain[0].Content)'"
 } else { Pass 'an unsorted heading carries no arrow' }
 
+# THE TWO LISTS DO NOT SHARE A SORT. All was sorted by STATE then WHEN above;
+# the inbox has no STATE heading, so a shared stack put "WHEN v2" on its bar
+# with no "^1" anywhere - a rank digit pointing at a key the operator can
+# neither see nor unset.
+Set-ViewMode 'inbox'
+$inboxKeys = @(Get-SortKeys 'inbox')
+$allKeys   = @(Get-SortKeys 'all')
+if ($allKeys.Count -ne 2) { Fail "the All view lost its sort when the view changed ($($allKeys.Count) key(s))" }
+elseif ($inboxKeys.Count -ne 1) { Fail "the inbox inherited the All view's stack ($($inboxKeys.Count) key(s))" }
+else { Pass 'each list keeps its own sort across a view switch' }
+
+# And no heading anywhere may claim a rank its own bar cannot account for.
+$orphan = @()
+foreach ($btn in @(Get-SortHeadControls)) {
+    $c = "$($btn.Content)"
+    if ($c -notmatch '(\d)$') { continue }
+    $rank = [int]$Matches[1]
+    $inInbox = ($ui.InboxHead -and $btn.Parent -eq $ui.InboxHead.Child)
+    $bar = @(Get-SortHeadControls | Where-Object { ($ui.InboxHead -and $_.Parent -eq $ui.InboxHead.Child) -eq $inInbox })
+    $marked = @($bar | Where-Object { "$($_.Content)" -match '\d$' }).Count
+    if ($rank -gt $marked) { $orphan += "$c (rank $rank of $marked shown in its own bar)" }
+}
+if ($orphan.Count) { Fail ("a heading claims a rank nothing beside it accounts for: " + ($orphan -join '; ')) }
+else { Pass 'no heading shows a rank digit its own bar cannot account for' }
+
 # THE BANDS ARE NOT SORTABLE AWAY. They are what the inbox is; a sort orders
 # rows WITHIN one. If WHEN could dissolve them, NEEDS YOU would stop being first
 # and the inbox would silently become a list.
@@ -450,7 +475,7 @@ elseif ("$($headsSeen[0].Name)" -ne 'NEEDS YOU') { Fail "after sorting, the firs
 else { Pass 'sorting the inbox reorders within the bands and NEEDS YOU stays first' }
 
 # Put it back so nothing downstream inherits a sort.
-$script:sortKeys = @($script:SortDefault | ForEach-Object { @{ Key = $_.Key; Desc = $_.Desc } })
+Set-SortKeys 'all' @($script:SortDefault['all'] | ForEach-Object { @{ Key = $_.Key; Desc = $_.Desc } })
 Update-List -ToTop
 
 # --- 10c. THE READING PANE IS A SPLIT, NOT A REPLACEMENT --------------------

@@ -158,6 +158,28 @@
       <Setter Property="FontWeight" Value="Bold"/>
     </Style>
 
+    <!-- A ROW'S OWN ACTIONS, ON THE ROW YOU ARE POINTING AT.
+         Eighteen identical "Open  +" pairs stacked down the right edge is a
+         column of noise that says the same word eighteen times. They belong to
+         whichever row you are pointing at, plus the SELECTED row - which is
+         always exactly one, so the affordance is never entirely absent and
+         never has to be discovered by accident.
+
+         Hidden, not Collapsed: the space stays reserved so rows do not reflow
+         under the pointer, and a Hidden element is not hit-testable, so there
+         is nothing to click by mistake either. -->
+    <Style x:Key="RowActions" TargetType="Grid">
+      <Setter Property="Visibility" Value="Hidden"/>
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+          <Setter Property="Visibility" Value="Visible"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+          <Setter Property="Visibility" Value="Visible"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+
     <!-- A COLUMN HEADING YOU CAN SORT BY.
          Looks like a caption and behaves like a button: no chrome at rest, a
          rule underneath on hover so it is discoverable by pointing at it, and
@@ -841,17 +863,24 @@
         <Rectangle Grid.Column="1" Width="1" Fill="{StaticResource HairlineHi}"
                    HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
 
-        <!-- 2: pinned marker; click hands the row back to the rolling auto-tick.
+        <!-- 2: pinned marker, ON HOVER ONLY.
+             128 of 143 conversations are pinned, because touching one pins it.
+             A mark that is on nine rows in ten is texture, not information - it
+             cost a column and told you nothing. The state is still reachable
+             three ways: the pinned / not pinned chips, the footer's Unpin, and
+             Bulk. What is gone is printing it on every row.
              A drawn asterisk, not the character: six strokes through one centre,
              which cannot be confused with the chevron or the bars beside it. -->
-        <Button Grid.Column="2" Style="{StaticResource BtnBare}" Tag="unpin"
-                Width="18" Height="20"
-                Visibility="{Binding PinVisibility}"
-                ToolTip="Pinned - the hourly roll leaves this alone. Click to hand it back.">
-          <Path Data="M 4,0 L 4,8 M 0.5,2 L 7.5,6 M 0.5,6 L 7.5,2"
-                Width="8" Height="8" Stretch="None"
-                Stroke="{Binding PinBrush}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-        </Button>
+        <Grid Grid.Column="2" Style="{StaticResource RowActions}">
+          <Button Style="{StaticResource BtnBare}" Tag="unpin"
+                  Width="18" Height="20"
+                  Visibility="{Binding PinVisibility}"
+                  ToolTip="Pinned - the hourly roll leaves this alone. Click to hand it back.">
+            <Path Data="M 4,0 L 4,8 M 0.5,2 L 7.5,6 M 0.5,6 L 7.5,2"
+                  Width="8" Height="8" Stretch="None"
+                  Stroke="{Binding PinBrush}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+          </Button>
+        </Grid>
 
         <!-- 3: name, and what an untitled conversation was about.
              A struck-through name is a conversation whose transcript is gone and
@@ -938,8 +967,10 @@
         <Rectangle Grid.Column="7" Width="1" Fill="{StaticResource HairlineHi}"
                    HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
 
-        <!-- 8: actions. Opens it this second, tick or no tick. -->
-        <StackPanel Grid.Column="8" Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
+        <!-- 8: actions. Opens it this second, tick or no tick. On the row you
+             are pointing at, and on the selected one. -->
+        <Grid Grid.Column="8" Style="{StaticResource RowActions}">
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
           <Button Style="{StaticResource BtnRow}" Tag="launch"
                   Visibility="{Binding ActionVisibility}"
                   Content="{Binding LaunchLabel}"
@@ -952,12 +983,16 @@
           <!-- The one row that is not a conversation: what the age window left
                out. Nothing is ever hidden silently, so the count that was cut
                is on screen and one click brings it back. -->
-          <Button Style="{StaticResource BtnRow}" Tag="more"
-                  Visibility="{Binding MoreVisibility}"
-                  Content="{Binding MoreLabel}"
-                  HorizontalAlignment="Left"
-                  ToolTip="{Binding MoreTip}"/>
         </StackPanel>
+        </Grid>
+        <!-- OUTSIDE the hover style: the age window's own row is the one thing
+             on the list that must be visible without being pointed at, or the
+             58 conversations it is hiding stay hidden. -->
+        <Button Grid.Column="8" Style="{StaticResource BtnRow}" Tag="more"
+                Visibility="{Binding MoreVisibility}"
+                Content="{Binding MoreLabel}"
+                HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0"
+                ToolTip="{Binding MoreTip}"/>
       </Grid>
     </DataTemplate>
 
@@ -1018,6 +1053,16 @@
         <!-- 2: which project this belongs to. A LABEL here, not a parent: the
              inbox is deliberately cross-project, so the project is one more
              attribute of the row rather than a node above it. -->
+        <!-- 2b: the band's count, NEXT TO THE HEADING IT COUNTS. It used to sit
+             in the column where a conversation's prose goes, which put "3" a
+             third of the way across the window from "NEEDS YOU" and made it
+             read as if 3 were the project. A band never has a project, so the
+             two can never collide here. -->
+        <TextBlock Grid.Column="2" Text="{Binding Counts}"
+                   Visibility="{Binding CountsVisibility}"
+                   VerticalAlignment="Center" Margin="10,0,0,0"
+                   FontFamily="{StaticResource FontSmall}" FontSize="11"
+                   Foreground="{Binding CountsBrush}"/>
         <TextBlock Grid.Column="2" Text="{Binding Project}"
                    Visibility="{Binding ProjectVisibility}"
                    VerticalAlignment="Center" Margin="12,0,0,0"
@@ -1033,28 +1078,24 @@
                    TextTrimming="CharacterEllipsis"
                    ToolTip="{Binding SaidTip}"/>
 
-        <!-- 3b: the band's count, in the same cell the prose would occupy.
-             A band never has prose, so the two can never collide. -->
-        <TextBlock Grid.Column="3" Text="{Binding Counts}"
-                   Visibility="{Binding CountsVisibility}"
-                   VerticalAlignment="Center" Margin="12,0,0,0"
-                   Style="{StaticResource Caption}"
-                   Foreground="{Binding CountsBrush}"/>
-
         <!-- 4: how long ago, right-aligned so the numbers form a column. -->
         <TextBlock Grid.Column="4" Text="{Binding Stamp}"
                    VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,12,0"
                    FontFamily="{StaticResource FontSmall}" FontSize="11"
                    Foreground="{Binding StampBrush}"/>
 
-        <!-- 5: what you can do about it. -->
-        <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center"
-                    Visibility="{Binding ActionVisibility}" Margin="0,0,10,0">
-          <Button Style="{StaticResource BtnRow}" Tag="jump"
-                  Content="{Binding JumpLabel}"
-                  IsEnabled="{Binding CanJump}"
-                  ToolTip="{Binding JumpTip}"/>
-        </StackPanel>
+        <!-- 5: what you can do about it, on the row you are pointing at and on
+             the selected one. Eleven identical "Go to" buttons in a column say
+             the same word eleven times. -->
+        <Grid Grid.Column="5" Style="{StaticResource RowActions}">
+          <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                      Visibility="{Binding ActionVisibility}" Margin="0,0,10,0">
+            <Button Style="{StaticResource BtnRow}" Tag="jump"
+                    Content="{Binding JumpLabel}"
+                    IsEnabled="{Binding CanJump}"
+                    ToolTip="{Binding JumpTip}"/>
+          </StackPanel>
+        </Grid>
       </Grid>
     </DataTemplate>
 
