@@ -158,6 +158,39 @@
       <Setter Property="FontWeight" Value="Bold"/>
     </Style>
 
+    <!-- A COLUMN HEADING YOU CAN SORT BY.
+         Looks like a caption and behaves like a button: no chrome at rest, a
+         rule underneath on hover so it is discoverable by pointing at it, and
+         the arrow the code appends is the only permanent difference between a
+         sorted column and an unsorted one. -->
+    <Style x:Key="SortCap" TargetType="Button">
+      <Setter Property="FontFamily" Value="{StaticResource FontSmall}"/>
+      <Setter Property="FontSize" Value="10.5"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Foreground" Value="{StaticResource TextDim}"/>
+      <Setter Property="HorizontalAlignment" Value="Left"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Padding" Value="0,1"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="Transparent" BorderBrush="Transparent"
+                    BorderThickness="0,0,0,1" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalAlignment}"
+                                VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource TextDim}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <!-- The label in front of a group of filter chips. Quieter than a pole
          caption: it names a dimension, it is not one of the two poles. -->
     <Style x:Key="GroupCaption" TargetType="TextBlock" BasedOn="{StaticResource Caption}">
@@ -1303,6 +1336,32 @@
          Hidden in the inbox, which has no columns and needs no captions: a name,
          a project, a sentence and a time need no headings, and the bands already
          label the groups. That is a whole row of chrome the inbox gets back. -->
+    <!-- THE INBOX'S OWN HEADING ROW, so there is ONE sorting mechanic in the
+         tool rather than a sortable table beside an unsortable list. Its columns
+         mirror InboxTemplate.
+
+         The BANDS are not a sort key and cannot be sorted away: they are what
+         the inbox IS. A sort reorders WITHIN each band, which is why WHEN can be
+         flipped here without NEEDS YOU stopping being first. -->
+    <Border x:Name="InboxHead" Grid.Row="4" Visibility="Collapsed"
+            Background="{StaticResource PanelHi}" BorderBrush="{StaticResource Hairline}"
+            BorderThickness="0,0,0,1" Padding="22,9,22,9">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="30"/>
+          <ColumnDefinition Width="Auto" MinWidth="120"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*" MinWidth="120"/>
+          <ColumnDefinition Width="64"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <Button Grid.Column="1" Tag="name"    Style="{StaticResource SortCap}" Content="CONVERSATION"/>
+        <Button Grid.Column="2" Tag="project" Style="{StaticResource SortCap}" Margin="12,0,0,0" Content="PROJECT"/>
+        <TextBlock Grid.Column="3" Text="WHAT IT LAST SAID" Style="{StaticResource Caption}" Margin="14,0,0,0"/>
+        <Button Grid.Column="4" Tag="when"    Style="{StaticResource SortCap}" HorizontalAlignment="Right" Margin="0,0,10,0" Content="WHEN"/>
+      </Grid>
+    </Border>
+
     <Border x:Name="ListHead" Grid.Row="4" Background="{StaticResource PanelHi}" BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="0,9,0,9">
       <Grid>
         <Grid.ColumnDefinitions>
@@ -1316,11 +1375,11 @@
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="140"/>
         </Grid.ColumnDefinitions>
-        <TextBlock Grid.Column="0" Text="LOGON" Style="{StaticResource PoleCaption}" HorizontalAlignment="Center"/>
-        <TextBlock Grid.Column="3" Text="CONVERSATION" Style="{StaticResource PoleCaption}"/>
-        <TextBlock Grid.Column="4" Text="PROJECT / LANE" Style="{StaticResource PoleCaption}"/>
-        <TextBlock Grid.Column="5" Text="STATE" Style="{StaticResource PoleCaption}"/>
-        <TextBlock Grid.Column="6" Text="WHEN" Style="{StaticResource PoleCaption}" HorizontalAlignment="Right" Margin="0,0,12,0"/>
+        <Button Grid.Column="0" Tag="logon"   Style="{StaticResource SortCap}" HorizontalAlignment="Center" Content="LOGON"/>
+        <Button Grid.Column="3" Tag="name"    Style="{StaticResource SortCap}" Content="CONVERSATION"/>
+        <Button Grid.Column="4" Tag="project" Style="{StaticResource SortCap}" Content="PROJECT / LANE"/>
+        <Button Grid.Column="5" Tag="state"   Style="{StaticResource SortCap}" Content="STATE"/>
+        <Button Grid.Column="6" Tag="when"    Style="{StaticResource SortCap}" HorizontalAlignment="Right" Margin="0,0,12,0" Content="WHEN"/>
         <TextBlock Grid.Column="8" Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="10,0,0,0"/>
       </Grid>
     </Border>

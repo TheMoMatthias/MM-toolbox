@@ -325,6 +325,112 @@ $missing = @('TextMax','TextHigh','TextMid','TextLow','TextDim') | Where-Object 
 if ($missing.Count -eq 0) { Pass 'the palette is still a palette after switching views' }
 else { Fail "the palette lost: $($missing -join ', ')" }
 
+# --- 10b. THE SORT KEY STACK ------------------------------------------------
+# A tree could only ever sort within a lane, so "the youngest across every
+# project" was not expressible at all. These check the ORDER OF THE ROWS, not
+# the state of the sort variables: a stack that is set correctly and never
+# applied looks identical from the variables.
+Set-ViewMode 'all'
+function AllSessions { $o = @(); foreach ($r in $script:rows) { if ($r.Kind -eq 'session') { $o += $r } }; return $o }
+
+# The default has to be what the tree showed, or the flattening moved the list
+# under the operator for no reason.
+$script:sortKeys = @($script:SortDefault | ForEach-Object { @{ Key = $_.Key; Desc = $_.Desc } })
+Update-List -ToTop
+$def = AllSessions
+# Grouped by the STRING THE COLUMN SHOWS, which is what a heading called
+# "PROJECT / LANE" has to sort by, and newest-first inside each group.
+$outOfOrder = 0; $notGrouped = 0
+$seen = @{}
+$prev = $null
+for ($i = 0; $i -lt $def.Count; $i++) {
+    $lbl = "$($def[$i].Project)"
+    if ($lbl -ne $prev) {
+        # A label coming back after another one appeared in between means the
+        # grouping broke, which no amount of within-group order would show.
+        if ($seen.ContainsKey($lbl)) { $notGrouped++ }
+        $seen[$lbl] = $true
+        $prev = $lbl
+    } elseif ([datetime]$def[$i - 1].Session.lastActive -lt [datetime]$def[$i].Session.lastActive) {
+        $outOfOrder++
+    }
+}
+if ($notGrouped) { Fail "$notGrouped project label(s) appear in more than one run - the default is not grouping" }
+elseif ($outOfOrder) { Fail "$outOfOrder row(s) are older than the row above them inside one project" }
+else { Pass "the default order is project A-Z then newest first ($($seen.Count) groups)" }
+
+# ONE KEY: newest across EVERYTHING, which is the thing a tree could not do.
+Invoke-SortHead -Key 'when' -Add $false
+$byWhen = AllSessions
+$bad = 0
+for ($i = 1; $i -lt $byWhen.Count; $i++) {
+    if ([datetime]$byWhen[$i - 1].Session.lastActive -lt [datetime]$byWhen[$i].Session.lastActive) { $bad++ }
+}
+if ($bad) { Fail "sorting by WHEN left $bad row(s) out of order" }
+elseif ($byWhen.Count -lt 2) { Fail 'not enough rows to prove an order' }
+else { Pass "WHEN sorts $($byWhen.Count) conversations newest-first across every project" }
+
+# Clicking the same heading again reverses it.
+Invoke-SortHead -Key 'when' -Add $false
+$rev = AllSessions
+$bad = 0
+for ($i = 1; $i -lt $rev.Count; $i++) {
+    if ([datetime]$rev[$i - 1].Session.lastActive -gt [datetime]$rev[$i].Session.lastActive) { $bad++ }
+}
+if ($bad) { Fail "clicking WHEN twice left $bad row(s) out of order the other way" }
+else { Pass 'clicking the same heading again reverses it' }
+
+# TWO KEYS: shift-click stacks rather than replaces. "By what it needs, then
+# newest" is the case the whole mechanic exists for.
+Invoke-SortHead -Key 'state' -Add $false
+Invoke-SortHead -Key 'when'  -Add $true
+if (@($script:sortKeys).Count -ne 2) { Fail "shift-click produced $(@($script:sortKeys).Count) key(s), expected 2" }
+else {
+    $two = AllSessions
+    $bad = 0
+    for ($i = 1; $i -lt $two.Count; $i++) {
+        $ra = [int]$script:BandOrder[(Get-InboxBand $two[$i - 1].Session)]
+        $rb = [int]$script:BandOrder[(Get-InboxBand $two[$i].Session)]
+        if ($ra -gt $rb) { $bad++; continue }
+        if ($ra -eq $rb -and [datetime]$two[$i - 1].Session.lastActive -lt [datetime]$two[$i].Session.lastActive) { $bad++ }
+    }
+    if ($bad) { Fail "state-then-newest left $bad row(s) out of order" }
+    else { Pass 'shift-click stacks: state first, newest within each' }
+}
+
+# The headings ARE the readout. A stack nobody can see is a stack nobody trusts.
+$heads = @(Get-SortHeadControls)
+if (-not $heads.Count) { Fail 'no sortable column headings were found at all' }
+else {
+    $marked = @($heads | Where-Object { "$($_.Content)" -match [regex]::Escape($script:SortUp) -or "$($_.Content)" -match [regex]::Escape($script:SortDown) })
+    # Two keys, and each heading exists in BOTH bars, so 'when' is marked twice.
+    $keysMarked = @($marked | ForEach-Object { "$($_.Tag)" } | Sort-Object -Unique)
+    if ($keysMarked.Count -ne 2) { Fail "the headings mark $($keysMarked.Count) sorted column(s), expected 2: $($keysMarked -join ', ')" }
+    elseif (-not (@($marked | Where-Object { "$($_.Content)" -match '2$' }).Count)) { Fail 'nothing on the headings says which key is second' }
+    else { Pass "the headings show the stack: $(($marked | ForEach-Object { $_.Content }) -join '  ')" }
+}
+
+# An UNSORTED column must carry no arrow, or the arrow means nothing.
+$plain = @($heads | Where-Object { "$($_.Tag)" -eq 'name' })
+if ($plain.Count -and ("$($plain[0].Content)" -match [regex]::Escape($script:SortUp) -or "$($plain[0].Content)" -match [regex]::Escape($script:SortDown))) {
+    Fail "an unsorted heading carries an arrow: '$($plain[0].Content)'"
+} else { Pass 'an unsorted heading carries no arrow' }
+
+# THE BANDS ARE NOT SORTABLE AWAY. They are what the inbox is; a sort orders
+# rows WITHIN one. If WHEN could dissolve them, NEEDS YOU would stop being first
+# and the inbox would silently become a list.
+Set-ViewMode 'inbox'
+Invoke-SortHead -Key 'when' -Add $false
+$ib = @(); foreach ($r in $script:inboxRows) { $ib += $r }
+$headsSeen = @($ib | Where-Object { $_.Kind -eq 'band' })
+if ($headsSeen.Count -lt 2) { Fail "sorting the inbox by WHEN left $($headsSeen.Count) band heading(s)" }
+elseif ("$($headsSeen[0].Name)" -ne 'NEEDS YOU') { Fail "after sorting, the first band is '$($headsSeen[0].Name)'" }
+else { Pass 'sorting the inbox reorders within the bands and NEEDS YOU stays first' }
+
+# Put it back so nothing downstream inherits a sort.
+$script:sortKeys = @($script:SortDefault | ForEach-Object { @{ Key = $_.Key; Desc = $_.Desc } })
+Update-List -ToTop
+
 # --- 11. a band heading is not an action target -----------------------------
 # Back to the inbox first: Update-Selection reads whichever list is SHOWING, and
 # the block above leaves the All view up.

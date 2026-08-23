@@ -552,6 +552,41 @@ $script:olderCount   = 0
 # The anchor for shift-click ticking: the last conversation whose tick was
 # changed by hand, so a shift-click has something to draw a range from.
 $script:tickAnchor   = $null
+
+# ---------------------------------------------------------------------------
+# THE SORT KEY STACK
+#
+# An ORDERED list of keys, applied in order, each with its own direction. Click
+# a heading and it becomes the only key; shift-click and it joins the end of the
+# stack. "Sorted by need, then newest" is a two-item stack and reads off the
+# headings as "STATE ^1  WHEN v2".
+#
+# The DEFAULT is project A-Z, then newest first - which reads like the tree it
+# replaced (a project's conversations together, newest at the top) while being
+# something the headings can actually express: PROJECT and WHEN both carry an
+# arrow from the first frame, so the mechanic teaches itself before it is used.
+#
+# In the INBOX the bands sit outside this entirely: they are what the inbox IS,
+# so a sort reorders within a band and NEEDS YOU never stops being first.
+# ---------------------------------------------------------------------------
+$script:SortDefault = @(
+    @{ Key = 'project'; Desc = $false }
+    @{ Key = 'when';    Desc = $true  }
+)
+$script:sortKeys = @($script:SortDefault | ForEach-Object { @{ Key = $_.Key; Desc = $_.Desc } })
+# Where each band sits when STATE is the key: the same order the inbox lists
+# them in, so sorting by state and reading the inbox give the same sequence.
+$script:BandOrder = @{ needs = 0; working = 1; idle = 2; quiet = 3 }
+# The word on the heading, kept here rather than read back off the button: the
+# code appends an arrow to Content, so reading Content to rebuild Content
+# accumulates arrows.
+$script:SortCaptions = @{
+    logon   = 'LOGON'
+    name    = 'CONVERSATION'
+    project = 'PROJECT / LANE'
+    state   = 'STATE'
+    when    = 'WHEN'
+}
 $script:dirty        = $false
 $script:exitMode     = $null
 
@@ -1139,7 +1174,7 @@ foreach ($n in @(
     # The inbox: its own list, the view switch, and the three count pills that
     # are now buttons rather than decoration.
     'InboxList','ModeInbox','ModeAll','LivePill','WaitPill','TickPill',
-    'ListHead','NowCaption','WorktreeCaption'
+    'ListHead','InboxHead','NowCaption','WorktreeCaption'
 )) { $ui[$n] = $window.FindName($n) }
 
 # A name in the markup that is not in the list above is $null here, and the
@@ -1230,9 +1265,144 @@ function New-Row { param([string]$Kind, [string]$Key, $Dir, $Lane, $Session)
 # to reach the whole registry, or the search is lying), and anything that is not
 # in the NOT RUNNING band. Age is a proxy for attention, and a live conversation
 # has your attention whatever its timestamp says.
+# One key's value for one conversation. Every branch returns a value of a single
+# comparable type: Sort-Object over a mixed column silently orders by the type
+# name first, which looks like a sort that nearly works.
+function Get-SortValue { param($Pick, [string]$Key)
+    switch ($Key) {
+        'when'    { return $Pick.At }
+        'name'    { return "$(Get-SessionTitle $Pick.S $Pick.D)".ToLowerInvariant() }
+        'project' {
+            # BY THE STRING THE COLUMN SHOWS. It sorted by the project's
+            # recency rank and then by lane, which reproduced the tree's own
+            # order - and meant clicking a heading labelled "PROJECT / LANE"
+            # ordered the list by something that is not on screen. A column
+            # heading has to sort by its column.
+            $lane = $(if ($Pick.L) { "$($Pick.L.Name)" } else { 'main' })
+            $proj = Split-Path $Pick.D.path -Leaf
+            return $(if ($lane -and $lane -ne 'main') { "$proj / $lane" } else { $proj }).ToLowerInvariant()
+        }
+        'logon'   { return $(if ($Pick.S.enabled) { 0 } else { 1 }) }
+        'state'   {
+            # BY WHAT IT WANTS FROM YOU, not alphabetically: "idle" before
+            # "needs" before "working" is an ordering of words, not of urgency.
+            $b = Get-InboxBand $Pick.S
+            $r = $script:BandOrder[$b]
+            if ($null -eq $r) { $r = 9 }
+            return [int]$r
+        }
+    }
+    return ''
+}
+
+# Apply the stack. Sort-Object is stable in PowerShell, so passing every key at
+# once and passing them one at a time are the same answer; one call is cheaper.
+function Sort-Picked { param($Picked)
+    # COPIED ELEMENT BY ELEMENT, and returned WITHOUT a leading comma. Two traps
+    # meet in this one function:
+    #   @($Picked) throws "Argument types do not match" when $Picked is a
+    #     List[object] -- which Build-Rows hands it -- on PowerShell 5.1;
+    #   ",@()" around an EMPTY result is a one-element array holding the empty
+    #     array, so an empty band came back with Count 1, the "nothing here"
+    #     guard did not fire, and New-Row was handed @() as its directory. The
+    #     symptom was Get-SessionTitle dying on a null path at startup.
+    $items = New-Object System.Collections.ArrayList
+    foreach ($x in $Picked) { $null = $items.Add($x) }
+    if (-not $items.Count) { return @() }
+    $props = @()
+    foreach ($k in @($script:sortKeys)) {
+        $key = $k.Key
+        $props += @{ Expression = [scriptblock]::Create("Get-SortValue `$_ '$key'"); Descending = [bool]$k.Desc }
+    }
+    if (-not $props.Count) { return $items }
+    return $items | Sort-Object $props
+}
+
+# Click: this column alone, and clicking the column that is already the only key
+# flips it. Shift-click: add to the end of the stack, or flip it where it is.
+function Invoke-SortHead { param([string]$Key, [bool]$Add)
+    if (-not $Key) { return }
+    $existing = $null
+    foreach ($k in @($script:sortKeys)) { if ($k.Key -eq $Key) { $existing = $k; break } }
+    if ($Add) {
+        if ($existing) { $existing.Desc = -not $existing.Desc }
+        else { $script:sortKeys = @(@($script:sortKeys) + @{ Key = $Key; Desc = $(if ($Key -eq 'when') { $true } else { $false }) }) }
+    } else {
+        $wasOnly = (@($script:sortKeys).Count -eq 1 -and $existing)
+        $desc = $(if ($wasOnly) { -not $existing.Desc } else { ($Key -eq 'when') })
+        $script:sortKeys = @(@{ Key = $Key; Desc = $desc })
+    }
+    Update-List -ToTop
+    Set-Status ("sorted by " + (Get-SortSummary)) 'info'
+}
+
+function Get-SortSummary {
+    $words = @{ when = 'newest'; name = 'name'; project = 'project'; state = 'what it needs'; logon = 'the logon tick' }
+    $bits = @()
+    foreach ($k in @($script:sortKeys)) {
+        $w = $words[$k.Key]; if (-not $w) { $w = $k.Key }
+        if ($k.Key -eq 'when') { $bits += $(if ($k.Desc) { 'newest first' } else { 'oldest first' }) }
+        else { $bits += ("$w" + $(if ($k.Desc) { ' (reversed)' } else { '' })) }
+    }
+    if (-not $bits.Count) { return 'nothing' }
+    return ($bits -join ', then ')
+}
+
+# The arrow IS the readout: a column with no arrow is not sorting, and the digit
+# says where it sits in the stack. Nothing else on the heading changes, so the
+# row of captions still reads as a row of captions.
+$script:SortUp   = [string][char]0x2191
+$script:SortDown = [string][char]0x2193
+# Both heading rows at once. They are two Borders each wrapping a Grid, and the
+# sortable captions are the Buttons in them - no per-column names to keep in
+# step with the markup.
+function Get-SortHeadControls {
+    $out = @()
+    foreach ($bar in @($ui.ListHead, $ui.InboxHead)) {
+        if (-not $bar -or -not $bar.Child) { continue }
+        foreach ($ch in $bar.Child.Children) {
+            $b = $ch -as [System.Windows.Controls.Button]
+            if ($b -and $b.Tag) { $out += $b }
+        }
+    }
+    # NO LEADING COMMA: see Get-FilterDescription. ",@()" around an empty array
+    # is a one-element array holding the empty array.
+    return $out
+}
+
+function Update-SortHeads {
+    foreach ($btn in @(Get-SortHeadControls)) {
+        $key = "$($btn.Tag)"
+        $base = "$($btn.Tag)"
+        if ($btn.Tag -and $script:SortCaptions.ContainsKey($key)) { $base = $script:SortCaptions[$key] }
+        # The inbox's project column is narrower and carries no lane, so it says
+        # the shorter word. Told apart by which bar the button is in.
+        if ($key -eq 'project' -and $ui.InboxHead -and $btn.Parent -eq $ui.InboxHead.Child) { $base = 'PROJECT' }
+        $idx = -1
+        for ($i = 0; $i -lt @($script:sortKeys).Count; $i++) { if ($script:sortKeys[$i].Key -eq $key) { $idx = $i; break } }
+        if ($idx -lt 0) {
+            $btn.Content = $base
+            $btn.Foreground = $Pal.TextDim
+        } else {
+            $arrow = $(if ($script:sortKeys[$idx].Desc) { $script:SortDown } else { $script:SortUp })
+            $rank = $(if (@($script:sortKeys).Count -gt 1) { [string]($idx + 1) } else { '' })
+            $btn.Content = "$base  $arrow$rank"
+            # The PRIMARY key is the brightest thing on the row; a secondary key
+            # is present but is not what you are reading the list by.
+            $btn.Foreground = $(if ($idx -eq 0) { $Pal.TextMax } else { $Pal.TextMid })
+        }
+        $btn.ToolTip = "Sort by $base. Shift-click to add it after the keys already set, or to flip one. Now: $(Get-SortSummary)."
+    }
+}
+
 function Build-Rows {
     $out = New-Object System.Collections.Generic.List[object]
     $filtering = Test-AnyFilter
+    # Project order as a NUMBER, computed once. $script:dirs is already sorted
+    # newest-project-first, so this rank is what makes the default sort
+    # reproduce the tree's own order exactly.
+    $script:dirRank = @{}
+    for ($i = 0; $i -lt $script:dirs.Count; $i++) { $script:dirRank[[string]$script:dirs[$i].path] = $i }
     $matched = 0; $total = 0; $older = 0
     $cut = (Get-Date).AddDays(-$script:listDays)
 
@@ -1252,23 +1422,15 @@ function Build-Rows {
                 $matched++
                 $picked.Add([PSCustomObject]@{
                     S = $s; D = $d; L = $lane
+                    Rank = [int]$script:dirRank[[string]$d.path]
                     At = $(if ($s.lastActive) { [datetime]$s.lastActive } else { [datetime]'1970-01-01' })
                 })
             }
         }
     }
 
-    # THE DEFAULT ORDER, and it is deliberately the tree's order: $script:dirs is
-    # already sorted newest-project-first, so ranking by that and taking newest
-    # first inside each project reproduces exactly what the tree showed. The
-    # difference is that this is now an ORDERING rather than a STRUCTURE, so a
-    # column heading can replace it.
-    $rank = @{}
-    for ($i = 0; $i -lt $script:dirs.Count; $i++) { $rank[[string]$script:dirs[$i].path] = $i }
-    $ordered = @($picked | Sort-Object `
-        @{ Expression = { [int]$rank[[string]$_.D.path] } }, `
-        @{ Expression = { $_.At }; Descending = $true })
-    foreach ($pk in $ordered) {
+    $ordered = Sort-Picked $picked
+    foreach ($pk in @($ordered)) {
         $out.Add((New-Row 'session' "$($pk.D.path)|$($pk.L.Name)|$($pk.S.sessionId)" $pk.D $pk.L $pk.S))
     }
 
@@ -1343,6 +1505,9 @@ function Get-InboxBand { param($Session)
 
 function Build-InboxRows {
     $out = New-Object System.Collections.Generic.List[object]
+    # Same project ranking the All view sorts by, so 'project' means one thing.
+    $script:dirRank = @{}
+    for ($i = 0; $i -lt $script:dirs.Count; $i++) { $script:dirRank[[string]$script:dirs[$i].path] = $i }
     # ANY filter widens the inbox, not just the text box. The inbox normally
     # shows only what is running or recently active -- but if you deliberately
     # ask for "not live" or "stale", the honest answer is the conversations that
@@ -1376,6 +1541,7 @@ function Build-InboxRows {
                 $picked.Add([PSCustomObject]@{
                     S = $s; D = $d; L = $lane
                     Band = (Get-InboxBand $s)
+                    Rank = [int]$script:dirRank[[string]$d.path]
                     At = $(if ($s.lastActive) { [datetime]$s.lastActive } else { [datetime]'1970-01-01' })
                 })
             }
@@ -1386,7 +1552,10 @@ function Build-InboxRows {
     $script:totalCount = $total
 
     foreach ($band in $script:InboxBands) {
-        $inBand = @($picked | Where-Object { $_.Band -eq $band.Key } | Sort-Object At -Descending)
+        # WITHIN the band. The bands are not a sort key and cannot be sorted
+        # away - they are what the inbox is - so the stack orders the rows
+        # inside each one and NEEDS YOU stays first whatever WHEN is set to.
+        $inBand = @(Sort-Picked @($picked | Where-Object { $_.Band -eq $band.Key }))
         if (-not $inBand.Count) { continue }
         $head = New-Row 'band' ("band|" + $band.Key) $null $null $null
         $head.Band = $band.Key
@@ -2270,6 +2439,7 @@ function Update-Header {
     $ui.TickPill.SetValue($nameProp, $ui.TickSummary.Text)
 
     Update-FilterReadout
+    Update-SortHeads
 
     if ($script:unattributed -gt 0) {
         # Honest about the blind spot rather than implying LIVE is complete.
@@ -2869,6 +3039,9 @@ function Set-ViewMode { param([string]$Mode)
     foreach ($ctl in @($ui.ListHead, $ui.WorktreeToggle, $ui.WorktreeCaption)) {
         if ($ctl) { $ctl.Visibility = $(if ($inbox) { $V_Hide } else { $V_Show }) }
     }
+    # The inbox has its own, narrower heading row. Both live in the same grid
+    # row, so exactly one of them is ever up.
+    if ($ui.InboxHead) { $ui.InboxHead.Visibility = $(if ($inbox) { $V_Show } else { $V_Hide }) }
 
     # The selection footer, same rule: Tick / untick and Unpin only mean anything
     # where the tick is on screen.
@@ -2894,7 +3067,11 @@ function Set-ViewMode { param([string]$Mode)
 function Set-Registry { param($Registry, $Config)
     if ($Config) {
         $script:cfg       = $Config
-        $script:showWt    = [bool]$Config.includeWorktrees
+        # CLAMP, DO NOT OVERWRITE. Hiding worktree lanes is a display choice
+        # now, and a rescan must not undo it - but showing them when discovery
+        # is off would promise rows nothing scanned for, so config-false still
+        # wins in that one direction.
+        if (-not [bool]$Config.includeWorktrees) { $script:showWt = $false }
         $script:staleDays = [double]$Config.recencyDays
     }
     $script:reg = $Registry
@@ -3613,6 +3790,23 @@ $ui.TickPill.Add_Click({ Invoke-Guarded {
     $ui.ModeAll.IsChecked = $true
 } 'show what reopens at logon' })
 
+# ONE handler per heading row rather than one per column: the captions are
+# Buttons inside a Grid inside a Border, Click is routed, and a column added to
+# the markup later is wired the moment it exists. OriginalSource, never Source -
+# a routed event that crosses a template boundary is retargeted, and that
+# mistake once left every button in the list silently dead.
+$sortHandler = [System.Windows.RoutedEventHandler]{
+    param($sender, $e)
+    Invoke-Guarded {
+        $b = $e.OriginalSource -as [System.Windows.Controls.Button]
+        if (-not $b -or -not $b.Tag) { return }
+        $shift = [bool]([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Shift)
+        Invoke-SortHead -Key "$($b.Tag)" -Add $shift
+    } 'that sort'
+}
+$ui.ListHead.AddHandler([System.Windows.Controls.Button]::ClickEvent,  $sortHandler)
+$ui.InboxHead.AddHandler([System.Windows.Controls.Button]::ClickEvent, $sortHandler)
+
 $ui.ModeInbox.Add_Checked({ Invoke-Guarded { Set-ViewMode 'inbox' } 'switch to the inbox' })
 $ui.ModeAll.Add_Checked({   Invoke-Guarded { Set-ViewMode 'all' }   'switch to all conversations' })
 
@@ -3697,9 +3891,27 @@ $ui.UnpinAll.Add_Click({ Invoke-Guarded { Set-AllUnpinned } 'unpin all shown' })
 # W. Turning worktrees ON needs a rescan, because discovery skips them entirely
 # while they are off. The config write is the same targeted replacement the
 # terminal panel makes, so the hand-laid-out _README block is never reflowed.
+# UNTICKING THIS ONLY HIDES ROWS.
+#
+# It used to write includeWorktrees=false to the config and rescan, which does
+# far more than the checkbox looks like it does: config-false means worktree
+# conversations are not discovered AND NEVER RESTORED AT LOGON. Measured on this
+# machine, three of the four live sessions are in worktree lanes - so a tick box
+# labelled "worktrees" could quietly stop most of the day's work coming back.
+#
+# Hiding is now display-only. The config is still written in the one direction
+# where it has to be: turning worktrees ON when discovery is off, because
+# otherwise the tool would promise rows that were never scanned for.
 function Invoke-WorktreeToggle {
     if ($script:suppress) { return }
     $want = [bool]$ui.WorktreeToggle.IsChecked
+    if (-not $want -or [bool]$script:cfg.includeWorktrees) {
+        $script:showWt = $want
+        $script:visCache = @{}
+        Update-List -ToTop
+        Set-Status $(if ($want) { 'worktree lanes shown' } else { 'worktree lanes hidden here - they are still discovered, and they still reopen at logon' }) 'info'
+        return
+    }
     if ($script:dirty) { Save-SRRegistry -Registry $script:reg; $script:dirty = $false }
     $started = Start-SRJob -Name 'writing the config' -Body $script:WorktreeJob -Data @{ Value = $want } -OnDone {
         param($res)
