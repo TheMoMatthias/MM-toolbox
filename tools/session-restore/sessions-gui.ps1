@@ -440,6 +440,27 @@ namespace SRGui
         // to keep the selection when the list is rebuilt.
         private string _band = "";
         public string Band { get { return _band; } set { if (_band != value) { _band = value; N("Band"); } } }
+
+        // THE TICK IS A CONVERSATION'S ALONE now that project and lane rows are
+        // gone, and the one row that is not a conversation - "N older, show" -
+        // must not offer one either.
+        private Visibility _tickVisibility = Visibility.Visible;
+        public Visibility TickVisibility { get { return _tickVisibility; } set { if (_tickVisibility != value) { _tickVisibility = value; N("TickVisibility"); } } }
+
+        // The age window's own row: what it left out, and the way back in.
+        private Visibility _moreVisibility = Visibility.Collapsed;
+        public Visibility MoreVisibility { get { return _moreVisibility; } set { if (_moreVisibility != value) { _moreVisibility = value; N("MoreVisibility"); } } }
+
+        private string _moreLabel = "";
+        public string MoreLabel { get { return _moreLabel; } set { if (_moreLabel != value) { _moreLabel = value; N("MoreLabel"); } } }
+
+        private string _moreTip = "";
+        public string MoreTip { get { return _moreTip; } set { if (_moreTip != value) { _moreTip = value; N("MoreTip"); } } }
+
+        // Where the id went when it lost its column: eight hex characters are
+        // worth having but not worth 88 pixels on every row.
+        private string _nameTip = "";
+        public string NameTip { get { return _nameTip; } set { if (_nameTip != value) { _nameTip = value; N("NameTip"); } } }
     }
 }
 '@
@@ -522,7 +543,15 @@ $script:reg          = $null
 $script:dirs         = @()
 $script:showWt       = [bool]$script:cfg.includeWorktrees
 $script:staleDays    = [double]$script:cfg.recencyDays
-$script:collapsed    = @{}
+# THE AGE WINDOW for the All view. registryWindowDays (30) bounds what is
+# TRACKED; nothing has ever bounded what is SHOWN, which is why 51 of the 143
+# conversations on screen were between a week and a month old.
+$script:listDays     = [double]$script:cfg.listDays
+$script:showOlder    = $false
+$script:olderCount   = 0
+# The anchor for shift-click ticking: the last conversation whose tick was
+# changed by hand, so a shift-click has something to draw a range from.
+$script:tickAnchor   = $null
 $script:dirty        = $false
 $script:exitMode     = $null
 
@@ -535,7 +564,7 @@ $script:agents       = @{}   # sessionId -> what CLAUDE ITSELF says, for live on
 $script:unattributed = 0
 $script:probedAt     = $null
 
-# THE VIEW: 'inbox' | 'tree' | 'restore'.
+# THE VIEW: 'inbox' | 'all'.
 #
 #   inbox    flat, cross-project, ordered by what each conversation needs from
 #            you. The default, because "who needs me" is why the window gets
@@ -740,15 +769,8 @@ function Get-LiveInDirectory { param([Parameter(Mandatory)][string]$Dir)
 # select-sessions.ps1 Get-RowPath. A lane's path comes from its own sessions: a
 # worktree lives somewhere else entirely, not under the project root.
 function Get-RowPath { param($Row)
-    switch ($Row.Kind) {
-        'session' { return (Get-SessionCwd $Row.Session $Row.Dir) }
-        'lane'    {
-            $first = @($Row.Lane.Group)[0]
-            if ($first) { return (Get-SessionCwd $first $Row.Dir) }
-            return $Row.Dir.path
-        }
-        default   { return $Row.Dir.path }
-    }
+    if ($Row.Kind -ne 'session') { return '' }
+    return (Get-SessionCwd $Row.Session $Row.Dir)
 }
 
 # select-sessions.ps1 Get-RowSessions. Every session a row covers, newest first.
@@ -756,12 +778,8 @@ function Get-RowPath { param($Row)
 # whole array as ONE item, which is how a project row once built a single entry
 # holding every session at once.
 function Get-RowSessions { param($Row)
-    $out = switch ($Row.Kind) {
-        'session' { @($Row.Session) }
-        'lane'    { @($Row.Lane.Group) }
-        default   { @(Get-Visible $Row.Dir) }
-    }
-    return ,@($out | Sort-Object { [datetime]$_.lastActive } -Descending)
+    if ($Row.Kind -ne 'session') { return ,@() }
+    return ,@($Row.Session)
 }
 
 # select-sessions.ps1 Invoke-SpawnNew's naming rule, so a session spawned from
@@ -1098,7 +1116,7 @@ foreach ($k in @('TextMax','TextHigh','TextMid','TextLow','TextDim','Hairline','
 $ui = @{}
 foreach ($n in @(
     'SubTitle','SearchBox','ClearSearch','BusyText','RescanBtn','LiveSummary','TickSummary',
-    'ProbeStamp','Unattributed','TickAll','TickNone','UnpinAll','CollapseAll','ExpandAll',
+    'ProbeStamp','Unattributed','TickAll','TickNone','UnpinAll',
     'WorktreeToggle','LaunchTicked','RowList','EmptyNote','SelName','SelPath','SelTick',
     'SelUnpin','SelLaunch','SelSpawn','StatusText','CancelBtn','SaveBtn','Overlay','OvTitle',
     'OvPath','OvWarnBox','OvWarn','OvName','OvCancel','OvOk',
@@ -1120,8 +1138,8 @@ foreach ($n in @(
     'MoreFilters','ActiveTokens',
     # The inbox: its own list, the view switch, and the three count pills that
     # are now buttons rather than decoration.
-    'InboxList','ModeInbox','ModeTree','ModeRestore','LivePill','WaitPill','TickPill',
-    'TreeHead','NowCaption','WorktreeCaption'
+    'InboxList','ModeInbox','ModeAll','LivePill','WaitPill','TickPill',
+    'ListHead','NowCaption','WorktreeCaption'
 )) { $ui[$n] = $window.FindName($n) }
 
 # A name in the markup that is not in the list above is $null here, and the
@@ -1190,36 +1208,81 @@ function New-Row { param([string]$Kind, [string]$Key, $Dir, $Lane, $Session)
     return $r
 }
 
+# ONE CONVERSATION, ONE ROW, ACROSS EVERY PROJECT.
+#
+# This was a tree: a project row, a lane row under it, conversations under that.
+# 143 conversations rendered as 195 rows, and ELEVEN OF THE FIFTEEN PROJECTS had
+# exactly one lane, called "main" - a row that said nothing, under a row that
+# said the same thing. AlgoTrader alone was 89 conversations across 23 lanes.
+#
+# It is flat now because of the SORT. A hierarchy cannot answer "the ten
+# youngest across every project" however it is ordered; the tree could only ever
+# sort within a lane. Project and lane became columns, which is also what let 52
+# header rows go.
+#
+# THE AGE WINDOW is the other half. registryWindowDays bounds what is TRACKED at
+# 30 days; nothing has ever bounded what is SHOWN, so 51 of the 143 on screen
+# were between a week and a month old. Now the list is the last $listDays days -
+# and NOTHING IS HIDDEN SILENTLY: what falls outside is counted and offered on a
+# row of its own at the end.
+#
+# Two things the window never hides: anything a filter asked for (searching has
+# to reach the whole registry, or the search is lying), and anything that is not
+# in the NOT RUNNING band. Age is a proxy for attention, and a live conversation
+# has your attention whatever its timestamp says.
 function Build-Rows {
     $out = New-Object System.Collections.Generic.List[object]
     $filtering = Test-AnyFilter
-    # Counted here rather than in a second pass: this loop already visits every
-    # conversation exactly once and already knows which ones survived.
-    $matched = 0; $total = 0
+    $matched = 0; $total = 0; $older = 0
+    $cut = (Get-Date).AddDays(-$script:listDays)
+
+    $picked = New-Object System.Collections.Generic.List[object]
     foreach ($d in $script:dirs) {
-        $sub = New-Object System.Collections.Generic.List[object]
+        # ASSIGN, THEN WRAP: Get-Lanes returns ",@(...)". Build-InboxRows carries
+        # the same two-step for the same reason.
         $lanes = Get-Lanes $d
         foreach ($lane in @($lanes)) {
-            $lkey = "$($d.path)|$($lane.Name)"
-            $kids = New-Object System.Collections.Generic.List[object]
-            foreach ($s in (@($lane.Group) | Sort-Object { [datetime]$_.lastActive } -Descending)) {
+            foreach ($s in @($lane.Group)) {
                 $total++
                 if (-not (Test-RowMatch -Session $s -Dir $d -Lane $lane.Name)) { continue }
+                if (-not $filtering -and -not $script:showOlder) {
+                    $at = $(if ($s.lastActive) { [datetime]$s.lastActive } else { [datetime]'1970-01-01' })
+                    if ($at -lt $cut -and (Get-InboxBand $s) -eq 'quiet') { $older++; continue }
+                }
                 $matched++
-                $kids.Add((New-Row 'session' "$lkey|$($s.sessionId)" $d $lane $s))
+                $picked.Add([PSCustomObject]@{
+                    S = $s; D = $d; L = $lane
+                    At = $(if ($s.lastActive) { [datetime]$s.lastActive } else { [datetime]'1970-01-01' })
+                })
             }
-            if ($filtering -and $kids.Count -eq 0) { continue }
-            $sub.Add((New-Row 'lane' $lkey $d $lane $null))
-            if (-not $filtering -and $script:collapsed[$lkey]) { continue }
-            foreach ($k in $kids) { $sub.Add($k) }
         }
-        if ($filtering -and $sub.Count -eq 0) { continue }
-        $out.Add((New-Row 'dir' $d.path $d $null $null))
-        if (-not $filtering -and $script:collapsed[$d.path]) { continue }
-        foreach ($s in $sub) { $out.Add($s) }
     }
+
+    # THE DEFAULT ORDER, and it is deliberately the tree's order: $script:dirs is
+    # already sorted newest-project-first, so ranking by that and taking newest
+    # first inside each project reproduces exactly what the tree showed. The
+    # difference is that this is now an ORDERING rather than a STRUCTURE, so a
+    # column heading can replace it.
+    $rank = @{}
+    for ($i = 0; $i -lt $script:dirs.Count; $i++) { $rank[[string]$script:dirs[$i].path] = $i }
+    $ordered = @($picked | Sort-Object `
+        @{ Expression = { [int]$rank[[string]$_.D.path] } }, `
+        @{ Expression = { $_.At }; Descending = $true })
+    foreach ($pk in $ordered) {
+        $out.Add((New-Row 'session' "$($pk.D.path)|$($pk.L.Name)|$($pk.S.sessionId)" $pk.D $pk.L $pk.S))
+    }
+
+    # The window's own row. Present whenever it cut something, and whenever it
+    # has been opened, so the way back is never a thing you have to remember.
+    if ($older -gt 0 -or $script:showOlder) {
+        $r = New-Row 'more' 'more|older' $null $null $null
+        $r.Band = 'more'
+        $out.Add($r)
+    }
+
     $script:matchCount = $matched
     $script:totalCount = $total
+    $script:olderCount = $older
     return ,$out
 }
 
@@ -1452,35 +1515,14 @@ function Update-InboxRow { param($Row)
 # pin, the name's weight and colour. No file access, so this can run on every
 # click without the list feeling heavy.
 function Update-RowTicks { param($Row)
-    switch ($Row.Kind) {
-        'dir' {
-            $d = $Row.Dir
-            $v = @(Get-Visible $d)
-            $n = @($v | Where-Object { $_.enabled }).Count
-            $Row.Ticked  = [bool]$d.enabled -and -not $d.missing
-            $Row.Counts  = "{0}/{1}" -f $n, $v.Count
-            $Row.CountsBrush = $(if ($d.enabled -and $n -gt 0) { $Pal.TextHigh } else { $Pal.TextDim })
-            $Row.NameBrush = $(if ($d.missing) { $Pal.TextDim } elseif ($d.enabled) { $Pal.TextMax } else { $Pal.TextLow })
-            $Row.TickTip = "Project master tick. Untick it and nothing in this repo reopens at logon, whatever its conversations say."
-        }
-        'lane' {
-            $g = @($Row.Lane.Group)
-            $n = @($g | Where-Object { $_.enabled }).Count
-            $Row.Ticked = ($g.Count -gt 0 -and $n -eq $g.Count)
-            $Row.Counts = "{0}/{1}" -f $n, $g.Count
-            $Row.CountsBrush = $(if ($n -gt 0) { $Pal.TextHigh } else { $Pal.TextDim })
-            $Row.TickTip = "Tick or untick every conversation in this lane, and pin them."
-        }
-        'session' {
-            $d = $Row.Dir; $s = $Row.Session
-            $Row.Ticked = [bool]$s.enabled
-            $Row.PinVisibility = $(if (Test-Pinned $s) { $V_Show } else { $V_Hide })
-            $Row.PinBrush = $Pal.TextHigh
-            $Row.AgeBrush = $(if (Test-Stale $s.lastActive) { $Pal.TextMid } else { $Pal.TextDim })
-            $Row.TickTip = "Reopen this conversation at the next logon. Ticking pins it, so the hourly roll leaves it alone. It does NOT open anything now."
-            Update-RowName $Row
-        }
-    }
+    if ($Row.Kind -ne 'session') { return }
+    $s = $Row.Session
+    $Row.Ticked = [bool]$s.enabled
+    $Row.PinVisibility = $(if (Test-Pinned $s) { $V_Show } else { $V_Hide })
+    $Row.PinBrush = $Pal.TextDim
+    $Row.AgeBrush = $(if (Test-Stale $s.lastActive) { $Pal.TextMid } else { $Pal.TextDim })
+    $Row.TickTip = "Reopen this conversation at the next logon. Ticking pins it, so the hourly roll leaves it alone. It does NOT open anything now. Shift-click to tick a range."
+    Update-RowName $Row
 }
 
 # A conversation's name is where the value ramp does most of its work, and it
@@ -1516,25 +1558,6 @@ function Update-RowName { param($Row)
 # the notes, whether OPEN is available.
 function Update-RowLive { param($Row)
     switch ($Row.Kind) {
-        'dir' {
-            $d = $Row.Dir
-            $v = @(Get-Visible $d)
-            $liveN = @($v | Where-Object { (Get-SessionState $_) -in @('run','act','new') }).Count
-            $Row.Note = $(if ($d.missing) { 'MISSING' } elseif ($liveN -gt 0) { "$liveN live" } else { '' })
-            $Row.NoteBrush = $(if ($d.missing) { $Pal.TextMid } else { $Pal.TextHigh })
-            $Row.CanLaunch = (@($v | Where-Object { Test-RowLaunchable $_ }).Count -gt 0)
-            $Row.LaunchTip = "Open every conversation in this project that is not already open. Confirmed by count first. Ticks are not consulted."
-        }
-        'lane' {
-            $g = @($Row.Lane.Group)
-            $n = @($g | Where-Object { $_.enabled }).Count
-            # Two conversations in ONE tree share a git index. Main and each
-            # worktree are DIFFERENT trees, so they are counted separately.
-            $Row.Note = $(if ($Row.Dir.enabled -and $n -ge 2) { "$n in one tree" } else { '' })
-            $Row.NoteBrush = $Pal.TextMid
-            $Row.CanLaunch = (@($g | Where-Object { Test-RowLaunchable $_ }).Count -gt 0)
-            $Row.LaunchTip = "Open every conversation in this lane that is not already open. Ticks are not consulted."
-        }
         'session' {
             $d = $Row.Dir; $s = $Row.Session
             $st = Get-SessionState $s
@@ -1574,7 +1597,7 @@ function Update-RowLive { param($Row)
             # Spelled out rather than left to a mark: without colour, "gone" has
             # to say what it means somewhere the operator can read it.
             if ($st -eq 'gone') { $note = 'cannot be launched' }
-            elseif (-not $d.enabled) { $note = '(project off)' }
+            elseif ($s.enabled -and -not $d.enabled) { $note = 'project off - will NOT reopen' }
             elseif ($s.enabled -and (Test-Stale $s.lastActive)) { $note = 'STALE' }
             $Row.Note = $note
             $Row.NoteBrush = $(if ($st -eq 'gone') { $Pal.TextMid } else { $Pal.TextLow })
@@ -1702,40 +1725,15 @@ function Update-RowConv { param($Row)
             $Row.ConvTip = $tip
         }
         default {
-            # A project or lane rolls its children up, so a FOLDED parent still
-            # says that something underneath it wants attention. Waiting outranks
-            # working: one is asking for you, the other is busy without you.
-            $kids = $(if ($Row.Kind -eq 'lane') { @($Row.Lane.Group) } else { @(Get-Visible $Row.Dir) })
-            # Live demands only. A rollup counting last-known states said
-            # "9 waiting" for a project with nothing running in it.
-            $wait = 0; $work = 0
-            foreach ($s in $kids) {
-                $k = Get-Conv $s
-                if (-not $k) { continue }
-                if ($k.Needs) { $wait++ }
-                elseif (-not $k.Stale -and "$($k.State)" -eq 'working') { $work++ }
-            }
-            $Row.ConvWeight = $FW_Normal
-            if ($wait -gt 0) {
-                $Row.Conv = "{0} waiting" -f $wait
-                $Row.ConvBrush = $Pal.TextMax
-                $Row.ConvWeight = $FW_Semi
-                $Row.ConvGeometry = $GlyphWaiting
-                $Row.ConvGlyphVisibility = $V_Show
-                $Row.ConvTip = "$wait conversation(s) under this row are asking you for something right now."
-            } elseif ($work -gt 0) {
-                $Row.Conv = "{0} working" -f $work
-                $Row.ConvBrush = $Pal.TextHigh
-                $Row.ConvGeometry = $GlyphWorking
-                $Row.ConvGlyphVisibility = $V_Show
-                $Row.ConvTip = "$work conversation(s) under this row are running a tool or owe a reply right now."
-            } else {
-                $Row.Conv = ''
-                $Row.ConvBrush = $Pal.TextDim
-                $Row.ConvGeometry = $null
-                $Row.ConvGlyphVisibility = $V_Hide
-                $Row.ConvTip = 'Nothing under this row is doing anything right now.'
-            }
+            # Nothing but conversations reaches this function now. The rollup
+            # that used to live here - "3 waiting" on a folded project - went
+            # with the rows it was summarising; the same fact is on the band
+            # chips and the summary pills, counted once.
+            $Row.Conv = ''
+            $Row.ConvBrush = $Pal.TextDim
+            $Row.ConvGeometry = $null
+            $Row.ConvGlyphVisibility = $V_Hide
+            $Row.ConvTip = ''
         }
     }
 }
@@ -1743,56 +1741,70 @@ function Update-RowConv { param($Row)
 # The parts that never change once a row is built.
 function Update-RowStatic { param($Row)
     switch ($Row.Kind) {
-        'dir' {
-            # Roomier than it was. The three levels are 44 / 36 / 34 rather than
-            # 32 / 26 / 24: the hierarchy still steps down, but no line is
-            # cramped, and a project header now has room to read as a header.
-            $Row.RowHeight = 44
-            $Row.Indent = New-Object System.Windows.Thickness (8, 0, 0, 0)
-            $Row.Name = Split-Path $Row.Dir.path -Leaf
-            $Row.NameWeight = $FW_Semi
-            $Row.NameSize = 15
-            $Row.FoldVisibility = $V_Show
-            $Row.LaunchLabel = 'Open all'
-            $Row.IdShort = ''
-            $Row.Age = ''
-        }
-        'lane' {
-            $Row.RowHeight = 36
-            $Row.Indent = New-Object System.Windows.Thickness (34, 0, 0, 0)
-            # A worktree lane used to be told apart by hue. The literal prefix
-            # "worktree: " now carries that entirely, which is more explicit than
-            # the colour ever was.
-            $wt = ($Row.Lane.Name -ne 'main')
-            $Row.Name = $(if ($wt) { 'worktree: ' + $Row.Lane.Name } else { 'main' })
-            $Row.NameBrush = $Pal.TextMid
-            $Row.NameWeight = $FW_Normal
-            $Row.NameSize = 13
-            $Row.FoldVisibility = $V_Show
-            $Row.LaunchLabel = 'Open all'
-            $Row.IdShort = ''
-            $Row.Age = ''
-        }
         'session' {
             $Row.RowHeight = 34
-            $Row.Indent = New-Object System.Windows.Thickness (62, 0, 0, 0)
+            # FLUSH LEFT. The indent was 62px of hierarchy that no longer exists;
+            # spending it on nothing would leave the column looking broken.
+            $Row.Indent = New-Object System.Windows.Thickness (10, 0, 0, 0)
             $Row.Name = Get-SessionTitle $Row.Session $Row.Dir
             $Row.NameWeight = $FW_Normal
             $Row.NameSize = 13.5
             $Row.FoldVisibility = $V_Hide
+            $Row.TickVisibility = $V_Show
+            $Row.MoreVisibility = $V_Hide
+            $Row.ActionVisibility = $V_Show
             $Row.LaunchLabel = 'Open'
             $Row.IdShort = "$($Row.Session.sessionId)".Substring(0, 8)
+            # WHERE THE ID COLUMN WENT. Eight hex characters are worth having and
+            # are not worth 88 pixels on every row; the footer carries the path
+            # for the selected row and this carries the id for any of them.
+            $Row.NameTip = "{0}`n{1}" -f $Row.Session.sessionId, (Get-SessionCwd $Row.Session $Row.Dir)
             $Row.Age = Get-Age $Row.Session.lastActive
             $Row.Counts = ''
+            # PROJECT / LANE, which used to be two rows of hierarchy above this
+            # one. Same string the inbox row uses, so the two views name a
+            # conversation's home identically.
+            $lane = $(if ($Row.Lane) { "$($Row.Lane.Name)" } else { 'main' })
+            $proj = Split-Path $Row.Dir.path -Leaf
+            $Row.Project = $(if ($lane -and $lane -ne 'main') { "$proj / $lane" } else { $proj })
+        }
+        'more' {
+            $Row.RowHeight = 40
+            $Row.Indent = New-Object System.Windows.Thickness (10, 0, 0, 0)
+            $Row.TickVisibility = $V_Hide
+            $Row.ActionVisibility = $V_Hide
+            $Row.MoreVisibility = $V_Show
+            $Row.PinVisibility = $V_Hide
+            $Row.FoldVisibility = $V_Hide
+            $Row.NameBrush = $Pal.TextDim
+            $Row.NameWeight = $FW_Normal
+            $Row.NameSize = 12.5
+            $Row.IdShort = ''
+            $Row.Age = ''
+            $Row.Project = ''
+            $Row.State = ''
+            $Row.Conv = ''
+            $Row.DotVisibility = $V_Hide
+            $Row.GoneMarkVisibility = $V_Hide
+            $Row.ConvGlyphVisibility = $V_Hide
+            Update-MoreRow $Row
         }
     }
-    Update-RowFold $Row
 }
 
-function Update-RowFold { param($Row)
-    if ($Row.Kind -eq 'session') { return }
-    $folded = [bool]$script:collapsed[$Row.Key]
-    $Row.FoldAngle = $(if ($folded) { $FoldAngleClosed } else { $FoldAngleOpen })
+# The age window, said out loud. A list that quietly stops at seven days is
+# indistinguishable from a list that has lost things.
+function Update-MoreRow { param($Row)
+    if ($Row.Kind -ne 'more') { return }
+    if ($script:showOlder) {
+        $Row.Name = "showing everything, including conversations older than $([int]$script:listDays) days"
+        $Row.MoreLabel = 'Show less'
+        $Row.MoreTip = "Go back to the last $([int]$script:listDays) days."
+    } else {
+        $Row.Name = "{0} older conversation{1} not shown" -f $script:olderCount, $(if ($script:olderCount -eq 1) { '' } else { 's' })
+        $Row.MoreLabel = 'Show older'
+        $Row.MoreTip = "The list is the last $([int]$script:listDays) days. These are older than that and nothing is holding them. Searching reaches them without this."
+    }
 }
 
 function Update-AllTicks {
@@ -2241,7 +2253,7 @@ function Update-Header {
     # this conversation alone -- so it only earns space in the view that owns the
     # tick. Everywhere else the stamp is just how fresh this screen is.
     $ui.ProbeStamp.Text  = $(if (-not $script:probedAt) { '' }
-        elseif ($script:viewMode -eq 'restore') {
+        elseif ($script:viewMode -eq 'all') {
             "{0} pinned   |   as of {1}" -f $pinned, ([datetime]$script:probedAt).ToString('HH:mm:ss')
         } else {
             "as of {0}" -f ([datetime]$script:probedAt).ToString('HH:mm:ss')
@@ -2270,12 +2282,11 @@ function Update-Header {
     # generic: the words on screen have to be about what is on screen.
     $ui.SubTitle.Text = $(switch ($script:viewMode) {
         'inbox' { 'what each one last said, and which are waiting on you   |   press / to find' }
-        'tree'  { $(if ($script:showWt) {
-                      'every conversation on this machine, by project and lane   |   press / to find'
+        default { $(if ($script:showOlder) {
+                      'every conversation on this machine   |   the tick reopens it at logon'
                   } else {
-                      'worktree lanes are OFF - hidden and never restored   |   press / to find'
+                      "the last $([int]$script:listDays) days   |   the tick reopens it at logon"
                   }) }
-        default { 'the tick reopens it at logon   |   pinned conversations are left alone by the hourly roll' }
     })
 }
 
@@ -2796,7 +2807,9 @@ function Update-Selection {
     $row = (Get-ActiveList).SelectedItem
     # A band heading is a label. Selecting one must not light up actions that
     # would then have nothing to act on.
-    if ($row -and $row.Kind -eq 'band') { $row = $null }
+    # A band heading and the older-conversations row are labels, not things to
+    # act on.
+    if ($row -and ($row.Kind -eq 'band' -or $row.Kind -eq 'more')) { $row = $null }
     if (-not $row) {
         $ui.SelName.Text = 'nothing selected'
         $ui.SelPath.Text = ''
@@ -2806,8 +2819,7 @@ function Update-Selection {
     if (-not $script:busy) {
         foreach ($b in @($ui.SelTick, $ui.SelUnpin, $ui.SelLaunch, $ui.SelSpawn)) { $b.IsEnabled = $true }
     }
-    $what = switch ($row.Kind) { 'dir' { 'project' } 'lane' { 'lane' } default { 'conversation' } }
-    $ui.SelName.Text = "{0}   {1}" -f $row.Name, $what
+    $ui.SelName.Text = "{0}   conversation" -f $row.Name
     $ui.SelPath.Text = Get-RowPath $row
 }
 
@@ -2820,7 +2832,12 @@ function Update-Selection {
 # thing wherever you are.
 # ---------------------------------------------------------------------------
 function Set-ViewMode { param([string]$Mode)
-    if ($Mode -ne 'inbox' -and $Mode -ne 'tree' -and $Mode -ne 'restore') { return }
+    # 'tree' and 'restore' both meant the SAME 195 rows in the same order - the
+    # comparison was run row for row and they were identical. They are one mode
+    # called 'all' now. The old names are accepted so nothing that remembers
+    # them breaks in the middle of a switch.
+    if ($Mode -eq 'tree' -or $Mode -eq 'restore') { $Mode = 'all' }
+    if ($Mode -ne 'inbox' -and $Mode -ne 'all') { return }
     $script:viewMode = $Mode
     $inbox = ($Mode -eq 'inbox')
 
@@ -2837,7 +2854,10 @@ function Set-ViewMode { param([string]$Mode)
     # the collision already documented in Update-RowConv, walked into again in a
     # brand-new function. The guard that caught it is the one added the last time
     # this happened.
-    $restore = ($Mode -eq 'restore')
+    # The logon furniture lives in All. It used to be a whole THIRD VIEW whose
+    # rows were identical to the second one's; what actually distinguished it
+    # was these four controls, so these four controls are the difference now.
+    $restore = ($Mode -eq 'all')
     foreach ($ctl in @($ui.LaunchTicked, $ui.BulkBtn, $ui.TickPill, $ui.NowCaption)) {
         if ($ctl) { $ctl.Visibility = $(if ($restore) { $V_Show } else { $V_Hide }) }
     }
@@ -2846,7 +2866,7 @@ function Set-ViewMode { param([string]$Mode)
     # hierarchy: LOGON / TICKED / ID / OPEN? name columns the inbox does not
     # have, and "show a lane per worktree" means nothing in a flat list where the
     # worktree is printed on the row itself.
-    foreach ($ctl in @($ui.TreeHead, $ui.WorktreeToggle, $ui.WorktreeCaption)) {
+    foreach ($ctl in @($ui.ListHead, $ui.WorktreeToggle, $ui.WorktreeCaption)) {
         if ($ctl) { $ctl.Visibility = $(if ($inbox) { $V_Hide } else { $V_Show }) }
     }
 
@@ -2863,9 +2883,8 @@ function Set-ViewMode { param([string]$Mode)
     Update-List -ToTop
     $null = (Get-ActiveList).Focus()
     Set-Status $(switch ($Mode) {
-        'inbox'   { 'Inbox: every conversation that is running or was, ordered by what it needs from you.' }
-        'tree'    { 'Projects: everything on this machine, grouped by project and lane.' }
-        'restore' { 'Restore: tick what should reopen automatically at the next logon.' }
+        'inbox' { 'Inbox: every conversation that is running or was, ordered by what it needs from you.' }
+        'all'   { "All: every conversation from the last $([int]$script:listDays) days. Click a column heading to sort; tick what should reopen at logon." }
     }) 'info'
 }
 
@@ -3218,50 +3237,85 @@ function Confirm-Spawn {
 # them is a deliberate act -- exactly as SPACE, A, N, -Enable and -Disable do.
 # ---------------------------------------------------------------------------
 function Set-RowTick { param($Row, [Nullable[bool]]$Value)
-    switch ($Row.Kind) {
-        'dir' {
-            if ($Row.Dir.missing) { return }
-            $v = if ($null -ne $Value) { [bool]$Value } else { -not [bool]$Row.Dir.enabled }
-            $Row.Dir.enabled = $v
-        }
-        'lane' {
-            $g = @($Row.Lane.Group)
-            # Toggle the whole lane to whatever it is NOT already all-on.
-            $allOn = ($g.Count -gt 0 -and -not @($g | Where-Object { -not $_.enabled }).Count)
-            $v = if ($null -ne $Value) { [bool]$Value } else { -not $allOn }
-            foreach ($s in $g) { $s.enabled = $v; Set-Pin $s $true }
-        }
-        'session' {
-            $v = if ($null -ne $Value) { [bool]$Value } else { -not [bool]$Row.Session.enabled }
-            $Row.Session.enabled = $v
-            Set-Pin $Row.Session $true
-        }
+    if (-not $Row -or $Row.Kind -ne 'session') { return }
+    $v = if ($null -ne $Value) { [bool]$Value } else { -not [bool]$Row.Session.enabled }
+    $Row.Session.enabled = $v
+    Set-Pin $Row.Session $true
+    # THE PROJECT MASTER TICK. It had its own checkbox on the project row and
+    # there are no project rows now. Ticking a conversation in a switched-off
+    # project would otherwise be a tick that does nothing at logon, silently -
+    # the restore consults the project first. So ticking a conversation turns
+    # its project on, which is what the operator meant by ticking it.
+    if ($v -and $Row.Dir -and -not $Row.Dir.missing -and -not $Row.Dir.enabled) {
+        $Row.Dir.enabled = $true
     }
     $script:dirty = $true
     Update-AllTicks
 }
 
-function Set-RowUnpin { param($Row)
-    if (-not $Row) { return }
-    switch ($Row.Kind) {
-        'dir'     { foreach ($s in @(Get-Visible $Row.Dir)) { Set-Pin $s $false } }
-        'lane'    { foreach ($s in @($Row.Lane.Group))      { Set-Pin $s $false } }
-        'session' { Set-Pin $Row.Session $false }
+# SHIFT-CLICK TICKS A RANGE. What the project and lane checkboxes were really
+# for was "tick these twelve at once", and that is a selection gesture, not a
+# hierarchy. The anchor is the last conversation ticked by hand.
+function Set-TickRange { param($Row, [bool]$Value)
+    $list = Get-ActiveList
+    $rows = @()
+    foreach ($r in $list.ItemsSource) { $rows += $r }
+    $to = [array]::IndexOf($rows, $Row)
+    $from = $(if ($script:tickAnchor) { [array]::IndexOf($rows, $script:tickAnchor) } else { -1 })
+    if ($to -lt 0 -or $from -lt 0) { Set-RowTick -Row $Row -Value $Value; return }
+    if ($from -gt $to) { $t = $from; $from = $to; $to = $t }
+    $touched = 0
+    for ($i = $from; $i -le $to; $i++) {
+        $r = $rows[$i]
+        if ($r.Kind -ne 'session') { continue }
+        $r.Session.enabled = $Value
+        Set-Pin $r.Session $true
+        if ($Value -and $r.Dir -and -not $r.Dir.missing) { $r.Dir.enabled = $true }
+        $touched++
     }
+    $script:dirty = $true
+    Update-AllTicks
+    Set-Status ("{0} conversation(s) {1}" -f $touched, $(if ($Value) { 'ticked' } else { 'unticked' })) 'info'
+}
+
+function Set-RowUnpin { param($Row)
+    if (-not $Row -or $Row.Kind -ne 'session') { return }
+    Set-Pin $Row.Session $false
     $script:dirty = $true
     Update-AllTicks
     Set-Status 'handed back to the rolling auto-tick - its tick is recomputed by the next scan' 'info'
 }
 
+# ON WHAT IS SHOWN. It used to reach every conversation in every project,
+# including the ones a filter had taken off screen -- a bulk action whose extent
+# the operator could not see. Now it does exactly what the list shows, and says
+# how many that was.
 function Set-AllTicks { param([bool]$Value)
-    foreach ($d in $script:dirs) {
-        if ($d.missing) { continue }
-        $d.enabled = $Value
-        foreach ($s in @(Get-Visible $d)) { $s.enabled = $Value; Set-Pin $s $true }
+    $n = 0
+    foreach ($r in $script:rows) {
+        if ($r.Kind -ne 'session') { continue }
+        $r.Session.enabled = $Value
+        Set-Pin $r.Session $true
+        if ($Value -and $r.Dir -and -not $r.Dir.missing) { $r.Dir.enabled = $true }
+        $n++
     }
     $script:dirty = $true
     Update-AllTicks
-    Set-Status $(if ($Value) { 'everything ticked and pinned - nothing has been launched' } else { 'everything unticked and pinned - nothing has been closed' }) 'info'
+    Set-Status ("{0} shown conversation(s) {1} and pinned - nothing has been {2}" -f $n,
+        $(if ($Value) { 'ticked' } else { 'unticked' }),
+        $(if ($Value) { 'launched' } else { 'closed' })) 'info'
+}
+
+function Set-AllUnpinned {
+    $n = 0
+    foreach ($r in $script:rows) {
+        if ($r.Kind -ne 'session') { continue }
+        Set-Pin $r.Session $false
+        $n++
+    }
+    $script:dirty = $true
+    Update-AllTicks
+    Set-Status "$n shown conversation(s) handed back to the rolling auto-tick" 'info'
 }
 
 # ---------------------------------------------------------------------------
@@ -3291,16 +3345,16 @@ $tickHandler = [System.Windows.RoutedEventHandler]{
     if (-not $cb -or "$($cb.Tag)" -ne 'tick') { return }
     $row = $cb.DataContext -as [SRGui.Row]
     if (-not $row) { return }
+    if ($row.Kind -ne 'session') { return }
     $want = [bool]$cb.IsChecked
-    $cur = switch ($row.Kind) {
-        'dir'  { [bool]$row.Dir.enabled -and -not $row.Dir.missing }
-        'lane' { $g = @($row.Lane.Group); ($g.Count -gt 0 -and -not @($g | Where-Object { -not $_.enabled }).Count) }
-        default { [bool]$row.Session.enabled }
-    }
+    $cur = [bool]$row.Session.enabled
     if ($cur -eq $want) { return }
+    $shift = [System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Shift
     try {
         $script:suppress = $true
-        Set-RowTick -Row $row -Value $want
+        if ($shift -and $script:tickAnchor) { Set-TickRange -Row $row -Value $want }
+        else { Set-RowTick -Row $row -Value $want }
+        $script:tickAnchor = $row
     } catch {
         Write-SRLog "gui tick failed: $($_.Exception.Message)"
         Set-Status "could not change that tick: $($_.Exception.Message)" 'bad'
@@ -3555,13 +3609,12 @@ function Show-InboxBand { param([string]$Band)
 $ui.LivePill.Add_Click({ Invoke-Guarded { Show-InboxBand 'working' } 'show what is running' })
 $ui.WaitPill.Add_Click({ Invoke-Guarded { Show-InboxBand 'needs' }   'show what is waiting' })
 $ui.TickPill.Add_Click({ Invoke-Guarded {
-    # The tick lives in Restore now, so the pill that counts it goes there.
-    $ui.ModeRestore.IsChecked = $true
+    # The tick lives in All, and the pill that counts it goes there.
+    $ui.ModeAll.IsChecked = $true
 } 'show what reopens at logon' })
 
-$ui.ModeInbox.Add_Checked({   Invoke-Guarded { Set-ViewMode 'inbox' }   'switch to the inbox' })
-$ui.ModeTree.Add_Checked({    Invoke-Guarded { Set-ViewMode 'tree' }    'switch to projects' })
-$ui.ModeRestore.Add_Checked({ Invoke-Guarded { Set-ViewMode 'restore' } 'switch to restore' })
+$ui.ModeInbox.Add_Checked({ Invoke-Guarded { Set-ViewMode 'inbox' } 'switch to the inbox' })
+$ui.ModeAll.Add_Checked({   Invoke-Guarded { Set-ViewMode 'all' }   'switch to all conversations' })
 
 $ui.NeedsList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.Windows.RoutedEventHandler]{
     param($sender, $e)
@@ -3602,10 +3655,8 @@ $ui.RowList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.Win
     $e.Handled = $true
     try {
         switch ("$($btn.Tag)") {
-            'fold' {
-                $script:collapsed[$row.Key] = -not [bool]$script:collapsed[$row.Key]
-                Update-List -KeepKey $row.Key
-            }
+            # 'fold' is gone with the tree. 'more' is the age window's own row.
+            'more'   { $script:showOlder = -not $script:showOlder; Update-List -KeepKey $row.Key }
             'unpin'  { $ui.RowList.SelectedItem = $row; Set-RowUnpin $row }
             'launch' { $ui.RowList.SelectedItem = $row; Invoke-RowLaunch $row }
             'spawn'  { $ui.RowList.SelectedItem = $row; Invoke-RowSpawn $row }
@@ -3636,23 +3687,12 @@ $ui.ClearSearch.Add_Click({ Invoke-Guarded { $ui.SearchBox.Text = ''; $null = (G
 
 # --- toolbar ---
 $ui.RescanBtn.Add_Click({ Invoke-Guarded { Start-Rescan } 'rescan' })
-$ui.TickAll.Add_Click({ Invoke-Guarded { Set-AllTicks $true } 'tick all' })
-$ui.TickNone.Add_Click({ Invoke-Guarded { Set-AllTicks $false } 'tick none' })
-$ui.UnpinAll.Add_Click({ Invoke-Guarded {
-    foreach ($d in $script:dirs) { foreach ($s in @(Get-Visible $d)) { Set-Pin $s $false } }
-    $script:dirty = $true
-    Update-AllTicks
-    Set-Status 'every conversation handed back to the rolling auto-tick' 'info'
-} 'unpin all' })
-$ui.CollapseAll.Add_Click({ Invoke-Guarded {
-    foreach ($d in $script:dirs) {
-        $script:collapsed[$d.path] = $true
-        $lanes = Get-Lanes $d
-        foreach ($lane in @($lanes)) { $script:collapsed["$($d.path)|$($lane.Name)"] = $true }
-    }
-    Update-List
-} 'collapse all' })
-$ui.ExpandAll.Add_Click({ Invoke-Guarded { $script:collapsed = @{}; Update-List } 'expand all' })
+$ui.TickAll.Add_Click({ Invoke-Guarded { Set-AllTicks $true } 'tick all shown' })
+$ui.TickNone.Add_Click({ Invoke-Guarded { Set-AllTicks $false } 'untick all shown' })
+$ui.UnpinAll.Add_Click({ Invoke-Guarded { Set-AllUnpinned } 'unpin all shown' })
+# Collapse all / Expand all went with the tree: a flat list has nothing to
+# fold. What they were really for -- getting AlgoTrader's 89 conversations out
+# of the way -- is the age window and the project filter now.
 
 # W. Turning worktrees ON needs a rescan, because discovery skips them entirely
 # while they are off. The config write is the same targeted replacement the
@@ -3782,16 +3822,18 @@ $window.Add_PreviewKeyDown({ param($s, $e)
             'F3'     { $e.Handled = $true; $null = $ui.SearchBox.Focus(); $ui.SearchBox.SelectAll() }
             # The three views, in the order they sit on screen.
             'D1'     { $e.Handled = $true; $ui.ModeInbox.IsChecked = $true }
-            'D2'     { $e.Handled = $true; $ui.ModeTree.IsChecked = $true }
-            'D3'     { $e.Handled = $true; $ui.ModeRestore.IsChecked = $true }
+            'D2'     { $e.Handled = $true; $ui.ModeAll.IsChecked = $true }
             'Escape' {
                 $e.Handled = $true
                 if ($ui.SearchBox.Text) { $ui.SearchBox.Text = '' }
                 else { $ui.CancelBtn.RaiseEvent((New-Object System.Windows.RoutedEventArgs ([System.Windows.Controls.Button]::ClickEvent))) }
             }
             'Space'  { if ($row -and -not $script:busy) { $e.Handled = $true; Set-RowTick -Row $row -Value $null } }
-            'Left'   { if ($row -and $row.Kind -ne 'session') { $e.Handled = $true; $script:collapsed[$row.Key] = $true;  Update-List -KeepKey $row.Key } }
-            'Right'  { if ($row -and $row.Kind -ne 'session') { $e.Handled = $true; $script:collapsed[$row.Key] = $false; Update-List -KeepKey $row.Key } }
+            # LEFT / RIGHT folded a project away. There is nothing to fold in a
+            # flat list, so they are the age window instead: the same gesture,
+            # aimed at the thing that is actually making the list long.
+            'Left'   { $e.Handled = $true; if ($script:showOlder) { $script:showOlder = $false; Update-List } }
+            'Right'  { $e.Handled = $true; if (-not $script:showOlder) { $script:showOlder = $true;  Update-List } }
             'L'      { if ($row -and -not $script:busy) { $e.Handled = $true; Invoke-RowLaunch $row } }
             # G for "go to": the terminal itself, as opposed to ENTER, which
             # reads the conversation inside this window.

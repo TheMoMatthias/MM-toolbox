@@ -213,7 +213,7 @@ if ($badLabel.Count -eq 0) { Pass 'every project label names one project and one
 else { Fail "$($badLabel.Count) row(s) have a run-together project label, e.g. '$($badLabel[0].Project)'" }
 
 # --- 9. the views switch without throwing -----------------------------------
-foreach ($mode in @('tree', 'restore', 'inbox')) {
+foreach ($mode in @('all', 'inbox')) {
     $threw = $null
     try { Set-ViewMode $mode } catch { $threw = $_.Exception.Message }
     if ($threw) { Fail "Set-ViewMode '$mode' threw: $threw"; continue }
@@ -225,11 +225,97 @@ foreach ($mode in @('tree', 'restore', 'inbox')) {
     # so a rebuild that throws still leaves the right list showing and empty.
     $n = $(if ($inbox) { $script:inboxRows.Count } else { $script:rows.Count })
     if ($n -lt 1) { Fail "'$mode' left an EMPTY list - the rebuild did not happen"; continue }
-    $restore = ($mode -eq 'restore')
-    if ($ui.LaunchTicked.Visibility -ne $(if ($restore) { $V_Show } else { $V_Hide })) {
+    # The logon furniture is what used to make Restore a separate view.
+    if ($ui.LaunchTicked.Visibility -ne $(if ($inbox) { $V_Hide } else { $V_Show })) {
         Fail "'$mode' has the wrong idea about 'Launch everything ticked'"; continue
     }
     Pass "'$mode' shows the right list, with $n rows, and the right chrome"
+}
+
+# The old 'tree' and 'restore' names have to keep landing somewhere sane rather
+# than silently doing nothing: Set-ViewMode returns early on an unknown mode,
+# and an early return leaves whatever was on screen with no error anywhere.
+foreach ($old in @('tree', 'restore')) {
+    Set-ViewMode 'inbox'
+    Set-ViewMode $old
+    if ($script:viewMode -eq 'all') { Pass "the old name '$old' still reaches the All view" }
+    else { Fail "Set-ViewMode '$old' left the view as '$($script:viewMode)'" }
+}
+
+# --- 9b. THE ALL VIEW IS FLAT, AND IT IS BOUNDED ----------------------------
+# It was a tree: 143 conversations rendered as 195 rows because every project
+# and every lane took a row of its own, and eleven of the fifteen projects had
+# exactly one lane called "main". It was also unbounded - registryWindowDays
+# caps what is TRACKED at 30 days and nothing capped what was SHOWN.
+Set-ViewMode 'all'
+$allRows = @(); foreach ($r in $script:rows) { $allRows += $r }
+$kinds = @($allRows | ForEach-Object { $_.Kind } | Sort-Object -Unique)
+$bad = @($kinds | Where-Object { $_ -ne 'session' -and $_ -ne 'more' })
+if ($bad.Count) { Fail "the All view still builds structural rows: $($bad -join ', ')" }
+else { Pass "the All view is flat - only $($kinds -join ' and ') rows" }
+
+$sessionRows = @($allRows | Where-Object { $_.Kind -eq 'session' })
+if ($sessionRows.Count -lt $script:totalCount) {
+    Pass "the age window shows $($sessionRows.Count) of $($script:totalCount) conversations"
+} else {
+    Fail "the age window hid nothing: $($sessionRows.Count) rows for $($script:totalCount) conversations"
+}
+
+# NOTHING IS HIDDEN SILENTLY. Whatever the window cut has to be on screen as a
+# count, and one press has to bring it back.
+$moreRow = @($allRows | Where-Object { $_.Kind -eq 'more' })
+if (-not $moreRow.Count) { Fail 'the age window cut rows and said nothing about it' }
+elseif ("$($moreRow[0].Name)" -notmatch "$($script:olderCount)") {
+    Fail "the older-conversations row says '$($moreRow[0].Name)' but $($script:olderCount) were cut"
+} else { Pass "it says so on a row of its own: '$($moreRow[0].Name)'" }
+
+$before = $sessionRows.Count
+$script:showOlder = $true
+Update-List
+$after = @($script:rows | Where-Object { $_.Kind -eq 'session' }).Count
+if ($after -gt $before) { Pass "'Show older' widens the list ($before -> $after)" }
+else { Fail "'Show older' changed nothing ($before -> $after)" }
+$script:showOlder = $false
+Update-List
+
+# A LIVE conversation is never hidden by age, whatever its timestamp says.
+$agedOut = @()
+foreach ($d in $script:dirs) {
+    foreach ($sn in @($d.sessions)) {
+        if (-not $sn.sessionId) { continue }
+        if ((Get-InboxBand $sn) -eq 'quiet') { continue }
+        $key = "$($d.path)|"
+        $hit = @($script:rows | Where-Object { $_.Kind -eq 'session' -and $_.Session.sessionId -eq $sn.sessionId })
+        if (-not $hit.Count) { $agedOut += (Get-SessionTitle $sn $d) }
+    }
+}
+if ($agedOut.Count) { Fail "the age window hid $($agedOut.Count) conversation(s) that are not NOT-RUNNING: $($agedOut -join ', ')" }
+else { Pass 'nothing that is running was hidden by the age window' }
+
+# --- 9c. the tick belongs to conversations alone ----------------------------
+$tickable = @($allRows | Where-Object { $_.TickVisibility -eq $V_Show })
+$wrongTick = @($tickable | Where-Object { $_.Kind -ne 'session' })
+if ($wrongTick.Count) { Fail "$($wrongTick.Count) non-conversation row(s) still offer a tick" }
+elseif (-not $tickable.Count) { Fail 'no row offers a tick at all' }
+else { Pass "only conversations carry a tick ($($tickable.Count) of $($allRows.Count) rows)" }
+
+# Shift-click ticks a range, which is what the project and lane checkboxes were
+# really for.
+# FROM THE CURRENT ROWS, not the snapshot taken before the show-older toggle
+# above: Update-List builds NEW Row objects every time, so the old ones are not
+# in the list any more and a range between two of them is a range of nothing.
+# Set-TickRange degrades to a single tick when it cannot find its endpoints,
+# which is the right behaviour and reads exactly like a broken range.
+$sessionRows = @($script:rows | Where-Object { $_.Kind -eq 'session' })
+$victims = @($sessionRows | Select-Object -First 4)
+if ($victims.Count -ge 4) {
+    foreach ($v in $victims) { $v.Session.enabled = $false }
+    $script:tickAnchor = $victims[0]
+    Set-TickRange -Row $victims[3] -Value $true
+    $on = @($victims | Where-Object { $_.Session.enabled }).Count
+    if ($on -eq 4) { Pass 'shift-click ticks the whole range between anchor and click' }
+    else { Fail "a range tick reached $on of 4 conversations" }
+    foreach ($v in $victims) { $v.Session.enabled = $false }
 }
 
 # --- 10. the palette survived -----------------------------------------------
@@ -240,6 +326,9 @@ if ($missing.Count -eq 0) { Pass 'the palette is still a palette after switching
 else { Fail "the palette lost: $($missing -join ', ')" }
 
 # --- 11. a band heading is not an action target -----------------------------
+# Back to the inbox first: Update-Selection reads whichever list is SHOWING, and
+# the block above leaves the All view up.
+Set-ViewMode 'inbox'
 $bandRow = @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'band' })[0]
 if ($bandRow) {
     $ui.InboxList.SelectedItem = $bandRow

@@ -135,6 +135,12 @@ function Get-SRConfig {
     # keeps working instead of silently behaving as if the value were zero.
     foreach ($kv in @(
         @{ k = 'recencyDays';          v = 14 },
+        # HOW MANY DAYS THE GUI'S "All" LIST SHOWS. registryWindowDays bounds
+        # what is TRACKED (30); nothing bounded what was SHOWN, so the list ran
+        # to 143 conversations of which 51 were between a week and a month old.
+        # Nothing is hidden silently: what falls outside is counted on a row at
+        # the end of the list, and a search reaches past it regardless.
+        @{ k = 'listDays';             v = 7  },
         @{ k = 'sessionWindowDays';    v = 3  },
         @{ k = 'autoTickPerDirectory'; v = 3  },
         @{ k = 'autoTickPerWorktree';  v = 3  },

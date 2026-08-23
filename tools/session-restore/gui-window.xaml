@@ -766,24 +766,40 @@
          lane and a conversation is carried by the view model (brush, weight,
          indent, strikethrough, which cells are visible), not by three
          near-identical copies. -->
+    <!-- == ONE CONVERSATION, ONE ROW ==
+         This was a project / lane / conversation TREE. It is a flat table now,
+         and the reason is the sort: a hierarchy cannot answer "the ten youngest
+         across every project" at all, however it is ordered, and every column
+         here is meant to be clickable. Project and lane became COLUMNS, which
+         also removed 52 header rows - 195 rows for 143 conversations, and
+         eleven of the fifteen projects had exactly one lane, called "main".
+
+         Six columns became five. ID is gone from the row: eight hex characters
+         nobody types, carried in the name's tooltip and the footer instead.
+         OPEN? and DOING have merged, because "LIVE" and "working" were one fact
+         said twice in two columns; they keep their separate marks inside the one
+         column, so the two questions are still told apart. -->
     <DataTemplate x:Key="RowTemplate">
       <Grid Height="{Binding RowHeight}" Background="Transparent">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="54"/>
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="20"/>
-          <ColumnDefinition Width="*" MinWidth="260"/>
-          <ColumnDefinition Width="66"/>
-          <ColumnDefinition Width="88"/>
-          <ColumnDefinition Width="54"/>
-          <ColumnDefinition Width="86"/>
-          <ColumnDefinition Width="164"/>
+          <ColumnDefinition Width="*" MinWidth="240"/>
+          <ColumnDefinition Width="196"/>
+          <ColumnDefinition Width="212"/>
+          <ColumnDefinition Width="64"/>
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="140"/>
         </Grid.ColumnDefinitions>
 
-        <!-- 0: THE TICK. Reopens at logon. Never launches. -->
+        <!-- 0: THE TICK. Reopens at logon. Never launches.
+             ONLY ON CONVERSATIONS now. It used to sit on project and lane rows
+             as well, so a fifteen-project list carried some fifty checkboxes of
+             which only a third were about a conversation - "we always have to
+             tick all boxes on the left". Shift-click ticks a range instead. -->
         <CheckBox Grid.Column="0" Style="{StaticResource TickBox}" Tag="tick"
+                  Visibility="{Binding TickVisibility}"
                   IsChecked="{Binding Ticked, Mode=TwoWay}"
                   ToolTip="{Binding TickTip}"/>
 
@@ -804,37 +820,21 @@
                 Stroke="{Binding PinBrush}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
         </Button>
 
-        <!-- 3: fold chevron + name + note. The chevron is ONE drawn path rotated
-             into place rather than two different characters, so the expanded and
-             folded states are provably the same mark at two angles.
+        <!-- 3: name, and what an untitled conversation was about.
              A struck-through name is a conversation whose transcript is gone and
              that can never open. -->
         <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center"
                     Margin="{Binding Indent}">
-          <Button Style="{StaticResource BtnBare}" Tag="fold" Width="20" Height="20"
-                  Visibility="{Binding FoldVisibility}">
-            <Path Data="M 2.4,0 L 6.9,4.5 L 2.4,9" Width="9.3" Height="9" Stretch="None"
-                  Stroke="{StaticResource TextMid}" StrokeThickness="1.5"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                  RenderTransformOrigin="0.5,0.5">
-              <Path.RenderTransform>
-                <RotateTransform Angle="{Binding FoldAngle}"/>
-              </Path.RenderTransform>
-            </Path>
-          </Button>
-          <TextBlock Text="{Binding Name}" Margin="6,0,0,0"
+          <TextBlock Text="{Binding Name}"
                      Foreground="{Binding NameBrush}"
                      FontWeight="{Binding NameWeight}"
                      FontSize="{Binding NameSize}"
                      TextDecorations="{Binding NameDecorations}"
+                     ToolTip="{Binding NameTip}"
                      TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
           <TextBlock Text="{Binding Note}" Margin="12,0,0,0" FontSize="11.5"
                      FontFamily="{StaticResource FontSmall}"
                      Foreground="{Binding NoteBrush}" VerticalAlignment="Center"/>
-          <!-- What an UNTITLED conversation is about. Ten rows all reading
-               "(untitled)" cannot be told apart, and this column is mostly
-               empty, so the last prompt goes here. Dim and small: it identifies
-               the row, it does not compete with the name. -->
           <TextBlock Text="{Binding Subtitle}" Visibility="{Binding SubtitleVisibility}"
                      Margin="10,0,0,0" FontSize="11.5"
                      FontFamily="{StaticResource FontSmall}"
@@ -842,30 +842,24 @@
                      TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
         </StackPanel>
 
-        <!-- 4: how many of this row's conversations are ticked -->
-        <TextBlock Grid.Column="4" Text="{Binding Counts}" Margin="0,0,12,0"
-                   HorizontalAlignment="Right" VerticalAlignment="Center"
-                   FontFamily="{StaticResource FontMono}"
-                   FontSize="11.5" Foreground="{Binding CountsBrush}"/>
+        <!-- 4: PROJECT / LANE. Was two levels of hierarchy; one column says the
+             same thing on every row without spending a row to say it. -->
+        <TextBlock Grid.Column="4" Text="{Binding Project}" Margin="0,0,12,0"
+                   VerticalAlignment="Center"
+                   FontFamily="{StaticResource FontSmall}" FontSize="11.5"
+                   Foreground="{StaticResource TextDim}"
+                   TextTrimming="CharacterEllipsis"/>
 
-        <!-- 5: id, so what the search finds can also be read off the row. -->
-        <TextBlock Grid.Column="5" Text="{Binding IdShort}" VerticalAlignment="Center"
-                   FontFamily="{StaticResource FontMono}" FontSize="11.5"
-                   Foreground="{StaticResource TextDim}"/>
-
-        <!-- 6: age -->
-        <TextBlock Grid.Column="6" Text="{Binding Age}" Margin="0,0,12,0"
-                   HorizontalAlignment="Right" VerticalAlignment="Center"
-                   FontFamily="{StaticResource FontMono}"
-                   FontSize="11.5" Foreground="{Binding AgeBrush}"/>
-
-        <!-- 7: OPEN? - LIVENESS. Is a process holding this conversation.
-             A filled dot plus bold LIVE is a process holding the id; a hollow dot
-             plus lower-case live is inferred from a transcript that just moved; a
-             drawn X plus the word GONE is a transcript that is off disk for good.
-             Mono type, upper case for the certain one. This column answers
-             "is anyone holding it", NOT "what is it doing" - that is column 8. -->
-        <StackPanel Grid.Column="7" Orientation="Horizontal" VerticalAlignment="Center">
+        <!-- 5: STATE - two questions in one column, still told apart.
+             LEFT of the middot: is anyone HOLDING it. A filled dot and bold LIVE
+             is a process carrying the id; a hollow dot and lower-case live is
+             inferred from a transcript that just moved; a drawn X and GONE is a
+             transcript off disk for good. Mono type.
+             RIGHT of it: what that process is DOING, in proportional type, lower
+             case, with its own stroke glyphs. Nothing on the left is a stroke
+             figure and nothing on the right is round, so the halves cannot be
+             read as one another even sharing a column. -->
+        <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
           <Ellipse Width="7" Height="7" Margin="0,0,7,0" VerticalAlignment="Center"
                    Fill="{Binding DotFill}" Stroke="{Binding DotStroke}" StrokeThickness="1.2"
                    Visibility="{Binding DotVisibility}"/>
@@ -880,46 +874,51 @@
                      Foreground="{Binding StateBrush}"
                      TextDecorations="{Binding StateDecorations}"
                      ToolTip="{Binding StateTip}"/>
+          <TextBlock Text="&#183;" Margin="8,0,8,0" VerticalAlignment="Center"
+                     FontSize="11.5" Foreground="{StaticResource Hairline}"
+                     Visibility="{Binding ConvGlyphVisibility}"/>
+          <Path Width="10" Height="10" Margin="0,0,7,0" VerticalAlignment="Center"
+                Stretch="None" Data="{Binding ConvGeometry}"
+                Stroke="{Binding ConvBrush}" StrokeThickness="1.4"
+                StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                Visibility="{Binding ConvGlyphVisibility}"/>
+          <TextBlock Text="{Binding Conv}" VerticalAlignment="Center"
+                     FontFamily="{StaticResource FontText}" FontSize="12"
+                     FontWeight="{Binding ConvWeight}"
+                     Foreground="{Binding ConvBrush}"
+                     ToolTip="{Binding ConvTip}"
+                     TextTrimming="CharacterEllipsis"/>
         </StackPanel>
 
-        <!-- 8: DOING - STATE. What the conversation is actually doing.
-             A DIFFERENT QUESTION from column 7 and told apart from it four ways:
-             its own short rule on the left, proportional type instead of mono,
-             always lower case, and its own vocabulary of drawn glyphs (a chevron
-             at the prompt, rising bars working, shrinking rules compacting).
-             The word says the last state it was seen in; "was" and a drop to
-             TextLow say that state is no longer current. Bright means now. -->
-        <Grid Grid.Column="8">
-          <Rectangle Width="1" Height="15" Fill="{StaticResource Hairline}"
-                     HorizontalAlignment="Left" VerticalAlignment="Center"/>
-          <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0"
-                      ToolTip="{Binding ConvTip}">
-            <Path Width="10" Height="10" Margin="0,0,7,0" VerticalAlignment="Center"
-                  Stretch="None" Data="{Binding ConvGeometry}"
-                  Stroke="{Binding ConvBrush}" StrokeThickness="1.4"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                  Visibility="{Binding ConvGlyphVisibility}"/>
-            <TextBlock Text="{Binding Conv}" VerticalAlignment="Center"
-                       FontFamily="{StaticResource FontText}" FontSize="12"
-                       FontWeight="{Binding ConvWeight}"
-                       Foreground="{Binding ConvBrush}"
-                       TextTrimming="CharacterEllipsis"/>
-          </StackPanel>
-        </Grid>
+        <!-- 6: WHEN -->
+        <TextBlock Grid.Column="6" Text="{Binding Age}" Margin="0,0,12,0"
+                   HorizontalAlignment="Right" VerticalAlignment="Center"
+                   FontFamily="{StaticResource FontMono}"
+                   FontSize="11.5" Foreground="{Binding AgeBrush}"/>
 
-        <!-- 9: the rule that fences RIGHT NOW off from everything else -->
-        <Rectangle Grid.Column="9" Width="1" Fill="{StaticResource HairlineHi}"
+        <!-- 7: the rule that fences the actions off from everything else -->
+        <Rectangle Grid.Column="7" Width="1" Fill="{StaticResource HairlineHi}"
                    HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
 
-        <!-- 10: RIGHT NOW. Opens it this second, tick or no tick. -->
-        <StackPanel Grid.Column="10" Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
+        <!-- 8: actions. Opens it this second, tick or no tick. -->
+        <StackPanel Grid.Column="8" Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
           <Button Style="{StaticResource BtnRow}" Tag="launch"
+                  Visibility="{Binding ActionVisibility}"
                   Content="{Binding LaunchLabel}"
                   IsEnabled="{Binding CanLaunch}"
                   ToolTip="{Binding LaunchTip}"/>
           <Button Style="{StaticResource BtnRowQuiet}" Tag="spawn" Content="+"
+                  Visibility="{Binding ActionVisibility}"
                   Margin="7,0,0,0"
                   ToolTip="Spawn a brand-new named session in this row's directory"/>
+          <!-- The one row that is not a conversation: what the age window left
+               out. Nothing is ever hidden silently, so the count that was cut
+               is on screen and one click brings it back. -->
+          <Button Style="{StaticResource BtnRow}" Tag="more"
+                  Visibility="{Binding MoreVisibility}"
+                  Content="{Binding MoreLabel}"
+                  HorizontalAlignment="Left"
+                  ToolTip="{Binding MoreTip}"/>
         </StackPanel>
       </Grid>
     </DataTemplate>
@@ -1096,10 +1095,15 @@
             <StackPanel Orientation="Horizontal">
               <RadioButton x:Name="ModeInbox" Style="{StaticResource Seg}" Content="Inbox" IsChecked="True"
                            ToolTip="Every conversation across every project, ordered by what it needs from you."/>
-              <RadioButton x:Name="ModeTree" Style="{StaticResource Seg}" Content="Projects"
-                           ToolTip="The project / lane / conversation tree, with folding and per-project counts."/>
-              <RadioButton x:Name="ModeRestore" Style="{StaticResource Seg}" Content="Restore"
-                           ToolTip="Choose what reopens automatically at the next logon."/>
+              <!-- RESTORE WAS A THIRD SEGMENT AND RENDERED THE SAME 195 ROWS AS
+                   PROJECTS, in the same order, with the same keys. Compared row
+                   for row: identical. All that differed was a caption, a count
+                   pill and three buttons. One of the three views was a duplicate
+                   of another, which is most of why the tool read as having more
+                   places than it has ideas. The tick column and the launch
+                   button live in All now. -->
+              <RadioButton x:Name="ModeAll" Style="{StaticResource Seg}" Content="All"
+                           ToolTip="Every conversation on this machine as one sortable list, with the logon tick."/>
             </StackPanel>
           </Border>
 
@@ -1144,12 +1148,13 @@
                   ToolTip="Tick all, tick none, unpin all, collapse or expand the tree.">
             <Button.ContextMenu>
               <ContextMenu>
-                <MenuItem x:Name="TickAll"     Header="Tick all"     ToolTip="Tick every project and conversation, and pin them all"/>
-                <MenuItem x:Name="TickNone"    Header="Tick none"    ToolTip="Untick everything, and pin it so the hourly roll leaves it alone"/>
-                <MenuItem x:Name="UnpinAll"    Header="Unpin all"    ToolTip="Hand every conversation back to the rolling auto-tick"/>
-                <Separator/>
-                <MenuItem x:Name="CollapseAll" Header="Collapse all"/>
-                <MenuItem x:Name="ExpandAll"   Header="Expand all"/>
+                <!-- ON WHAT IS SHOWN, not on the whole registry. "Tick all"
+                     used to reach every conversation in every project including
+                     the ones filtered off screen, which is a promise nobody can
+                     check by looking. Collapse/Expand are gone with the tree. -->
+                <MenuItem x:Name="TickAll"     Header="Tick all shown"   ToolTip="Tick every conversation currently in the list, and pin them"/>
+                <MenuItem x:Name="TickNone"    Header="Untick all shown" ToolTip="Untick every conversation currently in the list, and pin them so the hourly roll leaves them alone"/>
+                <MenuItem x:Name="UnpinAll"    Header="Unpin all shown"  ToolTip="Hand every conversation in the list back to the rolling auto-tick"/>
               </ContextMenu>
             </Button.ContextMenu>
           </Button>
@@ -1294,38 +1299,29 @@
          columns and needs no captions at all: a name, a project, a sentence and
          a time need no headings, and the bands already label the groups. That
          is a whole row of chrome the list gets back. -->
-    <Border x:Name="TreeHead" Grid.Row="4" Background="{StaticResource PanelHi}" BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="0,9,0,9">
+    <!-- == column captions. Widths and the rules mirror RowTemplate. ==
+         Hidden in the inbox, which has no columns and needs no captions: a name,
+         a project, a sentence and a time need no headings, and the bands already
+         label the groups. That is a whole row of chrome the inbox gets back. -->
+    <Border x:Name="ListHead" Grid.Row="4" Background="{StaticResource PanelHi}" BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="0,9,0,9">
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="54"/>
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="20"/>
-          <ColumnDefinition Width="*" MinWidth="260"/>
-          <ColumnDefinition Width="66"/>
-          <ColumnDefinition Width="88"/>
-          <ColumnDefinition Width="54"/>
-          <ColumnDefinition Width="86"/>
-          <ColumnDefinition Width="164"/>
+          <ColumnDefinition Width="*" MinWidth="240"/>
+          <ColumnDefinition Width="196"/>
+          <ColumnDefinition Width="212"/>
+          <ColumnDefinition Width="64"/>
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="140"/>
         </Grid.ColumnDefinitions>
-        <TextBlock Grid.Column="0" Text="LOGON" Style="{StaticResource PoleCaption}"
-                   HorizontalAlignment="Center" ToolTip="Does this reopen automatically at the next logon?"/>
-        <Rectangle Grid.Column="1" Width="1" Fill="{StaticResource HairlineHi}" HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
-        <TextBlock Grid.Column="3" Text="PROJECT  /  LANE  /  CONVERSATION" Style="{StaticResource Caption}" Margin="10,0,0,0"/>
-        <TextBlock Grid.Column="4" Text="TICKED" Style="{StaticResource Caption}" HorizontalAlignment="Right" Margin="0,0,12,0"/>
-        <TextBlock Grid.Column="5" Text="ID" Style="{StaticResource Caption}"/>
-        <TextBlock Grid.Column="6" Text="AGE" Style="{StaticResource Caption}" HorizontalAlignment="Right" Margin="0,0,12,0"/>
-        <TextBlock Grid.Column="7" Text="OPEN?" Style="{StaticResource Caption}"
-                   ToolTip="LIVENESS. Is a process holding this conversation."/>
-        <Grid Grid.Column="8">
-          <Rectangle Width="1" Height="15" Fill="{StaticResource Hairline}" HorizontalAlignment="Left" VerticalAlignment="Center"/>
-          <TextBlock Text="DOING" Style="{StaticResource Caption}" Margin="14,0,0,0"
-                     ToolTip="STATE. What that conversation is actually doing. A different question from OPEN? - a conversation can be live and waiting, live and working, or not live at all and still carry the last state it was seen in."/>
-        </Grid>
-        <Rectangle Grid.Column="9" Width="1" Fill="{StaticResource HairlineHi}" HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
-        <TextBlock Grid.Column="10" Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="10,0,0,0"
-                   ToolTip="Opens it this second, whatever the tick says"/>
+        <TextBlock Grid.Column="0" Text="LOGON" Style="{StaticResource PoleCaption}" HorizontalAlignment="Center"/>
+        <TextBlock Grid.Column="3" Text="CONVERSATION" Style="{StaticResource PoleCaption}"/>
+        <TextBlock Grid.Column="4" Text="PROJECT / LANE" Style="{StaticResource PoleCaption}"/>
+        <TextBlock Grid.Column="5" Text="STATE" Style="{StaticResource PoleCaption}"/>
+        <TextBlock Grid.Column="6" Text="WHEN" Style="{StaticResource PoleCaption}" HorizontalAlignment="Right" Margin="0,0,12,0"/>
+        <TextBlock Grid.Column="8" Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="10,0,0,0"/>
       </Grid>
     </Border>
 
