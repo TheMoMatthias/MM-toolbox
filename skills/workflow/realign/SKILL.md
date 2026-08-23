@@ -1,6 +1,6 @@
 ---
 name: realign
-description: Close out a report, summary or "I'm finished" claim without leaving anything on the field - re-check the objective against evidence rather than recollection, account for every unfinished task and deviation, decide the approach yourself, break what stands in the way instead of writing it off, ask the user about DIRECTION, then carry straight on with the outstanding work and the next item. Use when a progress report, summary or status update has just been given, when a session claims the work is done or complete, when something has been called blocked, too hard or not feasible, when something was skipped, cut short or never got done, when the user asks what decisions you need or whether the objective was really met, says "realign", "carry on", "keep going", "are you sure you are finished" or "do not leave anything open", or when work on a plan has paused and should continue.
+description: Close out a report, summary or "I'm finished" claim without leaving anything on the field - re-check the objective against evidence rather than recollection, account for every unfinished task and deviation, decide the approach yourself, break what stands in the way instead of writing it off, put up a compact picture of everything still open with the order you propose to take it in, ask the user about DIRECTION, then carry straight on with the outstanding work and the next item. Use when a progress report, summary or status update has just been given, when a session claims the work is done or complete, when something has been called blocked, too hard or not feasible, when something was skipped, cut short or never got done, when the user asks what decisions you need or whether the objective was really met, says "realign", "carry on", "keep going", "are you sure you are finished" or "do not leave anything open", or when work on a plan has paused and should continue.
 argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 ---
 
@@ -8,8 +8,9 @@ argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 
 **The deliverable is work resumed correctly** — the direction checked, and nothing quietly
 written off. Used at the end of a report, summary, update, or a claim of being finished.
-Account for what is open, settle the approach yourself, check the direction, then **keep
-going and break what is in the way**. Step 4 is the point; 1–3 make it safe.
+Account for what is open, settle the approach yourself, **put the picture up and check the
+direction**, then **keep going and break what is in the way**. Step 4 is the point; 1–3
+make it safe.
 
 ## 1. Sweep — on evidence, not recollection
 
@@ -56,7 +57,14 @@ and a feasibility call made at the desk is a guess wearing a conclusion's clothe
 item gets an approach *and the first thing to try*. Only step 4, after an attempt that
 actually failed, can produce a deferral.
 
-## 3. Ask about direction
+## 3. Show the board, then ask about direction
+
+🔴 **Put the picture up before the questions**, compact and in one place: what step 1 found
+still open, what you settled yourself, what stood in the way, and **the order you propose to
+take the rest in**. Questions with no board in front of them are an interrogation — they ask
+the user to choose between consequences they cannot see. This is also the one moment the
+plan can be redirected before the effort is spent. The closing block is the account of what
+happened; this is the proposal.
 
 - **HOW — decide it.** Implementation, tooling, structure, ordering within a step. Report
   under DEFAULTS; do not spend a question on it.
@@ -119,9 +127,10 @@ leaves none — so no rule about authority can catch it. Reconciliation catches 
 **every item from step 1 lands on exactly one line of the closing block.** An item on none
 of them was written off by nobody. [WALLS.md](WALLS.md) lists the shapes this takes.
 
-Say what you are doing in one line, then do it. Report at the end, not before starting.
-Close with this block, **omitting every line that has nothing in it**. Write it into the
-run-file or spec if the project keeps one, so it survives a compaction.
+Say what you are doing in one line, then do it. **Do not narrate progress mid-run** — the
+board went up in step 3, and the account comes at the end. Close with this block,
+**omitting every line that has nothing in it**. Write it into the run-file or spec if the
+project keeps one, so it survives a compaction.
 
 ```
 VERIFIED   what you re-checked, and how
@@ -144,8 +153,9 @@ NEXT       the remaining work, in the order you will now do it — anything not 
 > never tried; attacked, the schema change is one nullable column and
 > `orders/migrations/0007` already does exactly this. Twenty minutes. It was never a wall.
 >
-> One direction question: phase 3 assumes Postgres while phase 2 introduced DuckDB — with
-> "carry on unchanged" among the options, because it may still be right. Then the tests, the
+> Board up: the four open items, the order proposed for them, and the one thing that needs a
+> call — phase 3 assumes Postgres while phase 2 introduced DuckDB. Asked, with "carry on
+> unchanged" among the options, because it may still be right. Then the tests, the
 > migration, phase 3.
 >
 > The claim was wrong three ways, and the thing written off was the cheapest of them.
