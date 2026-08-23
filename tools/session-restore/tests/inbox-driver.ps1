@@ -161,12 +161,16 @@ try {
     else { Fail "$agentEnabled background-agent row(s) offer an action that cannot work" }
 
     # --- 5. the view switch actually switches ------------------------------
-    $tree = ByName 'Projects' ([System.Windows.Automation.ControlType]::RadioButton)
+    $tree = ByName 'All' ([System.Windows.Automation.ControlType]::RadioButton)
     $inbox = ByName 'Inbox' ([System.Windows.Automation.ControlType]::RadioButton)
+    # TWO, not three. Restore was retired because it rendered row-for-row
+    # identical rows to Projects; asserting that a retired view is still on
+    # screen is asserting the duplication is still there.
     $restore = ByName 'Restore' ([System.Windows.Automation.ControlType]::RadioButton)
-    if (-not $tree -or -not $inbox -or -not $restore) { Fail 'the three view buttons are not all present' }
+    if ($restore) { Fail 'the retired Restore view is still on screen' }
+    elseif (-not $tree -or -not $inbox) { Fail 'the two view buttons are not both present' }
     else {
-        Pass 'Inbox / Projects / Restore are all present'
+        Pass 'Inbox and All are present, and Restore is gone'
 
         # WHICH list is on screen, by position in the pair, not by identity.
         # Comparing runtime ids inline was a precedence trap: PowerShell parses
@@ -183,9 +187,9 @@ try {
         Start-Sleep -Seconds 3
         $after = ShownIndex
         if ($before -ge 0 -and $after -ge 0 -and $before -ne $after) {
-            Pass "switching to Projects swaps the visible list ($before to $after)"
+            Pass "switching to All swaps the visible list ($before to $after)"
         } else {
-            Fail "switching to Projects did not change which list is showing (before=$before after=$after)"
+            Fail "switching to All did not change which list is showing (before=$before after=$after)"
         }
 
         # AND IT MUST HAVE CONTENT. Set-ViewMode swaps Visibility BEFORE it
@@ -194,8 +198,8 @@ try {
         # collision wiped the palette, every repaint threw on a null brush, and
         # this suite went green over a window showing nothing.
         $treeRows = RowsOf (ShownList)
-        if ($treeRows.Count -ge 1) { Pass "the Projects list actually built ($($treeRows.Count) rows)" }
-        else { Fail 'switched to Projects and the list is EMPTY - the rebuild threw' }
+        if ($treeRows.Count -ge 1) { Pass "the All list actually built ($($treeRows.Count) rows)" }
+        else { Fail 'switched to All and the list is EMPTY - the rebuild threw' }
 
         # The status line is where a caught exception surfaces. If it is
         # reporting a failure, something threw whatever the rows look like.
@@ -214,19 +218,20 @@ try {
         # In Projects the tree's captions come BACK. This is the same assertion
         # as 3 with the answer inverted, which is what proves 3 was measuring
         # something real rather than looking for text that is never there.
-        if (TextOnScreen 'LOGON') { Pass 'LOGON returns in the Projects view' }
+        if (TextOnScreen 'LOGON') { Pass 'LOGON returns in the All view' }
         else { Fail 'LOGON is missing from the Projects view - assertion 3 proves nothing' }
 
-        $restore.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
-        Start-Sleep -Seconds 3
+        # The logon furniture used to be what made Restore a separate view. It
+        # lives in All now, so this checks it is up HERE - and, below, that the
+        # inbox still hides it. That pair is the whole of what Restore was.
         $launch = $null
         $btns = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants,
             (New-Object System.Windows.Automation.PropertyCondition(
                 [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
                 [System.Windows.Automation.ControlType]::Button)))
         foreach ($b in $btns) { if ("$($b.Current.Name)" -match 'Launch everything ticked') { $launch = $b; break } }
-        if ($launch -and -not $launch.Current.IsOffscreen) { Pass 'Restore shows "Launch everything ticked"' }
-        else { Fail 'Restore does not show "Launch everything ticked"' }
+        if ($launch -and -not $launch.Current.IsOffscreen) { Pass 'All shows "Launch everything ticked"' }
+        else { Fail 'All does not show "Launch everything ticked" - the logon furniture did not follow the retired view' }
 
         $inbox.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
         Start-Sleep -Seconds 3
