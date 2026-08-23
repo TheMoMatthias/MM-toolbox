@@ -1,6 +1,6 @@
 ---
 name: realign
-description: Close out a report, summary or "I'm finished" claim without leaving anything on the field - re-check the objective against evidence rather than recollection, account for every unfinished task and deviation, decide the approach yourself, break what stands in the way instead of writing it off, put up a compact picture of everything still open with the order you propose to take it in, ask the user about DIRECTION, then carry straight on with the outstanding work and the next item. Use when a progress report, summary or status update has just been given, when a session claims the work is done or complete, when something has been called blocked, too hard or not feasible, when something was skipped, cut short or never got done, when the user asks what decisions you need or whether the objective was really met, says "realign", "carry on", "keep going", "are you sure you are finished" or "do not leave anything open", or when work on a plan has paused and should continue.
+description: Close out a report, summary or "I'm finished" claim without leaving anything on the field - re-check the objective against evidence rather than recollection, account for every unfinished task and deviation, decide the approach yourself, break what stands in the way instead of writing it off, put up a compact picture of everything still open grouped by track, ask the user about DIRECTION on every track that needs one, steer the other lanes that share the plan, then carry straight on with the outstanding work and the next item. Use when a progress report, summary or status update has just been given, when a session claims the work is done or complete, when something has been called blocked, too hard or not feasible, when something was skipped, cut short or never got done, when the user asks what decisions you need or whether the objective was really met, says "realign", "carry on", "keep going", "are you sure you are finished" or "do not leave anything open", or when work on a plan has paused and should continue.
 argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 ---
 
@@ -45,6 +45,10 @@ easier neighbour, or met in part and reported whole**; **deferred items whose tr
 fired**. **Report scope you cut, even when cutting it was right** — silently narrowing the
 job is the failure this step exists to catch, and doing it to yourself mid-run counts.
 
+**Name the track each item belongs to** — a plan phase, a worktree lane, a subsystem, an
+open thread — including tracks another session owns. Two items share a track when one
+decision steers both. The sweep is a portfolio, not a list: [TRACKS.md](TRACKS.md).
+
 ## 2. Assign an approach to every item — you may not defer here
 
 Settle each item from the code, the repo's conventions, the plan, or a defensible default.
@@ -61,6 +65,10 @@ actually failed, can produce a deferral.
 
 🔴 **Show the picture, compact and in one place**: what step 1 found still open, what you
 settled yourself, what stood in the way, and **the order you propose to take the rest in**.
+**Group it by track** — one group each, with its owner, its state, its next step, and
+whether it runs in parallel or is serialized behind another (format in
+[TRACKS.md](TRACKS.md)). A flat list hides what you most need to see: which tracks are
+moving, which are waiting, and on what.
 
 **This happens every time — whether or not you have a question.** It is the status update
 the skill exists to produce, and it is the one moment the plan can still be redirected
@@ -76,7 +84,7 @@ end is the account of what happened; this is the proposal of what is about to.
   holds. Your pick can be perfectly defensible and still not be what they want, and drift
   here is expensive to unwind.
 
-**Run all five probes. Do not conclude from memory that there is nothing to ask:**
+**Run all five probes over EACH track — not once over the session as a whole:**
 
 1. Does what you just learned change what **"done" should mean**?
 2. Is the **next item still the right next item**, given what landed?
@@ -84,14 +92,17 @@ end is the account of what happened; this is the proposal of what is about to.
 4. Does new evidence **undercut an assumption** the plan was built on?
 5. Is anything now **not worth doing at all**?
 
-Ask about every probe that returns something, plus anything whose answer changes what you
-do next, plus the unfinished work — finish, drop, hand off — and any wall from step 5.
-Usually 1–3 questions. **If all five come back empty — rarer than it feels — say in one
-line that you ran them and found nothing, then go.** "There was no real question" is a
-conclusion you reach by looking, not by not looking.
+**Every track that returns something earns its own question** — three live tracks means
+three questions, not one. Add anything whose answer changes what you do next, the unfinished
+work (finish, drop, hand off), and any wall from step 5. 🔴 **A track you did not ask about
+is a track you decided alone**: correct for HOW, never for WHERE. **If every probe on every
+track comes back empty — rarer than it feels — say in one line that you ran them, then go.**
+"There was no real question" is a conclusion you reach by looking, not by not looking.
 
 Use **`AskUserQuestion`, batched, up to 4 per round**, selectable options each carrying its
-consequence. 🪤 **Frame it well — a wrong frame steers harder than a wrong decision would.**
+consequence. **Fire successive rounds until every track is covered — the cap is per call,
+not per realignment.** 🪤 **Frame it well — a wrong frame steers harder than a wrong
+decision would.**
 
 - **Lead with your own recommendation**, marked `(Recommended)`, its evidence cited — a
   `file:line`, an earlier decision, a measured result — including when it is "carry on as
@@ -110,6 +121,16 @@ re-litigate, do not seek confirmation to begin.
    step, and its DONE-WHEN is your stop condition. Without one, what the objective implies.
 3. **Keep going** until the objective is met **on evidence**, a wall survives the ladder
    below, or a new decision clears the step-4 bar.
+
+### When another lane owns it
+
+🔴 **A plan does not stop at the boundary of the session reading it.** Tracks owned by other
+lanes stay in scope: name their owner on the board, say what you will send **before** you
+send it, then send it with `SendMessage` — the decision just made, the finding that
+invalidates what they are building on, the correction. Only what changes their next action.
+A lane needing a different job gets a brief via `handover-and-spawn`, not a message. **Never
+redirect a lane mid-flight on something destructive, and never hand one file to a second
+lane.** A lane that has not answered has not agreed. [TRACKS.md](TRACKS.md).
 
 ### When something stands in the way
 
@@ -143,8 +164,10 @@ DECIDED    what they chose, in their words
 DEFAULTS   what you settled yourself, and why
 DROPPED    what they agreed to stop doing
 DEFERRED   what they agreed to park — claim, confidence, and the trigger that resurfaces it
-NEXT       the remaining work, in the order you will now do it — anything not verified,
-           decided, dropped or deferred lands here. Nothing leaves the sweep unaccounted.
+SENT       what went to which lane, and whether they have confirmed it
+NEXT       the remaining work per track, in the order you will now do it, marking what runs
+           in parallel — anything not verified, decided, dropped or deferred lands here.
+           Nothing leaves the sweep unaccounted, on any track.
 ```
 
 ## Example
@@ -157,9 +180,14 @@ NEXT       the remaining work, in the order you will now do it — anything not 
 > never tried; attacked, the schema change is one nullable column and
 > `orders/migrations/0007` already does exactly this. Twenty minutes. It was never a wall.
 >
-> Board up: the four open items, the order proposed for them, and the one thing that needs a
-> call — phase 3 assumes Postgres while phase 2 introduced DuckDB. Asked, with "carry on
-> unchanged" among the options, because it may still be right. Then the tests, the
+> Board up, three tracks. **ingest** — moving: tests, migration, then phase 3. **schema** —
+> was "deferred", now moving, serialized behind the migration. **lane F2** — building on the
+> old storage decision, and not this session's call to make.
+>
+> Two questions, one per track that had one: phase 3 assumes Postgres while phase 2
+> introduced DuckDB, with "carry on unchanged" among the options because it may still be
+> right; and whether F2 keeps its own store. Once answered, that decision goes to F2 by
+> `SendMessage` — it is building on the version that just changed. Then the tests, the
 > migration, phase 3.
 >
 > The claim was wrong three ways, and the thing written off was the cheapest of them.
