@@ -606,6 +606,68 @@ else {
 }
 Close-Cast
 
+# --- 10g. SEEN, AND THE NOTE ------------------------------------------------
+# "I click through the tabs to see if there has been any progress, and then it
+# is hard to remember where we are." Two problems: one the machine can answer
+# (has it said anything since I looked) and one only the operator can (what was
+# this for). These check both, and RESTORE what they touch - the registry here
+# is the operator's real one.
+Set-ViewMode 'inbox'
+$victim = @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'session' })[0]
+if (-not $victim) { Fail 'no conversation to mark seen' }
+else {
+    $sess = $victim.Session
+    $wasSeen = "$($sess.lastSeen)"
+    $wasNote = "$($sess.note)"
+    try {
+        # NEVER LOOKED AT IS NOT MOVED. With no baseline there is no answer to
+        # "has this said anything since", and rendering an unknown as a yes put
+        # a dot on eleven of eleven rows - a mark that is on for everything.
+        Set-SessionField $sess 'lastSeen' ''
+        if (Test-Moved $sess) { Fail 'a conversation with no baseline is marked moved, so the mark means nothing' }
+        else { Pass 'no baseline, no mark' }
+
+        # Seen, and then nothing has happened.
+        Set-SessionField $sess 'lastSeen' ((Get-Date).AddYears(1).ToString('o'))
+        if (Test-Moved $sess) { Fail 'a conversation seen after its last activity is still marked moved' }
+        else { Pass 'reading it clears the mark' }
+
+        # Seen, and then it spoke again.
+        Set-SessionField $sess 'lastSeen' ((Get-Date).AddYears(-1).ToString('o'))
+        if (-not (Test-Moved $sess)) { Fail 'a conversation that spoke after you looked is not marked moved' }
+        else { Pass 'it comes back the moment the conversation says something new' }
+
+        # The MARK follows the model without a rebuild - a rebuild while the
+        # operator is reading would move the list out from under them.
+        Update-RowSeenMarks
+        $mine = @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'session' -and "$($_.Session.sessionId)" -eq "$($sess.sessionId)" })[0]
+        if (-not $mine -or $mine.MovedVisibility -ne $V_Show) { Fail 'the row does not show the moved mark' }
+        else { Pass 'the mark is on the row, without rebuilding the list' }
+
+        # THE NOTE OUTRANKS THE LAST-SAID LINE, and the last-said is not lost.
+        $before = "$($mine.Said)"
+        Set-SessionNote $sess 'waiting on the migration to finish, then re-run G10'
+        Update-InboxRow $mine
+        if ("$($mine.Said)" -ne 'waiting on the migration to finish, then re-run G10') {
+            Fail "the note did not reach the row: '$($mine.Said)'"
+        } elseif ($before -and "$($mine.SaidTip)" -notmatch [regex]::Escape($before)) {
+            Fail 'the note replaced what it last said and threw it away'
+        } else { Pass 'your note outranks the transcript on the row, and the transcript moves into the tooltip' }
+
+        Set-SessionNote $sess ''
+        Update-InboxRow $mine
+        if ("$($mine.Said)" -ne $before) { Fail "clearing the note did not restore what it last said: '$($mine.Said)'" }
+        else { Pass 'clearing the note gives the last-said line back' }
+    } finally {
+        # THE REGISTRY HERE IS THE OPERATOR'S REAL ONE. A suite that leaves a
+        # note behind has changed their data, which is the same class of mistake
+        # as the run that left includeWorktrees false in their config.
+        Set-SessionField $sess 'lastSeen' $wasSeen
+        Set-SessionField $sess 'note' $wasNote
+        Update-RowSeenMarks
+    }
+}
+
 # --- 10f. THE FIXTURE IS STILL THE FIXTURE ----------------------------------
 # Everything above asserts against staged state. If a background probe replaced
 # it half way through, those assertions were measuring the machine rather than

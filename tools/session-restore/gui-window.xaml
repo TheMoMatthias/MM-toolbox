@@ -858,6 +858,11 @@
              that can never open. -->
         <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center"
                     Margin="{Binding Indent}">
+          <Grid Width="13">
+            <Ellipse Width="6" Height="6" HorizontalAlignment="Left" VerticalAlignment="Center"
+                     Fill="{StaticResource TextMax}" Visibility="{Binding MovedVisibility}"
+                     ToolTip="It has said something since you last opened it."/>
+          </Grid>
           <TextBlock Text="{Binding Name}"
                      Foreground="{Binding NameBrush}"
                      FontWeight="{Binding NameWeight}"
@@ -991,14 +996,24 @@
               Stroke="{Binding ConvBrush}" StrokeThickness="1.5"
               StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
 
-        <!-- 1: the name, or the band heading. -->
-        <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center"
+        <!-- 1: the name, or the band heading. The MOVED mark sits in front of
+             it: something has been said here since you last looked. It is the
+             unread dot every mail client uses, and it is the answer to
+             "clicking through the tabs to see if there has been any progress". -->
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+        <Grid Width="13">
+          <Ellipse Width="6" Height="6" HorizontalAlignment="Left" VerticalAlignment="Center"
+                   Fill="{StaticResource TextMax}" Visibility="{Binding MovedVisibility}"
+                   ToolTip="It has said something since you last opened it."/>
+        </Grid>
+        <TextBlock Text="{Binding Name}" VerticalAlignment="Center"
                    Foreground="{Binding NameBrush}"
                    FontWeight="{Binding NameWeight}"
                    FontSize="{Binding NameSize}"
                    TextDecorations="{Binding NameDecorations}"
                    TextTrimming="CharacterEllipsis"
                    ToolTip="{Binding ConvTip}"/>
+        </StackPanel>
 
         <!-- 2: which project this belongs to. A LABEL here, not a parent: the
              inbox is deliberately cross-project, so the project is one more
@@ -1190,6 +1205,8 @@
                 <MenuItem x:Name="TickAll"     Header="Tick all shown"   ToolTip="Tick every conversation currently in the list, and pin them"/>
                 <MenuItem x:Name="TickNone"    Header="Untick all shown" ToolTip="Untick every conversation currently in the list, and pin them so the hourly roll leaves them alone"/>
                 <MenuItem x:Name="UnpinAll"    Header="Unpin all shown"  ToolTip="Hand every conversation in the list back to the rolling auto-tick"/>
+                <Separator/>
+                <MenuItem x:Name="SeenAll"     Header="Mark all shown seen" ToolTip="Clear the moved marks on everything in the list"/>
               </ContextMenu>
             </Button.ContextMenu>
           </Button>
@@ -1516,6 +1533,17 @@
                          Foreground="{StaticResource TextMax}" VerticalAlignment="Center"/>
               <TextBlock x:Name="ReadWhat" Text="" FontSize="12" Margin="14,0,0,0"
                          Foreground="{StaticResource TextMid}" VerticalAlignment="Center"/>
+              <!-- WHERE WE ARE, IN YOUR WORDS.
+                   The transcript says what was said; it does not say why it
+                   matters or what you meant to do next, and that is the thing
+                   that is actually gone when you come back three days later.
+                   Saved on the conversation, shown on its row, and it OUTRANKS
+                   the machine-extracted last line there - a summary you wrote
+                   is worth more than the tail of a transcript. -->
+              <TextBlock Text="NOTE" Style="{StaticResource GroupCaption}" Margin="22,0,8,0"/>
+              <TextBox x:Name="ReadNote" Style="{StaticResource Search}" Width="320"
+                       MinHeight="26" VerticalContentAlignment="Center"
+                       ToolTip="Where this one is up to, in your words. Saved as you type; shown on the row instead of what it last said."/>
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
               <Button x:Name="ReadRefresh" Content="Refresh" Style="{StaticResource Btn}" Margin="0,0,8,0"/>

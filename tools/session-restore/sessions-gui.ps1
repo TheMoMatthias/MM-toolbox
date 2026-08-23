@@ -448,6 +448,10 @@ namespace SRGui
         public Visibility TickVisibility { get { return _tickVisibility; } set { if (_tickVisibility != value) { _tickVisibility = value; N("TickVisibility"); } } }
 
         // The age window's own row: what it left out, and the way back in.
+        // MOVED SINCE YOU LAST LOOKED. The unread dot.
+        private Visibility _movedVisibility = Visibility.Collapsed;
+        public Visibility MovedVisibility { get { return _movedVisibility; } set { if (_movedVisibility != value) { _movedVisibility = value; N("MovedVisibility"); } } }
+
         private Visibility _moreVisibility = Visibility.Collapsed;
         public Visibility MoreVisibility { get { return _moreVisibility; } set { if (_moreVisibility != value) { _moreVisibility = value; N("MoreVisibility"); } } }
 
@@ -711,6 +715,72 @@ function Set-Pin { param($Session, [bool]$Value)
     } else { $Session.pinned = $Value }
 }
 function Test-Pinned { param($Session) return ([bool]$Session.pinned) }
+
+# ---------------------------------------------------------------------------
+# SEEN, and the NOTE.
+#
+# "I find myself clicking through the tabs to see if there has been any
+# progress, and then it is hard to remember where we are." Two different
+# problems, and they want two different answers:
+#
+#   SEEN   is the machine's: has this conversation said anything since I last
+#          looked at it. A stamp on the conversation, set when the reading pane
+#          actually shows it, and a dot on the row while lastActive is newer.
+#          Exactly the unread mark, because it is exactly the unread problem.
+#
+#   NOTE   is yours: what this one is FOR and where you meant to take it. No
+#          amount of reading the transcript recovers that, which is why it
+#          outranks the last-said line on the row - a sentence you wrote beats
+#          the tail of a transcript.
+#
+# Both live on the session object in the registry beside `pinned`, so they
+# survive a rescan and a restart, and both are written through Add-Member
+# because a session discovered before this existed has no such property.
+# ---------------------------------------------------------------------------
+function Set-SessionField { param($Session, [string]$Name, $Value)
+    if ($null -eq $Session.PSObject.Properties[$Name]) {
+        $Session | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+    } else { $Session.$Name = $Value }
+}
+
+function Get-SessionNote { param($Session)
+    if (-not $Session) { return '' }
+    return "$($Session.note)"
+}
+
+function Set-SessionNote { param($Session, [string]$Text)
+    if (-not $Session) { return }
+    Set-SessionField $Session 'note' "$Text".Trim()
+    $script:dirty = $true
+}
+
+# Has it said anything since the pane last showed it?
+#
+# A CONVERSATION NEVER LOOKED AT IS NOT MOVED. The first version said it was -
+# "it has everything still to tell you" - which is defensible and, measured
+# against the real registry, put a dot on ELEVEN OF ELEVEN ROWS. A mark that is
+# on for everything carries no information at all; it is texture that costs a
+# column. The dot means one thing now: you looked at this, and it has spoken
+# since. That is rare, which is what makes it worth looking at.
+#
+# The cost is that the mark is silent until you have opened something, and that
+# is the honest state: with no baseline there is no answer to "has this moved",
+# and rendering an unknown as a yes is how a signal stops being believed.
+function Test-Moved { param($Session)
+    if (-not $Session -or -not $Session.lastActive) { return $false }
+    $seen = "$($Session.lastSeen)"
+    if (-not $seen) { return $false }
+    try { return ([datetime]$Session.lastActive -gt [datetime]$seen) } catch { return $false }
+}
+
+# Set ONLY where the conversation was actually put on screen. Marking things
+# seen because they scrolled past would make the dot mean nothing, which is the
+# one way an unread mark can be worse than none.
+function Set-Seen { param($Session)
+    if (-not $Session) { return }
+    Set-SessionField $Session 'lastSeen' ((Get-Date).ToString('o'))
+    $script:dirty = $true
+}
 
 function Get-LaneName { param($Session)
     if ($Session.lane -eq 'worktree' -and $Session.worktree) { return $Session.worktree }
@@ -1162,7 +1232,7 @@ foreach ($k in @('TextMax','TextHigh','TextMid','TextLow','TextDim','Hairline','
 $ui = @{}
 foreach ($n in @(
     'SubTitle','SearchBox','ClearSearch','BusyText','RescanBtn','LiveSummary','TickSummary',
-    'ProbeStamp','Unattributed','TickAll','TickNone','UnpinAll',
+    'ProbeStamp','Unattributed','TickAll','TickNone','UnpinAll','SeenAll','ReadNote',
     'WorktreeToggle','LaunchTicked','RowList','EmptyNote','SelName','SelPath','SelTick',
     'SelUnpin','SelLaunch','SelSpawn','StatusText','CancelBtn','SaveBtn','Overlay','OvTitle',
     'OvPath','OvWarnBox','OvWarn','OvName','OvCancel','OvOk',
@@ -1618,8 +1688,13 @@ function Update-InboxRow { param($Row)
     $Row.Project = $proj
     $Row.ProjectVisibility = $V_Show
 
+    $moved = Test-Moved $s
+    $Row.MovedVisibility = $(if ($moved) { $V_Show } else { $V_Hide })
     $needs = [bool]($cv -and $cv.Needs)
-    $Row.NameWeight = $(if ($needs) { $FW_Semi } else { $FW_Normal })
+    # Bold for "wants you", and also for "has said something since you looked" -
+    # the same weight for the same reason, which is that both are unfinished
+    # business. Read and quiet is the only combination that is not.
+    $Row.NameWeight = $(if ($needs -or $moved) { $FW_Semi } else { $FW_Normal })
     $Row.NameBrush  = $(if ($needs) { $Pal.TextMax } elseif ($Row.Band -eq 'quiet') { $Pal.TextMid } else { $Pal.TextHigh })
 
     # The state glyph, from the same vocabulary the tree uses.
@@ -1664,10 +1739,20 @@ function Update-InboxRow { param($Row)
         $text = $(if ($sd -and $sd.Pending) { "wants to run:  $($sd.Pending)" } else { 'a dialog is open, it wants an answer' })
         $tip  = 'Answer it in the terminal: a dialog wants a click, not a sentence.'
     }
+    # YOUR NOTE OUTRANKS THE TRANSCRIPT. What it last said is a machine's guess
+    # at what matters; a note is your own answer to "where were we", and it is
+    # the thing that is actually missing when you come back to thirteen tabs.
+    # The last-said line is not lost - it moves into the tooltip.
+    $note = Get-SessionNote $s
+    if ($note) {
+        $tip  = $(if ($text) { "your note:  $note`n`nit last said:  $text" } else { "your note:  $note" })
+        $text = $note
+    }
     $Row.Said = $text
     $Row.SaidTip = $tip
     $Row.SaidVisibility = $(if ($text) { $V_Show } else { $V_Hide })
-    $Row.SaidBrush = $(if ($needs) { $Pal.TextHigh } elseif ($Row.Band -eq 'quiet') { $Pal.TextDim } else { $Pal.TextMid })
+    # A note is yours, so it is brighter than anything the tool inferred.
+    $Row.SaidBrush = $(if ($note) { $Pal.TextHigh } elseif ($needs) { $Pal.TextHigh } elseif ($Row.Band -eq 'quiet') { $Pal.TextDim } else { $Pal.TextMid })
 
     $when = $(if ($sd -and $sd.At) { $sd.At } elseif ($cv -and $cv.LastActive) { $cv.LastActive } else { $s.lastActive })
     $Row.Stamp = Get-Stamp $when
@@ -1941,6 +2026,7 @@ function Update-RowStatic { param($Row)
             # are not worth 88 pixels on every row; the footer carries the path
             # for the selected row and this carries the id for any of them.
             $Row.NameTip = "{0}`n{1}" -f $Row.Session.sessionId, (Get-SessionCwd $Row.Session $Row.Dir)
+            $Row.MovedVisibility = $(if (Test-Moved $Row.Session) { $V_Show } else { $V_Hide })
             $Row.Age = Get-Age $Row.Session.lastActive
             $Row.Counts = ''
             # PROJECT / LANE, which used to be two rows of hierarchy above this
@@ -2911,6 +2997,24 @@ function Show-ReadPane {
     # read that stamps what the gate checks, so the gate is checked after it.
     Update-ReadDocument
     Update-SendState
+    # SEEN, HERE AND ONLY HERE. Marking things seen because they scrolled past
+    # would make the dot mean nothing, which is the one way an unread mark is
+    # worse than no mark at all.
+    Set-Seen $Row.Session
+    $ui.ReadNote.Text = Get-SessionNote $Row.Session
+    Update-RowSeenMarks
+}
+
+# Repaint the marks without rebuilding the list: a row that has just been read
+# has to lose its dot immediately, and a full rebuild would move the selection
+# out from under the operator while they are reading.
+function Update-RowSeenMarks {
+    foreach ($r in $script:rows) {
+        if ($r.Kind -eq 'session') { $r.MovedVisibility = $(if (Test-Moved $r.Session) { $V_Show } else { $V_Hide }) }
+    }
+    foreach ($r in $script:inboxRows) {
+        if ($r.Kind -eq 'session') { $r.MovedVisibility = $(if (Test-Moved $r.Session) { $V_Show } else { $V_Hide }) }
+    }
 }
 
 # Follow the selection while the pane is open, so arrowing down the list reads
@@ -3575,6 +3679,9 @@ function Invoke-LaunchTicked {
 # instead. One button, two situations, and the label says which: "Go to" when
 # there is something to go to, "Open" when there is not.
 function Invoke-RowJump { param($Row)
+    # Going to the tab IS looking at it. A dot that survives you reading the
+    # conversation in its own terminal is a dot that lies.
+    if ($Row -and $Row.Kind -eq 'session') { Set-Seen $Row.Session; Update-RowSeenMarks }
     if (-not $Row -or $Row.Kind -ne 'session') { return }
     $s = $Row.Session
     $key = "$($s.sessionId)".ToLower()
@@ -3938,6 +4045,34 @@ $ui.LegendToggle.Add_Click({
 })
 
 # --- the reading pane's own controls ---------------------------------------
+# SAVED AS YOU TYPE, debounced. A note behind a Save button is a note that does
+# not get written: the moment worth capturing is while you are still looking at
+# the thing, not after you have decided to commit to writing it down.
+$script:noteTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:noteTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+$script:noteTimer.Add_Tick({
+    $script:noteTimer.Stop()
+    Invoke-Guarded {
+        if (-not $script:readSession) { return }
+        $was = Get-SessionNote $script:readSession
+        $now = "$($ui.ReadNote.Text)".Trim()
+        if ($was -eq $now) { return }
+        Set-SessionNote $script:readSession $now
+        # Only the row's own text, not a rebuild: rebuilding while someone is
+        # typing into the pane moves the list under them.
+        foreach ($lst in @($script:rows, $script:inboxRows)) {
+            foreach ($r in $lst) {
+                if ($r.Kind -eq 'session' -and "$($r.Session.sessionId)" -eq "$($script:readSession.sessionId)") {
+                    if ($r.Band) { Update-InboxRow $r } else { Update-RowStatic $r; Update-RowLive $r }
+                }
+            }
+        }
+        Update-Header
+        Set-Status $(if ($now) { 'note saved' } else { 'note cleared' }) 'ok'
+    } 'the note'
+})
+$ui.ReadNote.Add_TextChanged({ $script:noteTimer.Stop(); $script:noteTimer.Start() })
+
 $ui.ReadBack.Add_Click({    Invoke-Guarded { Hide-ReadPane }        'close the reading pane' })
 $ui.SendBtn.Add_Click({     Invoke-Guarded { Invoke-SendReply }      'send that line to the session' })
 $ui.SendBox.Add_KeyDown({
@@ -4137,6 +4272,12 @@ $ui.RescanBtn.Add_Click({ Invoke-Guarded { Start-Rescan } 'rescan' })
 $ui.TickAll.Add_Click({ Invoke-Guarded { Set-AllTicks $true } 'tick all shown' })
 $ui.TickNone.Add_Click({ Invoke-Guarded { Set-AllTicks $false } 'untick all shown' })
 $ui.UnpinAll.Add_Click({ Invoke-Guarded { Set-AllUnpinned } 'unpin all shown' })
+$ui.SeenAll.Add_Click({ Invoke-Guarded {
+    $n = 0
+    foreach ($r in $script:rows) { if ($r.Kind -eq 'session' -and (Test-Moved $r.Session)) { Set-Seen $r.Session; $n++ } }
+    Update-RowSeenMarks
+    Set-Status "$n conversation(s) marked seen" 'info'
+} 'mark all seen' })
 # Collapse all / Expand all went with the tree: a flat list has nothing to
 # fold. What they were really for -- getting AlgoTrader's 89 conversations out
 # of the way -- is the age window and the project filter now.
@@ -4382,7 +4523,7 @@ $window.Add_Closing({ param($s, $e)
         if ($r -eq 'Cancel') { $e.Cancel = $true; return }
         if ($r -eq 'Yes') { try { Save-Now } catch { } }
     }
-    foreach ($t in @($script:searchTimer, $script:pollTimer, $script:liveTimer)) { if ($t) { $t.Stop() } }
+    foreach ($t in @($script:searchTimer, $script:pollTimer, $script:liveTimer, $script:readTimer, $script:noteTimer)) { if ($t) { $t.Stop() } }
     # A worker still running would keep the process alive after the window has
     # gone. Stopping it is safe: nothing here half-writes the registry -- every
     # write is an atomic replace under the named mutex.
