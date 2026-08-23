@@ -1,15 +1,15 @@
 ---
 name: realign
-description: Close out a report, summary or "I'm finished" claim without leaving anything on the field - re-check the objective against evidence rather than recollection, account for every unfinished task and deviation, decide the approach yourself, ask the user about DIRECTION, then carry straight on with the outstanding work and the next item. Use when a progress report, summary or status update has just been given, when a session claims the work is done or complete, when the user asks what decisions you need or whether the objective was really met, says "realign", "carry on", "keep going", "are you sure you are finished" or "do not leave anything open", or when work on a plan has paused and should continue.
+description: Close out a report, summary or "I'm finished" claim without leaving anything on the field - re-check the objective against evidence rather than recollection, account for every unfinished task and deviation, decide the approach yourself, break what stands in the way instead of writing it off, ask the user about DIRECTION, then carry straight on with the outstanding work and the next item. Use when a progress report, summary or status update has just been given, when a session claims the work is done or complete, when something has been called blocked, too hard or not feasible, when something was skipped, cut short or never got done, when the user asks what decisions you need or whether the objective was really met, says "realign", "carry on", "keep going", "are you sure you are finished" or "do not leave anything open", or when work on a plan has paused and should continue.
 argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 ---
 
 # realign
 
-**The deliverable is work resumed correctly, not a list of questions.** Used at the end of
-a report, summary, update — or a claim of being finished. Account for what is open, settle
-the approach yourself, check the direction with the user, then **keep going**. Step 4 is
-the point; 1–3 make it safe.
+**The deliverable is work resumed correctly** — the direction checked, and nothing quietly
+written off. Used at the end of a report, summary, update, or a claim of being finished.
+Account for what is open, settle the approach yourself, check the direction, then **keep
+going and break what is in the way**. Step 4 is the point; 1–3 make it safe.
 
 ## 1. Sweep — on evidence, not recollection
 
@@ -27,51 +27,67 @@ your own summary:
   requirement is unfinished work however confident the summary was.
 - **Ask where it deviated.** A wrong turn taken confidently reads exactly like progress.
 
-**Default to NOT DONE on any doubt.** A re-check costs minutes; a false "finished" costs
-whatever gets built on top of it.
+**Default to NOT DONE on any doubt.**
+
+🔴 **Now run that test in the other direction.** *"This can't be done"*, *"the library
+doesn't support it"*, *"that needs a rewrite"* is a claim too — same reasoning, same
+pressure to be finished. It earns **more** scrutiny than a done-claim, not less: a false
+"done" gets caught by the next test run, a false "blocked" removes the work silently and
+forever. **Default to NOT BLOCKED on any doubt.**
 
 Then list honestly — done, partly done, not started, abandoned: **scope not delivered**
 (including the parts that turned out hard); **started and left mid-air**; **promised in
 passing** ("I'll come back to that" — the most common thing a session loses); **red**
-(tests, lint, typecheck, TODOs in the diff); **deferred items whose trigger has fired**.
-**Report scope you cut, even when cutting it was right** — silently narrowing the job is
-the failure this step exists to catch.
+(tests, lint, typecheck, TODOs in the diff); **anything written off as blocked, too hard or
+not feasible** — a finding to re-open, never a fact; **anything quietly swapped for an
+easier neighbour, or met in part and reported whole**; **deferred items whose trigger has
+fired**. **Report scope you cut, even when cutting it was right** — silently narrowing the
+job is the failure this step exists to catch, and doing it to yourself mid-run counts.
 
-## 2. Decide the approach yourself
+## 2. Assign an approach to every item — you may not defer here
 
-Settle each open item from the code, the repo's conventions, the plan, or a defensible
-default. This is the default path, not the exception: most items need nobody. It covers
-**HOW** things get done — **WHERE** the work is headed belongs to step 3.
+Settle each item from the code, the repo's conventions, the plan, or a defensible default.
+This is the default path, not the exception: most items need nobody. It covers **HOW**
+things get done — **WHERE** the work is headed belongs to step 3.
+
+🔴 **Every item leaves this step with an approach, the hard ones included.** "Too hard",
+"blocked", "not feasible" are **not available verdicts here** — nothing has been tried yet,
+and a feasibility call made at the desk is a guess wearing a conclusion's clothes. The hard
+item gets an approach *and the first thing to try*. Only step 4, after an attempt that
+actually failed, can produce a deferral.
 
 ## 3. Ask about direction
 
 - **HOW — decide it.** Implementation, tooling, structure, ordering within a step. Report
   under DEFAULTS; do not spend a question on it.
 - **WHERE — ask.** Priority, scope, what counts as "next", whether the objective still
-  holds, whether this is still worth doing. Your pick can be perfectly defensible and
-  still not be what they want, and drift here is expensive to unwind.
+  holds. Your pick can be perfectly defensible and still not be what they want, and drift
+  here is expensive to unwind.
 
-Ask anything whose answer changes what you do next and that you cannot resolve — and **on
-top of that, raise at least one direction question whenever a real one exists**, even
-where you could have chosen. Usually 1–3 in total.
+**Run all five probes. Do not conclude from memory that there is nothing to ask:**
 
-🪤 **A question is itself an intervention.** Three options frame the space, and a wrong
-frame steers harder than a wrong decision would have. Use **`AskUserQuestion`, batched, up
-to 4 per round**, selectable options each carrying its consequence:
+1. Does what you just learned change what **"done" should mean**?
+2. Is the **next item still the right next item**, given what landed?
+3. Has the **cost/benefit moved** — something far more expensive now, or suddenly cheap?
+4. Does new evidence **undercut an assumption** the plan was built on?
+5. Is anything now **not worth doing at all**?
 
-- **Lead with your own recommendation**, marked `(Recommended)`, and say why — including
-  when it is "carry on as planned". **Never offer a menu that leaves out what you actually
-  think is right.**
-- **Do not manufacture a fork.** No genuine uncertainty? Say in one line where you are
-  heading and why, and go. A forced choice invents a crossroads that was not there.
-- **Cite evidence** — a `file:line`, an earlier decision, a measured result.
-- **Keep the options wide enough that "Other" is not the only true answer**, and include
-  one that genuinely challenges the current course where such a course exists.
-- Ask about the **unfinished work** too — finish, drop, or hand off.
+Ask about every probe that returns something, plus anything whose answer changes what you
+do next, plus the unfinished work — finish, drop, hand off — and any wall from step 4.
+Usually 1–3 questions. **If all five come back empty — rarer than it feels — say in one
+line that you ran them and found nothing, then go.** "There was no real question" is a
+conclusion you reach by looking, not by not looking.
 
-Decisions others depend on come first.
+Use **`AskUserQuestion`, batched, up to 4 per round**, selectable options each carrying its
+consequence. 🪤 **Frame it well — a wrong frame steers harder than a wrong decision would.**
 
-## 4. Carry on
+- **Lead with your own recommendation**, marked `(Recommended)`, its evidence cited — a
+  `file:line`, an earlier decision, a measured result — including when it is "carry on as
+  planned". **Never offer a menu that leaves out what you actually think is right.**
+- **Keep the options wide enough that "Other" is not the only true answer**, and include one
+  that genuinely challenges the current course. Decisions others depend on come first.
+
+## 4. Carry on — and break what is in the way
 
 **Decisions are now locked** for the rest of the session: do not re-ask, do not
 re-litigate, do not seek confirmation to begin.
@@ -80,34 +96,56 @@ re-litigate, do not seek confirmation to begin.
    Starting something new on top of them is how a session accumulates debt.
 2. **Then take the next item.** With a plan (see `to-execution-plan`) that is its next
    step, and its DONE-WHEN is your stop condition. Without one, what the objective implies.
-3. **Keep going** until genuinely blocked, the objective is met **on evidence**, or a new
-   decision clears the step-3 bar.
+3. **Keep going** until the objective is met **on evidence**, a wall survives the ladder
+   below, or a new decision clears the step-3 bar.
+
+### When something stands in the way
+
+🔴 **A wall is work, not a finding.** Do not report it, route around it, or narrow the
+scope to avoid it until it has survived the ladder in [WALLS.md](WALLS.md) — stated
+falsifiably, diagnosed to the real failure, attacked by a *different* approach, and checked
+against something outside your own head. Most "X doesn't support Y" is "I don't know how X
+does Y". Two real approaches down, or ~5 attempts / ~30 min, and it escalates.
+
+🔴 **You do not defer, drop, descope, skip, shrink or substitute on your own authority.** A
+wall that survives goes to the user as a question carrying its claim, what you tried, **how
+far the conclusion can be trusted** — `measured` · `documented` · `inferred`, and `inferred`
+is the weakest and by far the most common — and what would change it. [WALLS.md](WALLS.md)
+has the form. Then they choose: keep pushing · defer with a trigger · drop it · hand it off.
+
+🪤 **Simply not doing it is the same act with no decision to point at.** A deferral leaves a
+trace; an item quietly never started, half-satisfied, or swapped for an easier neighbour
+leaves none — so no rule about authority can catch it. Reconciliation catches it instead:
+**every item from step 1 lands on exactly one line of the closing block.** An item on none
+of them was written off by nobody. [WALLS.md](WALLS.md) lists the shapes this takes.
 
 Say what you are doing in one line, then do it. Report at the end, not before starting.
-Close with this block, **omitting every line that has nothing in it** — on a routine
-update that is often just VERIFIED and NEXT. Write it into the run-file or spec if the
-project keeps one, so it survives a compaction.
+Close with this block, **omitting every line that has nothing in it**. Write it into the
+run-file or spec if the project keeps one, so it survives a compaction.
 
 ```
 VERIFIED   what you re-checked, and how
+WALLS      what stood in the way, what you tried, how each ended
 DECIDED    what they chose, in their words
 DEFAULTS   what you settled yourself, and why
-DROPPED    what you are explicitly not doing
-DEFERRED   still open + the exact trigger that resurfaces it
-NEXT       the remaining work, in the order you will now do it
+DROPPED    what they agreed to stop doing
+DEFERRED   what they agreed to park — claim, confidence, and the trigger that resurfaces it
+NEXT       the remaining work, in the order you will now do it — anything not verified,
+           decided, dropped or deferred lands here. Nothing leaves the sweep unaccounted.
 ```
 
 ## Example
 
-> *"Phase 2 is done, tests green."* → `/realign`
+> *"Phase 2 is done, tests green. The idempotency key needs a schema change, so I deferred
+> it."* → `/realign`
 >
-> Re-run: 2 failures, "green" predated the last edit. The spec asks for idempotent
-> retries; the diff has retries but no idempotency key, so R4 is unmapped. A migration
-> script was written and never run.
+> Re-run: 2 failures, and "green" predated the last edit. R4 is unmapped. A migration script
+> was written and never run. The deferral was `inferred` — reasoned from the model file,
+> never tried; attacked, the schema change is one nullable column and
+> `orders/migrations/0007` already does exactly this. Twenty minutes. It was never a wall.
 >
-> Settled alone: fix the tests, run the migration. Asked: the idempotency gap is a scope
-> call, and phase 3 assumes Postgres while phase 2 introduced DuckDB — with "carry on
-> unchanged" among the options, because it may still be right.
+> One direction question: phase 3 assumes Postgres while phase 2 introduced DuckDB — with
+> "carry on unchanged" among the options, because it may still be right. Then the tests, the
+> migration, phase 3.
 >
-> Then all three closed and phase 3 started. The claim was wrong three ways, none of them
-> visible from the summary.
+> The claim was wrong three ways, and the thing written off was the cheapest of them.

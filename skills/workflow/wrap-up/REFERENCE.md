@@ -10,10 +10,10 @@ Every request and every derived item gets exactly one.
 |---|---|---|
 | `delivered` | Done and verified. Cite the evidence. | Delivered |
 | `partial` | Some of it shipped. Name precisely what is missing. | Not delivered |
-| `blocked` | Could not proceed. Name the blocker and what would unblock it. | Not delivered |
+| `blocked` | Could not proceed. Name the blocker, what would unblock it, and how far the claim is trusted. | Not delivered |
 | `needs-decision` | Work is ready but waiting on a choice only the user can make. | Needs your decision |
 | `descoped` | Dropped on purpose. Name who decided, and when. | Not delivered |
-| `failed` | Attempted, did not work. Say what was learned. | Not delivered |
+| `failed` | Attempted, did not work. Say what was tried, what came out, and what was learned. | Not delivered |
 | `not started` | Never begun. Say why - deprioritised, forgotten, superseded. | Not delivered |
 
 `blocked` vs `needs-decision` is the distinction that matters most in practice. `blocked` is an
@@ -21,6 +21,10 @@ external obstacle - a broken credential, an unreachable host, a failing dependen
 owner other than the user. `needs-decision` is waiting on a judgment call, and if it is not
 surfaced explicitly it will simply never happen. Default to `needs-decision` when a question was
 asked and never answered.
+
+🪤 A `blocked` or `failed` row carries a trust label - `measured` · `documented` · `inferred` -
+under the citation rule in `SKILL.md`. `inferred` means nobody ever actually ran it, and those
+are the rows worth re-opening first.
 
 ## Where ledger rows come from
 

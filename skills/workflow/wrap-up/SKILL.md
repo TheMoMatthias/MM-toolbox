@@ -67,6 +67,13 @@ be established". Definitions: [REFERENCE.md](REFERENCE.md).
 summary line. "Looks correct", "traced manually" and "should work" are not citations; they read
 identically whether the work is right or not. Downgrade to `partial` instead.
 
+**Nothing is `blocked`, `failed` or `descoped` without one either.** The bar is the same in both
+directions: name the attempt and its actual output, plus how far the conclusion can be trusted -
+`measured` (it ran and you watched it fail) · `documented` (a primary source says so; cite it) ·
+`inferred` (reasoned from code you read, never run). 🪤 `inferred` is the weakest and by far the
+most common, and in a report it reads identically to `measured`. Label it. An item blocked on
+`inferred` is a finding someone should re-open, not a fact the reader can build on.
+
 ## Step 3 - The report
 
 All seven sections, always, in this order. An empty section says "none"; it is never dropped.

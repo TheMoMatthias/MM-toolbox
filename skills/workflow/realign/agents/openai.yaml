@@ -1,5 +1,5 @@
 interface:
   display_name: "Realign"
-  short_description: "Surface every open decision and put it to the user"
+  short_description: "Re-check the claim on evidence, break what is in the way, then carry on"
 policy:
   allow_implicit_invocation: false
