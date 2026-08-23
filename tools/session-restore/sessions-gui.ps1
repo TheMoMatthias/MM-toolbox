@@ -556,6 +556,11 @@ $script:olderCount   = 0
 # The anchor for shift-click ticking: the last conversation whose tick was
 # changed by hand, so a shift-click has something to draw a range from.
 $script:tickAnchor   = $null
+# The fast pass's index and its last-seen mtimes.
+$script:byId         = @{}
+$script:dirOf        = @{}
+$script:mtimes       = @{}
+$script:reallyClose  = $false
 # The reading pane's share of the window, in pixels, remembered while the tool
 # is open so closing and reopening it does not throw the split away.
 $script:readHeight   = 340.0
@@ -2093,6 +2098,8 @@ function Update-AllLive {
     # reselect a row to find out whether their half-typed reply is still aimed
     # at the right thing.
     if ($script:readOpen -and $script:readSession) { Update-SendState }
+    Update-TrayBadge
+    Update-Toasts
 }
 
 # The taskbar button, flashed until the window is looked at. FLASHW_TIMERNOFG
@@ -2146,6 +2153,144 @@ namespace SRGui
 '@
 }
 
+# ---------------------------------------------------------------------------
+# THE TRAY, THE TOAST, AND THE THROTTLE
+#
+# The point of the whole tool is that you should not have to be looking at it.
+# That needs three things and they are separate:
+#
+#   TRAY      the window can go away without the process going away, so the
+#             watching keeps happening while you are doing something else.
+#   TOAST     something reaches you when a session stops and waits. Fired ONLY
+#             on the transition into waiting, never re-fired for one that has
+#             been waiting since you last looked - a notifier that repeats is a
+#             notifier you turn off.
+#   THROTTLE  hidden, it stops rendering entirely and only keeps asking the one
+#             question that could produce a toast. A window nobody is looking at
+#             has no business rebuilding 86 rows every six seconds.
+#
+# ShowBalloonTip rather than Windows.UI.Notifications: on Windows 10 and 11 the
+# shell renders a balloon AS a toast, and it needs no AppUserModelID, no shortcut
+# in the Start Menu and no WinRT interop from PowerShell 5.1 - three things that
+# each fail silently on some machine. Everything here is wrapped: a notifier that
+# takes the tool down with it is worse than no notifier.
+# ---------------------------------------------------------------------------
+$script:tray        = $null
+$script:trayCount   = -1
+$script:hidden      = $false
+$script:toastPrev   = @{}
+
+function Initialize-Tray {
+    if ($script:tray) { return }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+    } catch { Write-SRLog "tray unavailable: $($_.Exception.Message)"; return }
+    try {
+        $ni = New-Object System.Windows.Forms.NotifyIcon
+        $ni.Text = 'Claude sessions'
+        $ni.Visible = $true
+        $ni.Add_MouseClick({ param($sender, $e)
+            if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+                $window.Dispatcher.Invoke([action]{ Show-FromTray })
+            }
+        })
+        $menu = New-Object System.Windows.Forms.ContextMenuStrip
+        $null = $menu.Items.Add('Show', $null, { $window.Dispatcher.Invoke([action]{ Show-FromTray }) })
+        $null = $menu.Items.Add('Quit', $null, { $window.Dispatcher.Invoke([action]{ $script:reallyClose = $true; $window.Close() }) })
+        $ni.ContextMenuStrip = $menu
+        $script:tray = $ni
+        Update-TrayBadge
+    } catch { Write-SRLog "tray failed: $($_.Exception.Message)" }
+}
+
+# THE COUNT IS DRAWN, not decorated onto a static icon: a tray icon that always
+# looks the same is a tray icon you stop seeing. Redrawn only when the number
+# changes - GDI handles are not free and this is called on every probe.
+function Update-TrayBadge {
+    if (-not $script:tray) { return }
+    $wait = @(Get-WaitingNow).Count
+    if ($wait -eq $script:trayCount) { return }
+    $script:trayCount = $wait
+    try {
+        $bmp = New-Object System.Drawing.Bitmap 32, 32
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        try {
+            $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+            $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+            $g.Clear([System.Drawing.Color]::Transparent)
+            $back = $(if ($wait) { [System.Drawing.Color]::FromArgb(246, 246, 246) } else { [System.Drawing.Color]::FromArgb(110, 110, 110) })
+            $brush = New-Object System.Drawing.SolidBrush $back
+            $g.FillEllipse($brush, 1, 1, 30, 30)
+            if ($wait -gt 0) {
+                $txt = $(if ($wait -gt 9) { '9+' } else { "$wait" })
+                $fs = $(if ($wait -gt 9) { 15 } else { 19 })
+                $font = New-Object System.Drawing.Font 'Segoe UI', $fs, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
+                $fmt = New-Object System.Drawing.StringFormat
+                $fmt.Alignment = 'Center'; $fmt.LineAlignment = 'Center'
+                $ink = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(12, 12, 12))
+                $g.DrawString($txt, $font, $ink, (New-Object System.Drawing.RectangleF 0, 1, 32, 31), $fmt)
+                $ink.Dispose(); $font.Dispose(); $fmt.Dispose()
+            }
+            $brush.Dispose()
+        } finally { $g.Dispose() }
+        $old = $script:tray.Icon
+        $script:tray.Icon = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+        $script:tray.Text = $(if ($wait) { "Claude sessions - $wait waiting for you" } else { 'Claude sessions - nothing waiting' })
+        if ($old) { try { $old.Dispose() } catch { } }
+        $bmp.Dispose()
+    } catch { Write-SRLog "tray badge failed: $($_.Exception.Message)" }
+}
+
+# ONLY ON THE TRANSITION. A conversation that has been waiting since before you
+# looked away is not news, and re-announcing it is how a notifier gets muted.
+function Show-Toast {
+    param([string]$Title, [string]$Body)
+    if (-not $script:tray) { return }
+    try {
+        $script:tray.BalloonTipTitle = $Title
+        $script:tray.BalloonTipText  = $Body
+        $script:tray.BalloonTipIcon  = [System.Windows.Forms.ToolTipIcon]::None
+        $script:tray.ShowBalloonTip(8000)
+    } catch { Write-SRLog "toast failed: $($_.Exception.Message)" }
+}
+
+function Update-Toasts {
+    $now = @(Get-WaitingNow)
+    $fresh = @($now | Where-Object { -not $script:toastPrev[$_.Id] })
+    $next = @{}
+    foreach ($x in $now) { $next[$x.Id] = $true }
+    $first = ($script:toastPrev.Count -eq 0)
+    $script:toastPrev = $next
+    # Nothing on the first pass: everything is "new" then, and thirteen toasts
+    # at startup is the definition of a notifier nobody keeps on.
+    if ($first -or -not $fresh.Count) { return }
+    if ($window.IsActive -and -not $script:hidden) { return }
+    if ($fresh.Count -eq 1) {
+        Show-Toast $fresh[0].Label 'has stopped and is waiting for you'
+    } else {
+        Show-Toast "$($fresh.Count) sessions are waiting for you" (@($fresh | ForEach-Object { $_.Label }) -join ', ')
+    }
+}
+
+function Hide-ToTray {
+    Initialize-Tray
+    if (-not $script:tray) { return }   # no tray, no hiding: a window nobody can get back is a lost window
+    $script:hidden = $true
+    $window.Hide()
+    if ($script:fastTimer) { $script:fastTimer.Stop() }
+    Set-Status 'watching from the tray' 'info'
+}
+
+function Show-FromTray {
+    $script:hidden = $false
+    $window.Show()
+    $window.WindowState = [System.Windows.WindowState]::Normal
+    $null = $window.Activate()
+    if ($script:fastTimer) { $script:fastTimer.Start() }
+    Update-List
+}
+
 function Start-TaskbarFlash {
     try {
         $h = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
@@ -2190,7 +2335,24 @@ function Get-WaitingNow {
             }
         }
     }
-    return ,@($out)
+    # NO LEADING COMMA, AND THIS ONE COST TWO BUGS AT ONCE.
+    #
+    # ",@(...)" exists to stop a ONE-element array unrolling to a scalar. What it
+    # also does is make @(f) at the call site an array of ONE element holding
+    # everything - so it only works if every caller assigns first and wraps
+    # second, forever. Update-NeedsBand did. The tray badge and the toaster,
+    # written later, did the obvious thing:
+    #
+    #     $wait = @(Get-WaitingNow).Count     -> always 1, whatever is waiting
+    #     $now  = @(Get-WaitingNow)           -> one element whose .Id is null,
+    #                                            so nothing was ever "fresh" and
+    #                                            no toast ever fired
+    #
+    # This is the sixth time this pattern has bitten this codebase. The comma is
+    # protection against a caller that pipes a bare return; @(...) at the call
+    # site is protection against everything, and every caller here already does
+    # it. Returning the plain array is right at zero, one and many.
+    return $out
 }
 
 function Update-NeedsBand {
@@ -2201,8 +2363,7 @@ function Update-NeedsBand {
         $ui.NeedsBand.Visibility = $V_Hide
         return
     }
-    $now = Get-WaitingNow
-    $now = @($now)
+    $now = @(Get-WaitingNow)
 
     if (-not $now.Count) {
         $ui.NeedsBand.Visibility = $V_Hide
@@ -3293,6 +3454,7 @@ function Set-Registry { param($Registry, $Config)
     # the chips that carried the right Tag and had no handler. It belongs here
     # because this is the one place $script:dirs changes.
     Update-FilterSources
+    Update-SessionIndex
 }
 
 function Set-ProbeResult { param($Result)
@@ -3389,6 +3551,70 @@ function Start-Rescan { param([switch]$NoScanPass)
         Set-Status $(if ($script:rescanNoScan) { 'live state refreshed' } else { 'rescanned - the registry and the live state are both current' }) 'info'
     }
     if (-not $started) { Set-Status 'still busy - one background pass at a time' 'warn' }
+}
+
+# ---------------------------------------------------------------------------
+# TWO SPEEDS, because the two questions cost three orders of magnitude apart.
+#
+#   SLOW   the full probe: WMI for command lines, `claude agents --json` at a
+#          MEASURED 653 ms median. That answers "what is each session doing",
+#          and it is far too expensive to ask every few seconds.
+#   FAST   file mtimes for the handful of conversations that are live or recent.
+#          That answers "has anything moved", which is the question behind the
+#          unread dot and the "3m ago" stamp, and it is a dozen Get-Item calls.
+#
+# The fast pass NEVER changes what a session is doing - it only refreshes when
+# it last spoke. Letting it infer state from a file timestamp is how a tool ends
+# up disagreeing with itself between two refresh rates.
+# ---------------------------------------------------------------------------
+function Invoke-FastPass {
+    if ($script:busy -or $script:hidden) { return }
+    $changed = 0
+    foreach ($key in @($script:live.Keys) + @($script:running.Keys)) {
+        $sess = $script:byId[$key]
+        if (-not $sess) { continue }
+        $dir = $script:dirOf[$key]
+        if (-not $dir) { continue }
+        try {
+            $j = Get-SRTranscriptPath -Dir (Get-SessionCwd $sess $dir) -SessionId $sess.sessionId -Recorded $sess.jsonl
+            if (-not (Test-Path -LiteralPath $j)) { continue }
+            $mt = (Get-Item -LiteralPath $j).LastWriteTime
+            $was = $script:mtimes[$key]
+            if ($was -and $mt -le $was) { continue }
+            $script:mtimes[$key] = $mt
+            if ($was) {
+                # It moved. lastActive is what every stamp, sort and unread mark
+                # reads, so it is the one field worth writing here.
+                $sess.lastActive = $mt.ToString('o')
+                try { $script:said[$key] = Get-SRLastSaid -JsonlPath $j } catch { }
+                $changed++
+            }
+        } catch { }
+    }
+    if (-not $changed) { return }
+    Update-RowSeenMarks
+    # Repaint rather than rebuild: a rebuild reorders the list, and reordering
+    # under someone who is reading it is worse than a slightly stale sort.
+    foreach ($lst in @($script:rows, $script:inboxRows)) {
+        foreach ($r in $lst) { if ($r.Kind -eq 'session') { if ($r.Band) { Update-InboxRow $r } } }
+    }
+    Update-Header
+    if ($script:readOpen -and $script:readSession) { Update-SendState }
+}
+
+# An index from session id to its objects, so the fast pass does not walk every
+# project to find twelve conversations. Rebuilt whenever the registry is.
+function Update-SessionIndex {
+    $script:byId  = @{}
+    $script:dirOf = @{}
+    foreach ($d in $script:dirs) {
+        foreach ($sn in @($d.sessions)) {
+            if (-not $sn.sessionId) { continue }
+            $k = "$($sn.sessionId)".ToLower()
+            $script:byId[$k]  = $sn
+            $script:dirOf[$k] = $d
+        }
+    }
 }
 
 function Start-LiveProbe {
@@ -4512,6 +4738,17 @@ $window.Add_SourceInitialized({
     } catch { }
 })
 
+# --- minimising goes to the tray ---
+# MINIMISE, not close. Close means close: a tool that will not go away when you
+# press its close button is a tool people learn to kill from Task Manager. The
+# minimise button is the one gesture that already means "out of my way but not
+# gone", so that is the one that hands it to the tray.
+$window.Add_StateChanged({
+    Invoke-Guarded {
+        if ($window.WindowState -eq [System.Windows.WindowState]::Minimized) { Hide-ToTray }
+    } 'minimise'
+})
+
 # --- closing ---
 $window.Add_Closing({ param($s, $e)
     if (-not $script:exitMode -and $script:dirty) {
@@ -4523,7 +4760,20 @@ $window.Add_Closing({ param($s, $e)
         if ($r -eq 'Cancel') { $e.Cancel = $true; return }
         if ($r -eq 'Yes') { try { Save-Now } catch { } }
     }
-    foreach ($t in @($script:searchTimer, $script:pollTimer, $script:liveTimer, $script:readTimer, $script:noteTimer)) { if ($t) { $t.Stop() } }
+    foreach ($t in @($script:searchTimer, $script:pollTimer, $script:liveTimer,
+                     $script:readTimer, $script:noteTimer, $script:fastTimer)) { if ($t) { $t.Stop() } }
+    # The tray icon outlives the window unless it is told not to: an orphaned
+    # NotifyIcon sits in the tray until something hovers over it.
+    if ($script:tray) {
+        try { $script:tray.Visible = $false } catch { }
+        try { $script:tray.Dispose() } catch { }
+        $script:tray = $null
+    }
+    if ($script:fsw) {
+        try { $script:fsw.EnableRaisingEvents = $false } catch { }
+        try { $script:fsw.Dispose() } catch { }
+        $script:fsw = $null
+    }
     # A worker still running would keep the process alive after the window has
     # gone. Stopping it is safe: nothing here half-writes the registry -- every
     # write is an atomic replace under the named mutex.
@@ -4546,6 +4796,39 @@ $script:pollTimer.Start()
 # liveness probe (and only the probe -- no scan, no writes, no launches) repeats
 # on a timer, and the header says when it last ran. Set the interval to 0 to turn
 # this off and rely on Rescan alone.
+# THE FAST PASS. Six seconds is chosen against what it costs: a dozen file
+# stats, no WMI, no agents --json, no rebuild unless something actually moved.
+$script:fastIntervalSeconds = 6
+$script:fastTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:fastTimer.Interval = [TimeSpan]::FromSeconds($script:fastIntervalSeconds)
+$script:fastTimer.Add_Tick({ try { Invoke-Guarded { Invoke-FastPass } 'the refresh' } catch { } })
+$script:fastTimer.Start()
+
+# A WATCHER ON TOP OF THE TIMER, not instead of it. FileSystemWatcher misses
+# events under load and dies quietly when a directory is replaced, so it is
+# here to make the common case feel instant, and the timer is what makes the
+# tool correct. Its handler does nothing but poke the fast timer: the callback
+# arrives on a threadpool thread, and touching the UI from there is a crash.
+try {
+    $root = $SR_Projects
+    if ($root -and (Test-Path -LiteralPath $root)) {
+        $script:fsw = New-Object System.IO.FileSystemWatcher $root, '*.jsonl'
+        $script:fsw.IncludeSubdirectories = $true
+        $script:fsw.NotifyFilter = [System.IO.NotifyFilters]::LastWrite
+        $onChange = {
+            try {
+                $script:fastTimer.Dispatcher.BeginInvoke([action]{
+                    $script:fastTimer.Stop(); $script:fastTimer.Start()
+                    Invoke-Guarded { Invoke-FastPass } 'the refresh'
+                }) | Out-Null
+            } catch { }
+        }
+        $null = Register-ObjectEvent -InputObject $script:fsw -EventName Changed -Action $onChange
+        $script:fsw.EnableRaisingEvents = $true
+        Write-SRLog "watching $root for transcript writes"
+    }
+} catch { Write-SRLog "file watcher unavailable: $($_.Exception.Message)" }
+
 $script:liveIntervalSeconds = 60
 if ($script:liveIntervalSeconds -gt 0) {
     $script:liveTimer = New-Object System.Windows.Threading.DispatcherTimer
@@ -4563,6 +4846,7 @@ try { $script:suppress = $true; $ui.WorktreeToggle.IsChecked = $script:showWt } 
 # ModeInbox carries IsChecked="True" in the markup, but Add_Checked is attached
 # after the window loads, so that initial state raises nothing. Apply the mode
 # explicitly or the window opens claiming Inbox while showing the tree.
+Initialize-Tray
 Set-ViewMode $script:viewMode
 Set-Status 'Inbox: what each conversation last said, and which of them are waiting on you. Projects and Restore are the other two views.' 'info'
 

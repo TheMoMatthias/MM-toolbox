@@ -137,10 +137,10 @@ foreach ($k in @($StagedAgents.Keys)) { if ($StagedAgents[$k].Pid) { $script:run
 $script:live = @{ $ids[4].ToLower() = $true }
 
 # lastActive drives the sort inside a band, so stage it to match the states.
-$byId = @{}
-foreach ($d in $script:dirs) { foreach ($s in @($d.sessions)) { if ($s.sessionId) { $byId["$($s.sessionId)".ToLower()] = $s } }}
-$byId[$ids[0].ToLower()].lastActive = (Get-Date).AddMinutes(-2).ToString('o')
-$byId[$ids[5].ToLower()].lastActive = (Get-Date).AddMinutes(-1).ToString('o')
+$stagedById = @{}
+foreach ($d in $script:dirs) { foreach ($s in @($d.sessions)) { if ($s.sessionId) { $stagedById["$($s.sessionId)".ToLower()] = $s } }}
+$stagedById[$ids[0].ToLower()].lastActive = (Get-Date).AddMinutes(-2).ToString('o')
+$stagedById[$ids[5].ToLower()].lastActive = (Get-Date).AddMinutes(-1).ToString('o')
 
 # --- build it ---------------------------------------------------------------
 try { Update-List -ToTop } catch { Fail "Update-List threw: $($_.Exception.Message)" }
@@ -665,6 +665,120 @@ else {
         Set-SessionField $sess 'lastSeen' $wasSeen
         Set-SessionField $sess 'note' $wasNote
         Update-RowSeenMarks
+    }
+}
+
+# --- 10h. THE NOTIFIER, AND THE TWO SPEEDS ----------------------------------
+# A notifier that repeats is a notifier you turn off, so the only thing worth
+# asserting about it is WHEN IT STAYS QUIET. Show-Toast is replaced with a
+# recorder rather than mocked at the NotifyIcon: the decision being tested is
+# "should anything be announced", which is entirely above the shell.
+$script:toastLog = @()
+function Show-Toast { param([string]$Title, [string]$Body) $script:toastLog += "$Title|$Body" }
+
+$script:toastPrev = @{}
+$script:hidden = $true          # so IsActive does not suppress it
+$script:toastLog = @()
+Update-Toasts
+if ($script:toastLog.Count) {
+    Fail "the first pass announced $($script:toastLog.Count) session(s) - everything is 'new' at startup and thirteen toasts is how a notifier gets muted"
+} else { Pass 'the first pass announces nothing, however many are already waiting' }
+
+# Nothing has changed since: still quiet.
+$script:toastLog = @()
+Update-Toasts
+if ($script:toastLog.Count) { Fail 'it re-announced conversations that were already waiting' }
+else { Pass 'a conversation that was already waiting is not news' }
+
+# One NEW one. This is the only case that should ever reach the shell.
+$fresh = $ids[3].ToLower()      # the staged idle session
+$StagedAgents[$fresh] = New-Agent -Status 'waiting' -WaitingFor 'input needed' -Name 'STAGE-NEWWAIT'
+$StagedConv[$fresh]   = New-Conv -State 'waiting' -Detail 'input needed' -AgeMin 1
+$script:agents = $StagedAgents
+$script:conv   = $StagedConv
+$script:toastLog = @()
+Update-Toasts
+# NAMED THE WAY THE ROW NAMES IT. The agent's own name ('STAGE-NEWWAIT') is an
+# internal label; a toast that used it would name something the operator cannot
+# find in the list. Get-WaitingNow uses the conversation title, and so must this.
+$freshTitle = "$(Get-SessionTitle $stagedById[$fresh] $script:dirOf[$fresh])"
+if ($script:toastLog.Count -ne 1) { Fail "a session that has just started waiting produced $($script:toastLog.Count) toast(s)" }
+elseif ("$($script:toastLog[0])" -notmatch [regex]::Escape($freshTitle)) { Fail "the toast says '$($script:toastLog[0])' but the row is called '$freshTitle'" }
+else { Pass "only the one that just started waiting is announced, by the name on its row: '$($script:toastLog[0])'" }
+
+# And not again.
+$script:toastLog = @()
+Update-Toasts
+if ($script:toastLog.Count) { Fail 'the same session was announced twice' }
+else { Pass 'it is announced once, not until it is dealt with' }
+
+# Put the fixture back.
+$StagedAgents[$fresh] = New-Agent -Status 'idle' -Name 'STAGE-IDLE'
+$StagedConv[$fresh]   = New-Conv -State 'idle' -Detail 'at its prompt, nothing pending' -Stale $true -AgeMin 20
+$script:agents = $StagedAgents
+$script:conv   = $StagedConv
+$script:hidden = $false
+
+# THE BADGE COUNTS WHAT IS WAITING, and it counted 1 forever: Get-WaitingNow
+# returned ",@(...)", so "@(Get-WaitingNow).Count" was the length of a
+# one-element array holding everything. Asserted against the band, which is the
+# same set by construction.
+$bandWait = @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'session' -and $_.Band -eq 'needs' }).Count
+$fnWait = @(Get-WaitingNow).Count
+if ($fnWait -ne $bandWait) { Fail "Get-WaitingNow reports $fnWait but NEEDS YOU holds $bandWait" }
+else { Pass "the waiting count is a count ($fnWait), not the length of a wrapper" }
+
+# --- the fast pass ----------------------------------------------------------
+# Six seconds of file stats against 653 ms of `claude agents --json`: the two
+# questions cost three orders of magnitude apart, so they run at two speeds. The
+# fast one answers "has anything moved" and MUST NOT answer "what is it doing" -
+# a tool that infers state from a file timestamp disagrees with itself between
+# its own refresh rates.
+$fastVictim = $null
+foreach ($k in @($script:running.Keys)) { if ($script:byId[$k]) { $fastVictim = $k; break } }
+if (-not $fastVictim) { Fail 'no running conversation indexed for the fast pass' }
+else {
+    $sessF = $script:byId[$fastVictim]
+    $wasActive = "$($sessF.lastActive)"
+    $wasState  = "$((Get-Conv $sessF).State)"
+    try {
+        # First sighting records the mtime and claims nothing: with no previous
+        # reading there is no movement to report, only a baseline to take.
+        $script:mtimes = @{}
+        Invoke-FastPass
+        if ("$($sessF.lastActive)" -ne $wasActive) { Fail 'the first fast pass reported movement it had no baseline for' }
+        else { Pass 'the first fast pass takes a baseline and reports nothing' }
+
+        # Now pretend the last reading was old. The file is newer, so it moved.
+        # FROM A SENTINEL. The registry's lastActive is ALREADY derived from the
+        # transcript's mtime, so "did lastActive change" compares a value with
+        # itself and passes whether the pass ran or not. The sentinel makes the
+        # write unmistakable - the first version of this assertion could not
+        # have failed for the right reason.
+        $sentinel = (Get-Date).AddYears(-5).ToString('o')
+        $sessF.lastActive = $sentinel
+        $script:mtimes[$fastVictim] = (Get-Date).AddDays(-30)
+        Invoke-FastPass
+        if ("$($sessF.lastActive)" -eq $sentinel) { Fail 'the fast pass did not notice a transcript that had moved' }
+        else { Pass 'the fast pass notices a transcript that moved, without a probe' }
+
+        # AND IT DID NOT TOUCH WHAT THE SESSION IS DOING.
+        if ("$((Get-Conv $sessF).State)" -ne $wasState) {
+            Fail "the fast pass changed what the session is doing ($wasState -> $((Get-Conv $sessF).State)) - only the slow probe may do that"
+        } else { Pass 'the fast pass never changes what a session is doing' }
+
+        # HIDDEN, IT DOES NOTHING AT ALL. A window nobody is looking at has no
+        # business rebuilding 86 rows every six seconds.
+        $sessF.lastActive = $sentinel
+        $script:mtimes[$fastVictim] = (Get-Date).AddDays(-30)
+        $script:hidden = $true
+        Invoke-FastPass
+        $script:hidden = $false
+        if ("$($sessF.lastActive)" -ne $sentinel) { Fail 'the fast pass ran while the window was hidden' }
+        else { Pass 'hidden, the fast pass does nothing' }
+    } finally {
+        $sessF.lastActive = $wasActive
+        $script:hidden = $false
     }
 }
 
