@@ -566,15 +566,26 @@ $script:viewMode = 'inbox'
 # that the lit chips ARE the whole filter, readable in one glance.
 # ---------------------------------------------------------------------------
 $script:filter    = $null   # the text box
-$script:fState    = @{}     # waiting | working | summarising | idle | unknown
+# THE BAND, not the last-known transcript state. $script:fState held the latter
+# and made the chip called "waiting" select 110 of 143 conversations while the
+# band called NEEDS YOU held 6 -- one word meaning two things on one screen.
+# Filtering on Get-InboxBand ties a chip's count to a band's count by
+# construction. The last-known state survives as the words on a row ("was
+# waiting"), which is the only place it was ever the right answer.
+$script:fBand     = @{}     # needs | working | idle | quiet
 $script:fLive     = @{}     # live | notlive | gone
 $script:fTick     = @{}     # ticked | unticked
-$script:fPin      = @{}     # pinned
+$script:fPin      = @{}     # pinned | unpinned
 $script:fAge      = @{}     # recent | stale
 $script:fProject  = $null   # a project path, or $null for any
 $script:fLane     = $null   # a lane name, or $null for any
 $script:matchCount = 0
 $script:totalCount = 0
+# How many conversations sit in each band, over EVERYTHING rather than over what
+# is currently shown. The band chips print it, which is what earns them
+# permanent space: the line answers "how much is waiting on me" before it is
+# clicked. Filled by Update-Header, which already walks every session.
+$script:bandCount  = @{}
 
 $script:visCache     = @{}
 $script:rows         = New-Object System.Collections.Generic.List[object]
@@ -783,37 +794,25 @@ function Get-Conv { param($Session)
     return (Resolve-SRSessionState -Agent $a -Conv $c)
 }
 
-# The bucket a conversation falls in for the DOING dimension.
+# GONE, and worth saying why. Get-ConvBucket partitioned conversations by the
+# LAST state their transcript was seen in, and the DOING chips selected on it.
+# Measured over the whole registry: 110 of 143 bucketed as 'waiting', because
+# every conversation that ever ended on an assistant turn ends up there and
+# stays there forever. A chip that selects 77% of everything is
+# indistinguishable from a chip that does nothing, which is exactly how it read.
 #
-# This is a PARTITION: every conversation is in exactly one bucket, so the chips
-# never overlap, OR-within-the-dimension adds up, and the counts cannot
-# double-count. That is the whole reason 'idle' exists here and does not exist in
-# _common.ps1: Get-SRConversationState returns the LAST state a conversation was
-# seen in plus a Stale flag, deliberately, so that the last-known state is not
-# thrown away. Measured 2026-08-22 across all 119 conversations: 113 of them are
-# stale. Collapsing those into one bucket in the DISPLAY would erase almost
-# everything the function works to preserve, so the display keeps the state word
-# and marks staleness with "was". The FILTER is the one place a flat partition is
-# worth more than the detail, because a chip has to select a set the operator can
-# point at: 'idle' selects exactly the rows that read "was ...".
-function Get-ConvBucket { param($Session)
-    # $cv rather than $c: see the note in Update-RowConv. $c IS $C, the palette.
-    $cv = Get-Conv $Session
-    if (-not $cv) { return 'unknown' }
-    $s = "$($cv.State)"
-    if ($s -eq 'unknown' -or -not $s) { return 'unknown' }
-    # 'idle' is claude's own word now -- at its prompt, nothing pending -- rather
-    # than the staleness collapse it used to be. A conversation that is NOT
-    # running is not idle, it is a last-known state, and it buckets as that.
-    if ($cv.Stale -and $s -ne 'idle') { return $s }
-    return $s
-}
+# The distinction it was protecting is real and is NOT lost: a conversation's
+# last-known state is still shown on its row, prefixed "was", straight out of
+# Get-Conv. What is gone is the idea that a filter should select on it. The
+# chips now select on Get-InboxBand -- the same four groups the list is headed
+# with and the pills count -- so a chip, a band heading and a pill are one
+# number by construction rather than three that happen to agree.
 
 # Is anything filtering at all? A fold is IGNORED while it is, because hiding the
 # very rows that were searched for is the one thing a filter must never do.
 function Test-AnyFilter {
     return [bool]($script:filter -or $script:fProject -or $script:fLane -or
-                  $script:fState.Count -or $script:fLive.Count -or $script:fTick.Count -or
+                  $script:fBand.Count -or $script:fLive.Count -or $script:fTick.Count -or
                   $script:fPin.Count -or $script:fAge.Count)
 }
 
@@ -838,7 +837,10 @@ function Test-RowMatch { param($Session, $Dir, $Lane)
     if ($script:fProject -and ("$($Dir.path)" -ne $script:fProject)) { return $false }
     if ($script:fLane    -and ("$Lane" -ne $script:fLane))           { return $false }
 
-    if ($script:fState.Count -and -not $script:fState[(Get-ConvBucket $Session)]) { return $false }
+    # THE BAND. Deliberately the same call Build-InboxRows uses to group the
+    # list and Update-Header uses to count the pills, so a chip cannot select a
+    # different set from the heading that names it.
+    if ($script:fBand.Count -and -not $script:fBand[(Get-InboxBand $Session)]) { return $false }
 
     if ($script:fLive.Count) {
         # LIVENESS, not state. run / act / new are all "something is holding it";
@@ -858,7 +860,14 @@ function Test-RowMatch { param($Session, $Dir, $Lane)
         if (-not $script:fTick[$t]) { return $false }
     }
 
-    if ($script:fPin.Count -and -not (Test-Pinned $Session)) { return $false }
+    if ($script:fPin.Count) {
+        # Two values, like every other dimension. It was one chip in a two-value
+        # world: 128 of 143 conversations are pinned -- touching one pins it --
+        # so lighting "pinned" selected almost everything and read as broken.
+        # The useful half was always the inverse, and it was unreachable.
+        $pn = $(if (Test-Pinned $Session) { 'pinned' } else { 'unpinned' })
+        if (-not $script:fPin[$pn]) { return $false }
+    }
 
     if ($script:fAge.Count) {
         # The band the tool already understands: recencyDays, the same rule that
@@ -1102,12 +1111,13 @@ foreach ($n in @(
     # element it was -- so keep the two in step.
     'WaitSummary','FilterCount','ClearFilters','ProjectFilter','LaneFilter',
     'FlLive','FlNot','FlGone',
-    'FsWaiting','FsWorking','FsSumm','FsIdle','FsUnknown',
-    'FtOn','FtOff','FpPin','FaRecent','FaStale',
+    'FbNeeds','FbWorking','FbIdle','FbQuiet',
+    'FtOn','FtOff','FpPin','FpFree','FaRecent','FaStale',
     'ListShift','NeedsBand','NeedsLabel','NeedsList',
     'ReadPane','ReadName','ReadWhat','ReadView','ReadBack','ReadRefresh','ReadOpen',
     'LegendBox','LegendToggle','SendBox','SendBtn','SendNote',
-    'FilterBar','FilterBtn','BulkBtn','FilterChips',
+    'FilterBar','BulkBtn','FilterChips','FilterMain','FilterMore',
+    'MoreFilters','ActiveTokens',
     # The inbox: its own list, the view switch, and the three count pills that
     # are now buttons rather than decoration.
     'InboxList','ModeInbox','ModeTree','ModeRestore','LivePill','WaitPill','TickPill',
@@ -1945,7 +1955,7 @@ function Get-FilterDimensionCount {
     if ($script:filter)       { $n++ }
     if ($script:fProject)     { $n++ }
     if ($script:fLane)        { $n++ }
-    if ($script:fState.Count) { $n++ }
+    if ($script:fBand.Count)  { $n++ }
     if ($script:fLive.Count)  { $n++ }
     if ($script:fTick.Count)  { $n++ }
     if ($script:fPin.Count)   { $n++ }
@@ -1953,41 +1963,115 @@ function Get-FilterDimensionCount {
     return $n
 }
 
+# A band chip says what it selects AND how much of it there is. Counted over
+# every conversation, not over what survives the current filter: a count that
+# shrank as you filtered would be telling you about the screen rather than about
+# the machine, and the question it answers is about the machine.
+function Update-BandChips {
+    foreach ($pair in @(
+        @{ C = $ui.FbNeeds;   K = 'needs';   L = 'Needs you' }
+        @{ C = $ui.FbWorking; K = 'working'; L = 'Working' }
+        @{ C = $ui.FbIdle;    K = 'idle';    L = 'Idle' }
+        @{ C = $ui.FbQuiet;   K = 'quiet';   L = 'Not running' }
+    )) {
+        if (-not $pair.C) { continue }
+        $k = [int]$script:bandCount[$pair.K]
+        $pair.C.Content = $(if ($k) { "$($pair.L)  $k" } else { $pair.L })
+        # A band with nothing in it is still worth showing -- its absence is
+        # information -- but it is not worth clicking, and a chip that selects
+        # nothing looks broken the moment it is pressed.
+        $pair.C.IsEnabled = ($k -gt 0 -or $pair.C.IsChecked)
+    }
+}
+
+# Every filter currently applied, as a token you can take off on its own. The
+# chips are self-describing; the text box and the two dropdowns are not, and a
+# filter you cannot see reads as missing data rather than as a filter.
+function Update-ActiveTokens {
+    if (-not $ui.ActiveTokens) { return }
+    $ui.ActiveTokens.Children.Clear()
+    foreach ($t in @(Get-FilterTokens)) {
+        $b = New-Object System.Windows.Controls.Border
+        $b.Background      = $Pal.Raised
+        $b.BorderBrush     = $Pal.Hairline
+        $b.BorderThickness = New-Object System.Windows.Thickness 1
+        $b.CornerRadius    = New-Object System.Windows.CornerRadius 9
+        $b.Padding         = New-Object System.Windows.Thickness 9, 2, 4, 2
+        $b.Margin          = New-Object System.Windows.Thickness 0, 0, 6, 0
+        $b.VerticalAlignment = 'Center'
+
+        $sp = New-Object System.Windows.Controls.StackPanel
+        $sp.Orientation = 'Horizontal'
+
+        $tb = New-Object System.Windows.Controls.TextBlock
+        $tb.Text = $t.Label
+        $tb.Foreground = $Pal.TextHigh
+        $tb.FontSize = 11.5
+        $tb.VerticalAlignment = 'Center'
+        $null = $sp.Children.Add($tb)
+
+        # The x carries the token's key in its Tag; one handler on the strip
+        # reads it back. Building thirteen closures that each capture a
+        # different key is the version of this that leaks.
+        $x = New-Object System.Windows.Controls.Button
+        $x.Content = 'x'
+        $x.Tag     = $t.Key
+        $x.Style   = $window.FindResource('BtnBare')
+        $x.Width   = 16
+        $x.Height  = 16
+        $x.Margin  = New-Object System.Windows.Thickness 6, 0, 0, 0
+        $x.Foreground = $Pal.TextMid
+        $x.FontSize = 11
+        $x.ToolTip = "Drop this filter"
+        $x.SetValue([System.Windows.Automation.AutomationProperties]::NameProperty, "drop $($t.Label)")
+        $null = $sp.Children.Add($x)
+
+        $b.Child = $sp
+        $null = $ui.ActiveTokens.Children.Add($b)
+    }
+}
+
 function Update-FilterReadout {
     if (-not $ui.FilterCount) { return }
     $dims = Get-FilterDimensionCount
+    Update-BandChips
+    Update-ActiveTokens
     if ($dims -eq 0) {
         $ui.FilterCount.Text = "all {0} conversations" -f $script:totalCount
         $ui.FilterCount.Foreground = $Pal.TextDim
     } else {
-        $ui.FilterCount.Text = "{0} of {1} conversations   |   {2} filter{3} on" -f `
-            $script:matchCount, $script:totalCount, $dims, $(if ($dims -eq 1) { '' } else { 's' })
+        $ui.FilterCount.Text = "{0} of {1} shown" -f $script:matchCount, $script:totalCount
         # A filter that matches nothing is the loudest thing on the strip, because
         # it is the one state the operator most needs to notice.
         $ui.FilterCount.Foreground = $(if ($script:matchCount) { $Pal.TextHigh } else { $Pal.TextMax })
     }
     $ui.ClearFilters.IsEnabled = ($dims -gt 0)
 
-    # The button that opens the bar carries the count, so folding the bar away
-    # can never hide the fact that something is being filtered out. A hidden
-    # filter with no readout is the one way this fold could do harm.
-    if ($ui.FilterBtn) {
-        $ui.FilterBtn.Content = $(if ($dims -eq 0) { 'Filters' } else { "Filters  $dims" })
-        # Open it on its own the moment a filter is applied from anywhere else --
-        # the search box, a keyboard shortcut. Being filtered without being able
-        # to see by what is worse than a row of chips.
-        if ($dims -gt 0 -and $ui.FilterBar.Visibility -ne $V_Show) {
-            $ui.FilterBtn.IsChecked = $true
-            $ui.FilterBar.Visibility = $V_Show
+    # The More fold carries the count of what is hidden inside it, so folding it
+    # away can never conceal that something in there is filtering. The permanent
+    # line needs no such badge: its chips ARE its readout.
+    if ($ui.MoreFilters) {
+        $hidden = 0
+        if ($script:fLive.Count) { $hidden++ }
+        if ($script:fTick.Count) { $hidden++ }
+        if ($script:fPin.Count)  { $hidden++ }
+        if ($script:fAge.Count)  { $hidden++ }
+        $ui.MoreFilters.Content = $(if ($hidden) { "More  $hidden" } else { 'More' })
+        # Open it on its own the moment one of ITS filters is applied from
+        # somewhere else -- a keyboard shortcut, Clear undoing a chip. Being
+        # filtered without being able to see by what is the harm this prevents.
+        if ($hidden -gt 0 -and $ui.FilterMore.Visibility -ne $V_Show) {
+            $ui.MoreFilters.IsChecked = $true
+            $ui.FilterMore.Visibility = $V_Show
         }
     }
 }
 
 function Get-ChipControls {
     return @(
-        $ui.FsWaiting, $ui.FsWorking, $ui.FsSumm, $ui.FsIdle, $ui.FsUnknown,
+        $ui.FbNeeds, $ui.FbWorking, $ui.FbIdle, $ui.FbQuiet,
         $ui.FlLive, $ui.FlNot, $ui.FlGone,
-        $ui.FtOn, $ui.FtOff, $ui.FpPin,
+        $ui.FtOn, $ui.FtOff, $ui.FpPin, $ui.FpFree,
         $ui.FaRecent, $ui.FaStale
     ) | Where-Object { $_ }
 }
@@ -1997,7 +2081,7 @@ function Get-ChipControls {
 # forgotten filter reads as missing data.
 function Clear-AllFilters {
     $script:filter   = $null
-    $script:fState   = @{}
+    $script:fBand    = @{}
     $script:fLive    = @{}
     $script:fTick    = @{}
     $script:fPin     = @{}
@@ -2081,10 +2165,22 @@ function Set-DropSelection { param($Combo, [string]$Value)
 
 function Update-Header {
     $on = 0; $tot = 0; $projOn = 0; $liveTotal = 0; $pinned = 0; $waiting = 0; $working = 0
+    $bands = @{ needs = 0; working = 0; idle = 0; quiet = 0 }
     foreach ($d in $script:dirs) {
-        if ($d.missing) { continue }
         $v = @(Get-Visible $d)
-        $tot += $v.Count
+        # THE BANDS COUNT EVERY DIRECTORY, INCLUDING THE ONES WHOSE FOLDER HAS GONE.
+        #
+        # This loop used to skip them, and it made the summary a count of a
+        # DIFFERENT SET from the rows beneath it: 18 conversations live in
+        # directories that no longer exist, the list shows all of them, and the
+        # header quietly left them out. It is the same failure this function was
+        # already rewritten once to make impossible, surviving in the one place
+        # the rewrite did not look -- which is why the band chips now assert their
+        # printed count against what they actually select.
+        #
+        # The TICK totals below keep the skip, and should: a directory that is
+        # gone restores nothing, so counting its conversations as "ticked to
+        # reopen" would be a promise the tool cannot keep.
         foreach ($s in $v) {
             # THE SAME PREDICATE THE BANDS USE, not merely similar evidence.
             #
@@ -2099,7 +2195,12 @@ function Update-Header {
             # pill is exactly the count of everything not in NOT RUNNING -- so
             # they cannot drift apart again whatever the evidence looks like.
             # It is hashtable lookups, no file or process access.
-            if ((Get-InboxBand $s) -ne 'quiet') { $liveTotal++ }
+            # ONE call, then everything derived from it. It used to be called
+            # twice per session for two of the four bands; the chips need all
+            # four, and a second walk would be a second chance to disagree.
+            $bnd = Get-InboxBand $s
+            $bands[$bnd] = 1 + [int]$bands[$bnd]
+            if ($bnd -ne 'quiet') { $liveTotal++ }
             if ($s.pinned) { $pinned++ }
             # ALL THREE COUNTS COME FROM Get-InboxBand, for the same reason the
             # live count does: a summary that is computed differently from the
@@ -2111,17 +2212,20 @@ function Update-Header {
             # showing 2, because ~110 of them are not running and cannot be
             # waiting for anything. Deriving from the band makes that class of
             # disagreement impossible rather than merely fixed once.
-            switch (Get-InboxBand $s) {
+            switch ($bnd) {
                 'needs'   { $waiting++ }
                 'working' { $working++ }
             }
         }
+        if ($d.missing) { continue }
+        $tot += $v.Count
         if ($d.enabled) {
             $n = @($v | Where-Object { $_.enabled }).Count
             if ($n -gt 0) { $projOn++ }
             $on += $n
         }
     }
+    $script:bandCount = $bands
     $ui.LiveSummary.Text = "{0} live now" -f $liveTotal
     # Two counts, two questions, two pills. "live" is how many are being held;
     # "waiting" is how many are asking for the operator. They are routinely
@@ -2180,15 +2284,72 @@ function Update-Header {
 # rather than left looking at an empty screen.
 function Get-FilterDescription {
     $bits = @()
-    if ($script:filter)       { $bits += "text '$($script:filter)'" }
-    if ($script:fProject)     { $bits += "PROJECT " + (Split-Path $script:fProject -Leaf) }
-    if ($script:fLane)        { $bits += "LANE $script:fLane" }
-    if ($script:fState.Count) { $bits += "DOING " + (@($script:fState.Keys | Sort-Object) -join '/') }
-    if ($script:fLive.Count)  { $bits += "OPEN? " + (@($script:fLive.Keys | Sort-Object) -join '/') }
-    if ($script:fTick.Count)  { $bits += "LOGON " + (@($script:fTick.Keys | Sort-Object) -join '/') }
-    if ($script:fPin.Count)   { $bits += "pinned" }
-    if ($script:fAge.Count)   { $bits += "AGE " + (@($script:fAge.Keys | Sort-Object) -join '/') }
-    return ,@($bits)
+    foreach ($t in @(Get-FilterTokens)) { $bits += $t.Label }
+    # NO LEADING COMMA. ",@()" around an EMPTY array is a one-element array whose
+    # element is the empty array, so @(Get-FilterDescription) came back with
+    # Count 1 when nothing was filtering and Get-FilterSummary never once reached
+    # its "no filters" branch. The comma exists to stop a ONE-element array
+    # unrolling to a scalar; @(...) at every call site already handles that, and
+    # a bare return is the only form that is right at zero, one and many.
+    return $bits
+}
+
+# One filter, one token: a label and the key that removes it. The words used to
+# be built twice -- once for the status line, once for nothing at all -- so the
+# tokens and the sentence are generated from this single list and cannot drift.
+#
+# The key is "<dimension>:<value>" for a chip, matching the chip's own Tag, so
+# dropping a token and unticking a chip go through exactly the same code.
+$script:BandWords = @{ needs = 'Needs you'; working = 'Working'; idle = 'Idle'; quiet = 'Not running' }
+function Get-FilterTokens {
+    $out = @()
+    if ($script:filter)   { $out += @{ Key = 'text:';    Label = "text '$($script:filter)'" } }
+    if ($script:fProject) { $out += @{ Key = 'project:'; Label = "in " + (Split-Path $script:fProject -Leaf) } }
+    if ($script:fLane)    { $out += @{ Key = 'lane:';    Label = "lane $script:fLane" } }
+    foreach ($k in @($script:fBand.Keys | Sort-Object)) {
+        $w = $script:BandWords[$k]; if (-not $w) { $w = $k }
+        $out += @{ Key = "band:$k"; Label = $w }
+    }
+    foreach ($k in @($script:fLive.Keys | Sort-Object)) { $out += @{ Key = "live:$k"; Label = $k } }
+    foreach ($k in @($script:fTick.Keys | Sort-Object)) { $out += @{ Key = "tick:$k"; Label = $k } }
+    foreach ($k in @($script:fPin.Keys  | Sort-Object)) { $out += @{ Key = "pin:$k";  Label = $k } }
+    foreach ($k in @($script:fAge.Keys  | Sort-Object)) { $out += @{ Key = "age:$k";  Label = $k } }
+    # See Get-FilterDescription: no leading comma. With one, an unfiltered window
+    # drew a phantom token with an empty label and a live x next to it.
+    return $out
+}
+
+# Take one filter off, whatever kind it is. Chips are unticked rather than
+# cleared behind their own backs: setting IsChecked raises the routed event the
+# container already listens to, so the chip, the set and the list stay in step
+# without a second code path that could get them out of it.
+function Remove-Filter { param([string]$Key)
+    $bits = "$Key" -split ':', 2
+    if ($bits.Count -ne 2) { return }
+    switch ($bits[0]) {
+        'text'    { $script:filter = $null
+                    try { $script:suppress = $true; $ui.SearchBox.Text = '' } finally { $script:suppress = $false }
+                    Update-List -ToTop }
+        'project' { try { $script:suppress = $true
+                          $script:fProject = $null
+                          if ($ui.ProjectFilter.Items.Count) { $ui.ProjectFilter.SelectedIndex = 0 }
+                      } finally { $script:suppress = $false }
+                    Update-List -ToTop }
+        'lane'    { try { $script:suppress = $true
+                          $script:fLane = $null
+                          if ($ui.LaneFilter.Items.Count) { $ui.LaneFilter.SelectedIndex = 0 }
+                      } finally { $script:suppress = $false }
+                    Update-List -ToTop }
+        default   {
+            $chip = @(Get-ChipControls | Where-Object { "$($_.Tag)" -eq $Key })
+            if ($chip.Count) { $chip[0].IsChecked = $false; return }
+            # No chip carries it -- drop it from the set directly rather than
+            # leaving a token that cannot be removed.
+            $set = Get-FilterSet $bits[0]
+            if ($set) { $set.Remove($bits[1]); Update-List -ToTop }
+        }
+    }
+    Set-Status (Get-FilterSummary) 'info'
 }
 
 # The list just changed under the operator -- a filter, a fold, a rescan. A hard
@@ -2722,6 +2883,12 @@ function Set-Registry { param($Registry, $Config)
     # Before the sort, not after: the cache holds the OLD session objects, and
     # sorting on them would order the new list by the previous scan's timestamps.
     $script:dirs = @($script:reg.directories | Sort-Object { Get-Newest (Get-Visible $_) } -Descending)
+    # NOTHING EVER CALLED THIS. Update-FilterSources fills the PROJECT and LANE
+    # dropdowns from the registry, and it had no caller anywhere in the file --
+    # so both combos have been empty since the day they were added, exactly like
+    # the chips that carried the right Tag and had no handler. It belongs here
+    # because this is the one place $script:dirs changes.
+    Update-FilterSources
 }
 
 function Set-ProbeResult { param($Result)
@@ -3164,7 +3331,7 @@ $window.Add_Activated({ Stop-TaskbarFlash })
 # THE FILTER BAR
 #
 # Every one of these controls existed, carried the right Tag, and did NOTHING.
-# $script:fState / fLive / fTick / fPin / fAge were declared, read by
+# $script:fBand / fLive / fTick / fPin / fAge were declared, read by
 # Test-RowMatch, counted by Get-FilterDimensionCount, described by
 # Get-FilterDescription and emptied by Clear-AllFilters -- and never once
 # WRITTEN, because no handler was ever attached. Clicking a chip lit it up and
@@ -3175,7 +3342,7 @@ $window.Add_Activated({ Stop-TaskbarFlash })
 # mutate the real filter rather than a copy.
 function Get-FilterSet { param([string]$Dim)
     switch ($Dim) {
-        'state' { return $script:fState }
+        'band'  { return $script:fBand }
         'live'  { return $script:fLive }
         'tick'  { return $script:fTick }
         'age'   { return $script:fAge }
@@ -3249,11 +3416,24 @@ $ui.LaneFilter.Add_SelectionChanged({
 # Clear-AllFilters existed too, and nothing called it.
 $ui.ClearFilters.Add_Click({ Invoke-Guarded { Clear-AllFilters } 'clear the filters' })
 
-$ui.FilterBtn.Add_Click({
+$ui.MoreFilters.Add_Click({
     Invoke-Guarded {
-        $ui.FilterBar.Visibility = $(if ($ui.FilterBtn.IsChecked) { $V_Show } else { $V_Hide })
-    } 'toggle the filter bar'
+        $ui.FilterMore.Visibility = $(if ($ui.MoreFilters.IsChecked) { $V_Show } else { $V_Hide })
+    } 'toggle the extra filters'
 })
+
+# ONE handler for every token's x, on the strip rather than on each button, for
+# the same reason the chips share one: the tokens are rebuilt on every readout,
+# and per-button handlers would be re-attached 13 times a second.
+$ui.ActiveTokens.AddHandler(
+    [System.Windows.Controls.Button]::ClickEvent,
+    [System.Windows.RoutedEventHandler]{
+        param($sender, $e)
+        Invoke-Guarded {
+            $b = $e.OriginalSource -as [System.Windows.Controls.Button]
+            if ($b -and $b.Tag) { Remove-Filter "$($b.Tag)" }
+        } 'drop that filter'
+    })
 
 # A menu, because these are occasional. Opening it from the button's own click
 # rather than a right-click: nobody right-clicks a button expecting a menu.

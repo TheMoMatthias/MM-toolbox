@@ -538,21 +538,38 @@
                 <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource TextDim}"/>
                 <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
               </Trigger>
+              <!-- A LIT CHIP IS DARK TEXT ON A PALE FILL, and the fill is set
+                   here as a plain Setter rather than left to the animation.
+
+                   It used to be the animation alone. That put a chip's whole
+                   legibility on the clock: Foreground flips to Ink (#0C0C0C)
+                   the instant IsChecked goes true, while fill.Opacity was still
+                   0 until a Storyboard had run - so anywhere the clock does not
+                   tick, a lit chip is near-black text on a near-black panel and
+                   the label simply is not there. Measured in the off-screen
+                   render, where nothing animates: fill at Opacity 0, TextBlock
+                   at #FF0C0C0C, chip blank.
+
+                   From="0" on the enter animation is what lets both be true at
+                   once: the Setter owns the resting state, so the chip is legible
+                   with no clock at all, and the animation still starts from
+                   transparent so the fade is not flattened out of existence. -->
               <Trigger Property="IsChecked" Value="True">
                 <Setter Property="Foreground" Value="{StaticResource Ink}"/>
                 <Setter Property="FontWeight" Value="SemiBold"/>
                 <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource TextHigh}"/>
+                <Setter TargetName="fill" Property="Opacity" Value="1"/>
                 <Trigger.EnterActions>
                   <BeginStoryboard>
                     <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="fill" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.13"/>
+                      <DoubleAnimation Storyboard.TargetName="fill" Storyboard.TargetProperty="Opacity" From="0" To="1" Duration="0:0:0.13"/>
                     </Storyboard>
                   </BeginStoryboard>
                 </Trigger.EnterActions>
                 <Trigger.ExitActions>
                   <BeginStoryboard>
                     <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="fill" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.16"/>
+                      <DoubleAnimation Storyboard.TargetName="fill" Storyboard.TargetProperty="Opacity" From="1" To="0" Duration="0:0:0.16"/>
                     </Storyboard>
                   </BeginStoryboard>
                 </Trigger.ExitActions>
@@ -1123,8 +1140,6 @@
              on screen is the thing you press often and the thing the whole
              window is built around. -->
         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
-          <ToggleButton x:Name="FilterBtn" Style="{StaticResource Chip}" Content="Filters" Margin="0,0,9,0"
-                        ToolTip="Filter by what a conversation is doing, whether it is open, its tick, its project or its age."/>
           <Button x:Name="BulkBtn" Style="{StaticResource Btn}" Content="Bulk" Margin="0,0,9,0"
                   ToolTip="Tick all, tick none, unpin all, collapse or expand the tree.">
             <Button.ContextMenu>
@@ -1165,26 +1180,82 @@
          A lit chip is filled. The row of chips IS the readout of what is applied,
          which is why they are always on screen rather than behind a menu, and
          why the match count sits at the end of the same strip. -->
-    <Border x:Name="FilterBar" Grid.Row="3" Visibility="Collapsed"
+    <Border x:Name="FilterBar" Grid.Row="3"
             Background="{StaticResource Panel}"
-            BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,1" Padding="22,10,22,10">
+            BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,1" Padding="22,9,22,9">
       <StackPanel x:Name="FilterChips">
 
-        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-          <TextBlock Text="DOING" Style="{StaticResource GroupCaption}"/>
-          <ToggleButton x:Name="FsWaiting" Style="{StaticResource Chip}" Tag="state:waiting" Content="waiting"
-                        ToolTip="At its prompt and waiting for you, right now."/>
-          <ToggleButton x:Name="FsWorking" Style="{StaticResource Chip}" Tag="state:working" Content="working"
-                        ToolTip="Running a tool, or holding a prompt it has not answered yet. Right now."/>
-          <ToggleButton x:Name="FsSumm" Style="{StaticResource Chip}" Tag="state:summarising" Content="summarising"
-                        ToolTip="Compacting its own context, right now."/>
-          <ToggleButton x:Name="FsIdle" Style="{StaticResource Chip}" Tag="state:idle" Content="idle"
-                        ToolTip="Nothing has moved for minutes. These are the rows that read 'was ...' - the state shown is the last one it was seen in, not a current one."/>
-          <ToggleButton x:Name="FsUnknown" Style="{StaticResource Chip}" Tag="state:unknown" Content="unknown"
-                        ToolTip="No assistant turn in the tail of the transcript, or no transcript at all."/>
+        <!-- == THE PERMANENT LINE ==
+             The four BANDS, and nothing else that needs explaining. These are
+             the same four groups the inbox heads its list with and the same four
+             the summary pills count, so a chip, a band heading and a pill can
+             never again mean three different things.
 
-          <Border Width="1" Background="{StaticResource Hairline}" Margin="10,2,16,2"/>
+             They were "waiting / working / summarising / idle / unknown", which
+             came from Get-ConvBucket: the LAST KNOWN state of a transcript,
+             ignoring whether anything is still running. Measured over the real
+             registry: that made "waiting" select 110 of 143 conversations while
+             the band called NEEDS YOU held 6. One word, two meanings, on one
+             screen. Filtering on the band is what makes a chip's count and a
+             band's count the same number by construction.
 
+             They carry live counts, which is why they earn permanent space: the
+             line answers "how much is waiting on me" before it is clicked. -->
+        <Grid x:Name="FilterMain">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*" MinWidth="40"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+
+          <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+            <TextBlock Text="SHOW" Style="{StaticResource GroupCaption}"/>
+            <ToggleButton x:Name="FbNeeds" Style="{StaticResource Chip}" Tag="band:needs" Content="Needs you"
+                          ToolTip="Stopped and waiting on you: a question, a permission dialog, or a blocked agent."/>
+            <ToggleButton x:Name="FbWorking" Style="{StaticResource Chip}" Tag="band:working" Content="Working"
+                          ToolTip="Busy right now. Nothing for you to do."/>
+            <ToggleButton x:Name="FbIdle" Style="{StaticResource Chip}" Tag="band:idle" Content="Idle"
+                          ToolTip="At its prompt with nothing pending. Yours to pick up."/>
+            <ToggleButton x:Name="FbQuiet" Style="{StaticResource Chip}" Tag="band:quiet" Content="Not running"
+                          ToolTip="No process is holding it. Ticking this widens the inbox to reach conversations it normally leaves out."/>
+          </StackPanel>
+
+          <Border Grid.Column="1" Width="1" Background="{StaticResource Hairline}" Margin="12,2,14,2"/>
+
+          <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+            <TextBlock Text="PROJECT" Style="{StaticResource GroupCaption}"/>
+            <ComboBox x:Name="ProjectFilter" Style="{StaticResource Drop}" Width="196"/>
+            <TextBlock Text="LANE" Style="{StaticResource GroupCaption}" Margin="14,0,8,0"/>
+            <ComboBox x:Name="LaneFilter" Style="{StaticResource Drop}" Width="140"/>
+          </StackPanel>
+
+          <ToggleButton x:Name="MoreFilters" Grid.Column="3" Style="{StaticResource Chip}"
+                        Content="More" Margin="14,0,0,0" VerticalAlignment="Center"
+                        ToolTip="Open? / logon tick / age. The filters you reach for less often."/>
+
+          <!-- WHAT IS APPLIED, as tokens you can take off one at a time. The
+               chips above only cover one dimension; the text box and the two
+               dropdowns filter invisibly, and an invisible filter reads as
+               missing data. Every one of them shows up here with an x. -->
+          <StackPanel x:Name="ActiveTokens" Grid.Column="4" Orientation="Horizontal"
+                      VerticalAlignment="Center" Margin="16,0,10,0" ClipToBounds="True"/>
+
+          <TextBlock x:Name="FilterCount" Grid.Column="5" Text="" VerticalAlignment="Center"
+                     FontFamily="{StaticResource FontText}" FontSize="12"
+                     Foreground="{StaticResource TextMid}"/>
+          <Button x:Name="ClearFilters" Grid.Column="6" Style="{StaticResource Btn}" Content="Clear"
+                  Margin="14,0,0,0" Padding="11,4" FontSize="11.5" VerticalAlignment="Center"
+                  ToolTip="Drop every chip, both dropdowns and the text box in one go (Esc)"/>
+        </Grid>
+
+        <!-- == THE REST, behind More ==
+             Still inside FilterChips, so the one container handler wires these
+             exactly like the permanent ones. -->
+        <StackPanel x:Name="FilterMore" Orientation="Horizontal" Margin="0,11,0,1" Visibility="Collapsed">
           <TextBlock Text="OPEN?" Style="{StaticResource GroupCaption}"/>
           <ToggleButton x:Name="FlLive" Style="{StaticResource Chip}" Tag="live:live" Content="live"
                         ToolTip="A process is holding it, certainly or inferred. LIVE or live in the OPEN? column."/>
@@ -1202,7 +1273,9 @@
                         ToolTip="Does not reopen at the next logon."/>
           <ToggleButton x:Name="FpPin" Style="{StaticResource Chip}" Tag="pin:pinned" Content="pinned"
                         Margin="10,0,5,0"
-                        ToolTip="Held by hand, so the hourly roll leaves it alone."/>
+                        ToolTip="Held by hand, so the hourly roll leaves it alone. Measured: 128 of 143 conversations are pinned, so this alone barely narrows anything - it is the inverse that is worth reaching for."/>
+          <ToggleButton x:Name="FpFree" Style="{StaticResource Chip}" Tag="pin:unpinned" Content="not pinned"
+                        ToolTip="Still handed to the hourly auto-tick roll."/>
 
           <Border Width="1" Background="{StaticResource Hairline}" Margin="10,2,16,2"/>
 
@@ -1211,22 +1284,6 @@
                         ToolTip="Touched inside the recencyDays window from the config."/>
           <ToggleButton x:Name="FaStale" Style="{StaticResource Chip}" Tag="age:stale" Content="stale"
                         ToolTip="Not touched inside the recencyDays window. These are the rows marked STALE."/>
-        </StackPanel>
-
-        <StackPanel Orientation="Horizontal">
-          <TextBlock Text="PROJECT" Style="{StaticResource GroupCaption}"/>
-          <ComboBox x:Name="ProjectFilter" Style="{StaticResource Drop}" Width="230"/>
-          <TextBlock Text="LANE" Style="{StaticResource GroupCaption}" Margin="18,0,8,0"/>
-          <ComboBox x:Name="LaneFilter" Style="{StaticResource Drop}" Width="180"/>
-
-          <Border Width="1" Background="{StaticResource Hairline}" Margin="18,2,18,2"/>
-
-          <TextBlock x:Name="FilterCount" Text="" VerticalAlignment="Center"
-                     FontFamily="{StaticResource FontText}" FontSize="12"
-                     Foreground="{StaticResource TextMid}"/>
-          <Button x:Name="ClearFilters" Style="{StaticResource Btn}" Content="Clear all filters"
-                  Margin="18,0,0,0" Padding="11,4" FontSize="11.5"
-                  ToolTip="Drop every chip, both dropdowns and the text box in one go (Esc)"/>
         </StackPanel>
 
       </StackPanel>

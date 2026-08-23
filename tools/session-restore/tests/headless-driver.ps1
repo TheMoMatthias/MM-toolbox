@@ -293,31 +293,122 @@ function ChipSet { param($Chip, [bool]$On)
     return $script:inboxRows.Count
 }
 
-# A DOING chip must cut the list down to that state.
-$n = ChipSet $ui.FsWorking $true
+# A BAND chip must cut the list down to exactly that band.
+$n = ChipSet $ui.FbWorking $true
 $workRows = @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'session' })
-if ($n -eq $baseline) { Fail "ticking 'working' changed nothing ($n rows before and after)" }
-elseif (-not $workRows.Count) { Fail "ticking 'working' left no conversations at all" }
+if ($n -eq $baseline) { Fail "ticking 'Working' changed nothing ($n rows before and after)" }
+elseif (-not $workRows.Count) { Fail "ticking 'Working' left no conversations at all" }
 else {
     $wrong = @($workRows | Where-Object { $_.Band -ne 'working' })
-    if ($wrong.Count) { Fail "'working' let through $($wrong.Count) row(s) in other bands" }
-    else { Pass "'working' filters to $($workRows.Count) working conversation(s) (from $baseline rows)" }
+    if ($wrong.Count) { Fail "'Working' let through $($wrong.Count) row(s) in other bands" }
+    else { Pass "'Working' filters to $($workRows.Count) working conversation(s) (from $baseline rows)" }
 }
 
 # The readout has to agree with what is on screen.
 if ((Get-FilterDimensionCount) -eq 1) { Pass 'the readout counts exactly one dimension' }
 else { Fail "the readout counts $(Get-FilterDimensionCount) dimensions, expected 1" }
 
-# OR within a dimension: adding 'idle' must widen, not narrow.
-$n2 = ChipSet $ui.FsIdle $true
-if ($n2 -gt $n) { Pass "adding 'idle' widens the list ($n -> $n2), so a dimension ORs" }
-else { Fail "adding 'idle' did not widen the list ($n -> $n2)" }
+# OR within a dimension: adding 'Idle' must widen, not narrow.
+$n2 = ChipSet $ui.FbIdle $true
+if ($n2 -gt $n) { Pass "adding 'Idle' widens the list ($n -> $n2), so a dimension ORs" }
+else { Fail "adding 'Idle' did not widen the list ($n -> $n2)" }
 
 # Unticking must put it back.
-$null = ChipSet $ui.FsIdle $false
-$n3 = ChipSet $ui.FsWorking $false
+$null = ChipSet $ui.FbIdle $false
+$n3 = ChipSet $ui.FbWorking $false
 if ($n3 -eq $baseline) { Pass "unticking restores the full list ($n3 rows)" }
 else { Fail "unticking left $n3 rows, expected the original $baseline" }
+
+# THE POINT OF THE WHOLE CHANGE. A chip's printed count and the band heading's
+# count are the same number, because they are now the same call. The old DOING
+# chips said "waiting" over 110 conversations while the band called NEEDS YOU
+# held 6, and nothing in the suite could tell.
+$labels = @{ FbNeeds = 'needs'; FbWorking = 'working'; FbIdle = 'idle'; FbQuiet = 'quiet' }
+$drift = @()
+foreach ($cn in @($labels.Keys)) {
+    $chip = $ui.$cn
+    if (-not $chip) { Fail "chip $cn is not in the markup"; continue }
+    # What the chip PRINTS, parsed back off its own face rather than read from
+    # the variable that drew it -- otherwise this only proves a hashtable agrees
+    # with itself.
+    $printed = 0
+    if ("$($chip.Content)" -match '(\d+)\s*$') { $printed = [int]$Matches[1] }
+    # What the chip SELECTS.
+    $got = ChipSet $chip $true
+    $sel = @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'session' }).Count
+    $null = ChipSet $chip $false
+    if ($printed -ne $sel) { $drift += "$cn prints $printed but selects $sel" }
+}
+if ($drift.Count) { Fail ("a band chip's count disagrees with what it selects: " + ($drift -join '; ')) }
+else { Pass 'every band chip selects exactly as many conversations as it prints' }
+
+# A LIT CHIP HAS TO BE READABLE WITHOUT AN ANIMATION HAVING RUN.
+#
+# The checked state flips Foreground to Ink (#0C0C0C) with a Setter, but the
+# pale fill behind it was left to a Storyboard alone -- so with no animation
+# clock the label was near-black on a near-black panel and the chip was blank.
+# It cost nothing on a real desktop and everything anywhere the clock does not
+# tick, which includes every screenshot this suite renders.
+#
+# Read off the TEMPLATE rather than the style: what matters is the value that is
+# actually in effect on the element being drawn.
+function FillOpacity { param($Chip)
+    # An unshown window has never been through a layout pass, so its controls
+    # have no template instance yet and FindName has nothing to find. Ask for
+    # one explicitly rather than reading -1 and calling it a failure.
+    $null = $Chip.ApplyTemplate()
+    $tpl = $Chip.Template
+    if (-not $tpl) { return -1 }
+    $f = $tpl.FindName('fill', $Chip)
+    if (-not $f) { return -1 }
+    return $f.Opacity
+}
+$ui.FbNeeds.IsChecked = $false
+$offOp = FillOpacity $ui.FbNeeds
+$ui.FbNeeds.IsChecked = $true
+$onOp = FillOpacity $ui.FbNeeds
+$fg = "$($ui.FbNeeds.Foreground)"
+$ui.FbNeeds.IsChecked = $false
+if ($onOp -lt 0) { Fail 'the chip template has no fill to check' }
+elseif ($onOp -ne 1) { Fail "a lit chip's fill rests at opacity $onOp, so its dark text ($fg) has nothing pale behind it" }
+elseif ($offOp -ne 0) { Fail "an unlit chip's fill rests at opacity $offOp, so every chip looks lit" }
+else { Pass "a lit chip is opaque ($offOp -> $onOp) without waiting for an animation" }
+
+# A token appears for whatever is filtering, and taking it off undoes it. This
+# is the only readout for the text box and the two dropdowns, which filter
+# without any chip lighting up.
+$null = ChipSet $ui.FbWorking $true
+$tokens = @($ui.ActiveTokens.Children)
+if ($tokens.Count -eq 1) { Pass 'one active filter shows one token' }
+else { Fail "one active filter produced $($tokens.Count) token(s)" }
+Remove-Filter 'band:working'
+if ($script:inboxRows.Count -eq $baseline -and (Get-FilterDimensionCount) -eq 0) {
+    Pass 'dropping the token clears the filter and restores the list'
+} else {
+    Fail "after dropping the token: $($script:inboxRows.Count) rows (expected $baseline), $(Get-FilterDimensionCount) dimension(s) on"
+}
+if ($ui.FbWorking.IsChecked) { Fail 'the token was dropped but its chip is still lit' }
+else { Pass 'dropping a token unlights the chip that set it' }
+
+# A filter hidden inside the More fold must OPEN the fold. Filtering with no
+# visible cause is the failure this prevents.
+$ui.MoreFilters.IsChecked = $false
+$ui.FilterMore.Visibility = $V_Hide
+$null = ChipSet $ui.FaStale $true
+if ($ui.FilterMore.Visibility -eq $V_Show) { Pass 'a filter inside More opens the fold that holds it' }
+else { Fail 'More stayed folded away while one of its own filters was on' }
+$null = ChipSet $ui.FaStale $false
+
+# The pin dimension had one chip in a two-value world: 128 of 143 are pinned, so
+# lighting it barely narrowed anything and the useful half was unreachable.
+$np = ChipSet $ui.FpPin $true
+$nf = ChipSet $ui.FpFree $true
+$null = ChipSet $ui.FpPin $false
+$only = @($script:inboxRows.ToArray() | Where-Object { $_.Kind -eq 'session' })
+$wrongPin = @($only | Where-Object { $_.Session -and $_.Session.pinned })
+if ($wrongPin.Count) { Fail "'not pinned' let through $($wrongPin.Count) pinned conversation(s)" }
+else { Pass "'not pinned' selects the half that used to be unreachable" }
+$null = ChipSet $ui.FpFree $false
 
 # A chip whose rows the inbox normally hides must still work. This is the case
 # that would look most broken: 'stale' conversations are excluded from the inbox
@@ -329,7 +420,7 @@ else { Fail "'stale' matched nothing - the inbox is filtering rows out before th
 $null = ChipSet $ui.FaStale $false
 
 # Clear-AllFilters was never wired either.
-$null = ChipSet $ui.FsWorking $true
+$null = ChipSet $ui.FbWorking $true
 Clear-AllFilters
 if ($script:inboxRows.Count -eq $baseline -and (Get-FilterDimensionCount) -eq 0) {
     Pass 'Clear all filters empties every dimension and restores the list'
