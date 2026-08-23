@@ -1,6 +1,6 @@
 ' Double-click THIS for the session window. Nothing flashes.
 '
-' "Sessions GUI.bat" opened two windows before the app appeared: cmd.exe has to
+' A .bat launcher opened two windows before the app appeared: cmd.exe has to
 ' create a console to run a batch file at all, and the PowerShell it starts gets
 ' its own before -WindowStyle Hidden can take effect. Both are gone by the time
 ' you see the app, which is exactly what makes it look broken.
@@ -10,7 +10,7 @@
 ' drawn. The last argument is False, so this script exits immediately instead of
 ' waiting for the app to close.
 '
-' The .bat is kept for the terminal: it is how you run the GUI with a console
+' Sessions.bat is kept for the terminal: it is how you run the window with a console
 ' attached (SR_GUI_SHOW=1) and see a startup error rather than reading the log
 ' for it. Use this file for normal use and that one when something is wrong.
 

@@ -9,7 +9,7 @@
     deliberately separate -- a directory you untick stays untouched even though it
     is still discoverable, so a finished project stops reopening every morning.
 
-    Run select-sessions.ps1 (or `ccs`) to tick and untick.
+    Run Sessions.bat (or `ccs`) to tick and untick.
 
     WHY THIS EXISTS. Launching a bare `claude` while remoteControlAtStartup is true
     registers a Remote Control session for an EMPTY conversation, so the remote
@@ -43,7 +43,7 @@
     .\restore-sessions.ps1 -DryRun     # what would come back?
     .\restore-sessions.ps1             # bring it back
     .\restore-sessions.ps1 -Scan       # just refresh the registry
-    .\select-sessions.ps1              # choose which directories are in scope
+    .\Sessions.bat                     # choose which conversations are in scope
 #>
 [CmdletBinding()]
 param(
@@ -89,7 +89,7 @@ function Invoke-Scan {
     $allS = @(@($reg.directories) | ForEach-Object { @($_.sessions) }).Count
     Write-Host ""
     Write-Host ("  {0} of {1} conversation(s), across {2} project(s), selected for restore" -f @($sel).Count, $allS, @($reg.directories).Count)
-    Write-Host "  Choose with: select-sessions.ps1   (or ccs)"
+    Write-Host "  Choose with: Sessions.bat   (or ccs)"
     Write-Host ""
     return 0
 }
@@ -124,7 +124,7 @@ function Invoke-Restore {
         return 1
     }
     if (@($wanted).Count -eq 0) {
-        Write-SRFail ("{0} conversation(s) across {1} project(s) known, but NONE is ticked. Run select-sessions.ps1 (or ccs) to choose." -f $knownSes, $knownDir)
+        Write-SRFail ("{0} conversation(s) across {1} project(s) known, but NONE is ticked. Run Sessions.bat (or ccs) to choose." -f $knownSes, $knownDir)
         return 1
     }
 
@@ -201,7 +201,7 @@ function Invoke-Restore {
             Write-SROk "$label / `"$title`"   (last active $(if($ageDays -ge 1){"${ageDays}d"}else{"${ageHours}h"}) ago)"
             Write-SRStep "claude --resume $($e.sessionId) -n `"$title`" --remote-control `"$title`""
             Write-SRStep "in $($e.path)"
-            if ($ageDays -gt $staleDays) { Write-Host "         STALE - ticked, but untouched for ${ageDays}d. Untick it in select-sessions.ps1 if it is finished." -ForegroundColor DarkYellow }
+            if ($ageDays -gt $staleDays) { Write-Host "         STALE - ticked, but untouched for ${ageDays}d. Untick it in Sessions.bat if it is finished." -ForegroundColor DarkYellow }
             $launched++
             continue
         }
@@ -308,7 +308,6 @@ function New-SRShortcut {
 
 function Invoke-Install {
     $restore = Join-Path $SR_Root 'restore-sessions.ps1'
-    $select  = Join-Path $SR_Root 'select-sessions.ps1'
 
     Write-Host ""
     Write-Host "Installing" -ForegroundColor Cyan
@@ -368,7 +367,7 @@ function Invoke-Install {
     Write-Host "                         see what is live, L opens any conversation now, S starts a new one,"
     Write-Host "                         and the ticks decide what comes back at logon"
     Write-Host "  Bring back the ticked:  double-click 'Restore Sessions.bat'  (or the desktop button)"
-    Write-Host "  Open one by name    :  select-sessions.ps1 -Launch <title, worktree, project or id>"
+    Write-Host "  Open one by name    :  Sessions.bat, then type in the search box and press Open"
     Write-Host "  Preview first       :  restore-sessions.ps1 -DryRun"
     Write-Host "  Everything lives in :  $SR_Root"
     Write-Host ""

@@ -12,11 +12,18 @@
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# Ported helpers. Each cites the original in select-sessions.ps1, which is the
-# functional specification for this window and which must not be edited.
+# Ported helpers.
+#
+# These came from select-sessions.ps1, the terminal panel this window replaced,
+# and each one used to cite its original by name. THE PANEL IS RETIRED, so those
+# citations would point at a file nobody can open. What they were really
+# recording is that this behaviour is a PORT rather than an invention, and that
+# restore-sessions.ps1 applies the SAME guards at logon - so the window, the
+# logon task and the hourly roll can never disagree about what is launchable.
+# That is the part worth keeping, and it is said once, here.
 # ---------------------------------------------------------------------------
 
-# select-sessions.ps1 Get-Newest. Null-filtered, not just @()-wrapped: a function
+# Ported: Get-Newest. Null-filtered, not just @()-wrapped: a function
 # returning an empty array yields $null, and @($null) is an array of ONE $null,
 # which sails past a .Count check and then dies in the sort.
 function Get-Newest { param($Sessions)
@@ -27,7 +34,7 @@ function Get-Newest { param($Sessions)
     return [datetime]$ordered[0].lastActive
 }
 
-# select-sessions.ps1 Get-Visible. Memoised: several passes walk every project.
+# Ported: Get-Visible. Memoised: several passes walk every project.
 # Returned UNWRAPPED, so empty arrives as $null and Get-Newest survives it.
 function Get-Visible { param($Dir)
     $hit = $script:visCache[[string]$Dir.path]
@@ -46,7 +53,7 @@ function Test-Stale { param($Iso) return (((Get-Date) - [datetime]$Iso).TotalDay
 
 # Touching a conversation PINS it: the hourly roll then leaves it alone. Without
 # this the scan would undo every hand-made choice within the hour and this window
-# would be decorative. select-sessions.ps1 Set-Pin / Test-Pinned.
+# would be decorative. Ported: Set-Pin / Test-Pinned.
 function Set-Pin { param($Session, [bool]$Value)
     if ($null -eq $Session.PSObject.Properties['pinned']) {
         $Session | Add-Member -NotePropertyName pinned -NotePropertyValue $Value -Force
@@ -125,7 +132,7 @@ function Get-LaneName { param($Session)
     return 'main'
 }
 
-# main first, then worktree lanes newest-first. select-sessions.ps1 Get-Lanes.
+# main first, then worktree lanes newest-first. Ported: Get-Lanes.
 # Returns ,@(...) -- assign it, then wrap. Never pipe the call.
 function Get-Lanes { param($Dir)
     $g = @(Get-Visible $Dir) | Group-Object -Property { Get-LaneName $_ }
@@ -145,7 +152,7 @@ function Get-SessionTitle { param($Session, $Dir)
     return $t
 }
 
-# select-sessions.ps1 Test-JustLaunched. The optimistic mark expires on the CLOCK,
+# Ported: Test-JustLaunched. The optimistic mark expires on the CLOCK,
 # not on the next rescan: claude takes seconds to surface in Win32_Process and a
 # row that reads idle in that gap invites a second, duplicate tab.
 function Test-JustLaunched { param([string]$Id)
@@ -158,7 +165,7 @@ function Test-JustLaunched { param([string]$Id)
     return $true
 }
 
-# select-sessions.ps1 Get-SessionState. GONE outranks everything: there is nothing
+# Ported: Get-SessionState. GONE outranks everything: there is nothing
 # to launch, so nothing else about the row matters.
 function Get-SessionState { param($Session)
     $id = "$($Session.sessionId)".ToLower()
@@ -169,7 +176,7 @@ function Get-SessionState { param($Session)
     return ''
 }
 
-# The launch guard, with no side effects. This is select-sessions.ps1
+# The launch guard, with no side effects. This is the ported
 # Invoke-LaunchSession -Preview, verbatim in behaviour: every check here is one
 # restore-sessions.ps1 already applies, so this window, L in the terminal panel
 # and the logon restore can never disagree. Returns $null to mean "it would go",
@@ -201,7 +208,7 @@ function Test-RowLaunchable { param($Session)
     return $true
 }
 
-# select-sessions.ps1 Get-LiveInDirectory. What stops a new session being spawned
+# Ported: Get-LiveInDirectory. What stops a new session being spawned
 # onto a tree somebody is already working -- they would share the tree's git index.
 #
 # DIVERGENCE, deliberate: the original compares $cwd.TrimEnd('') which trims
@@ -220,14 +227,14 @@ function Get-LiveInDirectory { param([Parameter(Mandatory)][string]$Dir)
     return ,@($out)
 }
 
-# select-sessions.ps1 Get-RowPath. A lane's path comes from its own sessions: a
+# Ported: Get-RowPath. A lane's path comes from its own sessions: a
 # worktree lives somewhere else entirely, not under the project root.
 function Get-RowPath { param($Row)
     if ($Row.Kind -ne 'session') { return '' }
     return (Get-SessionCwd $Row.Session $Row.Dir)
 }
 
-# select-sessions.ps1 Get-RowSessions. Every session a row covers, newest first.
+# Ported: Get-RowSessions. Every session a row covers, newest first.
 # Returns ,@(...) -- assign, then wrap. Piping the call hands ForEach-Object the
 # whole array as ONE item, which is how a project row once built a single entry
 # holding every session at once.
@@ -236,7 +243,7 @@ function Get-RowSessions { param($Row)
     return ,@($Row.Session)
 }
 
-# select-sessions.ps1 Invoke-SpawnNew's naming rule, so a session spawned from
+# Ported: Invoke-SpawnNew's naming rule, so a session spawned from
 # this window and one spawned from the shell are indistinguishable afterwards.
 function Resolve-SpawnName { param([string]$Dir, [string]$Name)
     if ([string]::IsNullOrWhiteSpace($Name)) { $Name = (Split-Path $Dir -Leaf) + '-' + (Get-Date -Format 'MMdd-HHmm') }
@@ -288,7 +295,7 @@ function Test-AnyFilter {
                   $script:fPin.Count -or $script:fAge.Count)
 }
 
-# select-sessions.ps1 Test-RowMatch, widened to every dimension this window
+# Ported: Test-RowMatch, widened to every dimension this window
 # shows. The text box is one clause among several now and composes with the rest.
 #
 # AND across dimensions, OR within one. An EMPTY dimension does not filter -- so

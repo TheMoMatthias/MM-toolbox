@@ -21,7 +21,7 @@ From then on the tool is two double-clicks:
 
 | double-click | does |
 |---|---|
-| `Sessions.bat` | **the control panel** — every conversation, what is live, launch any of them |
+| `Sessions.bat` | **the session console** — every conversation, what each last said, what is waiting on you |
 | `Restore Sessions.bat` | bring back everything you ticked, in one go |
 | `Enable Auto Logon.bat` | let the PC sign itself in, so the restore runs with nobody at the keyboard |
 
@@ -30,17 +30,35 @@ pass arguments through (`Restore Sessions.bat -DryRun`) and pause only when
 double-clicked, so the output stays readable. Set `SR_NOPAUSE=1` to drive them from
 a script.
 
-There used to be a second name for the panel, `Select Sessions.bat`, kept so an old
-shortcut would not break. It was removed on 2026-08-22: two files that open the same
-screen make the folder unreadable, and the first question on opening it was which of
-the two was the real one. **`Sessions.bat` is the entry point; every other file here
-does a different job.**
+**One screen, one entry point.** There have been three duplicates of it over time
+and all three are gone: `Select Sessions.bat` (a second name for the same panel,
+removed 2026-08-22), `Sessions GUI.bat` (a second launcher for the same window),
+and `select-sessions.ps1` — a hand-written terminal panel with its own painter and
+key loop, retired 2026-08-23 when the window overtook it. The window does
+everything the panel did and several things a console cannot: read a conversation,
+reply to it, and jump to its real terminal tab. **`Sessions.bat` is the entry
+point; every other file here does a different job.**
 
-## The control panel
+`Sessions GUI.vbs` opens the same window with no console flash at all, and is what
+the Start Menu shortcut uses. `Sessions.bat` is the one to run from a terminal;
+`SR_GUI_SHOW=1` keeps the console up so a startup error is on screen rather than in
+`.state\restore.log`.
 
-`Sessions.bat` — the one entry point — opens a single screen for every conversation
-on the machine, across every repo. (`select-sessions.ps1` is the same thing from a
-terminal.)
+## The session console
+
+`Sessions.bat` opens a single window for every conversation on the machine, across
+every repo, in two views:
+
+- **Inbox** — what is running or was, grouped by what it wants from you:
+  **Needs you** / **Working** / **Idle** / **Not running**, each row carrying the
+  one line that conversation last said.
+- **All** — one flat, sortable row per conversation from the last `listDays` (7),
+  and the logon ticks. Click a column heading to sort; shift-click to sort by one
+  thing and then another.
+
+Selecting a row opens the conversation underneath the list, with a box to reply
+into it — and the reply box stays dead until what is on screen is what that session
+last said, so you cannot answer something it has already moved past.
 
 **Two independent things live on it, and confusing them is the one way to misread
 the screen:**
@@ -137,17 +155,15 @@ that directory it says which, warns that they will share the tree's git index, a
 makes you confirm. It is the refusal `spawn-claude-session` makes, for the same
 reason — a session was once spawned onto a lane a live one had held for 73 minutes.
 
-### From the terminal, without the panel
+### Opening one by name
 
-```powershell
-.\select-sessions.ps1 -Launch RC-WORKFLOW        # by title
-.\select-sessions.ps1 -Launch D2                 # by worktree lane
-.\select-sessions.ps1 -Launch AlgoTrader -DryRun # by project, see it first
-```
+Type into the search box — it matches project path, worktree name, conversation
+title or id — and press **Open** on the row, or **Go to** to jump to the terminal
+tab it is already running in. Ticks are not consulted; opening is not a tick.
 
-Same matching as `-Enable`/`-Disable` — project path, worktree name, conversation
-title or id — and the same guards. Ticks are ignored. A pattern that matches more
-than `maxSessions` says so and takes the most recent, rather than opening 46 tabs.
+This used to be `select-sessions.ps1 -Launch <pattern>` from a shell. That script
+is retired. `restore-sessions.ps1` remains the scriptable path and is what the
+logon task runs — it applies exactly the same guards.
 
 ### Launches are verified, not assumed
 
@@ -395,7 +411,8 @@ permission-gating, so a *new* session can only be named at launch — which is w
 
 ## Tests
 
-`testsun-tests.ps1`. Three suites, each of which exists because something shipped
+`tests
+un-tests.ps1`. Three suites, each of which exists because something shipped
 broken.
 
 | suite | |
@@ -444,12 +461,15 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
 | file | |
 |---|---|
 | `Install Session Restore.bat` | double-click to install just this tool — tasks + buttons, no profile changes |
-| `Sessions.bat` | **the entry point** — the control panel. Double-clickable; the desktop button points here |
+| `Sessions.bat` | **the entry point** — the session console. Double-clickable; the desktop button points here |
+| `Sessions GUI.vbs` | the same window with no console flash — what the Start Menu shortcut uses |
 | `Restore Sessions.bat` | reopen the ticked conversations without showing the panel |
 | `Enable Auto Logon.bat` | self-elevating wrapper for `enable-autologon.ps1` |
 | `_common.ps1` | discovery, registry, the rolling auto-tick, guards, launching — shared, so there is one copy |
 | `restore-sessions.ps1` | restore · `-Scan` · `-New` · `-Install` · `-Uninstall` |
-| `select-sessions.ps1` | the control panel · `-List` · `-Launch` · `-Enable`/`-Disable` · `-Worktrees` |
+| `sessions-gui.ps1` | the window itself: markup, `$ui`, handlers |
+| `gui/` | the rest of it — `gui-model` (what a conversation is) · `gui-rows` (what a row shows) · `gui-notify` (tray, toasts) · `gui-read` (reading and replying) · `gui-actions` |
+| `CONTEXT.md` | the shared vocabulary, and the traps this subsystem keeps walking into |
 | `enable-autologon.ps1` | auto-logon on/off, password into the LSA store — needs elevation |
 | `profile.ps1` | the `cc` / `ccr` / `ccs` functions; your PowerShell profile gets a single dot-source line pointing here |
 | `session-restore.config.json` | `recencyDays`, `maxSessions`, `excludePatterns` |

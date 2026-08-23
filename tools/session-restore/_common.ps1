@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
     Shared internals for session-restore. Dot-sourced by restore-sessions.ps1 and
-    select-sessions.ps1 so discovery, the registry and the guards exist ONCE.
+    sessions-gui.ps1 so discovery, the registry and the guards exist ONCE.
 
     Defines functions and paths only -- it must never do work on load.
 

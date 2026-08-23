@@ -104,8 +104,9 @@ goes into the encrypted LSA store, never the registry in plaintext, and is verif
 before anything is written. `-LockAfterLogon` starts the sessions and then locks the
 screen. Weigh it against physical access to the machine.
 
-`select-sessions.ps1` and `restore-sessions.ps1` are ordinary scripts you can run
-directly, and both have desktop buttons. Pass `-NoSessionRestore` to `install.ps1`
+`restore-sessions.ps1` is an ordinary script you can run directly, and has a
+desktop button. (`select-sessions.ps1`, the terminal panel, was retired on
+2026-08-23 — the window replaced it.) Pass `-NoSessionRestore` to `install.ps1`
 to skip all of it.
 
 **Never launch a bare `claude` if you want to drive it from your phone.** Remote

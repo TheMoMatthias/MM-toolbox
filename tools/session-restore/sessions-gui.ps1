@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
     The session control panel, as a window. A graphical equivalent of
-    select-sessions.ps1 -- same model, same guards, same registry.
+    restore-sessions.ps1 -- same model, same guards, same registry.
 
 .DESCRIPTION
     Three levels. A PROJECT is a repository. Under it sit LANES -- `main` for the
@@ -35,7 +35,7 @@
     Everything that reads or writes state goes through _common.ps1 -- config,
     registry, discovery, the rolling auto-tick, the launch guards and the registry
     lock. This file adds a window and nothing else. Helpers that exist only inside
-    select-sessions.ps1 are re-implemented here and each one cites the original.
+    the retired terminal panel are re-implemented here; see gui/gui-model.ps1.
 
 .PARAMETER NoScan
     Skip the scan on startup and show whatever the registry already holds.
@@ -1031,7 +1031,7 @@ function Invoke-Guarded { param([Parameter(Mandatory)][scriptblock]$Body, [strin
 }
 
 # ---------------------------------------------------------------------------
-# Building the rows. Same shape as select-sessions.ps1 Build-Rows: while
+# Building the rows. Same shape as the ported Build-Rows: while
 # filtering, a project or lane is kept only if something under it survived --
 # an empty repo header is just noise -- and a fold is ignored, because it would
 # hide the very rows that were searched for.
@@ -1980,7 +1980,7 @@ function Get-ProbeSnapshot {
 function Start-Rescan { param([switch]$NoScanPass)
     # The panel holds a copy in memory while you browse; the scan reads from disk.
     # Save first or the scan's copy wins and the ticks changed here are gone -- the
-    # same order select-sessions.ps1 Invoke-Rescan uses.
+    # same order the ported Invoke-Rescan uses.
     if ($script:dirty) { Save-SRRegistry -Registry $script:reg; $script:dirty = $false }
     # TRAP: script scope, not a local. A scriptblock invoked after its defining
     # function has returned resolves variables against the CURRENT scope chain,
