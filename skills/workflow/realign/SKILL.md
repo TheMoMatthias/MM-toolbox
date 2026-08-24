@@ -100,6 +100,11 @@ is a track you decided alone**: correct for HOW, never for WHERE. **If every pro
 track comes back empty — rarer than it feels — say in one line that you ran them, then go.**
 "There was no real question" is a conclusion you reach by looking, not by not looking.
 
+🔴 **An open track with no live owner, or one gone quiet past its cadence, is a question by
+itself** — who drives it, and when — even when there is nothing to decide about its content.
+**"Nothing from me" is not an answer; it is the reason to ask.** Only the user can assign a
+track nobody is driving, and a stalled lane looks identical to a healthy one on a board.
+
 Use **`AskUserQuestion`, batched, up to 4 per round**, selectable options each carrying its
 consequence. **Fire successive rounds until every track is covered — the cap is per call,
 not per realignment.** 🪤 **Frame it well — a wrong frame steers harder than a wrong
@@ -110,6 +115,11 @@ decision would.**
   planned". **Never offer a menu that leaves out what you actually think is right.**
 - **Keep the options wide enough that "Other" is not the only true answer**, and include one
   that genuinely challenges the current course. Decisions others depend on come first.
+- **Say what the plan already says on this point, and mark any option that would amend it.**
+  One option always holds the current spec, and that is the recommendation *unless* new
+  evidence undercuts what it rested on — in which case the question is "is this evidence
+  enough to amend?", not "A or B". 🪤 **A question forces an answer.** Offering a settled
+  point as an open menu is how a signed plan drifts with nobody deciding to change it.
 
 🔔 **Push the questions — do not just post them.** Send a `PushNotification` the moment they
 go up, one line naming the lane and what is waiting. It suppresses itself when the user is
