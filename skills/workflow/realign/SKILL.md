@@ -95,8 +95,8 @@ already committed; the sixth looks forward at what just became possible:
 **Every track that returns something earns its own question** — three live tracks means
 three questions. Add anything whose answer changes what you do next, and the unfinished
 work — finish, drop, or hand off. 🔴 **A track you did not ask about is a track you decided
-alone**: correct for HOW, never for WHERE. **If every probe on every track comes back empty — rarer
-than it feels — say in one line that you ran them, then go.**
+alone**: correct for HOW, never for WHERE. **If every probe on every track comes back empty
+— rarer than it feels — say in one line that you ran them, then go.**
 
 🔴 **An open track with no live owner, or one gone quiet past its cadence, is a question by
 itself** — who drives it, and when. **"Nothing from me" is not an answer; it is the reason
