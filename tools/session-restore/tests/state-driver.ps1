@@ -226,6 +226,34 @@ try {
 } finally {
     Remove-Item -LiteralPath $qtmp -Recurse -Force -ErrorAction SilentlyContinue
 }
+# --- THE TOOL HAS TO FIND EVERY SESSION IT LAUNCHES -------------------------
+# Two rules once conspired to hide 13 real conversations, and both looked
+# reasonable in isolation. These assertions are about the DECISIONS, because that
+# is where the bug was -- the code did exactly what it said it did.
+Write-Host ''
+Write-Host '--- discovery hides nothing real ---'
+
+# 1. THE BYTE FLOOR, justified by a 118-byte Remote Control placeholder and then
+# set to 5000 -- forty-two times higher. A real conversation carrying three user
+# messages measured 3,191 bytes and was invisible; a freshly spawned session is
+# smaller still, which is exactly when someone looks for it.
+if ($SR_MinRealBytes -gt 1000) {
+    Fail "SR_MinRealBytes is $SR_MinRealBytes - a real 3,191-byte conversation was hidden by a floor of 5000"
+} else { Pass "the size floor is $SR_MinRealBytes bytes, below any real transcript" }
+
+# 2. THE HOME DIRECTORY, excluded because it 'is never a project'. Measured across
+# 290 transcripts: five live there and three of them are over 20 MB. Where someone
+# works is not the tool's to assume.
+$cfgNow = Get-SRConfig
+if (Test-SRExcluded -Path $env:USERPROFILE -Config $cfgNow) {
+    Fail 'the home directory is excluded - three conversations over 20 MB lived there'
+} else { Pass 'a session started from the home directory is discoverable' }
+
+# ...and the exclusions that ARE right still hold, or the trade went too far.
+$tempish = Join-Path $env:TEMP 'claude'
+if (-not (Test-SRExcluded -Path $tempish -Config $cfgNow)) {
+    Fail "a temp path ($tempish) is no longer excluded - the fix went too wide"
+} else { Pass 'temp paths are still excluded' }
 Write-Host ''
 if ($fails) { Write-Host ("$fails FAILURE(S)") -ForegroundColor Red; exit 1 }
 Write-Host 'all conversation-state tests passed' -ForegroundColor Green

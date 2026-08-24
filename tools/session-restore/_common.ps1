@@ -24,9 +24,28 @@ $SR_ConfigPath = Join-Path $SR_Root 'session-restore.config.json'
 # the paths in it are specific to this machine.
 $SR_RegistryPath = Join-Path $SR_Root 'sessions-registry.json'
 
-# A transcript smaller than this is a Remote Control placeholder, not a
-# conversation: a lone bridge-session line is 118 bytes.
-$SR_MinRealBytes = 5000
+# 🔴 THIS WAS A BYTE FLOOR OF 5000, AND IT THREW AWAY REAL CONVERSATIONS.
+#
+# It was justified by a Remote Control placeholder -- a lone bridge-session line,
+# 118 bytes -- and then set FORTY-TWO TIMES higher than the thing it was measuring.
+# Measured on the operator's machine 2026-08-24, three transcripts under the floor:
+#
+#     ece892a8   270 B   1 bridge-session record, NO cwd     <- a real placeholder
+#     49674e61 1,544 B   6 records, a cwd, mode, last-prompt <- a real session
+#     860df09e 3,191 B  10 records, THREE user messages      <- a real conversation
+#
+# and it was backwards on top of that: the two real ones were missing from the
+# registry while the placeholder was in it. A newly spawned session writes a small
+# transcript, which is exactly when the operator looks for it in the window and
+# exactly when this hid it. THE TOOL HAS TO FIND EVERY SESSION IT LAUNCHES.
+#
+# The floor is now only what it was ever supposed to be: below any plausible real
+# transcript, and above nothing. What actually separates a placeholder from a
+# conversation is SEMANTIC and already enforced a few lines further down -- a
+# placeholder has no `cwd`, so Get-SRDiscovered drops it on that test rather than
+# on its size. Keep both: the byte test is a cheap skip for the 118-byte case, and
+# the cwd test is the one that is actually true.
+$SR_MinRealBytes = 200
 
 # A transcript written this recently is being held by a live session.
 $SR_LiveWindowMinutes = 3
@@ -286,9 +305,20 @@ function Get-SRWorktreeInfo {
 function Test-SRExcluded {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Config)
 
-    # The home directory is never a project: Claude Code creates a transcript folder
-    # for it the moment anyone runs `claude` from ~.
-    if ($Path.TrimEnd('\') -ieq $env:USERPROFILE.TrimEnd('\')) { return $true }
+    # 🔴 THE HOME DIRECTORY IS A PLACE PEOPLE WORK. This used to return $true here,
+    # on the reasoning that Claude Code makes a transcript folder for ~ the moment
+    # anyone runs `claude` from it, so ~ 'is never a project'. That was an assumption
+    # about how the operator works, and it was wrong.
+    #
+    # Measured 2026-08-24 across 290 transcripts: FIVE have ~ as their cwd, and three
+    # of those are 28 MB, 22 MB and 20 MB. The rule hid three substantial
+    # conversations to save two small ones, and none of them had ever appeared in the
+    # window. The requirement is not negotiable -- the tool has to find every session
+    # it launches -- and five extra rows is not noise worth that.
+    #
+    # Genuinely empty transcripts are still dropped: a placeholder has no `cwd` at
+    # all, which Get-SRDiscovered tests a few lines down. Size and location were
+    # always the wrong questions.
     foreach ($pat in @($Config.excludePatterns)) {
         if ([string]::IsNullOrWhiteSpace($pat)) { continue }
         if ($Path -like ([Environment]::ExpandEnvironmentVariables($pat))) { return $true }
