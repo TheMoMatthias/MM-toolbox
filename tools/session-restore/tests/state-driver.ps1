@@ -254,6 +254,44 @@ $tempish = Join-Path $env:TEMP 'claude'
 if (-not (Test-SRExcluded -Path $tempish -Config $cfgNow)) {
     Fail "a temp path ($tempish) is no longer excluded - the fix went too wide"
 } else { Pass 'temp paths are still excluded' }
+# --- A SESSION THAT HAS NEVER BEEN PROMPTED --------------------------------
+# claude writes the transcript on the FIRST MESSAGE, so a window just opened and
+# not yet typed into has no .jsonl anywhere -- and a walk over transcripts cannot
+# see it however carefully it walks. The agent list has known about it since it
+# started. Discovery reads both, and this proves the second source is wired.
+Write-Host ''
+Write-Host '--- a launched session with no transcript yet ---'
+$ghostId = 'ffffffff-0000-1111-2222-333333333333'
+$savedCache = $script:SR_AgentCache
+$savedAt    = $script:SR_AgentCacheAt
+try {
+    # Seed the agent cache with a session that is RUNNING and has written nothing.
+    # Its cwd is this repo, which exists and is not excluded.
+    $ghostCwd = Split-Path $here -Parent
+    $script:SR_AgentCache = @{
+        $ghostId = [PSCustomObject]@{
+            Status = 'idle'; WaitingFor = ''; Needs = $false; Pid = 999999
+            Kind = 'interactive'; Name = 'GHOST'; Cwd = $ghostCwd; StartedAt = (Get-Date)
+        }
+    }
+    $script:SR_AgentCacheAt = Get-Date
+
+    $cfgNow2 = Get-SRConfig
+    # ASSIGN, THEN WRAP -- the house rule, and it is correct against either shape.
+    $discRaw = Get-SRDiscovered -Config $cfgNow2
+    $disc = @($discRaw)
+    $ghost = @($disc | Where-Object { "$($_.SessionId)".ToLower() -eq $ghostId })
+    if (-not $ghost.Count) {
+        Fail 'a running session with no transcript was not discovered - the tool cannot find what it launched'
+    } else {
+        Pass 'a running session with no transcript is discovered from the agent list'
+        if ("$($ghost[0].Title)" -ne 'GHOST') { Fail "it came back titled '$($ghost[0].Title)', not its agent name" }
+        else { Pass 'it carries the name claude reports for it' }
+    }
+} finally {
+    $script:SR_AgentCache   = $savedCache
+    $script:SR_AgentCacheAt = $savedAt
+}
 Write-Host ''
 if ($fails) { Write-Host ("$fails FAILURE(S)") -ForegroundColor Red; exit 1 }
 Write-Host 'all conversation-state tests passed' -ForegroundColor Green

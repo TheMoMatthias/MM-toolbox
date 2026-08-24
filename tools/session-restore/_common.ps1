@@ -387,11 +387,60 @@ function Get-SRDiscovered {
         }
     }
 
+    # 🔴 A SESSION THAT HAS NEVER BEEN PROMPTED HAS NO TRANSCRIPT AT ALL.
+    #
+    # claude writes the .jsonl on the FIRST MESSAGE, so a window you have just
+    # opened and not yet typed into is invisible to a walk over transcripts -- while
+    # `claude agents --json` has known about it since it started, with its pid, its
+    # cwd and its name. Measured 2026-08-24: a session launched and left at its
+    # prompt was reported by the agent list, had no transcript anywhere on disk, and
+    # appeared nowhere in the tool.
+    #
+    # THE SECOND SOURCE. The requirement is that the tool finds every session it
+    # launches, and one source cannot meet it: the transcript knows what a
+    # conversation SAID, the agent list knows what is RUNNING, and a session can be
+    # one without the other. This pass is only ever ADDITIVE -- anything already
+    # found on disk keeps its transcript-derived row, because that row knows more.
+    #
+    # Get-SRAgentStatus returns an empty map when claude cannot be asked, so this
+    # degrades to exactly the old behaviour rather than throwing.
+    $seenIds = @{}
+    foreach ($r in $found) { $seenIds["$($r.SessionId)".ToLower()] = $true }
+    foreach ($kv in (Get-SRAgentStatus).GetEnumerator()) {
+        $a = $kv.Value
+        if (-not $a -or -not $a.Cwd) { continue }
+        if ($seenIds[[string]$kv.Key]) { continue }
+        $acwd = "$($a.Cwd)".TrimEnd('')
+        if (-not (Test-Path -LiteralPath $acwd -PathType Container)) { continue }
+        if (Test-SRExcluded -Path $acwd -Config $Config) { continue }
+        $awt = Get-SRWorktreeInfo -Path $acwd
+        if ($awt.Lane -eq 'worktree' -and -not $Config.includeWorktrees) { continue }
+        $found += [PSCustomObject]@{
+            RepoRoot   = $awt.RepoRoot
+            Lane       = $awt.Lane
+            Worktree   = $awt.Worktree
+            Cwd        = $acwd
+            SessionId  = [string]$kv.Key
+            Jsonl      = (Get-SRTranscriptPath -Dir $acwd -SessionId ([string]$kv.Key))
+            LastActive = $(if ($a.StartedAt) { $a.StartedAt } else { Get-Date })
+            Title      = $(if ($a.Name) { "$($a.Name)" } else { '(untitled)' })
+            # Not an mtime+length: there is no file. Keyed on the pid so the row is
+            # re-read once the session actually writes something.
+            Stamp      = "agent:$($a.Pid)"
+        }
+    }
     # A session that changed directory mid-life exists under two project folders
     # with the SAME id; keep one row per id, the most recently written.
-    return ,@($found |
+    # 🪤 A PLAIN ARRAY. This returned ",@(...)" -- the EIGHTH comma-wrapped return in
+    # this codebase -- which makes @(Get-SRDiscovered ...) a ONE-ELEMENT array holding
+    # every conversation. The one production caller assigns before wrapping and was
+    # unaffected, so it sat here harmlessly until a new caller used the obvious form
+    # and got a count of 1 out of 189. Assign-then-wrap still works against a plain
+    # array, so nothing that was correct becomes incorrect.
+    $rows = @($found |
         Group-Object -Property SessionId |
         ForEach-Object { $_.Group | Sort-Object LastActive -Descending | Select-Object -First 1 })
+    return $rows
 }
 
 # ---------------------------------------------------------------------------
