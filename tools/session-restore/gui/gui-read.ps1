@@ -73,11 +73,16 @@ function Add-ReadProse {
         }
 
         $p = New-Object System.Windows.Documents.Paragraph
-        $p.Margin = New-Object System.Windows.Thickness 0, 2, 0, 2
+        $p.Margin = New-Object System.Windows.Thickness 0, 3, 0, 3
+        $p.LineHeight = 21
+        $p.LineStackingStrategy = 'BlockLineHeight'
         $body = $ln
-        $size = 13; $weight = 'Normal'; $indent = 0
+        # 13pt at default leading was the operator's "type is too small or too
+        # tight". Prose is the thing this pane exists to show; the tool lines around
+        # it are the ones that should stay small.
+        $size = 14.5; $weight = 'Normal'; $indent = 0
 
-        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = 14 }
+        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = 16 }
         elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [char]0x2022 + '  ' + $Matches[1]; $indent = 14 }
         elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.  ' + $Matches[2]; $indent = 14 }
         if ($indent) { $p.Margin = New-Object System.Windows.Thickness $indent, 2, 0, 2 }
@@ -97,6 +102,47 @@ function Add-ReadProse {
     }
 }
 
+# 🔴 TOOL TRAFFIC OUTNUMBERS PROSE FIVE TO ONE. Measured across six transcripts:
+# text 50, thinking 84, tool_use 129, tool_result 130. Collapsing each call to one
+# line was not enough -- twenty consecutive Bash lines still bury the sentence
+# above them, which is what the operator meant by "tool noise still dominates".
+#
+# A RUN of them becomes ONE line saying how many and naming the last, because the
+# question a reader has about a wall of tool calls is "how much of this is there,
+# and where does the conversation start again". A short run is left alone: two
+# lines are cheaper to read than a summary of two lines.
+function Compress-ToolRuns { param($Blocks)
+    $out = New-Object System.Collections.Generic.List[object]
+    $arr = @($Blocks)
+    $i = 0
+    while ($i -lt $arr.Count) {
+        if ($arr[$i].Kind -ne 'tool' -and $arr[$i].Kind -ne 'result') { $out.Add($arr[$i]); $i++; continue }
+        $j = $i
+        $calls = 0
+        $lastHead = ''
+        while ($j -lt $arr.Count -and ($arr[$j].Kind -eq 'tool' -or $arr[$j].Kind -eq 'result')) {
+            if ($arr[$j].Kind -eq 'tool') { $calls++; $lastHead = "$($arr[$j].Head)" }
+            $j++
+        }
+        if ($calls -le 2) {
+            for ($k = $i; $k -lt $j; $k++) { $out.Add($arr[$k]) }
+        } else {
+            $out.Add([PSCustomObject]@{
+                Kind = 'tools'
+                Head = "$calls tool calls"
+                Body = $(if ($lastHead) { "last: $lastHead" } else { '' })
+                Meta = ''
+            })
+        }
+        $i = $j
+    }
+    # 🪤 A PLAIN ARRAY, NEVER a comma-wrapped one. Wrapping protects a one-element
+    # result from unrolling and makes @(f) at every call site a ONE-ELEMENT array
+    # holding everything -- and for an EMPTY result it yields a single empty array,
+    # so "nothing to render" becomes one phantom row. This codebase has shipped that
+    # bug six times. The assertion for the empty case is in the headless suite.
+    return $out.ToArray()
+}
 function Build-ReadDocument {
     param($Blocks)
     $doc = New-Object System.Windows.Documents.FlowDocument
@@ -114,7 +160,7 @@ function Build-ReadDocument {
         return $doc
     }
 
-    foreach ($b in @($Blocks)) {
+    foreach ($b in @(Compress-ToolRuns $Blocks)) {
         switch ($b.Kind) {
             'you' {
                 $s = New-Object System.Windows.Documents.Section
@@ -141,11 +187,18 @@ function Build-ReadDocument {
                 $doc.Blocks.Add($s)
             }
             'said' {
+                # WHO IS TALKING, SAID OUT LOUD. YOU had a label and a rule down its
+                # side; the reply had neither, so a long exchange ran together into one
+                # column of grey and the operator could not tell where a turn ended.
+                $lab = New-Object System.Windows.Documents.Paragraph
+                $lab.Margin = New-Object System.Windows.Thickness 0, 14, 0, 4
+                $lab.Inlines.Add((New-ReadRun -Text 'CLAUDE' -Brush $Pal.TextLow -Size 10.5 -Weight 'SemiBold'))
+                $doc.Blocks.Add($lab)
                 $inner = New-Object System.Windows.Documents.FlowDocument
                 Add-ReadProse -Doc $inner -Text $b.Body -Brush $Pal.TextHigh
                 foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
                 $sp = New-Object System.Windows.Documents.Paragraph
-                $sp.Margin = New-Object System.Windows.Thickness 0, 0, 0, 8
+                $sp.Margin = New-Object System.Windows.Thickness 0, 0, 0, 14
                 $sp.Inlines.Add((New-ReadRun -Text ' ' -Brush $Pal.TextDim -Size 4))
                 $doc.Blocks.Add($sp)
             }
@@ -164,6 +217,14 @@ function Build-ReadDocument {
                 $p.Inlines.Add((New-ReadRun -Text ([char]0x203A + '  ') -Brush $Pal.TextLow -Size 12 -Mono))
                 $p.Inlines.Add((New-ReadRun -Text ($b.Head + '  ') -Brush $Pal.TextMid -Size 11.5 -Weight 'SemiBold' -Mono))
                 $p.Inlines.Add((New-ReadRun -Text $b.Body -Brush $Pal.TextLow -Size 11.5 -Mono))
+                $doc.Blocks.Add($p)
+            }
+            'tools' {
+                $p = New-Object System.Windows.Documents.Paragraph
+                $p.Margin = New-Object System.Windows.Thickness 4, 3, 0, 3
+                $p.Inlines.Add((New-ReadRun -Text ([char]0x203A + '  ') -Brush $Pal.TextLow -Size 12 -Mono))
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextDim -Size 11 -Weight 'SemiBold' -Mono))
+                $p.Inlines.Add((New-ReadRun -Text $b.Body -Brush $Pal.TextDim -Size 11 -Mono))
                 $doc.Blocks.Add($p)
             }
             'result' {
@@ -454,7 +515,12 @@ function Update-ReadDocument {
     # ~680 ms on a 15 MB transcript, so it is announced rather than looking hung.
     Set-Busy 'reading the conversation'
     try {
-        $blocks = Get-SRTranscriptBlocks -JsonlPath $j
+        # 60 records was "not enough of the conversation is shown": with tool traffic
+        # outnumbering prose five to one, sixty records is a dozen sentences. Runs of
+        # tool calls now fold to one line each, so a wider window costs far less
+        # screen than it used to and buys back the context that makes the last
+        # message make sense.
+        $blocks = Get-SRTranscriptBlocks -JsonlPath $j -MaxRecords 220
         $docObj = Build-ReadDocument -Blocks $blocks
         if ($docObj -isnot [System.Windows.Documents.FlowDocument]) {
             throw ("Build-ReadDocument returned {0}, not a FlowDocument - something in it emitted to the pipeline" -f $docObj.GetType().Name)

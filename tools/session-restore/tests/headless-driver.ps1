@@ -839,6 +839,39 @@ else {
 }
 
 # --- 10f. THE FIXTURE IS STILL THE FIXTURE ----------------------------------
+# --- THE READING PANE IS FOR READING ---------------------------------------
+# TOOL TRAFFIC OUTNUMBERS PROSE FIVE TO ONE, so a run of calls buries the
+# sentence above it. A run folds to one line; a short run does not, because two
+# lines are cheaper to read than a summary of two lines.
+function B { param($k, $h) return [PSCustomObject]@{ Kind = $k; Head = $h; Body = 'x'; Meta = '' } }
+$run = @(
+    (B 'said' ''),
+    (B 'tool' 'Bash'), (B 'result' 'ok'),
+    (B 'tool' 'Read'), (B 'result' 'ok'),
+    (B 'tool' 'Grep'), (B 'result' 'ok'),
+    (B 'tool' 'Edit'), (B 'result' 'ok'),
+    (B 'you'  '')
+)
+$folded = @(Compress-ToolRuns $run)
+$toolsRows = @($folded | Where-Object { $_.Kind -eq 'tools' })
+if ($toolsRows.Count -ne 1) { Fail "a run of 4 tool calls folded into $($toolsRows.Count) row(s), expected 1" }
+elseif ("$($toolsRows[0].Head)" -ne '4 tool calls') { Fail "the folded row says '$($toolsRows[0].Head)'" }
+elseif ("$($toolsRows[0].Body)" -notlike '*Edit*') { Fail 'the folded row does not name the last call' }
+else { Pass 'four tool calls fold into one line that names the last of them' }
+if (@($folded | Where-Object { $_.Kind -eq 'said' }).Count -ne 1 -or @($folded | Where-Object { $_.Kind -eq 'you' }).Count -ne 1) {
+    Fail 'folding tool calls swallowed the prose around them'
+} else { Pass 'the prose on either side of the run survives' }
+
+# A SHORT RUN IS LEFT ALONE.
+$short = @((B 'said' ''), (B 'tool' 'Bash'), (B 'result' 'ok'), (B 'you' ''))
+$sf = @(Compress-ToolRuns $short)
+if (@($sf | Where-Object { $_.Kind -eq 'tools' }).Count) { Fail 'a single tool call was folded into a summary' }
+else { Pass 'one tool call is shown as itself, not summarised' }
+
+# and nothing at all still renders
+$empty = @(Compress-ToolRuns @())
+if ($empty.Count) { Fail 'an empty transcript produced rows' }
+else { Pass 'an empty transcript folds to nothing' }
 # --- THE QUESTION PANEL -----------------------------------------------------
 # The operator could not see what a session was asking. Detection is covered in
 # the state suite; this covers the half that is on screen -- that the panel draws
