@@ -1302,6 +1302,38 @@ public static class SRCon {
             } finally { CloseHandle(h); }
         } finally { FreeConsole(); }
     }
+
+    // KEYS, NOT CHARACTERS. Send() writes UnicodeChar records, which is everything
+    // a prompt needs and nothing a MENU needs: claude's AskUserQuestion is chosen
+    // with the arrow keys, and an arrow has no character to write. A virtual-key
+    // record carries wVirtualKeyCode with UnicodeChar left at 0 -- the console
+    // delivers it as a real keypress rather than as text that happens to spell one.
+    //
+    // The caller passes the codes it wants: 0x26 UP, 0x28 DOWN, 0x20 SPACE,
+    // 0x0D ENTER, 0x09 TAB. Down and up are written for each, because a TUI that
+    // watches for key-release sees nothing from a half-pair.
+    public static int SendKeys(uint pid, ushort[] vks) {
+        FreeConsole();
+        if (!AttachConsole(pid)) return -Marshal.GetLastWin32Error();
+        try {
+            IntPtr h = OpenConIn();
+            if (h == new IntPtr(-1)) return -Marshal.GetLastWin32Error();
+            try {
+                INPUT_RECORD[] r = new INPUT_RECORD[vks.Length * 2];
+                int i = 0;
+                foreach (ushort vk in vks) {
+                    // ENTER is the one that also needs its character, or a console
+                    // reading cooked input never sees the line end.
+                    char ch = (vk == 0x0D) ? (char)13 : (char)0;
+                    r[i].EventType = 1; r[i].bKeyDown = true;  r[i].wRepeatCount = 1; r[i].wVirtualKeyCode = vk; r[i].UnicodeChar = ch; i++;
+                    r[i].EventType = 1; r[i].bKeyDown = false; r[i].wRepeatCount = 1; r[i].wVirtualKeyCode = vk; r[i].UnicodeChar = ch; i++;
+                }
+                uint written;
+                if (!WriteConsoleInputW(h, r, (uint)r.Length, out written)) return -Marshal.GetLastWin32Error();
+                return (int)written;
+            } finally { CloseHandle(h); }
+        } finally { FreeConsole(); }
+    }
 }
 '@
 }
