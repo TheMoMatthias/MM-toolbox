@@ -1277,6 +1277,11 @@
                 <MenuItem x:Name="UnpinAll"    Header="Unpin all shown"  ToolTip="Hand every conversation in the list back to the rolling auto-tick"/>
                 <Separator/>
                 <MenuItem x:Name="SeenAll"     Header="Mark all shown seen" ToolTip="Clear the moved marks on everything in the list"/>
+                <Separator/>
+                <!-- HIDING IS NEVER A DELETION. The registry is the only record a
+                     conversation has, so hiding sets a flag and this brings the
+                     hidden rows back into both lists, marked, ready to be unhidden. -->
+                <MenuItem x:Name="ShowHidden"  Header="Show hidden" IsCheckable="True" ToolTip="Bring hidden conversations back into the list so you can unhide them. Nothing is ever removed - hiding is a flag on the conversation."/>
               </ContextMenu>
             </Button.ContextMenu>
           </Button>

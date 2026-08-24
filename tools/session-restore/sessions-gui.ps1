@@ -705,6 +705,10 @@ $script:fTick     = @{}     # ticked | unticked
 # index you can read, 173 conversations is the flood that made the operator ask
 # for grouping in the first place.
 $script:fold     = @{}
+
+# Is the list showing hidden conversations? Off by default, and never persisted:
+# revealing them is something you do for a moment, not a mode you leave on.
+$script:showHidden = $false
 $script:fPin      = @{}     # pinned | unpinned
 $script:fAge      = @{}     # recent | stale
 $script:fProject  = $null   # a project path, or $null for any
@@ -969,7 +973,7 @@ foreach ($n in @(
     # The inbox: its own list, the view switch, and the three count pills that
     # are now buttons rather than decoration.
     'InboxList','ModeInbox','ModeAll','LivePill','WaitPill','TickPill',
-    'ListHead','InboxHead','NowCaption','WorktreeCaption'
+    'ListHead','InboxHead','NowCaption','WorktreeCaption','ShowHidden'
 )) { $ui[$n] = $window.FindName($n) }
 
 # A name in the markup that is not in the list above is $null here, and the
@@ -2777,6 +2781,89 @@ $ui.RowList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.Win
     }
 })
 
+# ---------------------------------------------------------------------------
+# RIGHT-CLICK, ON ANY ROW, IN EITHER SCREEN.
+#
+# The operator asked for this after hunting for where ticking happens: the answer
+# should be "wherever the conversation is". Tick, untick, hide and open are all
+# things you want to do to the row under the pointer, not to whatever the footer
+# happens to be pointing at.
+#
+# ONE MENU PER LIST, BUILT IN CODE. A ContextMenu declared inside a DataTemplate
+# is instantiated once per row and its MenuItems cannot be wired from here; a
+# menu built once and hung on the ListBox can. A ContextMenu also has a single
+# parent, so the two lists get one each rather than sharing.
+function Invoke-RowMenu { param([string]$Tag)
+    $list = Get-ActiveList
+    $row  = $list.SelectedItem -as [SRGui.Row]
+    if (-not $row) { Set-Status 'nothing is selected' 'warn'; return }
+    if ($row.Kind -ne 'session') { Set-Status 'that is a heading, not a conversation' 'warn'; return }
+    switch ($Tag) {
+        'tick'   { Set-RowTick -Row $row -Value $true;  Set-Status "$($row.Name) will reopen at logon" }
+        'untick' { Set-RowTick -Row $row -Value $false; Set-Status "$($row.Name) will not reopen" }
+        'hide'   {
+            Set-SessionField $row.Session 'hidden' $true
+            $script:dirty = $true
+            Set-Status "$($row.Name) hidden - Bulk > Show hidden brings it back"
+            Update-List
+        }
+        'unhide' {
+            Set-SessionField $row.Session 'hidden' $false
+            $script:dirty = $true
+            Set-Status "$($row.Name) is no longer hidden"
+            Update-List
+        }
+        'open'   { Invoke-RowLaunch $row }
+        'jump'   { Invoke-RowJump $row }
+    }
+}
+
+function New-RowMenu {
+    $m = New-Object System.Windows.Controls.ContextMenu
+    $specs = @(
+        @{ Tag = 'tick';   Header = 'Tick - reopen this at logon' },
+        @{ Tag = 'untick'; Header = 'Untick - do not reopen this' },
+        @{ Tag = '-' },
+        @{ Tag = 'hide';   Header = 'Hide this conversation' },
+        @{ Tag = 'unhide'; Header = 'Stop hiding it' },
+        @{ Tag = '-' },
+        @{ Tag = 'open';   Header = 'Open it now' },
+        @{ Tag = 'jump';   Header = 'Go to its terminal' }
+    )
+    foreach ($spec in $specs) {
+        if ($spec.Tag -eq '-') { $null = $m.Items.Add((New-Object System.Windows.Controls.Separator)); continue }
+        $mi = New-Object System.Windows.Controls.MenuItem
+        $mi.Header = $spec.Header
+        $mi.Tag    = $spec.Tag
+        $mi.Add_Click({ param($sender, $e) Invoke-Guarded { Invoke-RowMenu -Tag "$($sender.Tag)" } 'that row action' })
+        $null = $m.Items.Add($mi)
+    }
+    return $m
+}
+
+# A right-click does NOT select a row on its own, so the menu would act on
+# whatever was selected before -- which is how a context menu ends up ticking the
+# wrong conversation. Walk up from what was hit to its ListBoxItem and select it
+# first. OriginalSource, never Source: the click lands on a TextBlock inside a
+# template and Source has already been retargeted by the time it arrives.
+$rowRightClick = [System.Windows.Input.MouseButtonEventHandler]{
+    param($sender, $e)
+    $dep = $e.OriginalSource -as [System.Windows.DependencyObject]
+    while ($dep -and -not ($dep -is [System.Windows.Controls.ListBoxItem])) {
+        $dep = [System.Windows.Media.VisualTreeHelper]::GetParent($dep)
+    }
+    if ($dep) { $dep.IsSelected = $true }
+}
+$ui.RowList.ContextMenu   = New-RowMenu
+$ui.InboxList.ContextMenu = New-RowMenu
+$ui.RowList.Add_PreviewMouseRightButtonDown($rowRightClick)
+$ui.InboxList.Add_PreviewMouseRightButtonDown($rowRightClick)
+
+$ui.ShowHidden.Add_Click({ Invoke-Guarded {
+    $script:showHidden = [bool]$ui.ShowHidden.IsChecked
+    Update-List
+    Set-Status $(if ($script:showHidden) { 'showing hidden conversations' } else { 'hidden conversations are hidden again' })
+} 'show hidden' })
 $ui.RowList.Add_SelectionChanged({ Invoke-Guarded { Update-Selection } 'the selection' })
 
 # --- search, debounced so 150 rows are not rebuilt on every keystroke ---

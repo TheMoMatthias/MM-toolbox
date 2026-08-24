@@ -839,6 +839,68 @@ else {
 }
 
 # --- 10f. THE FIXTURE IS STILL THE FIXTURE ----------------------------------
+# --- HIDING IS A FLAG, NEVER A DELETION -------------------------------------
+# The registry is the only record these conversations have, so 'hide' must be
+# recoverable by construction. This hides a real row, proves it leaves BOTH
+# lists, proves Show hidden brings it back, and proves the conversation itself
+# was never touched.
+Set-ViewMode 'all'
+Update-List -ToTop
+$victim = $null
+foreach ($r in $script:rows) { if ($r.Kind -eq 'session') { $victim = $r; break } }
+if (-not $victim) { Fail 'no conversation row to hide' }
+else {
+    $vid = "$($victim.Session.sessionId)"
+    function CountRows { param([string]$Mode)
+        Set-ViewMode $Mode; Update-List
+        $lst = $(if ($Mode -eq 'inbox') { $script:inboxRows } else { $script:rows })
+        # 🪤 PIPE IT, do not wrap it. $script:rows is a List[object] and
+        # $script:inboxRows is a plain array: @($list) throws on the first and
+        # .ToArray() throws on the second. A pipeline enumerates both.
+        return @($lst | Where-Object { $_.Kind -eq 'session' -and "$($_.Session.sessionId)" -eq $vid }).Count
+    }
+    $beforeAll = CountRows 'all'
+    Set-SessionField $victim.Session 'hidden' $true
+    $script:showHidden = $false
+    $afterAll   = CountRows 'all'
+    $afterInbox = CountRows 'inbox'
+    if ($beforeAll -lt 1) { Fail 'the row to hide was not in the roster to begin with' }
+    elseif ($afterAll)    { Fail 'a hidden conversation is still in the roster' }
+    elseif ($afterInbox)  { Fail 'a hidden conversation is still in the inbox - hiding must cover both screens' }
+    else { Pass 'hiding removes a conversation from both screens' }
+
+    # A SEARCH MUST NOT REVEAL IT EITHER. Hiding is the operator saying stop
+    # showing me this, which outranks a filter that would otherwise match.
+    $script:filter = $vid
+    $found = CountRows 'all'
+    $script:filter = ''
+    if ($found) { Fail 'searching for a hidden conversation by id revealed it' }
+    else { Pass 'not even a search by id reveals a hidden conversation' }
+
+    $script:showHidden = $true
+    $back = CountRows 'all'
+    $script:showHidden = $false
+    if (-not $back) { Fail 'Show hidden did not bring the conversation back - hiding would be unrecoverable' }
+    else { Pass 'Show hidden brings it back' }
+
+    if (-not $victim.Session.sessionId) { Fail 'hiding damaged the conversation record' }
+    else { Pass 'the conversation record itself is untouched' }
+    Set-SessionField $victim.Session 'hidden' $false
+    Update-List
+}
+
+# The right-click menu exists on BOTH lists, with the actions the operator asked
+# for. A menu on one list only is the discoverability bug all over again.
+foreach ($pair in @(@{ N = 'roster'; L = $ui.RowList }, @{ N = 'inbox'; L = $ui.InboxList })) {
+    $m = $pair.L.ContextMenu
+    if (-not $m) { Fail "the $($pair.N) list has no right-click menu"; continue }
+    $tags = @($m.Items | Where-Object { $_ -is [System.Windows.Controls.MenuItem] } | ForEach-Object { "$($_.Tag)" })
+    $want = @('tick','untick','hide','unhide','open','jump')
+    $miss = @($want | Where-Object { $_ -notin $tags })
+    if ($miss.Count) { Fail "the $($pair.N) right-click menu is missing: $($miss -join ', ')" }
+    else { Pass "the $($pair.N) list right-clicks to $($tags.Count) actions" }
+}
+
 # Everything above asserts against staged state. If a background probe replaced
 # it half way through, those assertions were measuring the machine rather than
 # the fixture - and would still pass, because each one re-reads the list it is
