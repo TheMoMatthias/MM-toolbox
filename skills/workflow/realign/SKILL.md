@@ -1,6 +1,6 @@
 ---
 name: realign
-description: Close out a report, summary or "I'm finished" claim without leaving anything on the field - re-check the objective against evidence rather than recollection, account for every unfinished task and deviation, decide the approach yourself, break what stands in the way instead of writing it off, put up a compact picture of everything still open grouped by track, ask the user about DIRECTION on every track that needs one, steer the other lanes that share the plan, then carry straight on with the outstanding work and the next item. Use when a progress report, summary or status update has just been given, when a session claims the work is done or complete, when something has been called blocked, too hard or not feasible, when something was skipped, cut short or never got done, when the user asks what decisions you need or whether the objective was really met, says "realign", "carry on", "keep going", "are you sure you are finished" or "do not leave anything open", or when work on a plan has paused and should continue.
+description: Close out a report, summary or "I'm finished" claim without leaving anything on the field - re-check the objective against evidence rather than recollection, account for every unfinished task and deviation, decide the approach yourself, break what stands in the way instead of writing it off, put up a compact picture of everything still open grouped by track, ask the user about DIRECTION on every track that needs one, steer the other lanes that share the plan, then carry straight on with the outstanding work and the next item, and end with one or two plain sentences saying what happens next or that the item is closed. Use when a progress report, summary or status update has just been given, when a session claims the work is done or complete, when something has been called blocked, too hard or not feasible, when something was skipped, cut short or never got done, when the user asks what decisions you need or whether the objective was really met, says "realign", "carry on", "keep going", "are you sure you are finished" or "do not leave anything open", or when work on a plan has paused and should continue.
 argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 ---
 
@@ -9,7 +9,8 @@ argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 **The deliverable is work resumed correctly** — the direction checked, and nothing quietly
 written off. Used at the end of a report, summary, update, or a claim of being finished.
 Account for what is open, settle the approach yourself, **put the picture up and check the
-direction**, then **keep going and break what is in the way**. Step 5 is the point; 1–4
+direction**, then **keep going and break what is in the way**, and finish by saying
+**in plain sentences what happens next — or that there is nothing left**. Step 5 is the point; 1–4
 make it safe.
 
 ## 1. Sweep — on evidence, not recollection
@@ -153,7 +154,7 @@ leaves none — so no rule about authority can catch it. Reconciliation catches 
 of them was written off by nobody. [WALLS.md](WALLS.md) lists the shapes this takes.
 
 Say what you are doing in one line, then do it. **Do not narrate progress mid-run** — the
-board went up in step 3, and the account comes at the end. Close with this block,
+board went up in step 3, and the account comes at the end. Close with this block **and then the one or two sentences below it**,
 **omitting every line that has nothing in it**. Write it into the run-file or spec if the
 project keeps one, so it survives a compaction.
 
@@ -169,6 +170,29 @@ NEXT       the remaining work per track, in the order you will now do it, markin
            in parallel — anything not verified, decided, dropped or deferred lands here.
            Nothing leaves the sweep unaccounted, on any track.
 ```
+
+### The last thing you write is a sentence, not a field
+
+🔴 **End every realign with one or two plain sentences, outside the block.** The block
+above is a reconciliation — it exists so nothing is lost, and it is dense on purpose. It is
+not an answer. Someone who reads only the last line must still know what happens now.
+
+It takes exactly one of two shapes, and it is **never omitted** — it is the one line that is
+always written, even when every other line in the block was empty:
+
+- **Still open** — what the next action is, who takes it, and anything the user must do
+  before it can start. Name the thing, not the category: "next I run the migration, then
+  phase 3" — not "continuing with the outstanding items".
+- **Closed** — say it is closed, and say what makes that true. "Nothing is left on this:
+  tests green, pushed, and no track has an open item." A closure that does not say what
+  makes it a closure reads as a session that simply stopped.
+
+🪤 **Do not restate the block in prose.** If the sentence lists five things, it has become
+the block again and the reader is back where they started. One or two sentences.
+
+🪤 **Do not hedge it.** "Should be mostly done, though X may need a look" leaves the reader
+to decide whether the work is finished, which is the question they asked you. If X needs a
+look, the item is open and X is the next action.
 
 ## Example
 
@@ -191,3 +215,11 @@ NEXT       the remaining work per track, in the order you will now do it, markin
 > migration, phase 3.
 >
 > The claim was wrong three ways, and the thing written off was the cheapest of them.
+>
+> **Next I run the two failing tests down, then the migration, then phase 3 — F2 is
+> unblocked as soon as the storage answer reaches it.**
+
+And the same example, had nothing been left:
+
+> **This is closed: phase 3 landed, all suites green on the pushed commit, and every track
+> from the sweep is either verified or explicitly dropped.**
