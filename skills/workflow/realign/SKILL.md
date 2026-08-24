@@ -111,6 +111,13 @@ decision would.**
 - **Keep the options wide enough that "Other" is not the only true answer**, and include one
   that genuinely challenges the current course. Decisions others depend on come first.
 
+🔔 **Push the questions — do not just post them.** Send a `PushNotification` the moment they
+go up, one line naming the lane and what is waiting. It suppresses itself when the user is
+already at this terminal, so it costs nothing when they are present and is the only thing
+that reaches them when they are not. **With several lanes live, a question nobody sees is a
+question nobody asked** — measured across a day of concurrent lanes, the median wait for an
+answer was 45 minutes and not one was answered inside five.
+
 ## 5. Carry on — and break what is in the way
 
 **Decisions are now locked** for the rest of the session: do not re-ask, do not
