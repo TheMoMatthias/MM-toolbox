@@ -11,6 +11,11 @@ written off. Account for what is open, settle the approach yourself, put the pic
 check the direction, then keep going and break what is in the way. Step 5 is the point;
 1–4 make it safe.
 
+**Honour `$ARGUMENTS`** — an area scopes the sweep and the board to it (say so); a steer for
+what to do next settles the ordering, so do not re-ask what they just told you. **And scale
+the effort to the board**: a one-item board needs no six-probe sweep across three tracks —
+sweep it, say where you are going, and go. What follows is for the run that needs it.
+
 ## 1. Sweep — on evidence, not recollection
 
 🔴 **If the work was just called done, that claim is the thing under test** — you cannot
@@ -88,15 +93,17 @@ already committed; the sixth looks forward at what just became possible:
    was written.
 
 **Every track that returns something earns its own question** — three live tracks means
-three questions. Add anything whose answer changes what you do next, the unfinished work,
-and any wall from step 5. 🔴 **A track you did not ask about is a track you decided alone**:
-correct for HOW, never for WHERE. **If every probe on every track comes back empty — rarer
+three questions. Add anything whose answer changes what you do next, and the unfinished
+work — finish, drop, or hand off. 🔴 **A track you did not ask about is a track you decided
+alone**: correct for HOW, never for WHERE. **If every probe on every track comes back empty — rarer
 than it feels — say in one line that you ran them, then go.**
 
 🔴 **An open track with no live owner, or one gone quiet past its cadence, is a question by
 itself** — who drives it, and when. **"Nothing from me" is not an answer; it is the reason
 to ask**: only the user can assign a track nobody is driving, and a stalled lane looks
-identical to a healthy one on a board.
+identical to a healthy one on a board. **Stalled means quiet against that track's own pace**,
+not quiet in the abstract — and one already raised this way earlier in the session is not
+raised again until something about it changes.
 
 Use **`AskUserQuestion`, batched, up to 4 per round**, options selectable and each carrying
 its consequence. **Fire successive rounds until every track is covered — the cap is per
