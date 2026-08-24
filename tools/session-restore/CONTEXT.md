@@ -15,8 +15,15 @@ a bug that took an afternoon to find.
 directory, and whatever the tool has learned about it. The unit of everything.
 Never "session" in new code, because that word is also what the OS calls a logon.
 
-**project** — a repository. Holds conversations. Shown as a column, never as a
-row: it stopped being a level of hierarchy when the tree became a table.
+**project** — a repository. Holds conversations, and is a ROW again on the
+roster — a collapsible header carrying the count, how many are armed, and whether
+the project itself is switched off. It stopped being a row when the tree was
+retired and became one again when the registry reached 173 conversations across
+21 projects and the operator could not find a repository in it.
+
+A project also has its own `enabled` flag, and it OUTRANKS every tick under it:
+the restore consults the project first. 89 pinned conversations under a disabled
+AlgoTrader came back from exactly none of them.
 
 **lane** — `main` for a repo's own tree, plus one per git worktree. A worktree has
 its OWN git index, which is why it gets its own lane and its own auto-tick
@@ -34,6 +41,32 @@ number by construction rather than by three functions agreeing.
 state their transcript was seen in, and 110 of 143 landed in "waiting" — one word
 meaning two things on one screen. Gone.
 
+**now** / **roster** — the two screens, and the two questions. NOW is what is
+happening: live and recently-active conversations, banded by what they need. The
+ROSTER is what comes back at logon: every conversation, grouped project then lane,
+ticks as the primary control. They used to be Inbox and All, which differed only
+by SCOPE — and scope is a filter, not a screen, which is why All felt like a dump.
+*Internally the modes are still `inbox` and `all`; renaming them would be churn
+across a hundred call sites for no behaviour.*
+
+**fold** — a collapsed group on the roster. Lives on the project (`folded`, and
+`foldedLanes` for the lanes under it), so it survives a restart. FILTERING IGNORES
+FOLDS — hiding the rows that were searched for is the one thing a filter must
+never do.
+
+**hidden** — a conversation the operator has asked not to see. A FLAG, never a
+deletion: `Show hidden` brings every one back. The gate sits ahead of the search,
+because hiding outranks a filter that would otherwise match — not even a search
+by session id reveals one.
+
+**armed** — ticked AND in an enabled project, i.e. a tick that will actually fire
+at logon. A group header says "9 armed"; if the project is off it says
+"9 ticked, PROJECT OFF" instead, because those are different facts about tomorrow
+morning.
+
+**pending question** — an `AskUserQuestion` tool_use with no tool_result carrying
+its id. What a session is waiting on, readable from the transcript alone, and
+answerable from the window.
 **sort key stack** — the ordered list of columns the list is sorted by, each with
 its own direction. Click a heading and it becomes the only key; shift-click and
 it joins the end. "Sorted by what it needs, then newest" is a two-item stack and
@@ -41,20 +74,39 @@ reads off the headings as `STATE ↑1  WHEN ↓2`.
 
 ---
 
-## The two views
+## The two views, and the two questions
 
-**Inbox** — every conversation that is running or was, across every project,
-grouped into bands and ordered by what it wants from you. The bands are not a
-sort key and cannot be sorted away: they are what the inbox *is*.
+**NOW** (the inbox) — every conversation that is running or was, across every
+project, grouped into bands and ordered by what it wants from you. The bands are
+not a sort key and cannot be sorted away: they are what this screen *is*.
 
-**All** — one flat, sortable row per conversation, bounded to the last
-`listDays` (7). Holds the logon tick. Nothing is hidden silently: whatever the
-age window cut is counted on a row of its own at the bottom, and any search
-reaches past it.
+**ROSTER** (internally `all`) — what comes back at logon. Grouped project then
+lane, collapsible, ticks as the primary control, and the tick summary says what
+the `maxSessions` cap will DROP before it drops it.
+
+They differed only by SCOPE until 2026-08-24, and scope is a filter, not a screen.
+That is why All read as a dump: 173 rows with no structure and no purpose of its
+own. Each screen answers one question now, and "show me everything" is a filter
+inside the roster rather than a place to go.
+
+A lane row appears ONLY where a project has more than one lane. This is the
+specific thing that retired the original tree — 143 conversations rendered as 195
+rows because eleven of fifteen projects carried a lane row called `main`, a row
+that said nothing under a row that said the same thing. Measured on the live
+registry after the rework: 22 project rows and 26 lane rows for 117 conversations.
+There is an assertion that no project carries a lone lane row.
+
+Sorting applies WITHIN a group, not across everything. Sorting newest-first across
+every project was a real capability of the flat list and the grouping costs it;
+the operator was offered "grouped by default, flat when you sort" and chose
+"grouping replaces it" anyway. The assertion says so out loud rather than
+pretending the old contract still holds.
+
+Nothing is hidden silently: whatever the age window cut is counted on a row of its
+own at the bottom, and any search reaches past it — and past every fold.
 
 *Retired: "Projects" and "Restore".* They rendered byte-identical row sets — 195
 rows, same keys, same order. One of the three views was a duplicate of another.
-
 ---
 
 ## The states, which are three different questions
@@ -162,6 +214,40 @@ against. Drive the real entry point, and start from a sentinel.
 **The registry these tests run against is the operator's real one.** Restore
 anything you touch.
 
+## Four more traps, each of which cost a run
+
+**THE COMMA-WRAPPED RETURN HAS NOW SHIPPED SEVEN TIMES.** `return ,$out` protects
+a one-element result from unrolling, and makes `@(f)` at every call site a
+ONE-ELEMENT array holding everything. The seventh was `Compress-ToolRuns`, where
+the empty case was the tell: an empty result came back as a single empty array,
+so "nothing to render" became one phantom row, and a second assertion failed for
+the same cause. **Return a plain array. Always.** If a caller needs protection
+from unrolling, that is the caller's job.
+
+**`@($list)` THROWS ON A `List[object]`, AND `.ToArray()` THROWS ON AN ARRAY.**
+`$script:rows` is a List and `$script:inboxRows` is a plain array, so neither
+idiom is safe across both. A pipeline (`$list | Where-Object`) or a bare
+`foreach` enumerates either. "Argument types do not match" is this, every time.
+
+**PRINTED NON-ASCII MOJIBAKES.** PowerShell 5.1 reads a BOM-less UTF-8 file as
+ANSI, so a middle dot in a string literal reached the screen as two characters:
+the group headers read `93 A- 9 armed`. Comments survive because nothing prints
+them. Keep printed literals ASCII.
+
+**A `Conv` OBJECT IS NOT A TRANSCRIPT.** `Get-SRConversationState` returns a
+result even when the file is gone, carrying State `unknown`. Any guard that means
+"there is something to read" has to test for that, or it passes for exactly the
+case it exists to catch. This one was caught by looking at a screenshot, not by a
+test: a conversation rendered a bright `waiting` next to its own GONE mark.
+
+### And one about writing this code, not running it
+
+Authoring a patch through a shell heredoc converts escape sequences into literal
+control bytes. A Windows path in a generated COMMENT is enough: `runs` after a
+backslash becomes a carriage return, `ask-` becomes a BEL, and the file stops
+parsing somewhere that looks unrelated. It happened five times in one session.
+Write generated comments without backslashes, and if a file suddenly fails to
+parse after an edit, scan it for control bytes before reading the diff.
 ## The antivirus is part of the test environment
 
 **2026-08-23, measured.** A `tray` suite drove the LIVE Windows shell through UI
