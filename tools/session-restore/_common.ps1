@@ -742,6 +742,19 @@ function Update-SRRegistryCore {
         # EACH worktree, because a worktree is a separate lane of work with its own
         # git index -- three from main plus three from every active lane, rather than
         # three for the whole repo where one busy lane would crowd out the others.
+        # 🪤 A TICK INSIDE A SWITCHED-OFF PROJECT CANNOT FIRE, because the restore
+        # consults the project before it ever looks at a conversation. Rolling ticks
+        # here manufactured exactly the state that cost the operator every AlgoTrader
+        # lane on 2026-08-24: 89 pinned conversations in a project that was off, no
+        # sign of it on any row, and a logon that restored none of them.
+        #
+        # 🔑 Ticking BY HAND turns the project on -- Set-RowTick does that deliberately,
+        # because that is what the operator meant. The ROLL must not, or a project
+        # switched off on purpose would switch itself back on the next time anything
+        # in it was touched. So it leaves a disabled project entirely alone rather
+        # than writing ticks into it that can never launch.
+        if (-not $dir.enabled) { continue }
+
         $ordered = @($dir.sessions | Sort-Object { [datetime]$_.lastActive } -Descending)
         $laneGroups = $ordered | Group-Object -Property {
             if ($_.lane -eq 'worktree' -and $_.worktree) { 'wt:' + $_.worktree } else { 'main' }
