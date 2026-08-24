@@ -1,6 +1,6 @@
 ---
 name: realign
-description: Close out a report, summary or "I'm finished" claim without leaving anything on the field - re-check the objective against evidence rather than recollection, account for every unfinished task and deviation, decide the approach yourself, break what stands in the way instead of writing it off, put up a compact picture of everything still open grouped by track, ask the user about DIRECTION on every track that needs one, steer the other lanes that share the plan, then carry straight on with the outstanding work and the next item, and end with one or two plain sentences saying what happens next or that the item is closed. Use when a progress report, summary or status update has just been given, when a session claims the work is done or complete, when something has been called blocked, too hard or not feasible, when something was skipped, cut short or never got done, when the user asks what decisions you need or whether the objective was really met, says "realign", "carry on", "keep going", "are you sure you are finished" or "do not leave anything open", or when work on a plan has paused and should continue.
+description: Close out a report, summary or "I'm finished" claim without leaving anything on the field - re-check the objective against evidence rather than recollection, account for every unfinished task and deviation, decide the approach yourself, break what stands in the way instead of writing it off, put up a compact picture of everything still open grouped by track, ask the user about DIRECTION on every track that needs one, steer the other lanes that share the plan, then carry straight on with the outstanding work and the next item, and end with one or two plain sentences saying what happens next or that the item is closed - and when work is still open, ask which of the remaining items to take and carry on into it rather than handing back a list. Use when a progress report, summary or status update has just been given, when a session claims the work is done or complete, when something has been called blocked, too hard or not feasible, when something was skipped, cut short or never got done, when the user asks what decisions you need or whether the objective was really met, says "realign", "carry on", "keep going", "are you sure you are finished" or "do not leave anything open", or when work on a plan has paused and should continue.
 argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 ---
 
@@ -220,6 +220,19 @@ the block again and the reader is back where they started. One or two sentences.
 to decide whether the work is finished, which is the question they asked you. If X needs a
 look, the item is open and X is the next action.
 
+### A non-empty NEXT is not an ending
+
+🔁 **When work is still open, the sentence is followed by a question — not by silence.** Put
+the remaining items up: which to take now, or confirm the order you proposed. Then
+**implement the answer**, and when that lands this rule applies again. The block is the
+record, the sentence is the summary, **the question is the handover** — handing back a list
+and stopping just makes them invoke the skill again to get the same list.
+
+This does not re-open step 4; those decisions stay locked. It chooses what comes *after* the
+work they governed. And it is not a turn-boundary ritual: **one item left that plainly
+follows? Say so in a line and do it.** The question goes up when there is a real choice.
+**Only when nothing is outstanding on any track does a realign end on the sentence alone.**
+
 ## Example
 
 > *"Phase 2 is done, tests green. The idempotency key needs a schema change, so I deferred
@@ -244,6 +257,11 @@ look, the item is open and X is the next action.
 >
 > **Next I run the two failing tests down, then the migration, then phase 3 — F2 is
 > unblocked as soon as the storage answer reaches it.**
+>
+> Then, because phase 3 is not the only thing the migration unlocks: a closing question —
+> phase 3 as planned, or the second provider the schema now supports, or the backfill that
+> was waiting on it. Answered, and straight into it. No second `/realign` needed to find out
+> what was already on the list.
 
 And the same example, had nothing been left:
 
