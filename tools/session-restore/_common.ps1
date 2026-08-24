@@ -742,6 +742,19 @@ function Update-SRRegistryCore {
         # EACH worktree, because a worktree is a separate lane of work with its own
         # git index -- three from main plus three from every active lane, rather than
         # three for the whole repo where one busy lane would crowd out the others.
+        # 🪤 A TICK INSIDE A SWITCHED-OFF PROJECT CANNOT FIRE, because the restore
+        # consults the project before it ever looks at a conversation. Rolling ticks
+        # here manufactured exactly the state that cost the operator every AlgoTrader
+        # lane on 2026-08-24: 89 pinned conversations in a project that was off, no
+        # sign of it on any row, and a logon that restored none of them.
+        #
+        # 🔑 Ticking BY HAND turns the project on -- Set-RowTick does that deliberately,
+        # because that is what the operator meant. The ROLL must not, or a project
+        # switched off on purpose would switch itself back on the next time anything
+        # in it was touched. So it leaves a disabled project entirely alone rather
+        # than writing ticks into it that can never launch.
+        if (-not $dir.enabled) { continue }
+
         $ordered = @($dir.sessions | Sort-Object { [datetime]$_.lastActive } -Descending)
         $laneGroups = $ordered | Group-Object -Property {
             if ($_.lane -eq 'worktree' -and $_.worktree) { 'wt:' + $_.worktree } else { 'main' }
@@ -1289,6 +1302,38 @@ public static class SRCon {
             } finally { CloseHandle(h); }
         } finally { FreeConsole(); }
     }
+
+    // KEYS, NOT CHARACTERS. Send() writes UnicodeChar records, which is everything
+    // a prompt needs and nothing a MENU needs: claude's AskUserQuestion is chosen
+    // with the arrow keys, and an arrow has no character to write. A virtual-key
+    // record carries wVirtualKeyCode with UnicodeChar left at 0 -- the console
+    // delivers it as a real keypress rather than as text that happens to spell one.
+    //
+    // The caller passes the codes it wants: 0x26 UP, 0x28 DOWN, 0x20 SPACE,
+    // 0x0D ENTER, 0x09 TAB. Down and up are written for each, because a TUI that
+    // watches for key-release sees nothing from a half-pair.
+    public static int SendKeys(uint pid, ushort[] vks) {
+        FreeConsole();
+        if (!AttachConsole(pid)) return -Marshal.GetLastWin32Error();
+        try {
+            IntPtr h = OpenConIn();
+            if (h == new IntPtr(-1)) return -Marshal.GetLastWin32Error();
+            try {
+                INPUT_RECORD[] r = new INPUT_RECORD[vks.Length * 2];
+                int i = 0;
+                foreach (ushort vk in vks) {
+                    // ENTER is the one that also needs its character, or a console
+                    // reading cooked input never sees the line end.
+                    char ch = (vk == 0x0D) ? (char)13 : (char)0;
+                    r[i].EventType = 1; r[i].bKeyDown = true;  r[i].wRepeatCount = 1; r[i].wVirtualKeyCode = vk; r[i].UnicodeChar = ch; i++;
+                    r[i].EventType = 1; r[i].bKeyDown = false; r[i].wRepeatCount = 1; r[i].wVirtualKeyCode = vk; r[i].UnicodeChar = ch; i++;
+                }
+                uint written;
+                if (!WriteConsoleInputW(h, r, (uint)r.Length, out written)) return -Marshal.GetLastWin32Error();
+                return (int)written;
+            } finally { CloseHandle(h); }
+        } finally { FreeConsole(); }
+    }
 }
 '@
 }
@@ -1325,7 +1370,20 @@ function Send-SRSessionInput {
     if (-not $proc)                      { return 'that session has exited' }
     if ($proc.Name -ne 'claude.exe')     { return "pid $($a.Pid) is $($proc.Name), not claude.exe - refusing to type into it" }
 
-    $n = [SRCon]::Send([uint32]$a.Pid, $body, $true)
+    # 🔴 THE TEXT AND THE SUBMIT ARE TWO CALLS, and that is not tidiness.
+    # Send() wrote the characters and a trailing ENTER in ONE WriteConsoleInput
+    # batch, and measured against a live session the text landed in the input box
+    # and SAT there: 25 seconds, no transcript movement, until a separate ENTER
+    # arrived -- at which point the record count jumped 21 to 28. Every message
+    # sent this way could be reported as sent and never submitted.
+    #
+    # The box needs a beat to finish taking a few hundred characters before it will
+    # accept the newline that closes them.
+    $n = [SRCon]::Send([uint32]$a.Pid, $body, $false)
+    if ($n -ge 0) {
+        Start-Sleep -Milliseconds 400
+        $n = [SRCon]::SendKeys([uint32]$a.Pid, [uint16[]]@(0x0D))
+    }
     if ($n -lt 0) {
         $err = -$n
         Write-SRLog ("send to {0} failed: win32 {1}" -f $a.Name, $err)
@@ -1335,6 +1393,136 @@ function Send-SRSessionInput {
     return $null
 }
 
+# ANSWERING ONE, by driving the menu the way a person drives it.
+#
+# The choreography is measured, not guessed. Against a real claude TUI:
+#   * a virtual-key record reaches it at all      -- the folder-trust prompt took ENTER
+#   * the cursor starts on option 1               -- a bare ENTER recorded ALPHA, 3 times
+#   * ENTER commits whatever is highlighted       -- tool_result: "pick one"="ALPHA"
+#   * DOWN moves the cursor                       -- a 2-option prompt EXITED on option 2
+# so option n is DOWN (n-1) times, then ENTER.
+#
+# 🪤 The arrows are only safe because the cursor STARTS at the top. Nothing here
+# can see the menu, so if anything has already moved it this sends the wrong
+# answer. That is why it refuses unless the session is genuinely waiting, and why
+# it is only ever called straight off a freshly-read question.
+function Send-SRQuestionAnswer {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SessionId,
+        # 0-based, as the options are indexed on screen.
+        [Parameter(Mandatory)][int]$Index,
+        [int]$OptionCount = 0
+    )
+    if ($Index -lt 0) { return 'that is not one of the options' }
+    if ($OptionCount -gt 0 -and $Index -ge $OptionCount) { return 'that is not one of the options' }
+
+    $key = "$SessionId".ToLower()
+    $agents = Get-SRAgentStatus -Refresh
+    $a = $agents[$key]
+    if (-not $a)     { return 'that conversation is not running - open its terminal first' }
+    if (-not $a.Pid) { return 'that session has no console to answer in (it is a background agent)' }
+    if ($a.Kind -ne 'interactive') { return 'only an interactive session can be answered' }
+    # 🔒 IT MUST STILL BE ASKING. If it has moved on, the arrows land in whatever is
+    # on screen now -- which could be a prompt, and DOWN-DOWN-ENTER in a prompt is
+    # a command nobody typed.
+    if ("$($a.Status)" -ne 'waiting') { return 'that session is not waiting for an answer any more' }
+
+    $proc = $null
+    try { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($a.Pid)" -ErrorAction Stop } catch { }
+    if (-not $proc)                  { return 'that session has exited' }
+    if ($proc.Name -ne 'claude.exe') { return "pid $($a.Pid) is $($proc.Name), not claude.exe - refusing to type into it" }
+
+    $keys = New-Object System.Collections.Generic.List[uint16]
+    for ($i = 0; $i -lt $Index; $i++) { $null = $keys.Add([uint16]0x28) }   # VK_DOWN
+    if ($keys.Count) {
+        $n = [SRCon]::SendKeys([uint32]$a.Pid, $keys.ToArray())
+        if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
+        Start-Sleep -Milliseconds 250
+    }
+    $n = [SRCon]::SendKeys([uint32]$a.Pid, [uint16[]]@(0x0D))              # VK_RETURN
+    if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
+    Write-SRLog ("  [ok]   answered {0} with option {1}" -f $a.Name, ($Index + 1))
+    return $null
+}
+# --- the question a session is waiting on ------------------------------------
+# claude asks multiple-choice questions through AskUserQuestion, and until now the
+# window could show that a session was waiting without ever showing WHAT it wanted.
+# The operator had to go to the terminal to find out, which is most of the reason
+# the terminal was still being opened at all.
+#
+# WHAT A PENDING QUESTION LOOKS LIKE ON DISK, established by measurement rather
+# than assumption: an AskUserQuestion tool_use block with NO tool_result carrying
+# its id anywhere later in the transcript. Checked against a live session's own
+# journal -- 40 tool_use blocks, 18 results, and the one still on screen had none.
+#
+# The input carries everything needed to draw it, so nothing has to be guessed:
+#     questions[] : { question, header, multiSelect, options[] { label, description } }
+function Get-SRPendingQuestion {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$JsonlPath,
+        # A pending question is by definition at the END, so a bounded tail is not a
+        # compromise here -- it is the whole of the evidence. 400 KB covers a very
+        # long final turn; the alternative is parsing a 40 MB transcript per session
+        # per minute.
+        [int]$MaxTailBytes = 409600
+    )
+    if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return $null }
+    $text = ''
+    try {
+        $fi = Get-Item -LiteralPath $JsonlPath
+        if ($fi.Length -eq 0) { return $null }
+        # ReadWrite sharing: a live session holds this open for writing, and those
+        # are exactly the ones that have a question open.
+        $fs = [System.IO.File]::Open($JsonlPath, 'Open', 'Read', 'ReadWrite')
+        try {
+            $take = [int][Math]::Min($fi.Length, $MaxTailBytes)
+            $null = $fs.Seek(-$take, 'End')
+            $buf  = New-Object byte[] $take
+            $read = $fs.Read($buf, 0, $take)
+            $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        } finally { $fs.Dispose() }
+    } catch { return $null }
+
+    $asked = @{}   # id -> the tool_use input, in the order they appeared
+    $order = New-Object System.Collections.Generic.List[string]
+    $answered = @{}
+    foreach ($ln in ($text -split "`n")) {
+        $t = $ln.Trim()
+        if (-not $t.StartsWith('{')) { continue }
+        # Cheap reject before the expensive parse: ConvertFrom-Json costs ~17 ms a
+        # record and most records are neither.
+        if ($t -notmatch 'AskUserQuestion' -and $t -notmatch 'tool_result') { continue }
+        $r = $null
+        try { $r = $t | ConvertFrom-Json } catch { continue }
+        $c = $r.message.content
+        if ($c -isnot [array]) { continue }
+        foreach ($x in $c) {
+            if ($x.type -eq 'tool_use' -and $x.name -eq 'AskUserQuestion') {
+                $asked[[string]$x.id] = $x.input
+                $null = $order.Add([string]$x.id)
+            } elseif ($x.type -eq 'tool_result' -and $x.tool_use_id) {
+                $answered[[string]$x.tool_use_id] = $true
+            }
+        }
+    }
+    if (-not $order.Count) { return $null }
+
+    # The LAST unanswered one. A transcript can carry several asked-and-answered
+    # blocks in one tail, and only the final one can still be on screen.
+    for ($i = $order.Count - 1; $i -ge 0; $i--) {
+        $id = $order[$i]
+        if ($answered[$id]) { continue }
+        $inp = $asked[$id]
+        if (-not $inp -or -not $inp.questions) { continue }
+        return [PSCustomObject]@{
+            Id        = $id
+            Questions = @($inp.questions)
+        }
+    }
+    return $null
+}
 # --- reading a conversation back out -----------------------------------------
 # The transcript is a JSONL of API records, not a conversation. Turning it into
 # something readable is mostly deciding what to LEAVE OUT.
@@ -1680,8 +1868,37 @@ function Resolve-SRSessionState {
     param($Agent, $Conv)
 
     if ($Agent) {
+        # 🔴 A NEEDS CLAIM MUST BE CORROBORATED. `claude agents --json` keeps
+        # reporting background agents that went `blocked` and were never reaped.
+        # Measured 2026-08-23: STRATEGY-PERF-ANALYSIS, state `blocked`, startedAt
+        # 33 DAYS earlier, no pid, and no transcript left on disk. It sat in NEEDS
+        # YOU -- the band that means ACT ON THIS -- while Send-SRSessionInput
+        # refused to type into it for the very reason that made it unactionable.
+        # 🔑 The window knew it could not be acted on and filed it under act-on-this.
+        #
+        # Corroboration is the weakest true thing: either there is a process to
+        # type into, or there is a transcript to read. NEITHER, and the claim is a
+        # leftover rather than a demand. Note a running background agent reports NO
+        # pid, so the pid alone would condemn every one of them -- which is why the
+        # transcript is the second half of the test and not an afterthought.
+        # 🪤 A Conv OBJECT IS NOT A TRANSCRIPT. Get-SRConversationState returns a
+        # result even when the file is gone -- State 'unknown', Detail 'nothing
+        # known' -- so [bool]$Conv was true for exactly the case this guard exists
+        # to catch. Caught by looking at the screen: STRATEGY-PERF-ANALYSIS still
+        # rendered a bright 'waiting' next to its own GONE mark. Something must
+        # actually have been READ for the claim to stand.
+        $readable = ($Conv -and "$($Conv.State)" -and "$($Conv.State)" -ne 'unknown')
+        $backed = (([int]$Agent.Pid -gt 0) -or $readable)
+        $stuck  = ([bool]$Agent.Needs -and -not $backed)
+        # Stale, deliberately: an unbacked report is the LAST thing that was seen,
+        # not something happening now. It costs no new State value -- the row
+        # already renders a stale state as "was waiting" in the dim brush, and
+        # Get-InboxBand already sends anything stale to the quiet band.
         $out = [PSCustomObject]@{
-            State = 'unknown'; Detail = ''; Stale = $false; Needs = [bool]$Agent.Needs
+            State = 'unknown'; Detail = ''; Stale = $stuck
+            Needs = ([bool]$Agent.Needs -and $backed)
+            Stuck = $stuck
+            StuckSince = $(if ($stuck) { $Agent.StartedAt } else { $null })
             Source = 'agent'; Pid = $Agent.Pid; LastPrompt = $null; Title = $null; Mode = $null
         }
         if ($Conv) { $out.LastPrompt = $Conv.LastPrompt; $out.Title = $Conv.Title; $out.Mode = $Conv.Mode }
@@ -1705,18 +1922,24 @@ function Resolve-SRSessionState {
                 $out.Detail = $(if ($Agent.Status) { "claude reports '$($Agent.Status)'" } else { 'running, status unknown' })
             }
         }
+        if ($stuck) {
+            $since = $(if ($Agent.StartedAt) { $Agent.StartedAt.ToString('d MMM') } else { 'some time ago' })
+            $out.Detail = "stuck since $since - nothing is running it, and there is no transcript left to read"
+        }
         return $out
     }
 
     if ($Conv) {
         return [PSCustomObject]@{
             State = $Conv.State; Detail = $Conv.Detail; Stale = $true; Needs = $false
+            Stuck = $false; StuckSince = $null
             Source = 'transcript'; Pid = 0
             LastPrompt = $Conv.LastPrompt; Title = $Conv.Title; Mode = $Conv.Mode
         }
     }
     return [PSCustomObject]@{
         State = 'unknown'; Detail = 'nothing known'; Stale = $true; Needs = $false
+        Stuck = $false; StuckSince = $null
         Source = 'none'; Pid = 0; LastPrompt = $null; Title = $null; Mode = $null
     }
 }
@@ -1958,7 +2181,20 @@ __CLAUDELINE__
     $body = $body.Replace('__TITLE__',      $Title.Replace("'", "''"))
     $body = $body.Replace('__CLAUDELINE__', ($parts -join ' '))
 
-    Set-Content -LiteralPath $boot -Value $body -Encoding utf8
+    # THE BOOT PATH IS DETERMINISTIC, so anything that freezes that ONE path takes
+    # this conversation out of every future restore, silently, forever. On
+    # 2026-08-23 an antivirus quarantine did exactly that to
+    # boot-MM-toolbox-444f91ed.ps1: the name became unwritable while every other
+    # name in the same folder stayed fine. A conversation is worth more than its
+    # filename, so take a different one rather than fail the session.
+    try {
+        Set-Content -LiteralPath $boot -Value $body -Encoding utf8 -ErrorAction Stop
+    } catch {
+        $alt = ($boot -replace '\.ps1$', '') + '-b.ps1'
+        Write-SRWarn ("could not write {0} ({1}) - using {2}" -f (Split-Path $boot -Leaf), $_.Exception.Message.Split([char]10)[0], (Split-Path $alt -Leaf))
+        Set-Content -LiteralPath $alt -Value $body -Encoding utf8 -ErrorAction Stop
+        $boot = $alt
+    }
     return $boot
 }
 

@@ -73,11 +73,16 @@ function Add-ReadProse {
         }
 
         $p = New-Object System.Windows.Documents.Paragraph
-        $p.Margin = New-Object System.Windows.Thickness 0, 2, 0, 2
+        $p.Margin = New-Object System.Windows.Thickness 0, 3, 0, 3
+        $p.LineHeight = 21
+        $p.LineStackingStrategy = 'BlockLineHeight'
         $body = $ln
-        $size = 13; $weight = 'Normal'; $indent = 0
+        # 13pt at default leading was the operator's "type is too small or too
+        # tight". Prose is the thing this pane exists to show; the tool lines around
+        # it are the ones that should stay small.
+        $size = 14.5; $weight = 'Normal'; $indent = 0
 
-        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = 14 }
+        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = 16 }
         elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [char]0x2022 + '  ' + $Matches[1]; $indent = 14 }
         elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.  ' + $Matches[2]; $indent = 14 }
         if ($indent) { $p.Margin = New-Object System.Windows.Thickness $indent, 2, 0, 2 }
@@ -97,6 +102,47 @@ function Add-ReadProse {
     }
 }
 
+# 🔴 TOOL TRAFFIC OUTNUMBERS PROSE FIVE TO ONE. Measured across six transcripts:
+# text 50, thinking 84, tool_use 129, tool_result 130. Collapsing each call to one
+# line was not enough -- twenty consecutive Bash lines still bury the sentence
+# above them, which is what the operator meant by "tool noise still dominates".
+#
+# A RUN of them becomes ONE line saying how many and naming the last, because the
+# question a reader has about a wall of tool calls is "how much of this is there,
+# and where does the conversation start again". A short run is left alone: two
+# lines are cheaper to read than a summary of two lines.
+function Compress-ToolRuns { param($Blocks)
+    $out = New-Object System.Collections.Generic.List[object]
+    $arr = @($Blocks)
+    $i = 0
+    while ($i -lt $arr.Count) {
+        if ($arr[$i].Kind -ne 'tool' -and $arr[$i].Kind -ne 'result') { $out.Add($arr[$i]); $i++; continue }
+        $j = $i
+        $calls = 0
+        $lastHead = ''
+        while ($j -lt $arr.Count -and ($arr[$j].Kind -eq 'tool' -or $arr[$j].Kind -eq 'result')) {
+            if ($arr[$j].Kind -eq 'tool') { $calls++; $lastHead = "$($arr[$j].Head)" }
+            $j++
+        }
+        if ($calls -le 2) {
+            for ($k = $i; $k -lt $j; $k++) { $out.Add($arr[$k]) }
+        } else {
+            $out.Add([PSCustomObject]@{
+                Kind = 'tools'
+                Head = "$calls tool calls"
+                Body = $(if ($lastHead) { "last: $lastHead" } else { '' })
+                Meta = ''
+            })
+        }
+        $i = $j
+    }
+    # 🪤 A PLAIN ARRAY, NEVER a comma-wrapped one. Wrapping protects a one-element
+    # result from unrolling and makes @(f) at every call site a ONE-ELEMENT array
+    # holding everything -- and for an EMPTY result it yields a single empty array,
+    # so "nothing to render" becomes one phantom row. This codebase has shipped that
+    # bug six times. The assertion for the empty case is in the headless suite.
+    return $out.ToArray()
+}
 function Build-ReadDocument {
     param($Blocks)
     $doc = New-Object System.Windows.Documents.FlowDocument
@@ -114,7 +160,7 @@ function Build-ReadDocument {
         return $doc
     }
 
-    foreach ($b in @($Blocks)) {
+    foreach ($b in @(Compress-ToolRuns $Blocks)) {
         switch ($b.Kind) {
             'you' {
                 $s = New-Object System.Windows.Documents.Section
@@ -141,11 +187,18 @@ function Build-ReadDocument {
                 $doc.Blocks.Add($s)
             }
             'said' {
+                # WHO IS TALKING, SAID OUT LOUD. YOU had a label and a rule down its
+                # side; the reply had neither, so a long exchange ran together into one
+                # column of grey and the operator could not tell where a turn ended.
+                $lab = New-Object System.Windows.Documents.Paragraph
+                $lab.Margin = New-Object System.Windows.Thickness 0, 14, 0, 4
+                $lab.Inlines.Add((New-ReadRun -Text 'CLAUDE' -Brush $Pal.TextLow -Size 10.5 -Weight 'SemiBold'))
+                $doc.Blocks.Add($lab)
                 $inner = New-Object System.Windows.Documents.FlowDocument
                 Add-ReadProse -Doc $inner -Text $b.Body -Brush $Pal.TextHigh
                 foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
                 $sp = New-Object System.Windows.Documents.Paragraph
-                $sp.Margin = New-Object System.Windows.Thickness 0, 0, 0, 8
+                $sp.Margin = New-Object System.Windows.Thickness 0, 0, 0, 14
                 $sp.Inlines.Add((New-ReadRun -Text ' ' -Brush $Pal.TextDim -Size 4))
                 $doc.Blocks.Add($sp)
             }
@@ -164,6 +217,14 @@ function Build-ReadDocument {
                 $p.Inlines.Add((New-ReadRun -Text ([char]0x203A + '  ') -Brush $Pal.TextLow -Size 12 -Mono))
                 $p.Inlines.Add((New-ReadRun -Text ($b.Head + '  ') -Brush $Pal.TextMid -Size 11.5 -Weight 'SemiBold' -Mono))
                 $p.Inlines.Add((New-ReadRun -Text $b.Body -Brush $Pal.TextLow -Size 11.5 -Mono))
+                $doc.Blocks.Add($p)
+            }
+            'tools' {
+                $p = New-Object System.Windows.Documents.Paragraph
+                $p.Margin = New-Object System.Windows.Thickness 4, 3, 0, 3
+                $p.Inlines.Add((New-ReadRun -Text ([char]0x203A + '  ') -Brush $Pal.TextLow -Size 12 -Mono))
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextDim -Size 11 -Weight 'SemiBold' -Mono))
+                $p.Inlines.Add((New-ReadRun -Text $b.Body -Brush $Pal.TextDim -Size 11 -Mono))
                 $doc.Blocks.Add($p)
             }
             'result' {
@@ -227,6 +288,9 @@ function Show-ReadPane {
     # read that stamps what the gate checks, so the gate is checked after it.
     Update-ReadDocument
     Update-SendState
+    # After the document, for the same reason Update-SendState is: the panel is
+    # judged against what is now on screen, not against what was on screen before.
+    Update-AskPanel
     # SEEN, HERE AND ONLY HERE. Marking things seen because they scrolled past
     # would make the dot mean nothing, which is the one way an unread mark is
     # worse than no mark at all.
@@ -274,6 +338,89 @@ function Update-ReadFollow {
 # indistinguishable from a broken one.
 # Has the pane read this conversation, and has it moved since? Returns $null
 # when the composer may be used, otherwise the reason it may not.
+# THE QUESTION THE OPEN CONVERSATION IS WAITING ON.
+#
+# The operator's complaint was exact: "I cannot see the questions I am getting
+# asked". The window could say a session was waiting and never say what it wanted,
+# so the terminal had to be opened anyway -- which is most of what this window
+# exists to avoid.
+function Update-AskPanel {
+    $ui.AskPanel.Visibility = $V_Hide
+    $ui.AskOptions.Items.Clear()
+    $script:askPending = $null
+    $s = $script:readSession
+    if (-not $s) { return }
+
+    $sid = "$($s.sessionId)"
+    $j = Get-SRTranscriptPath -Dir (Get-SessionCwd $s $script:readDir) -SessionId $sid -Recorded $s.jsonl
+    $q = $null
+    try { $q = Get-SRPendingQuestion -JsonlPath $j } catch { }
+    if (-not $q -or -not $q.Questions.Count) { return }
+
+    $first = $q.Questions[0]
+    $script:askPending = $q
+    $ui.AskHeader.Text = $(if ($first.header) { "IT IS ASKING YOU  -  $($first.header)".ToUpper() } else { 'IT IS ASKING YOU' })
+    $ui.AskText.Text   = "$($first.question)"
+
+    $a = $script:agents[$sid.ToLower()]
+    $canAnswer = ($a -and $a.Pid -and $a.Kind -eq 'interactive' -and "$($a.Status)" -eq 'waiting')
+
+    # 🔒 MULTI-SELECT IS SHOWN, NOT ANSWERED. Ticking several options means Space
+    # on each and then Enter, and that choreography was never verified against a
+    # live TUI -- only single-select was. Half-answering a question from here would
+    # leave the session in a state nobody can see, so it says so and offers the
+    # terminal instead. This is the pre-agreed fallback, not a shortcut.
+    $multi = [bool]$first.multiSelect
+
+    $i = 0
+    foreach ($opt in @($first.options)) {
+        $b = New-Object System.Windows.Controls.Button
+        $b.Style = $window.FindResource('Btn')
+        $b.HorizontalAlignment = 'Stretch'
+        $b.HorizontalContentAlignment = 'Left'
+        $b.Margin = New-Object System.Windows.Thickness (0, 0, 0, 5)
+        $b.Content = "$($i + 1).  $($opt.label)"
+        $b.Tag = $i
+        $b.ToolTip = $(if ($opt.description) { "$($opt.description)" } else { "$($opt.label)" })
+        $b.IsEnabled = ($canAnswer -and -not $multi)
+        $b.Add_Click({ param($sender, $e) Invoke-Guarded { Invoke-AskAnswer ([int]$sender.Tag) } 'answering it' })
+        $null = $ui.AskOptions.Items.Add($b)
+        $i++
+    }
+
+    $ui.AskNote.Text = $(
+        if ($multi)          { 'This one takes several answers at once. That is answered in the terminal - Go to its terminal, below.' }
+        elseif (-not $a)     { 'This conversation is not running, so there is nothing to answer into. It is the last question it asked.' }
+        elseif (-not $a.Pid) { 'A background agent has no console to answer in.' }
+        elseif ("$($a.Status)" -ne 'waiting') { 'It has moved on since it asked this.' }
+        else { "Clicking an option presses it in that session's own menu." }
+    )
+    $ui.AskPanel.Visibility = $V_Show
+}
+
+# 🪤 RE-READ BEFORE SENDING. Everything about the arrow-key choreography assumes
+# the cursor is still on the first option, and the only evidence for that is that
+# the question is still the one we drew. If it has changed or gone since the panel
+# was painted, the keys would land somewhere unknown -- possibly a shell prompt.
+function Invoke-AskAnswer { param([int]$Index)
+    $s = $script:readSession
+    if (-not $s -or -not $script:askPending) { Set-Status 'there is no question open' 'warn'; return }
+    $sid = "$($s.sessionId)"
+    $j = Get-SRTranscriptPath -Dir (Get-SessionCwd $s $script:readDir) -SessionId $sid -Recorded $s.jsonl
+    $now = $null
+    try { $now = Get-SRPendingQuestion -JsonlPath $j } catch { }
+    if (-not $now -or "$($now.Id)" -ne "$($script:askPending.Id)") {
+        Set-Status 'that question is no longer the one on screen - nothing was sent' 'warn'
+        Update-AskPanel
+        return
+    }
+    $opts = @($now.Questions[0].options)
+    $label = $(if ($Index -lt $opts.Count) { "$($opts[$Index].label)" } else { "option $($Index + 1)" })
+    $why = Send-SRQuestionAnswer -SessionId $sid -Index $Index -OptionCount $opts.Count
+    if ($why) { Set-Status $why 'bad'; return }
+    Set-Status "answered: $label"
+    $ui.AskPanel.Visibility = $V_Hide
+}
 function Get-SendBlock {
     if (-not $script:readSession) { return 'nothing is open' }
     $sid = "$($script:readSession.sessionId)"
@@ -368,7 +515,12 @@ function Update-ReadDocument {
     # ~680 ms on a 15 MB transcript, so it is announced rather than looking hung.
     Set-Busy 'reading the conversation'
     try {
-        $blocks = Get-SRTranscriptBlocks -JsonlPath $j
+        # 60 records was "not enough of the conversation is shown": with tool traffic
+        # outnumbering prose five to one, sixty records is a dozen sentences. Runs of
+        # tool calls now fold to one line each, so a wider window costs far less
+        # screen than it used to and buys back the context that makes the last
+        # message make sense.
+        $blocks = Get-SRTranscriptBlocks -JsonlPath $j -MaxRecords 220
         $docObj = Build-ReadDocument -Blocks $blocks
         if ($docObj -isnot [System.Windows.Documents.FlowDocument]) {
             throw ("Build-ReadDocument returned {0}, not a FlowDocument - something in it emitted to the pipeline" -f $docObj.GetType().Name)
@@ -390,6 +542,8 @@ function Update-ReadDocument {
 }
 
 function Hide-ReadPane {
+    $ui.AskPanel.Visibility = $V_Hide
+    $script:askPending = $null
     $script:readSession = $null
     $script:readOpen = $false
     if ($script:readTimer) { $script:readTimer.Stop() }

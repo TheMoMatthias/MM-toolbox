@@ -302,6 +302,13 @@ function Test-AnyFilter {
 # "no chips lit" and "every chip lit" mean the same thing, which is what keeps a
 # half-set filter from silently hiding rows.
 function Test-RowMatch { param($Session, $Dir, $Lane)
+    # HIDDEN, and why it is checked before anything else. Hiding is the operator
+    # saying "stop showing me this", which outranks every other reason a row might
+    # appear -- including a search that would otherwise match it. It is a FLAG, not
+    # a deletion: Show hidden brings them all back, because the registry is the only
+    # record these conversations have and nothing here is allowed to be final.
+    if ([bool]$Session.hidden -and -not $script:showHidden) { return $false }
+
     # Text. Same fields -Launch matches on, so what you can find here you can
     # also launch by name from the terminal.
     if ($script:filter) {

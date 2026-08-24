@@ -272,9 +272,25 @@ foreach ($old in @('tree', 'restore')) {
 Set-ViewMode 'all'
 $allRows = @(); foreach ($r in $script:rows) { $allRows += $r }
 $kinds = @($allRows | ForEach-Object { $_.Kind } | Sort-Object -Unique)
-$bad = @($kinds | Where-Object { $_ -ne 'session' -and $_ -ne 'more' })
-if ($bad.Count) { Fail "the All view still builds structural rows: $($bad -join ', ')" }
-else { Pass "the All view is flat - only $($kinds -join ' and ') rows" }
+# 🔴 THIS ASSERTION USED TO SAY THE OPPOSITE, and the reversal was deliberate.
+# The tree was retired because 143 conversations became 195 rows with eleven of
+# fifteen projects carrying a lane row called "main" that said nothing. The
+# operator asked for the grouping back once the registry reached 173
+# conversations across 21 projects -- but the ORIGINAL complaint still has to
+# hold, so a lane row is emitted ONLY where a project really has more than one.
+$projRows = @($allRows | Where-Object { $_.Kind -eq 'project' })
+$laneRows = @($allRows | Where-Object { $_.Kind -eq 'lane' })
+if (-not $projRows.Count) { Fail 'the roster builds no project rows - it is not grouping' }
+else { Pass "the roster groups into $($projRows.Count) project row(s)" }
+
+# The trap the tree died of: a lane row under a project that has exactly one.
+$soloLane = 0
+foreach ($pr in $projRows) {
+    $mine = @($laneRows | Where-Object { $_.Dir -eq $pr.Dir })
+    if ($mine.Count -eq 1) { $soloLane++ }
+}
+if ($soloLane) { Fail "$soloLane project(s) carry a single lane row - a row that says nothing under a row that says the same thing" }
+else { Pass 'no project carries a lone lane row' }
 
 $sessionRows = @($allRows | Where-Object { $_.Kind -eq 'session' })
 if ($sessionRows.Count -lt $script:totalCount) {
@@ -366,7 +382,11 @@ $outOfOrder = 0; $notGrouped = 0
 $seen = @{}
 $prev = $null
 for ($i = 0; $i -lt $def.Count; $i++) {
-    $lbl = "$($def[$i].Project)"
+    # 🪤 KEYED ON THE PROJECT ITSELF, not on the label. Eight projects are called
+    # "repo" (Millwright-experiments uns\R* epo); grouping by the displayed
+    # string would call two different repositories one group and pass while the
+    # screen showed nonsense.
+    $lbl = "$($def[$i].Dir.path)|$(if ($def[$i].Lane) { $def[$i].Lane.Name } else { '' })"
     if ($lbl -ne $prev) {
         # A label coming back after another one appeared in between means the
         # grouping broke, which no amount of within-group order would show.
@@ -377,26 +397,35 @@ for ($i = 0; $i -lt $def.Count; $i++) {
         $outOfOrder++
     }
 }
-if ($notGrouped) { Fail "$notGrouped project label(s) appear in more than one run - the default is not grouping" }
+if ($notGrouped) { Fail "$notGrouped group(s) appear in more than one run - the rows are not grouped" }
 elseif ($outOfOrder) { Fail "$outOfOrder row(s) are older than the row above them inside one project" }
 else { Pass "the default order is project A-Z then newest first ($($seen.Count) groups)" }
 
 # ONE KEY: newest across EVERYTHING, which is the thing a tree could not do.
 Invoke-SortHead -Key 'when' -Add $false
 $byWhen = AllSessions
+# 🔴 WITHIN A GROUP, NOT ACROSS EVERYTHING. Sorting newest-first across every
+# project was a real capability of the flat list and the grouping costs it --
+# the operator was offered "grouped by default, flat when you sort" and chose
+# "grouping replaces it" anyway. So the contract is that a sort orders the rows
+# INSIDE each group, and this asserts that rather than pretending otherwise.
 $bad = 0
 for ($i = 1; $i -lt $byWhen.Count; $i++) {
+    $sameGroup = ($byWhen[$i - 1].Dir -eq $byWhen[$i].Dir -and "$($byWhen[$i - 1].Lane.Name)" -eq "$($byWhen[$i].Lane.Name)")
+    if (-not $sameGroup) { continue }
     if ([datetime]$byWhen[$i - 1].Session.lastActive -lt [datetime]$byWhen[$i].Session.lastActive) { $bad++ }
 }
-if ($bad) { Fail "sorting by WHEN left $bad row(s) out of order" }
+if ($bad) { Fail "sorting by WHEN left $bad row(s) out of order inside their group" }
 elseif ($byWhen.Count -lt 2) { Fail 'not enough rows to prove an order' }
-else { Pass "WHEN sorts $($byWhen.Count) conversations newest-first across every project" }
+else { Pass "WHEN sorts $($byWhen.Count) conversations newest-first inside each group" }
 
 # Clicking the same heading again reverses it.
 Invoke-SortHead -Key 'when' -Add $false
 $rev = AllSessions
 $bad = 0
 for ($i = 1; $i -lt $rev.Count; $i++) {
+    $sameGroup = ($rev[$i - 1].Dir -eq $rev[$i].Dir -and "$($rev[$i - 1].Lane.Name)" -eq "$($rev[$i].Lane.Name)")
+    if (-not $sameGroup) { continue }
     if ([datetime]$rev[$i - 1].Session.lastActive -gt [datetime]$rev[$i].Session.lastActive) { $bad++ }
 }
 if ($bad) { Fail "clicking WHEN twice left $bad row(s) out of order the other way" }
@@ -411,6 +440,8 @@ else {
     $two = AllSessions
     $bad = 0
     for ($i = 1; $i -lt $two.Count; $i++) {
+        $sameGroup = ($two[$i - 1].Dir -eq $two[$i].Dir -and "$($two[$i - 1].Lane.Name)" -eq "$($two[$i].Lane.Name)")
+        if (-not $sameGroup) { continue }
         $ra = [int]$script:BandOrder[(Get-InboxBand $two[$i - 1].Session)]
         $rb = [int]$script:BandOrder[(Get-InboxBand $two[$i].Session)]
         if ($ra -gt $rb) { $bad++; continue }
@@ -808,6 +839,170 @@ else {
 }
 
 # --- 10f. THE FIXTURE IS STILL THE FIXTURE ----------------------------------
+# --- THE READING PANE IS FOR READING ---------------------------------------
+# TOOL TRAFFIC OUTNUMBERS PROSE FIVE TO ONE, so a run of calls buries the
+# sentence above it. A run folds to one line; a short run does not, because two
+# lines are cheaper to read than a summary of two lines.
+function B { param($k, $h) return [PSCustomObject]@{ Kind = $k; Head = $h; Body = 'x'; Meta = '' } }
+$run = @(
+    (B 'said' ''),
+    (B 'tool' 'Bash'), (B 'result' 'ok'),
+    (B 'tool' 'Read'), (B 'result' 'ok'),
+    (B 'tool' 'Grep'), (B 'result' 'ok'),
+    (B 'tool' 'Edit'), (B 'result' 'ok'),
+    (B 'you'  '')
+)
+$folded = @(Compress-ToolRuns $run)
+$toolsRows = @($folded | Where-Object { $_.Kind -eq 'tools' })
+if ($toolsRows.Count -ne 1) { Fail "a run of 4 tool calls folded into $($toolsRows.Count) row(s), expected 1" }
+elseif ("$($toolsRows[0].Head)" -ne '4 tool calls') { Fail "the folded row says '$($toolsRows[0].Head)'" }
+elseif ("$($toolsRows[0].Body)" -notlike '*Edit*') { Fail 'the folded row does not name the last call' }
+else { Pass 'four tool calls fold into one line that names the last of them' }
+if (@($folded | Where-Object { $_.Kind -eq 'said' }).Count -ne 1 -or @($folded | Where-Object { $_.Kind -eq 'you' }).Count -ne 1) {
+    Fail 'folding tool calls swallowed the prose around them'
+} else { Pass 'the prose on either side of the run survives' }
+
+# A SHORT RUN IS LEFT ALONE.
+$short = @((B 'said' ''), (B 'tool' 'Bash'), (B 'result' 'ok'), (B 'you' ''))
+$sf = @(Compress-ToolRuns $short)
+if (@($sf | Where-Object { $_.Kind -eq 'tools' }).Count) { Fail 'a single tool call was folded into a summary' }
+else { Pass 'one tool call is shown as itself, not summarised' }
+
+# and nothing at all still renders
+$empty = @(Compress-ToolRuns @())
+if ($empty.Count) { Fail 'an empty transcript produced rows' }
+else { Pass 'an empty transcript folds to nothing' }
+# --- THE QUESTION PANEL -----------------------------------------------------
+# The operator could not see what a session was asking. Detection is covered in
+# the state suite; this covers the half that is on screen -- that the panel draws
+# the options, and that it REFUSES the shapes it cannot answer honestly.
+$askTmp = Join-Path (Join-Path $here '.state') ('ask-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$null = New-Item -ItemType Directory -Path $askTmp -Force
+try {
+    $askId = 'aaaaaaaa-1111-2222-3333-444444444444'
+    $optJson = '[{"label":"ALPHA","description":"a"},{"label":"BRAVO","description":"b"},{"label":"CHARLIE","description":"c"}]'
+    # 🪤 THE FILE MUST BE NAMED FOR ITS SESSION. Get-SRTranscriptPath refuses a
+    # recorded path whose filename is not the session id -- deliberately, so a stale
+    # registry row cannot vouch for someone else's transcript. A fixture called
+    # single.jsonl is silently rejected and the panel then has nothing to read, which
+    # is exactly how this assertion first failed. One directory per case instead.
+    function New-AskFile { param([string]$Name, [bool]$Multi)
+        $m = $(if ($Multi) { 'true' } else { 'false' })
+        $rec = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_ui","name":"AskUserQuestion","input":{"questions":[{"question":"which schema?","header":"SCHEMA","multiSelect":' + $m + ',"options":' + $optJson + '}]}}]}}'
+        $dir = Join-Path $askTmp $Name
+        $null = New-Item -ItemType Directory -Path $dir -Force
+        $fp = Join-Path $dir ($askId + '.jsonl')
+        [System.IO.File]::WriteAllLines($fp, @($rec), (New-Object System.Text.UTF8Encoding($false)))
+        return $fp
+    }
+
+    # A session that IS waiting, with a pid, so the options are answerable.
+    $script:agents[$askId] = [PSCustomObject]@{
+        Status = 'waiting'; WaitingFor = 'input needed'; Needs = $true; Pid = 4242
+        Kind = 'interactive'; Name = 'ASKER'; Cwd = $askTmp; StartedAt = (Get-Date)
+    }
+    $askSession = [PSCustomObject]@{ sessionId = $askId; title = 'ASKER'; cwd = $askTmp; jsonl = (New-AskFile 'single' $false) }
+    $script:readSession = $askSession
+    $script:readDir     = [PSCustomObject]@{ path = $askTmp }
+    Update-AskPanel
+
+    if ($ui.AskPanel.Visibility -ne $V_Show) { Fail 'a pending question did not open the panel' }
+    else { Pass 'a pending question opens the panel' }
+    if ($ui.AskOptions.Items.Count -ne 3) { Fail "the panel drew $($ui.AskOptions.Items.Count) option(s), expected 3" }
+    else { Pass 'all three options are drawn as buttons' }
+    if ("$($ui.AskText.Text)" -ne 'which schema?') { Fail "the question text is '$($ui.AskText.Text)'" }
+    else { Pass 'the question itself is on screen, not just that one exists' }
+    $enabled = @($ui.AskOptions.Items | Where-Object { $_.IsEnabled }).Count
+    if ($enabled -ne 3) { Fail "$enabled of 3 options are clickable on a waiting session" }
+    else { Pass 'every option is clickable while the session is waiting' }
+
+    # 🔒 MULTI-SELECT IS SHOWN, NOT ANSWERED. Space-then-Enter was never verified
+    # against a live TUI, and half-answering would leave the session somewhere
+    # nobody can see. This is the agreed fallback, so it is asserted, not assumed.
+    $askSession.jsonl = New-AskFile 'multi' $true
+    Update-AskPanel
+    $enabled = @($ui.AskOptions.Items | Where-Object { $_.IsEnabled }).Count
+    if ($enabled) { Fail "$enabled multi-select option(s) are clickable - that choreography was never verified" }
+    else { Pass 'a multi-select question is shown but not answerable from here' }
+    if ("$($ui.AskNote.Text)" -notlike '*terminal*') { Fail 'the panel does not say where a multi-select can be answered' }
+    else { Pass 'it says to answer a multi-select in the terminal' }
+
+    # It has moved on: the options must go dead rather than send arrows into a shell.
+    $askSession.jsonl = New-AskFile 'single2' $false
+    $script:agents[$askId].Status = 'idle'
+    Update-AskPanel
+    $enabled = @($ui.AskOptions.Items | Where-Object { $_.IsEnabled }).Count
+    if ($enabled) { Fail "$enabled option(s) are clickable on a session that is no longer waiting" }
+    else { Pass 'a session that has moved on cannot be answered by accident' }
+
+    $script:agents.Remove($askId)
+    $script:readSession = $null
+    $ui.AskPanel.Visibility = $V_Hide
+} finally {
+    Remove-Item -LiteralPath $askTmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+# --- HIDING IS A FLAG, NEVER A DELETION -------------------------------------
+# The registry is the only record these conversations have, so 'hide' must be
+# recoverable by construction. This hides a real row, proves it leaves BOTH
+# lists, proves Show hidden brings it back, and proves the conversation itself
+# was never touched.
+Set-ViewMode 'all'
+Update-List -ToTop
+$victim = $null
+foreach ($r in $script:rows) { if ($r.Kind -eq 'session') { $victim = $r; break } }
+if (-not $victim) { Fail 'no conversation row to hide' }
+else {
+    $vid = "$($victim.Session.sessionId)"
+    function CountRows { param([string]$Mode)
+        Set-ViewMode $Mode; Update-List
+        $lst = $(if ($Mode -eq 'inbox') { $script:inboxRows } else { $script:rows })
+        # 🪤 PIPE IT, do not wrap it. $script:rows is a List[object] and
+        # $script:inboxRows is a plain array: @($list) throws on the first and
+        # .ToArray() throws on the second. A pipeline enumerates both.
+        return @($lst | Where-Object { $_.Kind -eq 'session' -and "$($_.Session.sessionId)" -eq $vid }).Count
+    }
+    $beforeAll = CountRows 'all'
+    Set-SessionField $victim.Session 'hidden' $true
+    $script:showHidden = $false
+    $afterAll   = CountRows 'all'
+    $afterInbox = CountRows 'inbox'
+    if ($beforeAll -lt 1) { Fail 'the row to hide was not in the roster to begin with' }
+    elseif ($afterAll)    { Fail 'a hidden conversation is still in the roster' }
+    elseif ($afterInbox)  { Fail 'a hidden conversation is still in the inbox - hiding must cover both screens' }
+    else { Pass 'hiding removes a conversation from both screens' }
+
+    # A SEARCH MUST NOT REVEAL IT EITHER. Hiding is the operator saying stop
+    # showing me this, which outranks a filter that would otherwise match.
+    $script:filter = $vid
+    $found = CountRows 'all'
+    $script:filter = ''
+    if ($found) { Fail 'searching for a hidden conversation by id revealed it' }
+    else { Pass 'not even a search by id reveals a hidden conversation' }
+
+    $script:showHidden = $true
+    $back = CountRows 'all'
+    $script:showHidden = $false
+    if (-not $back) { Fail 'Show hidden did not bring the conversation back - hiding would be unrecoverable' }
+    else { Pass 'Show hidden brings it back' }
+
+    if (-not $victim.Session.sessionId) { Fail 'hiding damaged the conversation record' }
+    else { Pass 'the conversation record itself is untouched' }
+    Set-SessionField $victim.Session 'hidden' $false
+    Update-List
+}
+
+# The right-click menu exists on BOTH lists, with the actions the operator asked
+# for. A menu on one list only is the discoverability bug all over again.
+foreach ($pair in @(@{ N = 'roster'; L = $ui.RowList }, @{ N = 'inbox'; L = $ui.InboxList })) {
+    $m = $pair.L.ContextMenu
+    if (-not $m) { Fail "the $($pair.N) list has no right-click menu"; continue }
+    $tags = @($m.Items | Where-Object { $_ -is [System.Windows.Controls.MenuItem] } | ForEach-Object { "$($_.Tag)" })
+    $want = @('tick','untick','hide','unhide','open','jump')
+    $miss = @($want | Where-Object { $_ -notin $tags })
+    if ($miss.Count) { Fail "the $($pair.N) right-click menu is missing: $($miss -join ', ')" }
+    else { Pass "the $($pair.N) list right-clicks to $($tags.Count) actions" }
+}
+
 # Everything above asserts against staged state. If a background probe replaced
 # it half way through, those assertions were measuring the machine rather than
 # the fixture - and would still pass, because each one re-reads the list it is

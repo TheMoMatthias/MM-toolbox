@@ -126,6 +126,106 @@ if (-not $live.Count) {
     else { Pass ("{0} of {1} live conversations unknown" -f $unk, $live.Count) }
 }
 
+# --- a needs-claim must be corroborated -------------------------------------
+# `claude agents --json` keeps reporting background agents that went `blocked`
+# and were never reaped. On 2026-08-23 STRATEGY-PERF-ANALYSIS sat at the top of
+# NEEDS YOU: state `blocked`, startedAt 33 days earlier, NO pid, and no
+# transcript left on disk. The band that means ACT ON THIS held the one thing on
+# the machine that could not be acted on -- Send-SRSessionInput refuses a
+# background agent for the very reason that made it unactionable.
+#
+# The records below are verbatim from that agent list, so this fails for the real
+# reason rather than a reconstructed one.
+Write-Host ''
+Write-Host '--- a needs-claim must be corroborated ---'
+
+$stuckAgent = [PSCustomObject]@{
+    Status='blocked'; WaitingFor=''; Needs=$true; Pid=0; Kind='background'
+    Name='STRATEGY-PERF-ANALYSIS'; Cwd='C:/x'
+    StartedAt=[DateTimeOffset]::FromUnixTimeMilliseconds(1783972903099).LocalDateTime
+}
+$liveAgent = [PSCustomObject]@{
+    Status='waiting'; WaitingFor='dialog open'; Needs=$true; Pid=31316; Kind='interactive'
+    Name='OWN-WEBPAGE'; Cwd='C:/x'; StartedAt=(Get-Date).AddMinutes(-5)
+}
+# A RUNNING background agent reports no pid either. The pid alone would condemn
+# every one of them, which is why the transcript is the second half of the test.
+$bgAgent = [PSCustomObject]@{
+    Status='blocked'; WaitingFor=''; Needs=$true; Pid=0; Kind='background'
+    Name='LIVE-BG'; Cwd='C:/x'; StartedAt=(Get-Date).AddMinutes(-3)
+}
+$aConv = [PSCustomObject]@{ State='waiting'; Detail='waiting for you'; LastPrompt='x'; Title='t'; Mode='' }
+
+$sk = Resolve-SRSessionState -Agent $stuckAgent -Conv $null
+if ($sk.Needs)      { Fail 'an agent with no pid and no transcript still claims to need you' }
+else                { Pass 'a needs-claim with neither a process nor a transcript is refused' }
+if (-not $sk.Stuck) { Fail 'the uncorroborated claim was not marked stuck' }
+else                { Pass 'it is marked stuck instead of demanding' }
+if (-not $sk.Stale) { Fail 'a stuck report is not current and must read as stale' }
+else                { Pass 'it reads as the last thing seen, not something happening now' }
+if ($sk.Detail -notlike '*stuck since*') { Fail "the row does not say why it is dim: '$($sk.Detail)'" }
+else { Pass "it says why: '$($sk.Detail)'" }
+
+$lv = Resolve-SRSessionState -Agent $liveAgent -Conv $aConv
+if (-not $lv.Needs) { Fail 'a real waiting session with a pid lost its needs-claim' }
+else                { Pass 'a session with a pid still needs you' }
+if ($lv.Stuck)      { Fail 'a live session was condemned as stuck' }
+else                { Pass 'a live session is not stuck' }
+
+$bg = Resolve-SRSessionState -Agent $bgAgent -Conv $aConv
+if (-not $bg.Needs) { Fail 'a running background agent was refused for having no pid - the transcript backs it' }
+else                { Pass 'a background agent backed by a transcript still needs you' }
+# --- a question a session is waiting on -------------------------------------
+# A pending AskUserQuestion is a tool_use with NO tool_result carrying its id.
+# Hand-built here so the assertion can fail: reading the operator's live
+# transcripts would pass or fail depending on what happened to be on screen.
+Write-Host ''
+Write-Host '--- the question a session is waiting on ---'
+$qtmp = Join-Path $here ('.state\q-fixtures-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$null = New-Item -ItemType Directory -Path $qtmp -Force
+try {
+    function New-QFixture { param([string]$Name, [string[]]$Records)
+        $fp = Join-Path $qtmp ($Name + '.jsonl')
+        [System.IO.File]::WriteAllLines($fp, $Records, (New-Object System.Text.UTF8Encoding($false)))
+        return $fp
+    }
+    $ask = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"AskUserQuestion","input":{"questions":[{"question":"pick one","header":"PROBE","multiSelect":false,"options":[{"label":"ALPHA","description":"a"},{"label":"BRAVO","description":"b"},{"label":"CHARLIE","description":"c"}]}]}}]}}'
+    $res = '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":"answered"}]}}'
+    $noise = '{"type":"attachment","uuid":"n1"}'
+
+    $pend = Get-SRPendingQuestion -JsonlPath (New-QFixture 'pending' @($noise, $ask, $noise))
+    if (-not $pend) { Fail 'a pending question was not detected' }
+    elseif ("$($pend.Id)" -ne 'tu_1') { Fail "detected the wrong tool_use id: $($pend.Id)" }
+    else {
+        $opts = @($pend.Questions[0].options | ForEach-Object { $_.label })
+        if (($opts -join ',') -ne 'ALPHA,BRAVO,CHARLIE') { Fail "options came back as: $($opts -join ',')" }
+        else { Pass "a pending question is detected with its $($opts.Count) options" }
+        if ("$($pend.Questions[0].header)" -ne 'PROBE') { Fail 'the header did not survive' }
+        else { Pass 'the header and the question text survive' }
+    }
+
+    $done = Get-SRPendingQuestion -JsonlPath (New-QFixture 'answered' @($noise, $ask, $res, $noise))
+    if ($done) { Fail 'an ANSWERED question was reported as pending - the tool_result was ignored' }
+    else { Pass 'an answered question is not pending' }
+
+    # Asked, answered, then asked again: only the second one is still open, and a
+    # naive last-match search would return the first.
+    $ask2 = $ask.Replace('tu_1', 'tu_2').Replace('pick one', 'second question')
+    $again = Get-SRPendingQuestion -JsonlPath (New-QFixture 'again' @($ask, $res, $ask2))
+    if (-not $again) { Fail 'the second question was not detected' }
+    elseif ("$($again.Id)" -ne 'tu_2') { Fail "returned $($again.Id), not the still-open one" }
+    else { Pass 'with one answered and one open, the OPEN one is returned' }
+
+    $none = Get-SRPendingQuestion -JsonlPath (New-QFixture 'none' @($noise, $noise))
+    if ($none) { Fail 'a transcript with no question reported one' }
+    else { Pass 'a transcript with no question reports none' }
+
+    if ($null -ne (Get-SRPendingQuestion -JsonlPath (Join-Path $qtmp 'no-such-file.jsonl'))) {
+        Fail 'a missing transcript did not return null'
+    } else { Pass 'a missing transcript returns null rather than throwing' }
+} finally {
+    Remove-Item -LiteralPath $qtmp -Recurse -Force -ErrorAction SilentlyContinue
+}
 Write-Host ''
 if ($fails) { Write-Host ("$fails FAILURE(S)") -ForegroundColor Red; exit 1 }
 Write-Host 'all conversation-state tests passed' -ForegroundColor Green

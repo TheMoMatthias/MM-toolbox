@@ -887,6 +887,26 @@
              that can never open. -->
         <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center"
                     Margin="{Binding Indent}">
+          <!-- THE FOLD, on group rows only. ONE drawn chevron rotated, not two
+               characters: folded and open are provably the same mark at two
+               angles, and no font substitution can take them apart. It sits
+               inside the indented panel rather than in a fixed gutter, so a
+               lane's chevron lines up under its project's. -->
+          <Button Style="{StaticResource BtnBare}" Tag="fold"
+                  Width="16" Height="16" Margin="0,0,3,0"
+                  Visibility="{Binding FoldVisibility}"
+                  ToolTip="Fold this group away. Searching and filtering ignore folds, so nothing you looked for can be hidden by one.">
+            <Path Data="M 0,0 L 4,4 L 0,8" Width="8" Height="8" Stretch="None"
+                  Stroke="{StaticResource TextMid}" StrokeThickness="1.4"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                  RenderTransformOrigin="0.5,0.5">
+              <Path.RenderTransform>
+                <RotateTransform Angle="{Binding FoldAngle}"/>
+              </Path.RenderTransform>
+            </Path>
+          </Button>
+
+
           <Grid Width="13">
             <Ellipse Width="6" Height="6" HorizontalAlignment="Left" VerticalAlignment="Center"
                      Fill="{StaticResource TextMax}" Visibility="{Binding MovedVisibility}"
@@ -907,6 +927,15 @@
                      FontFamily="{StaticResource FontSmall}"
                      Foreground="{StaticResource TextDim}"
                      TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+        <!-- WHAT THE GROUP HOLDS, and whether any of it will actually fire.
+               A header that showed "12" and stayed silent about the project
+               being switched off would repeat the morning that cost the operator
+               every AlgoTrader lane: 89 ticks under a disabled project, and not
+               a row on the screen saying so. -->
+          <TextBlock Text="{Binding Counts}"
+                     Visibility="{Binding CountsVisibility}"
+                     Foreground="{Binding CountsBrush}"
+                     FontSize="10.5" Margin="10,1,0,0" VerticalAlignment="Center"/>
         </StackPanel>
 
         <!-- 4: PROJECT / LANE. Was two levels of hierarchy; one column says the
@@ -1248,6 +1277,11 @@
                 <MenuItem x:Name="UnpinAll"    Header="Unpin all shown"  ToolTip="Hand every conversation in the list back to the rolling auto-tick"/>
                 <Separator/>
                 <MenuItem x:Name="SeenAll"     Header="Mark all shown seen" ToolTip="Clear the moved marks on everything in the list"/>
+                <Separator/>
+                <!-- HIDING IS NEVER A DELETION. The registry is the only record a
+                     conversation has, so hiding sets a flag and this brings the
+                     hidden rows back into both lists, marked, ready to be unhidden. -->
+                <MenuItem x:Name="ShowHidden"  Header="Show hidden" IsCheckable="True" ToolTip="Bring hidden conversations back into the list so you can unhide them. Nothing is ever removed - hiding is a flag on the conversation."/>
               </ContextMenu>
             </Button.ContextMenu>
           </Button>
@@ -1620,24 +1654,50 @@
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
-            <TextBlock x:Name="SendNote" Grid.Row="0" Grid.ColumnSpan="2" Text=""
+            <!-- == THE QUESTION IT IS WAITING ON ==
+                 claude asks multiple-choice questions, and until now this window
+                 could say a session was waiting without ever saying WHAT it wanted.
+                 That is most of the reason the terminal still had to be opened.
+
+                 The options are real buttons. Clicking one drives that session's
+                 menu the way a person drives it - arrow down to the option, then
+                 Enter - because the cursor provably starts on the first one. -->
+            <StackPanel x:Name="AskPanel" Grid.Row="0" Grid.ColumnSpan="2"
+                        Visibility="Collapsed" Margin="0,0,0,10">
+              <TextBlock x:Name="AskHeader" Text="" FontSize="10.5" Margin="0,0,0,3"
+                         FontFamily="{StaticResource FontSmall}"
+                         Foreground="{StaticResource TextLow}"/>
+              <TextBlock x:Name="AskText" Text="" FontSize="13.5" TextWrapping="Wrap"
+                         Foreground="{StaticResource TextMax}" Margin="0,0,0,8"/>
+              <ItemsControl x:Name="AskOptions">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate><StackPanel Orientation="Vertical"/></ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+              </ItemsControl>
+              <TextBlock x:Name="AskNote" Text="" FontSize="11.5" TextWrapping="Wrap"
+                         FontFamily="{StaticResource FontSmall}"
+                         Foreground="{StaticResource TextDim}" Margin="0,7,0,0"/>
+            </StackPanel>
+
+            <TextBlock x:Name="SendNote" Grid.Row="1" Grid.ColumnSpan="2" Text=""
                        FontSize="11.5" FontFamily="{StaticResource FontSmall}"
                        Foreground="{StaticResource TextDim}" TextWrapping="Wrap"
                        Margin="0,0,0,7"/>
 
-            <TextBox x:Name="SendBox" Grid.Row="1" Grid.Column="0"
+            <TextBox x:Name="SendBox" Grid.Row="2" Grid.Column="0"
                      Style="{StaticResource Search}"
                      MinHeight="34" MaxHeight="110"
                      AcceptsReturn="False" TextWrapping="Wrap"
                      VerticalScrollBarVisibility="Auto"
                      ToolTip="Types this into the running session and presses Enter. Ctrl+Enter sends."/>
-            <Button x:Name="SendBtn" Grid.Row="1" Grid.Column="1" Content="Send"
+            <Button x:Name="SendBtn" Grid.Row="2" Grid.Column="1" Content="Send"
                     Style="{StaticResource BtnNow}" Margin="10,0,0,0" MinWidth="92"
                     ToolTip="Write this line into the session's console (Ctrl+Enter)."/>
           </Grid>

@@ -217,6 +217,21 @@ namespace SRGui
         // Identity and the links back into the registry objects. Plain fields:
         // only PowerShell touches them, and nothing in the XAML binds to them.
         public string Kind = "";
+        // Group bookkeeping. Plain fields: only PowerShell reads them, and nothing
+        // in the XAML binds to them.
+        //
+        // TickCount is counted while the rows are BUILT, so a header reflects what
+        // survived the filter rather than what the registry holds. A header that
+        // disagreed with the rows under it would be worse than no header at all.
+        public int TickCount = 0;
+        // 🪤 The RAW total, kept apart from Counts because Counts is the FORMATTED
+        // caption. Re-deriving the number from the caption works exactly once:
+        // the second paint parses "12  -  4 armed" and gets 12 or 0 depending on
+        // the separator, and the header quietly starts lying.
+        public int GroupTotal = 0;
+        // 0 project, 1 lane or a session in a single-lane project, 2 a session
+        // under a lane. The painter turns it into an indent; nothing else reads it.
+        public int Depth = 0;
         public string Key = "";
         public object Dir;
         public object Lane;
@@ -684,6 +699,21 @@ $script:filter    = $null   # the text box
 $script:fBand     = @{}     # needs | working | idle | quiet
 $script:fLive     = @{}     # live | notlive | gone
 $script:fTick     = @{}     # ticked | unticked
+
+# WHICH GROUPS ARE SHUT, keyed by project path and by "path|lane". Absent
+# means open. ROSTER opens with everything shut on purpose: 21 projects is an
+# index you can read, 173 conversations is the flood that made the operator ask
+# for grouping in the first place.
+$script:fold     = @{}
+
+# Is the list showing hidden conversations? Off by default, and never persisted:
+# revealing them is something you do for a moment, not a mode you leave on.
+$script:showHidden = $false
+
+# The question the open conversation is waiting on, as it was when the panel was
+# last drawn. Re-read and compared before anything is sent, because the whole
+# arrow-key choreography assumes the menu has not moved since.
+$script:askPending = $null
 $script:fPin      = @{}     # pinned | unpinned
 $script:fAge      = @{}     # recent | stale
 $script:fProject  = $null   # a project path, or $null for any
@@ -948,7 +978,8 @@ foreach ($n in @(
     # The inbox: its own list, the view switch, and the three count pills that
     # are now buttons rather than decoration.
     'InboxList','ModeInbox','ModeAll','LivePill','WaitPill','TickPill',
-    'ListHead','InboxHead','NowCaption','WorktreeCaption'
+    'ListHead','InboxHead','NowCaption','WorktreeCaption','ShowHidden',
+    'AskPanel','AskHeader','AskText','AskOptions','AskNote'
 )) { $ui[$n] = $window.FindName($n) }
 
 # A name in the markup that is not in the list above is $null here, and the
@@ -1204,44 +1235,89 @@ function Update-SortHeads {
 function Build-Rows {
     $out = New-Object System.Collections.Generic.List[object]
     $filtering = Test-AnyFilter
-    # Project order as a NUMBER, computed once. $script:dirs is already sorted
-    # newest-project-first, so this rank is what makes the default sort
-    # reproduce the tree's own order exactly.
     $script:dirRank = @{}
     for ($i = 0; $i -lt $script:dirs.Count; $i++) { $script:dirRank[[string]$script:dirs[$i].path] = $i }
     $matched = 0; $total = 0; $older = 0
     $cut = (Get-Date).AddDays(-$script:listDays)
 
-    $picked = New-Object System.Collections.Generic.List[object]
-    foreach ($d in $script:dirs) {
-        # ASSIGN, THEN WRAP: Get-Lanes returns ",@(...)". Build-InboxRows carries
-        # the same two-step for the same reason.
+    # 🪤 ORDERED BY NAME, NOT BY RECENCY RANK. $script:dirs is newest-project-first,
+    # which is the right order for a list you SCAN and the wrong one for a list you
+    # SEARCH -- and it splits projects that share a leaf name. Eight of these are
+    # called "repo" (Millwright-experiments uns\R* epo), so recency order scatters
+    # them down the screen and the answer to "where is my repo" becomes eight
+    # answers. Name first, path second so the order is total and stable.
+    $rosterDirs = @($script:dirs | Sort-Object @{ E = { Split-Path $_.path -Leaf } }, @{ E = { [string]$_.path } })
+    foreach ($d in $rosterDirs) {
+        # ASSIGN, THEN WRAP: Get-Lanes returns ",@(...)".
         $lanes = Get-Lanes $d
+
+        # COLLECT BEFORE EMITTING. A header over an empty group is noise when
+        # nothing is filtering and a lie about what matched when something is.
+        $kept = New-Object System.Collections.Generic.List[object]
+        $projTotal = 0; $projTicked = 0
         foreach ($lane in @($lanes)) {
+            $inLane = New-Object System.Collections.Generic.List[object]
             foreach ($s in @($lane.Group)) {
                 $total++
+                if ([bool]$s.enabled) { $projTicked++ }
+                $projTotal++
                 if (-not (Test-RowMatch -Session $s -Dir $d -Lane $lane.Name)) { continue }
                 if (-not $filtering -and -not $script:showOlder) {
                     $at = $(if ($s.lastActive) { [datetime]$s.lastActive } else { [datetime]'1970-01-01' })
                     if ($at -lt $cut -and (Get-InboxBand $s) -eq 'quiet') { $older++; continue }
                 }
                 $matched++
-                $picked.Add([PSCustomObject]@{
+                $inLane.Add([PSCustomObject]@{
                     S = $s; D = $d; L = $lane
                     Rank = [int]$script:dirRank[[string]$d.path]
                     At = $(if ($s.lastActive) { [datetime]$s.lastActive } else { [datetime]'1970-01-01' })
                 })
             }
+            if ($inLane.Count) { $kept.Add([PSCustomObject]@{ Lane = $lane; Items = $inLane }) }
+        }
+        if (-not $kept.Count) { continue }
+
+        $projKey = [string]$d.path
+        $projRow = New-Row 'project' "project|$projKey" $d $null $null
+        $projRow.GroupTotal = $projTotal
+        $projRow.TickCount = $projTicked
+        $projRow.Depth = 0
+        $out.Add($projRow)
+
+        # A FOLD IS IGNORED WHILE FILTERING. Hiding the very rows that were
+        # searched for is the one thing a filter must never do.
+        if ((-not $filtering) -and [bool]$script:fold[$projKey]) { continue }
+
+        # 🪤 ONE LANE IS NOT A HIERARCHY. This was a tree once: 143 conversations
+        # became 195 rows because ELEVEN OF FIFTEEN projects had a single lane
+        # called 'main' -- a row that said nothing, under a row that said the same
+        # thing. That is what retired it. A lane row is emitted only where a
+        # project genuinely HAS more than one, which is where it carries
+        # information: AlgoTrader's 23 lanes group, and a single-lane project goes
+        # straight to its conversations.
+        $showLanes = ($kept.Count -gt 1)
+        foreach ($grp in $kept) {
+            if ($showLanes) {
+                $laneKey = "$projKey|$($grp.Lane.Name)"
+                $laneRow = New-Row 'lane' "lane|$laneKey" $d $grp.Lane $null
+                # 🪤 NOT @($grp.Items).Count. Items is a List[object], and wrapping one
+                # in @() throws "Argument types do not match" on PowerShell 5.1. Ask
+                # the list for its own Count, or enumerate it with .ToArray().
+                $laneRow.GroupTotal = $grp.Items.Count
+                $laneRow.TickCount = @($grp.Items.ToArray() | Where-Object { [bool]$_.S.enabled }).Count
+                $laneRow.Depth = 1
+                $out.Add($laneRow)
+                if ((-not $filtering) -and [bool]$script:fold[$laneKey]) { continue }
+            }
+            $sorted = Sort-Picked $grp.Items.ToArray()
+            foreach ($pk in @($sorted)) {
+                $srow = New-Row 'session' "$($pk.D.path)|$($pk.L.Name)|$($pk.S.sessionId)" $pk.D $pk.L $pk.S
+                $srow.Depth = $(if ($showLanes) { 2 } else { 1 })
+                $out.Add($srow)
+            }
         }
     }
 
-    $ordered = Sort-Picked $picked
-    foreach ($pk in @($ordered)) {
-        $out.Add((New-Row 'session' "$($pk.D.path)|$($pk.L.Name)|$($pk.S.sessionId)" $pk.D $pk.L $pk.S))
-    }
-
-    # The window's own row. Present whenever it cut something, and whenever it
-    # has been opened, so the way back is never a thing you have to remember.
     if ($older -gt 0 -or $script:showOlder) {
         $r = New-Row 'more' 'more|older' $null $null $null
         $r.Band = 'more'
@@ -1547,7 +1623,16 @@ function Update-Header {
     # "waiting" is how many are asking for the operator. They are routinely
     # different numbers and the whole point of the DOING column is that they are.
     $ui.WaitSummary.Text = "{0} waiting for you   |   {1} working" -f $waiting, $working
-    $ui.TickSummary.Text = "{0} of {1} ticked to reopen at logon, in {2} project(s){3}" -f $on, $tot, $projOn, $(if ($script:dirty) { '  *unsaved*' } else { '' })
+    # 🔴 SAY WHAT THE CAP WILL DROP, BEFORE it drops it. On 2026-08-24 the logon
+    # restore took the 12 most recent and left 8 behind, and said so only in
+    # .state estore.log, which nobody reads. The operator lost a morning of
+    # AlgoTrader lanes to a number that was never on the screen. A roster that
+    # shows what is ticked and stays silent about what will not fit is lying by
+    # omission -- the same class of failure as a tick under a switched-off project.
+    $cap = [int]$script:cfg.maxSessions
+    $overflow = $(if ($cap -gt 0 -and $on -gt $cap) { $on - $cap } else { 0 })
+    $capNote = $(if ($overflow) { "  -  only the $cap most recent will open, $overflow will not" } else { '' })
+    $ui.TickSummary.Text = "{0} of {1} ticked to reopen at logon, in {2} project(s){3}{4}" -f $on, $tot, $projOn, $capNote, $(if ($script:dirty) { '  *unsaved*' } else { '' })
     # Two facts, not three. The auto-tick rule is a standing rule that never
     # changes -- it was a sentence of teaching text on the one line that also has
     # to hold every action, and it pushed "Launch everything ticked" off the
@@ -1821,6 +1906,45 @@ function Update-List { param([string]$KeepKey, [switch]$ToTop)
 # not move: the search box, the filters and the status line, which mean the same
 # thing wherever you are.
 # ---------------------------------------------------------------------------
+# FOLDING A GROUP, and where the fold LIVES.
+#
+# In memory it is $script:fold, keyed by project path and by "path|lane". On disk
+# it rides on the project itself -- `folded`, and `foldedLanes` for the lanes
+# under it -- so it is saved by the same write that saves the ticks and comes
+# back on the next launch. A fold you have to redo every morning is a fold
+# nobody uses.
+function Invoke-RowFold { param($Row)
+    if (-not $Row -or -not $Row.Dir) { return }
+    $d = $Row.Dir
+    $projKey = [string]$d.path
+    if ($Row.Kind -eq 'project') {
+        $shut = -not [bool]$script:fold[$projKey]
+        if ($shut) { $script:fold[$projKey] = $true } else { $script:fold.Remove($projKey) }
+        Set-SessionField $d 'folded' $shut
+    } elseif ($Row.Kind -eq 'lane') {
+        $laneName = "$($Row.Lane.Name)"
+        $laneKey  = "$projKey|$laneName"
+        $shut = -not [bool]$script:fold[$laneKey]
+        if ($shut) { $script:fold[$laneKey] = $true } else { $script:fold.Remove($laneKey) }
+        $keep = @(@($d.foldedLanes) | Where-Object { $_ -and "$_" -ne $laneName })
+        if ($shut) { $keep += $laneName }
+        Set-SessionField $d 'foldedLanes' $keep
+    } else { return }
+    $script:dirty = $true
+    Update-List -KeepKey $Row.Key
+}
+
+# Read the folds back off the registry. Called when a registry is set, so a
+# rescan does not silently throw every fold away.
+function Sync-FoldState {
+    $script:fold = @{}
+    foreach ($d in @($script:dirs)) {
+        if ([bool]$d.folded) { $script:fold[[string]$d.path] = $true }
+        foreach ($ln in @($d.foldedLanes)) {
+            if ($ln) { $script:fold["$($d.path)|$ln"] = $true }
+        }
+    }
+}
 function Set-ViewMode { param([string]$Mode)
     # 'tree' and 'restore' both meant the SAME 195 rows in the same order - the
     # comparison was run row for row and they were identical. They are one mode
@@ -1847,7 +1971,19 @@ function Set-ViewMode { param([string]$Mode)
     # The logon furniture lives in All. It used to be a whole THIRD VIEW whose
     # rows were identical to the second one's; what actually distinguished it
     # was these four controls, so these four controls are the difference now.
+    # 🔑 THE LOGON CHIPS COME OUT OF THE FOLD ON THIS SCREEN. `ticked` and `not
+    # ticked` were built and wired, and the operator still asked for a filter to
+    # show what reopens at logon -- because they sit inside `More`, collapsed, on a
+    # bar whose first four chips are about what a conversation is DOING. A chip
+    # nobody can find is indistinguishable from a chip that does not exist.
+    #
+    # Which dimension is primary depends on the question the screen answers: on
+    # NOW it is the band, on the ROSTER it is the tick. So the fold opens itself
+    # here rather than the chips being moved, and nothing that already works moves.
     $restore = ($Mode -eq 'all')
+    if ($restore -and $ui.MoreFilters -and -not $ui.MoreFilters.IsChecked) {
+        $ui.MoreFilters.IsChecked = $true
+    }
     foreach ($ctl in @($ui.LaunchTicked, $ui.BulkBtn, $ui.TickPill, $ui.NowCaption)) {
         if ($ctl) { $ctl.Visibility = $(if ($restore) { $V_Show } else { $V_Hide }) }
     }
@@ -1877,7 +2013,7 @@ function Set-ViewMode { param([string]$Mode)
     $null = (Get-ActiveList).Focus()
     Set-Status $(switch ($Mode) {
         'inbox' { 'Inbox: every conversation that is running or was, ordered by what it needs from you.' }
-        'all'   { "All: every conversation from the last $([int]$script:listDays) days. Click a column heading to sort; tick what should reopen at logon." }
+        'all'   { "Roster: what reopens at logon, grouped by project. Fold a repo you are not working in; tick what should come back. Searching ignores folds." }
     }) 'info'
 }
 
@@ -1899,6 +2035,7 @@ function Set-Registry { param($Registry, $Config)
     # Before the sort, not after: the cache holds the OLD session objects, and
     # sorting on them would order the new list by the previous scan's timestamps.
     $script:dirs = @($script:reg.directories | Sort-Object { Get-Newest (Get-Visible $_) } -Descending)
+    Sync-FoldState
     # NOTHING EVER CALLED THIS. Update-FilterSources fills the PROJECT and LANE
     # dropdowns from the registry, and it had no caller anywhere in the file --
     # so both combos have been empty since the day they were added, exactly like
@@ -2637,7 +2774,8 @@ $ui.RowList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.Win
     $e.Handled = $true
     try {
         switch ("$($btn.Tag)") {
-            # 'fold' is gone with the tree. 'more' is the age window's own row.
+            # 'fold' is back, with the grouping. 'more' is the age window's own row.
+            'fold'   { Invoke-RowFold $row }
             'more'   { $script:showOlder = -not $script:showOlder; Update-List -KeepKey $row.Key }
             'unpin'  { $ui.RowList.SelectedItem = $row; Set-RowUnpin $row }
             'launch' { $ui.RowList.SelectedItem = $row; Invoke-RowLaunch $row }
@@ -2649,6 +2787,89 @@ $ui.RowList.AddHandler([System.Windows.Controls.Button]::ClickEvent, [System.Win
     }
 })
 
+# ---------------------------------------------------------------------------
+# RIGHT-CLICK, ON ANY ROW, IN EITHER SCREEN.
+#
+# The operator asked for this after hunting for where ticking happens: the answer
+# should be "wherever the conversation is". Tick, untick, hide and open are all
+# things you want to do to the row under the pointer, not to whatever the footer
+# happens to be pointing at.
+#
+# ONE MENU PER LIST, BUILT IN CODE. A ContextMenu declared inside a DataTemplate
+# is instantiated once per row and its MenuItems cannot be wired from here; a
+# menu built once and hung on the ListBox can. A ContextMenu also has a single
+# parent, so the two lists get one each rather than sharing.
+function Invoke-RowMenu { param([string]$Tag)
+    $list = Get-ActiveList
+    $row  = $list.SelectedItem -as [SRGui.Row]
+    if (-not $row) { Set-Status 'nothing is selected' 'warn'; return }
+    if ($row.Kind -ne 'session') { Set-Status 'that is a heading, not a conversation' 'warn'; return }
+    switch ($Tag) {
+        'tick'   { Set-RowTick -Row $row -Value $true;  Set-Status "$($row.Name) will reopen at logon" }
+        'untick' { Set-RowTick -Row $row -Value $false; Set-Status "$($row.Name) will not reopen" }
+        'hide'   {
+            Set-SessionField $row.Session 'hidden' $true
+            $script:dirty = $true
+            Set-Status "$($row.Name) hidden - Bulk > Show hidden brings it back"
+            Update-List
+        }
+        'unhide' {
+            Set-SessionField $row.Session 'hidden' $false
+            $script:dirty = $true
+            Set-Status "$($row.Name) is no longer hidden"
+            Update-List
+        }
+        'open'   { Invoke-RowLaunch $row }
+        'jump'   { Invoke-RowJump $row }
+    }
+}
+
+function New-RowMenu {
+    $m = New-Object System.Windows.Controls.ContextMenu
+    $specs = @(
+        @{ Tag = 'tick';   Header = 'Tick - reopen this at logon' },
+        @{ Tag = 'untick'; Header = 'Untick - do not reopen this' },
+        @{ Tag = '-' },
+        @{ Tag = 'hide';   Header = 'Hide this conversation' },
+        @{ Tag = 'unhide'; Header = 'Stop hiding it' },
+        @{ Tag = '-' },
+        @{ Tag = 'open';   Header = 'Open it now' },
+        @{ Tag = 'jump';   Header = 'Go to its terminal' }
+    )
+    foreach ($spec in $specs) {
+        if ($spec.Tag -eq '-') { $null = $m.Items.Add((New-Object System.Windows.Controls.Separator)); continue }
+        $mi = New-Object System.Windows.Controls.MenuItem
+        $mi.Header = $spec.Header
+        $mi.Tag    = $spec.Tag
+        $mi.Add_Click({ param($sender, $e) Invoke-Guarded { Invoke-RowMenu -Tag "$($sender.Tag)" } 'that row action' })
+        $null = $m.Items.Add($mi)
+    }
+    return $m
+}
+
+# A right-click does NOT select a row on its own, so the menu would act on
+# whatever was selected before -- which is how a context menu ends up ticking the
+# wrong conversation. Walk up from what was hit to its ListBoxItem and select it
+# first. OriginalSource, never Source: the click lands on a TextBlock inside a
+# template and Source has already been retargeted by the time it arrives.
+$rowRightClick = [System.Windows.Input.MouseButtonEventHandler]{
+    param($sender, $e)
+    $dep = $e.OriginalSource -as [System.Windows.DependencyObject]
+    while ($dep -and -not ($dep -is [System.Windows.Controls.ListBoxItem])) {
+        $dep = [System.Windows.Media.VisualTreeHelper]::GetParent($dep)
+    }
+    if ($dep) { $dep.IsSelected = $true }
+}
+$ui.RowList.ContextMenu   = New-RowMenu
+$ui.InboxList.ContextMenu = New-RowMenu
+$ui.RowList.Add_PreviewMouseRightButtonDown($rowRightClick)
+$ui.InboxList.Add_PreviewMouseRightButtonDown($rowRightClick)
+
+$ui.ShowHidden.Add_Click({ Invoke-Guarded {
+    $script:showHidden = [bool]$ui.ShowHidden.IsChecked
+    Update-List
+    Set-Status $(if ($script:showHidden) { 'showing hidden conversations' } else { 'hidden conversations are hidden again' })
+} 'show hidden' })
 $ui.RowList.Add_SelectionChanged({ Invoke-Guarded { Update-Selection } 'the selection' })
 
 # --- search, debounced so 150 rows are not rebuilt on every keystroke ---

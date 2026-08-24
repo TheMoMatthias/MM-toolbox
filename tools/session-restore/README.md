@@ -52,13 +52,29 @@ every repo, in two views:
 - **Inbox** — what is running or was, grouped by what it wants from you:
   **Needs you** / **Working** / **Idle** / **Not running**, each row carrying the
   one line that conversation last said.
-- **All** — one flat, sortable row per conversation from the last `listDays` (7),
-  and the logon ticks. Click a column heading to sort; shift-click to sort by one
-  thing and then another.
+- **Roster** — what comes back at logon. Every conversation from the last
+  `listDays` (7), grouped by project and then by worktree, each group collapsible
+  and its header carrying the count, how many are armed, and whether the project
+  itself is switched off. Ticking is the point of this screen, so the tick column,
+  the ticked / not-ticked filter and **Launch everything ticked** all live here —
+  as does the warning that `maxSessions` will not fit everything you have ticked.
+  Click a column heading to sort within each group; shift-click to sort by one
+  thing and then another. Searching and filtering ignore folds.
 
 Selecting a row opens the conversation underneath the list, with a box to reply
 into it — and the reply box stays dead until what is on screen is what that session
 last said, so you cannot answer something it has already moved past.
+
+**If that conversation is waiting on a multiple-choice question, the question and
+its options appear there too, and clicking one answers it.** The window presses
+the option in that session's own menu rather than typing anything, so what it
+records is a real selection. It refuses if the session has moved on since you
+looked, and a question that takes several answers at once is shown but not
+answered from here — that one is still a trip to the terminal.
+
+Right-click any row, in either view, to tick it for logon, untick it, hide it, open
+it, or jump to its terminal. Hiding is a flag and never a deletion: **Bulk › Show
+hidden** brings everything back.
 
 **Two independent things live on it, and confusing them is the one way to misread
 the screen:**
