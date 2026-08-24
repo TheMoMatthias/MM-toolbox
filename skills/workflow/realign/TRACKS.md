@@ -35,7 +35,7 @@ serialized whether or not you intended it — say which one goes first, and why.
 
 ## Questions scale with tracks, not with your patience
 
-Run the five probes **over each track**, not once over the session as a whole. Every track
+Run the six probes **over each track**, not once over the session as a whole. Every track
 that returns something earns its own question. Three live tracks means three questions.
 
 **Fire successive rounds.** The four-per-round cap is per `AskUserQuestion` call, not per

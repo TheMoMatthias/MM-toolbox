@@ -85,13 +85,19 @@ end is the account of what happened; this is the proposal of what is about to.
   holds. Your pick can be perfectly defensible and still not be what they want, and drift
   here is expensive to unwind.
 
-**Run all five probes over EACH track — not once over the session as a whole:**
+**Run all six probes over EACH track — not once over the session as a whole.** Five look
+back at what is already committed; the sixth looks forward at what just became possible:
 
 1. Does what you just learned change what **"done" should mean**?
 2. Is the **next item still the right next item**, given what landed?
 3. Has the **cost/benefit moved** — something far more expensive now, or suddenly cheap?
 4. Does new evidence **undercut an assumption** the plan was built on?
 5. Is anything now **not worth doing at all**?
+6. **What did landing this make possible that was not before?** A finished piece opens moves
+   that did not exist while it was unfinished — a second provider, a different frequency,
+   the next source — and the plan rarely lists them, because they were not options when it
+   was written. Several genuinely different ones: name them and put the choice up. One
+   plainly right: say which, and go.
 
 **Every track that returns something earns its own question** — three live tracks means
 three questions, not one. Add anything whose answer changes what you do next, the unfinished
@@ -110,6 +116,9 @@ consequence. **Fire successive rounds until every track is covered — the cap i
 not per realignment.** 🪤 **Frame it well — a wrong frame steers harder than a wrong
 decision would.**
 
+- **Do not manufacture a fork.** No genuine uncertainty means one line saying where you are
+  heading and why, then go. A forced choice invents a crossroads that was not there, and it
+  steers worse than the decision you would have made alone.
 - **Lead with your own recommendation**, marked `(Recommended)`, its evidence cited — a
   `file:line`, an earlier decision, a measured result — including when it is "carry on as
   planned". **Never offer a menu that leaves out what you actually think is right.**
