@@ -709,6 +709,11 @@ $script:fold     = @{}
 # Is the list showing hidden conversations? Off by default, and never persisted:
 # revealing them is something you do for a moment, not a mode you leave on.
 $script:showHidden = $false
+
+# The question the open conversation is waiting on, as it was when the panel was
+# last drawn. Re-read and compared before anything is sent, because the whole
+# arrow-key choreography assumes the menu has not moved since.
+$script:askPending = $null
 $script:fPin      = @{}     # pinned | unpinned
 $script:fAge      = @{}     # recent | stale
 $script:fProject  = $null   # a project path, or $null for any
@@ -973,7 +978,8 @@ foreach ($n in @(
     # The inbox: its own list, the view switch, and the three count pills that
     # are now buttons rather than decoration.
     'InboxList','ModeInbox','ModeAll','LivePill','WaitPill','TickPill',
-    'ListHead','InboxHead','NowCaption','WorktreeCaption','ShowHidden'
+    'ListHead','InboxHead','NowCaption','WorktreeCaption','ShowHidden',
+    'AskPanel','AskHeader','AskText','AskOptions','AskNote'
 )) { $ui[$n] = $window.FindName($n) }
 
 # A name in the markup that is not in the list above is $null here, and the

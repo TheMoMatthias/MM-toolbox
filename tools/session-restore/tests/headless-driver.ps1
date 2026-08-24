@@ -839,6 +839,75 @@ else {
 }
 
 # --- 10f. THE FIXTURE IS STILL THE FIXTURE ----------------------------------
+# --- THE QUESTION PANEL -----------------------------------------------------
+# The operator could not see what a session was asking. Detection is covered in
+# the state suite; this covers the half that is on screen -- that the panel draws
+# the options, and that it REFUSES the shapes it cannot answer honestly.
+$askTmp = Join-Path (Join-Path $here '.state') ('ask-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$null = New-Item -ItemType Directory -Path $askTmp -Force
+try {
+    $askId = 'aaaaaaaa-1111-2222-3333-444444444444'
+    $optJson = '[{"label":"ALPHA","description":"a"},{"label":"BRAVO","description":"b"},{"label":"CHARLIE","description":"c"}]'
+    # 🪤 THE FILE MUST BE NAMED FOR ITS SESSION. Get-SRTranscriptPath refuses a
+    # recorded path whose filename is not the session id -- deliberately, so a stale
+    # registry row cannot vouch for someone else's transcript. A fixture called
+    # single.jsonl is silently rejected and the panel then has nothing to read, which
+    # is exactly how this assertion first failed. One directory per case instead.
+    function New-AskFile { param([string]$Name, [bool]$Multi)
+        $m = $(if ($Multi) { 'true' } else { 'false' })
+        $rec = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_ui","name":"AskUserQuestion","input":{"questions":[{"question":"which schema?","header":"SCHEMA","multiSelect":' + $m + ',"options":' + $optJson + '}]}}]}}'
+        $dir = Join-Path $askTmp $Name
+        $null = New-Item -ItemType Directory -Path $dir -Force
+        $fp = Join-Path $dir ($askId + '.jsonl')
+        [System.IO.File]::WriteAllLines($fp, @($rec), (New-Object System.Text.UTF8Encoding($false)))
+        return $fp
+    }
+
+    # A session that IS waiting, with a pid, so the options are answerable.
+    $script:agents[$askId] = [PSCustomObject]@{
+        Status = 'waiting'; WaitingFor = 'input needed'; Needs = $true; Pid = 4242
+        Kind = 'interactive'; Name = 'ASKER'; Cwd = $askTmp; StartedAt = (Get-Date)
+    }
+    $askSession = [PSCustomObject]@{ sessionId = $askId; title = 'ASKER'; cwd = $askTmp; jsonl = (New-AskFile 'single' $false) }
+    $script:readSession = $askSession
+    $script:readDir     = [PSCustomObject]@{ path = $askTmp }
+    Update-AskPanel
+
+    if ($ui.AskPanel.Visibility -ne $V_Show) { Fail 'a pending question did not open the panel' }
+    else { Pass 'a pending question opens the panel' }
+    if ($ui.AskOptions.Items.Count -ne 3) { Fail "the panel drew $($ui.AskOptions.Items.Count) option(s), expected 3" }
+    else { Pass 'all three options are drawn as buttons' }
+    if ("$($ui.AskText.Text)" -ne 'which schema?') { Fail "the question text is '$($ui.AskText.Text)'" }
+    else { Pass 'the question itself is on screen, not just that one exists' }
+    $enabled = @($ui.AskOptions.Items | Where-Object { $_.IsEnabled }).Count
+    if ($enabled -ne 3) { Fail "$enabled of 3 options are clickable on a waiting session" }
+    else { Pass 'every option is clickable while the session is waiting' }
+
+    # 🔒 MULTI-SELECT IS SHOWN, NOT ANSWERED. Space-then-Enter was never verified
+    # against a live TUI, and half-answering would leave the session somewhere
+    # nobody can see. This is the agreed fallback, so it is asserted, not assumed.
+    $askSession.jsonl = New-AskFile 'multi' $true
+    Update-AskPanel
+    $enabled = @($ui.AskOptions.Items | Where-Object { $_.IsEnabled }).Count
+    if ($enabled) { Fail "$enabled multi-select option(s) are clickable - that choreography was never verified" }
+    else { Pass 'a multi-select question is shown but not answerable from here' }
+    if ("$($ui.AskNote.Text)" -notlike '*terminal*') { Fail 'the panel does not say where a multi-select can be answered' }
+    else { Pass 'it says to answer a multi-select in the terminal' }
+
+    # It has moved on: the options must go dead rather than send arrows into a shell.
+    $askSession.jsonl = New-AskFile 'single2' $false
+    $script:agents[$askId].Status = 'idle'
+    Update-AskPanel
+    $enabled = @($ui.AskOptions.Items | Where-Object { $_.IsEnabled }).Count
+    if ($enabled) { Fail "$enabled option(s) are clickable on a session that is no longer waiting" }
+    else { Pass 'a session that has moved on cannot be answered by accident' }
+
+    $script:agents.Remove($askId)
+    $script:readSession = $null
+    $ui.AskPanel.Visibility = $V_Hide
+} finally {
+    Remove-Item -LiteralPath $askTmp -Recurse -Force -ErrorAction SilentlyContinue
+}
 # --- HIDING IS A FLAG, NEVER A DELETION -------------------------------------
 # The registry is the only record these conversations have, so 'hide' must be
 # recoverable by construction. This hides a real row, proves it leaves BOTH

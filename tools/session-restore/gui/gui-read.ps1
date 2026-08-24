@@ -227,6 +227,9 @@ function Show-ReadPane {
     # read that stamps what the gate checks, so the gate is checked after it.
     Update-ReadDocument
     Update-SendState
+    # After the document, for the same reason Update-SendState is: the panel is
+    # judged against what is now on screen, not against what was on screen before.
+    Update-AskPanel
     # SEEN, HERE AND ONLY HERE. Marking things seen because they scrolled past
     # would make the dot mean nothing, which is the one way an unread mark is
     # worse than no mark at all.
@@ -274,6 +277,89 @@ function Update-ReadFollow {
 # indistinguishable from a broken one.
 # Has the pane read this conversation, and has it moved since? Returns $null
 # when the composer may be used, otherwise the reason it may not.
+# THE QUESTION THE OPEN CONVERSATION IS WAITING ON.
+#
+# The operator's complaint was exact: "I cannot see the questions I am getting
+# asked". The window could say a session was waiting and never say what it wanted,
+# so the terminal had to be opened anyway -- which is most of what this window
+# exists to avoid.
+function Update-AskPanel {
+    $ui.AskPanel.Visibility = $V_Hide
+    $ui.AskOptions.Items.Clear()
+    $script:askPending = $null
+    $s = $script:readSession
+    if (-not $s) { return }
+
+    $sid = "$($s.sessionId)"
+    $j = Get-SRTranscriptPath -Dir (Get-SessionCwd $s $script:readDir) -SessionId $sid -Recorded $s.jsonl
+    $q = $null
+    try { $q = Get-SRPendingQuestion -JsonlPath $j } catch { }
+    if (-not $q -or -not $q.Questions.Count) { return }
+
+    $first = $q.Questions[0]
+    $script:askPending = $q
+    $ui.AskHeader.Text = $(if ($first.header) { "IT IS ASKING YOU  -  $($first.header)".ToUpper() } else { 'IT IS ASKING YOU' })
+    $ui.AskText.Text   = "$($first.question)"
+
+    $a = $script:agents[$sid.ToLower()]
+    $canAnswer = ($a -and $a.Pid -and $a.Kind -eq 'interactive' -and "$($a.Status)" -eq 'waiting')
+
+    # 🔒 MULTI-SELECT IS SHOWN, NOT ANSWERED. Ticking several options means Space
+    # on each and then Enter, and that choreography was never verified against a
+    # live TUI -- only single-select was. Half-answering a question from here would
+    # leave the session in a state nobody can see, so it says so and offers the
+    # terminal instead. This is the pre-agreed fallback, not a shortcut.
+    $multi = [bool]$first.multiSelect
+
+    $i = 0
+    foreach ($opt in @($first.options)) {
+        $b = New-Object System.Windows.Controls.Button
+        $b.Style = $window.FindResource('Btn')
+        $b.HorizontalAlignment = 'Stretch'
+        $b.HorizontalContentAlignment = 'Left'
+        $b.Margin = New-Object System.Windows.Thickness (0, 0, 0, 5)
+        $b.Content = "$($i + 1).  $($opt.label)"
+        $b.Tag = $i
+        $b.ToolTip = $(if ($opt.description) { "$($opt.description)" } else { "$($opt.label)" })
+        $b.IsEnabled = ($canAnswer -and -not $multi)
+        $b.Add_Click({ param($sender, $e) Invoke-Guarded { Invoke-AskAnswer ([int]$sender.Tag) } 'answering it' })
+        $null = $ui.AskOptions.Items.Add($b)
+        $i++
+    }
+
+    $ui.AskNote.Text = $(
+        if ($multi)          { 'This one takes several answers at once. That is answered in the terminal - Go to its terminal, below.' }
+        elseif (-not $a)     { 'This conversation is not running, so there is nothing to answer into. It is the last question it asked.' }
+        elseif (-not $a.Pid) { 'A background agent has no console to answer in.' }
+        elseif ("$($a.Status)" -ne 'waiting') { 'It has moved on since it asked this.' }
+        else { "Clicking an option presses it in that session's own menu." }
+    )
+    $ui.AskPanel.Visibility = $V_Show
+}
+
+# 🪤 RE-READ BEFORE SENDING. Everything about the arrow-key choreography assumes
+# the cursor is still on the first option, and the only evidence for that is that
+# the question is still the one we drew. If it has changed or gone since the panel
+# was painted, the keys would land somewhere unknown -- possibly a shell prompt.
+function Invoke-AskAnswer { param([int]$Index)
+    $s = $script:readSession
+    if (-not $s -or -not $script:askPending) { Set-Status 'there is no question open' 'warn'; return }
+    $sid = "$($s.sessionId)"
+    $j = Get-SRTranscriptPath -Dir (Get-SessionCwd $s $script:readDir) -SessionId $sid -Recorded $s.jsonl
+    $now = $null
+    try { $now = Get-SRPendingQuestion -JsonlPath $j } catch { }
+    if (-not $now -or "$($now.Id)" -ne "$($script:askPending.Id)") {
+        Set-Status 'that question is no longer the one on screen - nothing was sent' 'warn'
+        Update-AskPanel
+        return
+    }
+    $opts = @($now.Questions[0].options)
+    $label = $(if ($Index -lt $opts.Count) { "$($opts[$Index].label)" } else { "option $($Index + 1)" })
+    $why = Send-SRQuestionAnswer -SessionId $sid -Index $Index -OptionCount $opts.Count
+    if ($why) { Set-Status $why 'bad'; return }
+    Set-Status "answered: $label"
+    $ui.AskPanel.Visibility = $V_Hide
+}
 function Get-SendBlock {
     if (-not $script:readSession) { return 'nothing is open' }
     $sid = "$($script:readSession.sessionId)"
@@ -390,6 +476,8 @@ function Update-ReadDocument {
 }
 
 function Hide-ReadPane {
+    $ui.AskPanel.Visibility = $V_Hide
+    $script:askPending = $null
     $script:readSession = $null
     $script:readOpen = $false
     if ($script:readTimer) { $script:readTimer.Stop() }
