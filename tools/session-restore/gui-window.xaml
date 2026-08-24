@@ -887,6 +887,26 @@
              that can never open. -->
         <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center"
                     Margin="{Binding Indent}">
+          <!-- THE FOLD, on group rows only. ONE drawn chevron rotated, not two
+               characters: folded and open are provably the same mark at two
+               angles, and no font substitution can take them apart. It sits
+               inside the indented panel rather than in a fixed gutter, so a
+               lane's chevron lines up under its project's. -->
+          <Button Style="{StaticResource BtnBare}" Tag="fold"
+                  Width="16" Height="16" Margin="0,0,3,0"
+                  Visibility="{Binding FoldVisibility}"
+                  ToolTip="Fold this group away. Searching and filtering ignore folds, so nothing you looked for can be hidden by one.">
+            <Path Data="M 0,0 L 4,4 L 0,8" Width="8" Height="8" Stretch="None"
+                  Stroke="{StaticResource TextMid}" StrokeThickness="1.4"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                  RenderTransformOrigin="0.5,0.5">
+              <Path.RenderTransform>
+                <RotateTransform Angle="{Binding FoldAngle}"/>
+              </Path.RenderTransform>
+            </Path>
+          </Button>
+
+
           <Grid Width="13">
             <Ellipse Width="6" Height="6" HorizontalAlignment="Left" VerticalAlignment="Center"
                      Fill="{StaticResource TextMax}" Visibility="{Binding MovedVisibility}"
@@ -907,6 +927,15 @@
                      FontFamily="{StaticResource FontSmall}"
                      Foreground="{StaticResource TextDim}"
                      TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+        <!-- WHAT THE GROUP HOLDS, and whether any of it will actually fire.
+               A header that showed "12" and stayed silent about the project
+               being switched off would repeat the morning that cost the operator
+               every AlgoTrader lane: 89 ticks under a disabled project, and not
+               a row on the screen saying so. -->
+          <TextBlock Text="{Binding Counts}"
+                     Visibility="{Binding CountsVisibility}"
+                     Foreground="{Binding CountsBrush}"
+                     FontSize="10.5" Margin="10,1,0,0" VerticalAlignment="Center"/>
         </StackPanel>
 
         <!-- 4: PROJECT / LANE. Was two levels of hierarchy; one column says the

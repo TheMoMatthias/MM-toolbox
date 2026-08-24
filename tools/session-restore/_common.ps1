@@ -1738,7 +1738,14 @@ function Resolve-SRSessionState {
         # leftover rather than a demand. Note a running background agent reports NO
         # pid, so the pid alone would condemn every one of them -- which is why the
         # transcript is the second half of the test and not an afterthought.
-        $backed = (([int]$Agent.Pid -gt 0) -or [bool]$Conv)
+        # 🪤 A Conv OBJECT IS NOT A TRANSCRIPT. Get-SRConversationState returns a
+        # result even when the file is gone -- State 'unknown', Detail 'nothing
+        # known' -- so [bool]$Conv was true for exactly the case this guard exists
+        # to catch. Caught by looking at the screen: STRATEGY-PERF-ANALYSIS still
+        # rendered a bright 'waiting' next to its own GONE mark. Something must
+        # actually have been READ for the claim to stand.
+        $readable = ($Conv -and "$($Conv.State)" -and "$($Conv.State)" -ne 'unknown')
+        $backed = (([int]$Agent.Pid -gt 0) -or $readable)
         $stuck  = ([bool]$Agent.Needs -and -not $backed)
         # Stale, deliberately: an unbacked report is the LAST thing that was seen,
         # not something happening now. It costs no new State value -- the row

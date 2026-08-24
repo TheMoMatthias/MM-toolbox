@@ -495,11 +495,55 @@ function Update-RowConv { param($Row)
 # The parts that never change once a row is built.
 function Update-RowStatic { param($Row)
     switch ($Row.Kind) {
+        'project' {
+            $Row.RowHeight = 32
+            $Row.Indent = New-Object System.Windows.Thickness (8, 6, 0, 0)
+            $Row.Name = Split-Path $Row.Dir.path -Leaf
+            $Row.NameWeight = $FW_Semi
+            $Row.NameSize = 13
+            $Row.NameBrush = $Pal.TextHigh
+            $Row.FoldVisibility = $V_Show
+            $Row.FoldAngle = $(if ($script:fold[[string]$Row.Dir.path]) { $FoldAngleClosed } else { $FoldAngleOpen })
+            $Row.TickVisibility = $V_Hide
+            $Row.ActionVisibility = $V_Hide
+            $Row.MoreVisibility = $V_Hide
+            $Row.PinVisibility = $V_Hide
+            $Row.DotVisibility = $V_Hide
+            $Row.GoneMarkVisibility = $V_Hide
+            $Row.ConvGlyphVisibility = $V_Hide
+            $Row.IdShort = ''; $Row.Age = ''; $Row.State = ''; $Row.Conv = ''
+            $Row.Project = ''
+            Update-GroupCaption $Row
+            $Row.NameTip = $Row.Dir.path
+        }
+        'lane' {
+            $Row.RowHeight = 26
+            $Row.Indent = New-Object System.Windows.Thickness (26, 0, 0, 0)
+            $Row.Name = $(if ($Row.Lane -and $Row.Lane.Name) { "$($Row.Lane.Name)" } else { 'main' })
+            $Row.NameWeight = $FW_Normal
+            $Row.NameSize = 11.5
+            $Row.NameBrush = $Pal.TextMid
+            $Row.FoldVisibility = $V_Show
+            $Row.FoldAngle = $(if ($script:fold["$($Row.Dir.path)|$($Row.Lane.Name)"]) { $FoldAngleClosed } else { $FoldAngleOpen })
+            $Row.TickVisibility = $V_Hide
+            $Row.ActionVisibility = $V_Hide
+            $Row.MoreVisibility = $V_Hide
+            $Row.PinVisibility = $V_Hide
+            $Row.DotVisibility = $V_Hide
+            $Row.GoneMarkVisibility = $V_Hide
+            $Row.ConvGlyphVisibility = $V_Hide
+            $Row.IdShort = ''; $Row.Age = ''; $Row.State = ''; $Row.Conv = ''
+            $Row.Project = ''
+            Update-GroupCaption $Row
+        }
         'session' {
             $Row.RowHeight = 34
-            # FLUSH LEFT. The indent was 62px of hierarchy that no longer exists;
-            # spending it on nothing would leave the column looking broken.
-            $Row.Indent = New-Object System.Windows.Thickness (10, 0, 0, 0)
+            # INDENTED UNDER ITS HEADER. The hierarchy is back, so the indent is
+            # back with it -- but only as deep as the header it actually sits
+            # under, which is why Depth is set while building rather than assumed:
+            # a single-lane project has no lane row, and pretending otherwise
+            # would leave a column of conversations floating under nothing.
+            $Row.Indent = New-Object System.Windows.Thickness ((10 + 16 * [int]$Row.Depth), 0, 0, 0)
             $Row.Name = Get-SessionTitle $Row.Session $Row.Dir
             $Row.NameWeight = $FW_Normal
             $Row.NameSize = 13.5
@@ -545,6 +589,29 @@ function Update-RowStatic { param($Row)
             Update-MoreRow $Row
         }
     }
+}
+
+# WHAT A GROUP HEADER SAYS, and the one thing it must never leave out.
+#
+# 🔴 A TICK INSIDE A SWITCHED-OFF PROJECT CANNOT FIRE. On 2026-08-24 the operator
+# had 89 pinned conversations under a project whose `enabled` was false, and not a
+# row on the screen said so; none of them came back at logon. The count is not
+# decoration here -- "12 - 4 armed" and "12 - 4 ticked, project OFF" are different
+# facts about tomorrow morning, and the header is the only place either can be said.
+function Update-GroupCaption { param($Row)
+    $n = [int]$Row.GroupTotal
+    $t = [int]$Row.TickCount
+    $off = ($Row.Kind -eq 'project' -and $Row.Dir -and -not $Row.Dir.enabled)
+    $bits = @("$n")
+    if ($t) { $bits += $(if ($off) { "$t ticked, PROJECT OFF" } else { "$t armed" }) }
+    elseif ($off) { $bits += 'project off' }
+    # 🪤 ASCII ONLY. A middle dot here rendered as "93 Â· 9 armed": PowerShell 5.1
+    # reads a BOM-less UTF-8 file as ANSI, so every non-ASCII character in a
+    # string literal arrives mojibaked. The comments above survive because
+    # nothing prints them.
+    $Row.Counts = ($bits -join '  -  ')
+    $Row.CountsVisibility = $V_Show
+    $Row.CountsBrush = $(if ($off -and $t) { $Pal.TextMax } else { $Pal.TextLow })
 }
 
 # The age window, said out loud. A list that quietly stops at seven days is

@@ -272,9 +272,25 @@ foreach ($old in @('tree', 'restore')) {
 Set-ViewMode 'all'
 $allRows = @(); foreach ($r in $script:rows) { $allRows += $r }
 $kinds = @($allRows | ForEach-Object { $_.Kind } | Sort-Object -Unique)
-$bad = @($kinds | Where-Object { $_ -ne 'session' -and $_ -ne 'more' })
-if ($bad.Count) { Fail "the All view still builds structural rows: $($bad -join ', ')" }
-else { Pass "the All view is flat - only $($kinds -join ' and ') rows" }
+# 🔴 THIS ASSERTION USED TO SAY THE OPPOSITE, and the reversal was deliberate.
+# The tree was retired because 143 conversations became 195 rows with eleven of
+# fifteen projects carrying a lane row called "main" that said nothing. The
+# operator asked for the grouping back once the registry reached 173
+# conversations across 21 projects -- but the ORIGINAL complaint still has to
+# hold, so a lane row is emitted ONLY where a project really has more than one.
+$projRows = @($allRows | Where-Object { $_.Kind -eq 'project' })
+$laneRows = @($allRows | Where-Object { $_.Kind -eq 'lane' })
+if (-not $projRows.Count) { Fail 'the roster builds no project rows - it is not grouping' }
+else { Pass "the roster groups into $($projRows.Count) project row(s)" }
+
+# The trap the tree died of: a lane row under a project that has exactly one.
+$soloLane = 0
+foreach ($pr in $projRows) {
+    $mine = @($laneRows | Where-Object { $_.Dir -eq $pr.Dir })
+    if ($mine.Count -eq 1) { $soloLane++ }
+}
+if ($soloLane) { Fail "$soloLane project(s) carry a single lane row - a row that says nothing under a row that says the same thing" }
+else { Pass 'no project carries a lone lane row' }
 
 $sessionRows = @($allRows | Where-Object { $_.Kind -eq 'session' })
 if ($sessionRows.Count -lt $script:totalCount) {
@@ -366,7 +382,11 @@ $outOfOrder = 0; $notGrouped = 0
 $seen = @{}
 $prev = $null
 for ($i = 0; $i -lt $def.Count; $i++) {
-    $lbl = "$($def[$i].Project)"
+    # 🪤 KEYED ON THE PROJECT ITSELF, not on the label. Eight projects are called
+    # "repo" (Millwright-experiments uns\R* epo); grouping by the displayed
+    # string would call two different repositories one group and pass while the
+    # screen showed nonsense.
+    $lbl = "$($def[$i].Dir.path)|$(if ($def[$i].Lane) { $def[$i].Lane.Name } else { '' })"
     if ($lbl -ne $prev) {
         # A label coming back after another one appeared in between means the
         # grouping broke, which no amount of within-group order would show.
@@ -377,26 +397,35 @@ for ($i = 0; $i -lt $def.Count; $i++) {
         $outOfOrder++
     }
 }
-if ($notGrouped) { Fail "$notGrouped project label(s) appear in more than one run - the default is not grouping" }
+if ($notGrouped) { Fail "$notGrouped group(s) appear in more than one run - the rows are not grouped" }
 elseif ($outOfOrder) { Fail "$outOfOrder row(s) are older than the row above them inside one project" }
 else { Pass "the default order is project A-Z then newest first ($($seen.Count) groups)" }
 
 # ONE KEY: newest across EVERYTHING, which is the thing a tree could not do.
 Invoke-SortHead -Key 'when' -Add $false
 $byWhen = AllSessions
+# 🔴 WITHIN A GROUP, NOT ACROSS EVERYTHING. Sorting newest-first across every
+# project was a real capability of the flat list and the grouping costs it --
+# the operator was offered "grouped by default, flat when you sort" and chose
+# "grouping replaces it" anyway. So the contract is that a sort orders the rows
+# INSIDE each group, and this asserts that rather than pretending otherwise.
 $bad = 0
 for ($i = 1; $i -lt $byWhen.Count; $i++) {
+    $sameGroup = ($byWhen[$i - 1].Dir -eq $byWhen[$i].Dir -and "$($byWhen[$i - 1].Lane.Name)" -eq "$($byWhen[$i].Lane.Name)")
+    if (-not $sameGroup) { continue }
     if ([datetime]$byWhen[$i - 1].Session.lastActive -lt [datetime]$byWhen[$i].Session.lastActive) { $bad++ }
 }
-if ($bad) { Fail "sorting by WHEN left $bad row(s) out of order" }
+if ($bad) { Fail "sorting by WHEN left $bad row(s) out of order inside their group" }
 elseif ($byWhen.Count -lt 2) { Fail 'not enough rows to prove an order' }
-else { Pass "WHEN sorts $($byWhen.Count) conversations newest-first across every project" }
+else { Pass "WHEN sorts $($byWhen.Count) conversations newest-first inside each group" }
 
 # Clicking the same heading again reverses it.
 Invoke-SortHead -Key 'when' -Add $false
 $rev = AllSessions
 $bad = 0
 for ($i = 1; $i -lt $rev.Count; $i++) {
+    $sameGroup = ($rev[$i - 1].Dir -eq $rev[$i].Dir -and "$($rev[$i - 1].Lane.Name)" -eq "$($rev[$i].Lane.Name)")
+    if (-not $sameGroup) { continue }
     if ([datetime]$rev[$i - 1].Session.lastActive -gt [datetime]$rev[$i].Session.lastActive) { $bad++ }
 }
 if ($bad) { Fail "clicking WHEN twice left $bad row(s) out of order the other way" }
@@ -411,6 +440,8 @@ else {
     $two = AllSessions
     $bad = 0
     for ($i = 1; $i -lt $two.Count; $i++) {
+        $sameGroup = ($two[$i - 1].Dir -eq $two[$i].Dir -and "$($two[$i - 1].Lane.Name)" -eq "$($two[$i].Lane.Name)")
+        if (-not $sameGroup) { continue }
         $ra = [int]$script:BandOrder[(Get-InboxBand $two[$i - 1].Session)]
         $rb = [int]$script:BandOrder[(Get-InboxBand $two[$i].Session)]
         if ($ra -gt $rb) { $bad++; continue }
