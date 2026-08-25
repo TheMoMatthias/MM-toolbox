@@ -1642,7 +1642,17 @@ function Update-Header {
     # than none, because it reads as a rendering fault rather than a fact about
     # tomorrow morning. The full sentence is on the tooltip, which has the room.
     $capNote = $(if ($overflow) { "  -  $overflow will not fit" } else { '' })
-    $ui.TickSummary.Text = "{0} of {1} ticked to reopen at logon, in {2} project(s){3}{4}" -f $on, $tot, $projOn, $capNote, $(if ($script:dirty) { '  *unsaved*' } else { '' })
+    # 🪤 THE PILL HAS A FIXED WIDTH, AND IT WILL CLIP WITHOUT SAYING SO. Twice now a
+    # cap warning has been cut mid-sentence -- 'in 12 project(s) - only the', then
+    # 'in 15 project(s) - 24 wil'. A warning that stops mid-word reads as a rendering
+    # fault rather than as a fact about tomorrow morning, which is worse than not
+    # warning at all. So the pill gets the SHORT form and the tooltip carries the
+    # sentence: '44 of 184 ticked, 15 projects' and, when it matters, '24 over'.
+    $ui.TickSummary.Text = $(if ($overflow) {
+        "{0} ticked, {1} over the cap{2}" -f $on, $overflow, $(if ($script:dirty) { '  *unsaved*' } else { '' })
+    } else {
+        "{0} of {1} ticked for logon{2}" -f $on, $tot, $(if ($script:dirty) { '  *unsaved*' } else { '' })
+    })
     # Two facts, not three. The auto-tick rule is a standing rule that never
     # changes -- it was a sentence of teaching text on the one line that also has
     # to hold every action, and it pushed "Launch everything ticked" off the
@@ -2027,7 +2037,7 @@ function Set-ViewMode { param([string]$Mode)
     Update-List -ToTop
     $null = (Get-ActiveList).Focus()
     Set-Status $(switch ($Mode) {
-        'inbox' { 'Inbox: every conversation that is running or was, ordered by what it needs from you.' }
+        'inbox' { 'Now: every conversation that is running or was, grouped by what it needs from you.' }
         'all'   { "Roster: what reopens at logon, grouped by project. Fold a repo you are not working in; tick what should come back. Searching ignores folds." }
     }) 'info'
 }
@@ -3278,7 +3288,7 @@ try { $script:suppress = $true; $ui.WorktreeToggle.IsChecked = $script:showWt } 
 # explicitly or the window opens claiming Inbox while showing the tree.
 Initialize-Tray
 Set-ViewMode $script:viewMode
-Set-Status 'Inbox: what each conversation last said, and which of them are waiting on you. Projects and Restore are the other two views.' 'info'
+Set-Status 'Now: what each conversation last said, and which of them are waiting on you. Roster is where you choose what comes back at logon.' 'info'
 
 $window.Add_ContentRendered({
     $list = Get-ActiveList

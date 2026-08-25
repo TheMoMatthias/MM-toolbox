@@ -161,8 +161,11 @@ try {
     else { Fail "$agentEnabled background-agent row(s) offer an action that cannot work" }
 
     # --- 5. the view switch actually switches ------------------------------
-    $tree = ByName 'All' ([System.Windows.Automation.ControlType]::RadioButton)
-    $inbox = ByName 'Inbox' ([System.Windows.Automation.ControlType]::RadioButton)
+    # The segments are named Now and Roster on screen. This suite drives them BY
+    # NAME through UI Automation, so a rename that missed here would not fail
+    # loudly - it would find nothing and quietly test whatever was already up.
+    $tree = ByName 'Roster' ([System.Windows.Automation.ControlType]::RadioButton)
+    $inbox = ByName 'Now' ([System.Windows.Automation.ControlType]::RadioButton)
     # TWO, not three. Restore was retired because it rendered row-for-row
     # identical rows to Projects; asserting that a retired view is still on
     # screen is asserting the duplication is still there.
@@ -170,7 +173,7 @@ try {
     if ($restore) { Fail 'the retired Restore view is still on screen' }
     elseif (-not $tree -or -not $inbox) { Fail 'the two view buttons are not both present' }
     else {
-        Pass 'Inbox and All are present, and Restore is gone'
+        Pass 'Now and Roster are present, and Restore is gone'
 
         # WHICH list is on screen, by position in the pair, not by identity.
         # Comparing runtime ids inline was a precedence trap: PowerShell parses

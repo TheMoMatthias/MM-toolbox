@@ -58,7 +58,7 @@ Start-Sleep -Seconds 6
 # scrolled to -1%". The keys were fine; the suite was aimed at the wrong list.
 $modeCond = New-Object System.Windows.Automation.AndCondition(
     (New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::NameProperty, 'All')),
+        [System.Windows.Automation.AutomationElement]::NameProperty, 'Roster')),
     (New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::RadioButton)))
@@ -73,7 +73,7 @@ if ($modeBtn) {
     # every scroll assertion. That is EXACTLY the symptom the comment above
     # already describes, reproduced by a silent fallback, and it read as three
     # broken keyboard shortcuts for a day.
-    Write-Host "FAIL  no 'All' view button - this suite cannot test scrolling against a list that fits" -ForegroundColor Red
+    Write-Host "FAIL  no 'Roster' view button - this suite cannot test scrolling against a list that fits" -ForegroundColor Red
     exit 1
 }
 

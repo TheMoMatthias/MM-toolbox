@@ -1211,8 +1211,8 @@
           <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}"
                   BorderThickness="1" CornerRadius="7" Padding="3" Margin="0,0,16,0">
             <StackPanel Orientation="Horizontal">
-              <RadioButton x:Name="ModeInbox" Style="{StaticResource Seg}" Content="Inbox" IsChecked="True"
-                           ToolTip="Every conversation across every project, ordered by what it needs from you."/>
+              <RadioButton x:Name="ModeInbox" Style="{StaticResource Seg}" Content="Now" IsChecked="True"
+                           ToolTip="What is happening: every conversation that is running or was, grouped by what it needs from you."/>
               <!-- RESTORE WAS A THIRD SEGMENT AND RENDERED THE SAME 195 ROWS AS
                    PROJECTS, in the same order, with the same keys. Compared row
                    for row: identical. All that differed was a caption, a count
@@ -1220,8 +1220,8 @@
                    of another, which is most of why the tool read as having more
                    places than it has ideas. The tick column and the launch
                    button live in All now. -->
-              <RadioButton x:Name="ModeAll" Style="{StaticResource Seg}" Content="All"
-                           ToolTip="Every conversation on this machine as one sortable list, with the logon tick."/>
+              <RadioButton x:Name="ModeAll" Style="{StaticResource Seg}" Content="Roster"
+                           ToolTip="What comes back at logon: every conversation grouped by project and worktree, with the tick that decides. Fold a repo you are not working in; searching ignores folds."/>
             </StackPanel>
           </Border>
 
