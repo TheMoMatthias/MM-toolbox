@@ -890,6 +890,37 @@ try {
     $script:agents = $savedAgents
 }
 
+# RELAUNCH RESTARTS, IT DOES NOT OPEN. A ticked conversation that is NOT running
+# has no stale token and no stale remote registration, so there is nothing to fix
+# about it -- and taking it would have meant 29 tabs from a button pressed to
+# repair 12. Opening the rest is what `Launch everything ticked` is for.
+$notRunningId = 'eeeeeeee-4444-4444-4444-444444444444'
+$savedAgents2 = $script:agents
+$savedDirs2 = $script:dirs
+try {
+    $script:agents = @{}   # nothing is running at all
+    $rdir2 = [PSCustomObject]@{ path = $here; enabled = $true; missing = $false; sessions = @(
+        [PSCustomObject]@{ sessionId = $notRunningId; title = 'R-notrunning'; enabled = $true
+                           lastActive = (Get-Date).ToString('o'); cwd = $here; lane = 'main'
+                           gone = $false; jsonl = $null; pinned = $true }
+    ) }
+    $script:dirs = @($rdir2)
+    $script:visCache = @{}
+    $plan2 = Get-RelaunchPlan
+    if (@($plan2.Restart).Count) { Fail 'a conversation that is not running was put in the restart list' }
+    else { Pass 'a ticked conversation that is not running is not restarted' }
+    # Accounted for SOMEWHERE, not necessarily in Fresh: a conversation with no
+    # transcript on disk is correctly Blocked rather than launchable. What must not
+    # happen is it vanishing from the plan entirely, leaving the dialog silent
+    # about a ticked conversation the operator can see in the list.
+    $elsewhere = @($plan2.Fresh).Count + @($plan2.Blocked).Count
+    if (-not $elsewhere) { Fail 'it vanished from the plan - the dialog could not report it at all' }
+    else { Pass 'it is still accounted for in the plan, so the dialog can report it' }
+} finally {
+    $script:agents = $savedAgents2
+    $script:dirs = $savedDirs2
+    $script:visCache = @{}
+}
 # 🔴 THE KILL LIST MUST DIE WITH THE DIALOG. Cancel a relaunch, then confirm an
 # ordinary launch, and a kill list left in script scope would close sessions
 # nobody agreed to close: the dialog says 'open' and the tool kills.

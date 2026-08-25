@@ -254,15 +254,24 @@ function Get-RelaunchPlan {
 function Invoke-RelaunchTicked {
     if ($script:dirty) { Save-SRRegistry -Registry $script:reg; $script:dirty = $false; Update-AllTicks }
     $plan = Get-RelaunchPlan
-    $go = @($plan.Restart) + @($plan.Fresh)
-    $go = @($go | Sort-Object { [datetime]$_.S.lastActive } -Descending)
+    # 🔴 RELAUNCH RESTARTS; IT DOES NOT OPEN. This took Restart + Fresh, which on the
+    # operator's machine meant restarting 12 running conversations AND opening 17
+    # more that happened to be ticked -- 29 tabs from a button pressed to fix the
+    # names on the 12. Opening the rest is what `Launch everything ticked` is for,
+    # and pressing both gives the whole ticked set up and signed in.
+    #
+    # It stays inside the ticked set either way, which is the rule that was agreed;
+    # what changed is that being TICKED is no longer sufficient, it also has to be
+    # RUNNING. A conversation that is not running has no stale token and no stale
+    # remote registration -- there is nothing about it to fix.
+    $go = @($plan.Restart | Sort-Object { [datetime]$_.S.lastActive } -Descending)
 
     $cap = [int]$script:cfg.maxSessions
     $over = 0
     if ($cap -gt 0 -and $go.Count -gt $cap) { $over = $go.Count - $cap; $go = @($go | Select-Object -First $cap) }
 
     if (-not $go.Count) {
-        Set-Status 'nothing to relaunch - nothing is ticked, or every ticked conversation is mid-turn' 'warn'
+        Set-Status 'nothing to relaunch - no ticked conversation is running, or every one that is is mid-turn' 'warn'
         return
     }
 
@@ -275,14 +284,24 @@ function Invoke-RelaunchTicked {
         $more = $(if (@($plan.Busy).Count -gt 6) { " and $(@($plan.Busy).Count - 6) more" } else { '' })
         $note += "{0} are mid-turn and will be LEFT ALONE: {1}{2}. They keep the old token - run this again once they finish." -f @($plan.Busy).Count, $names, $more
     }
-    if (@($plan.Blocked).Count) { $note += "{0} cannot be launched at all (transcript or directory gone)." -f @($plan.Blocked).Count }
+    # NOT a skip, and said as such: these are simply not running, so a relaunch has
+    # nothing to do to them. Naming the button that DOES open them stops this
+    # reading as something withheld.
+    if (@($plan.Fresh).Count) { $note += "{0} more are ticked but not running - use 'Launch everything ticked' to open those." -f @($plan.Fresh).Count }
     if ($over) { $note += "{0} more are ticked but over the maxSessions cap of {1}, so they are skipped." -f $over, $cap }
 
+    # 🔴 NAME WHAT WILL BE CLOSED. The dialog carried the list and showed a COUNT,
+    # which is the wrong half: this closes live processes, and one of them may be
+    # the conversation the operator is talking to right now. A number cannot be
+    # checked against that; a list can.
+    $closing = (@($go) | ForEach-Object { Get-SessionTitle $_.S $_.D } | Sort-Object) -join ', '
+    $note = @("Closing: $closing") + $note
+
     $script:confirmKill = $kill
-    Request-Confirm -Title ("Close and reopen {0} ticked conversations" -f $go.Count) `
-        -Message ("{0} of them are running now and will be CLOSED first, then all {1} are opened again. Use this after signing in: a running session only reads your login at startup, so it cannot pick up a new token without a restart." -f $kill.Count, $go.Count) `
+    Request-Confirm -Title ("Restart {0} running conversations" -f $go.Count) `
+        -Message ("Each one is CLOSED and then opened again. Use this after signing in, or after reconnecting Remote Control: a running session reads your login AND its remote name at startup, so neither can be picked up without a restart." ) `
         -Note (($note -join '  ') ) `
-        -OkLabel ("Close {0}, open {1}" -f $kill.Count, $go.Count) -Items $go -What 'ticked conversation(s)'
+        -OkLabel ("Restart {0}" -f $go.Count) -Items $go -What 'ticked conversation(s)'
 }
 
 # The kill half. Called from the confirmation, never directly.
