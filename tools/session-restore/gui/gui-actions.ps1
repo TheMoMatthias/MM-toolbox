@@ -169,6 +169,12 @@ function Close-Confirm {
     $ui.ConfirmOverlay.Visibility = $V_Hide
     $script:confirmItems = $null
     $script:confirmWhat  = $null
+    # 🔴 THE KILL LIST DIES WITH THE DIALOG, and it is cleared HERE rather than only
+    # in the handler that uses it. Cancel a relaunch, then confirm an ordinary
+    # launch, and a kill list left lying in script scope would close sessions
+    # nobody agreed to close -- the dialog would say 'open' and the tool would kill.
+    # One function clears it, and every exit from the dialog goes through it.
+    $script:confirmKill  = $null
 }
 
 # X. Same cap as the logon restore, and said out loud rather than applied
@@ -202,6 +208,116 @@ function Invoke-LaunchTicked {
     }
 }
 
+# ---------------------------------------------------------------------------
+# RELAUNCH: close the ticked sessions and open them again.
+#
+# WHY THIS EXISTS. When the login token expires, every already-running session
+# sits at its own login prompt, and signing in once does NOT reach them: claude
+# reads the credential at STARTUP. The operator signed in and then had to sign in
+# again in every conversation by hand. A running process cannot be told to
+# re-read; only a new one picks the new token up. So the fix is genuinely a
+# restart, and the button exists because doing it by hand is the whole morning.
+#
+# 🔴 THIS KILLS LIVE PROCESSES. Three rules make that safe enough to put on a
+# button, and none of them are optional:
+#   1. only what is TICKED -- the set the logon restore would have opened, so it
+#      mirrors a fresh logon and leaves anything started by hand alone
+#   2. never a session that is MID-TURN. A kill loses the reply being written.
+#      The transcript survives and it resumes, but the in-flight turn does not.
+#   3. every skip is NAMED. A relaunch that silently passed over half the list
+#      would leave the operator believing the token problem was fixed.
+function Get-RelaunchPlan {
+    $restart = @(); $busy = @(); $fresh = @(); $blocked = @()
+    foreach ($d in $script:dirs) {
+        if ($d.missing -or -not $d.enabled) { continue }
+        foreach ($s in @(Get-Visible $d)) {
+            if (-not $s.enabled) { continue }
+            $id = "$($s.sessionId)".ToLower()
+            $a  = $script:agents[$id]
+            $it = [PSCustomObject]@{ S = $s; D = $d; Pid = $(if ($a) { [int]$a.Pid } else { 0 }) }
+            if ($a -and $a.Pid) {
+                # 'busy' is claude's own word for a turn in progress. Anything
+                # else that is running -- idle, waiting, at a login prompt -- is
+                # safe to take.
+                if ("$($a.Status)" -eq 'busy') { $busy += $it } else { $restart += $it }
+            } else {
+                # Not running. It still belongs in the relaunch: after a token
+                # expiry the operator wants the whole ticked set up and signed in.
+                $why = Get-LaunchBlock -Session $s -Dir $d
+                if ($why) { $blocked += $it } else { $fresh += $it }
+            }
+        }
+    }
+    return [PSCustomObject]@{ Restart = @($restart); Busy = @($busy); Fresh = @($fresh); Blocked = @($blocked) }
+}
+
+function Invoke-RelaunchTicked {
+    if ($script:dirty) { Save-SRRegistry -Registry $script:reg; $script:dirty = $false; Update-AllTicks }
+    $plan = Get-RelaunchPlan
+    $go = @($plan.Restart) + @($plan.Fresh)
+    $go = @($go | Sort-Object { [datetime]$_.S.lastActive } -Descending)
+
+    $cap = [int]$script:cfg.maxSessions
+    $over = 0
+    if ($cap -gt 0 -and $go.Count -gt $cap) { $over = $go.Count - $cap; $go = @($go | Select-Object -First $cap) }
+
+    if (-not $go.Count) {
+        Set-Status 'nothing to relaunch - nothing is ticked, or every ticked conversation is mid-turn' 'warn'
+        return
+    }
+
+    # WHAT IT WILL CLOSE, counted separately from what it will merely open. Those
+    # are different promises and only one of them can lose work.
+    $kill = @($go | Where-Object { $_.Pid -gt 0 })
+    $note = @()
+    if (@($plan.Busy).Count) {
+        $names = (@($plan.Busy) | ForEach-Object { Get-SessionTitle $_.S $_.D } | Select-Object -First 6) -join ', '
+        $more = $(if (@($plan.Busy).Count -gt 6) { " and $(@($plan.Busy).Count - 6) more" } else { '' })
+        $note += "{0} are mid-turn and will be LEFT ALONE: {1}{2}. They keep the old token - run this again once they finish." -f @($plan.Busy).Count, $names, $more
+    }
+    if (@($plan.Blocked).Count) { $note += "{0} cannot be launched at all (transcript or directory gone)." -f @($plan.Blocked).Count }
+    if ($over) { $note += "{0} more are ticked but over the maxSessions cap of {1}, so they are skipped." -f $over, $cap }
+
+    $script:confirmKill = $kill
+    Request-Confirm -Title ("Close and reopen {0} ticked conversations" -f $go.Count) `
+        -Message ("{0} of them are running now and will be CLOSED first, then all {1} are opened again. Use this after signing in: a running session only reads your login at startup, so it cannot pick up a new token without a restart." -f $kill.Count, $go.Count) `
+        -Note (($note -join '  ') ) `
+        -OkLabel ("Close {0}, open {1}" -f $kill.Count, $go.Count) -Items $go -What 'ticked conversation(s)'
+}
+
+# The kill half. Called from the confirmation, never directly.
+#
+# 🪤 KILLING claude.exe LEAVES ITS TAB BEHIND. The tab runs
+# `powershell -NoExit -File <boot>.ps1`, which invokes claude; kill the child and
+# the shell returns to a prompt and the tab lingers empty. Over a few relaunches
+# that is a screen full of dead tabs. So the boot shell goes too -- but ONLY when
+# its command line names a boot script this tool generated, because killing a
+# parent on any weaker evidence could close a terminal the operator is using.
+function Stop-SRSessions { param($Items)
+    $killed = 0
+    foreach ($it in @($Items)) {
+        $procId = [int]$it.Pid
+        if ($procId -le 0) { continue }
+        $proc = $null
+        try { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction Stop } catch { }
+        # A pid is reusable: confirm THIS one is still the claude that owns the
+        # session before killing anything. The same guard Send-SRSessionInput makes.
+        if (-not $proc -or $proc.Name -ne 'claude.exe') { continue }
+        $parent = $null
+        try { $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.ParentProcessId)" -ErrorAction Stop } catch { }
+        try { Stop-Process -Id $procId -Force -ErrorAction Stop; $killed++ } catch { continue }
+        if ($parent -and $parent.Name -eq 'powershell.exe' -and "$($parent.CommandLine)" -like '*.state*boot-*') {
+            try { Stop-Process -Id ([int]$parent.ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+    if ($killed) {
+        Write-SRLog ("  [ok]   closed {0} session(s) for a relaunch" -f $killed)
+        # The launch that follows opens fresh tabs; give the console host a beat to
+        # release the pids so the new ones are not fighting the old for the window.
+        Start-Sleep -Milliseconds 700
+    }
+    return $killed
+}
 # S. The same refusal spawn-claude-session makes, for the same reason: a session
 # was once spawned onto a lane a live one had held for 73 minutes.
 # GO TO: bring this conversation's real terminal tab to the front. The whole

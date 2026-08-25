@@ -714,6 +714,11 @@ $script:showHidden = $false
 # last drawn. Re-read and compared before anything is sent, because the whole
 # arrow-key choreography assumes the menu has not moved since.
 $script:askPending = $null
+
+# The sessions a confirmed relaunch will CLOSE. Separate from confirmItems, which
+# is what it will open: those are different lists and only one of them can lose
+# work, so they are never conflated.
+$script:confirmKill = $null
 $script:fPin      = @{}     # pinned | unpinned
 $script:fAge      = @{}     # recent | stale
 $script:fProject  = $null   # a project path, or $null for any
@@ -954,7 +959,7 @@ $ui = @{}
 foreach ($n in @(
     'SubTitle','SearchBox','ClearSearch','BusyText','RescanBtn','LiveSummary','TickSummary',
     'ProbeStamp','Unattributed','TickAll','TickNone','UnpinAll','SeenAll','ReadNote',
-    'WorktreeToggle','LaunchTicked','RowList','EmptyNote','SelName','SelPath','SelTick',
+    'WorktreeToggle','LaunchTicked','RelaunchTicked','RowList','EmptyNote','SelName','SelPath','SelTick',
     'SelUnpin','SelLaunch','SelSpawn','StatusText','CancelBtn','SaveBtn','Overlay','OvTitle',
     'OvPath','OvWarnBox','OvWarn','OvName','OvCancel','OvOk',
     'ConfirmOverlay','CfTitle','CfMessage','CfNoteBox','CfNote','CfCancel','CfOk',
@@ -1631,7 +1636,12 @@ function Update-Header {
     # omission -- the same class of failure as a tick under a switched-off project.
     $cap = [int]$script:cfg.maxSessions
     $overflow = $(if ($cap -gt 0 -and $on -gt $cap) { $on - $cap } else { 0 })
-    $capNote = $(if ($overflow) { "  -  only the $cap most recent will open, $overflow will not" } else { '' })
+    # 🪤 SHORT ENOUGH TO SURVIVE THE PILL. The first version of this ran to
+    # "only the 20 most recent will open, 8 will not" and the pill clipped it to
+    # "...in 12 project(s) - only the" -- a warning that stops mid-sentence is worse
+    # than none, because it reads as a rendering fault rather than a fact about
+    # tomorrow morning. The full sentence is on the tooltip, which has the room.
+    $capNote = $(if ($overflow) { "  -  $overflow will not fit" } else { '' })
     $ui.TickSummary.Text = "{0} of {1} ticked to reopen at logon, in {2} project(s){3}{4}" -f $on, $tot, $projOn, $capNote, $(if ($script:dirty) { '  *unsaved*' } else { '' })
     # Two facts, not three. The auto-tick rule is a standing rule that never
     # changes -- it was a sentence of teaching text on the one line that also has
@@ -1657,6 +1667,11 @@ function Update-Header {
     $ui.LivePill.SetValue($nameProp, $ui.LiveSummary.Text)
     $ui.WaitPill.SetValue($nameProp, $ui.WaitSummary.Text)
     $ui.TickPill.SetValue($nameProp, $ui.TickSummary.Text)
+    $ui.TickPill.ToolTip = $(if ($overflow) {
+        "Only the $cap most recent ticked conversations open at logon; $overflow will not. Raise maxSessions in session-restore.config.json if you want more."
+    } else {
+        "$on of $tot conversations are ticked to reopen at logon, across $projOn project(s). The cap is $cap."
+    })
 
     Update-FilterReadout
     Update-SortHeads
@@ -1984,7 +1999,7 @@ function Set-ViewMode { param([string]$Mode)
     if ($restore -and $ui.MoreFilters -and -not $ui.MoreFilters.IsChecked) {
         $ui.MoreFilters.IsChecked = $true
     }
-    foreach ($ctl in @($ui.LaunchTicked, $ui.BulkBtn, $ui.TickPill, $ui.NowCaption)) {
+    foreach ($ctl in @($ui.LaunchTicked, $ui.RelaunchTicked, $ui.BulkBtn, $ui.TickPill, $ui.NowCaption)) {
         if ($ctl) { $ctl.Visibility = $(if ($restore) { $V_Show } else { $V_Hide }) }
     }
 
@@ -2945,6 +2960,7 @@ function Invoke-WorktreeToggle {
 $ui.WorktreeToggle.Add_Click({ Invoke-Guarded { Invoke-WorktreeToggle } 'the worktree toggle' })
 
 $ui.LaunchTicked.Add_Click({ Invoke-Guarded { Invoke-LaunchTicked } 'launch everything ticked' })
+$ui.RelaunchTicked.Add_Click({ Invoke-Guarded { Invoke-RelaunchTicked } 'relaunch the ticked conversations' })
 
 # --- the selected row ---
 $ui.SelTick.Add_Click({ Invoke-Guarded { $r = (Get-ActiveList).SelectedItem; if ($r -and $r.Kind -ne 'band') { Set-RowTick -Row $r -Value $null } } 'the tick' })
@@ -2960,7 +2976,18 @@ $ui.CfOk.Add_Click({ Invoke-Guarded {
     # second press cannot open the same tabs twice.
     $items = $script:confirmItems
     $what  = $script:confirmWhat
+    # The kill list is read and CLEARED with the rest, before anything happens, so
+    # a second press cannot kill a set that has already been relaunched.
+    $kill  = $script:confirmKill
+    $script:confirmKill = $null
     Close-Confirm
+    if ($kill -and @($kill).Count) {
+        $n = Stop-SRSessions -Items $kill
+        Set-Status ("closed {0} session(s) - reopening" -f $n)
+        # The liveness table still says they are running. Clearing it here stops the
+        # relaunch being judged against processes that no longer exist.
+        foreach ($it in @($kill)) { $script:running.Remove("$($it.S.sessionId)".ToLower()) }
+    }
     if ($items) { Start-Launch -Items $items -What $what }
 } 'open' })
 

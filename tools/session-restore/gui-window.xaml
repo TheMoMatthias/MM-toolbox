@@ -1291,6 +1291,12 @@
           <TextBlock x:Name="NowCaption" Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="0,0,12,0"/>
           <Button x:Name="LaunchTicked" Style="{StaticResource BtnNow}" Content="Launch everything ticked"
                   ToolTip="Open every ticked conversation that is not already open, up to the maxSessions cap"/>
+          <!-- AFTER SIGNING IN AGAIN. A running session reads the login token at
+               STARTUP, so signing in once does not reach the sessions already open:
+               they each sit at their own login prompt until restarted. This closes the
+               ticked ones and opens them again, which is the only thing that works. -->
+          <Button x:Name="RelaunchTicked" Style="{StaticResource Btn}" Content="Relaunch ticked" Margin="9,0,0,0"
+                  ToolTip="Close the ticked conversations and open them again. Use it after signing in: a running session only reads your login at startup. Anything mid-turn is left alone and named."/>
         </StackPanel>
         </Grid>
         <TextBlock x:Name="Unattributed" Text="" Foreground="{StaticResource TextMid}" FontSize="12"

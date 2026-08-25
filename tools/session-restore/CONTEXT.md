@@ -64,6 +64,16 @@ at logon. A group header says "9 armed"; if the project is off it says
 "9 ticked, PROJECT OFF" instead, because those are different facts about tomorrow
 morning.
 
+**relaunch** — closing the ticked conversations and opening them again. Not a
+refresh: a running claude reads the login token at STARTUP, so after a token
+expiry every open session sits at its own login prompt and signing in once does
+not reach any of them. Only a new process picks the new token up.
+
+It kills live processes, so three rules are load-bearing: only what is TICKED,
+never what is mid-turn (a kill loses the reply being written; the transcript
+survives), and every skip is NAMED — a relaunch that silently passed over half
+the list would leave the operator believing the problem was fixed.
+
 **pending question** — an `AskUserQuestion` tool_use with no tool_result carrying
 its id. What a session is waiting on, readable from the transcript alone, and
 answerable from the window.

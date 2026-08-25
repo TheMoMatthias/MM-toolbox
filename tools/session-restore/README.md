@@ -72,6 +72,13 @@ records is a real selection. It refuses if the session has moved on since you
 looked, and a question that takes several answers at once is shown but not
 answered from here — that one is still a trip to the terminal.
 
+**After signing in again, press Relaunch ticked.** A running session reads your
+login token when it STARTS, so signing in once does not reach the sessions that
+are already open — they each sit at their own login prompt until restarted. The
+button closes the ticked conversations and opens them again, which is the only
+thing that fixes it. Anything mid-turn is left alone and named in the
+confirmation, because killing a session loses the reply it was writing.
+
 Right-click any row, in either view, to tick it for logon, untick it, hide it, open
 it, or jump to its terminal. Hiding is a flag and never a deletion: **Bulk › Show
 hidden** brings everything back.

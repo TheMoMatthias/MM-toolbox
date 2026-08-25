@@ -839,6 +839,64 @@ else {
 }
 
 # --- 10f. THE FIXTURE IS STILL THE FIXTURE ----------------------------------
+# --- RELAUNCH NEVER TAKES A SESSION MID-TURN --------------------------------
+# The button closes live processes, so its rules are the whole of its safety and
+# they are asserted rather than trusted: only what is TICKED, never what is busy,
+# and every skip named. A relaunch that quietly took a working session would lose
+# the reply it was writing.
+$relaunchIds = @{ busy = 'bbbbbbbb-1111-1111-1111-111111111111'
+                  idle = 'cccccccc-2222-2222-2222-222222222222'
+                  off  = 'dddddddd-3333-3333-3333-333333333333' }
+$savedAgents = $script:agents
+try {
+    # One of each: mid-turn, idle, and idle-but-not-ticked.
+    $script:agents = @{}
+    foreach ($k in @('busy','idle','off')) {
+        $script:agents[$relaunchIds[$k]] = [PSCustomObject]@{
+            Status = $(if ($k -eq 'busy') { 'busy' } else { 'idle' })
+            WaitingFor = ''; Needs = $false; Pid = 4000
+            Kind = 'interactive'; Name = "R-$k"; Cwd = $here; StartedAt = (Get-Date)
+        }
+    }
+    $rdir = [PSCustomObject]@{ path = $here; enabled = $true; missing = $false; sessions = @() }
+    foreach ($k in @('busy','idle','off')) {
+        $rdir.sessions += [PSCustomObject]@{
+            sessionId = $relaunchIds[$k]; title = "R-$k"
+            enabled = ($k -ne 'off')   # 'off' is deliberately NOT ticked
+            lastActive = (Get-Date).ToString('o'); cwd = $here; lane = 'main'
+            gone = $false; jsonl = $null; pinned = $true
+        }
+    }
+    $savedDirs = $script:dirs
+    $script:dirs = @($rdir)
+    $script:visCache = @{}
+    $plan = Get-RelaunchPlan
+
+    $restartIds = @(@($plan.Restart) | ForEach-Object { "$($_.S.sessionId)" })
+    $busyIds    = @(@($plan.Busy)    | ForEach-Object { "$($_.S.sessionId)" })
+
+    if ($busyIds -notcontains $relaunchIds['busy']) { Fail 'a mid-turn session was not held back' }
+    else { Pass 'a session that is mid-turn is held back from the relaunch' }
+    if ($restartIds -contains $relaunchIds['busy']) { Fail 'a mid-turn session is in the restart list - its in-flight turn would be lost' }
+    else { Pass 'a mid-turn session is never in the restart list' }
+    if ($restartIds -notcontains $relaunchIds['idle']) { Fail 'an idle ticked session was not picked up' }
+    else { Pass 'an idle ticked session is restarted' }
+    if (($restartIds + $busyIds) -contains $relaunchIds['off']) { Fail 'an UNTICKED session was taken - relaunch must only touch the ticked set' }
+    else { Pass 'an unticked session is left alone entirely' }
+
+    $script:dirs = $savedDirs
+    $script:visCache = @{}
+} finally {
+    $script:agents = $savedAgents
+}
+
+# 🔴 THE KILL LIST MUST DIE WITH THE DIALOG. Cancel a relaunch, then confirm an
+# ordinary launch, and a kill list left in script scope would close sessions
+# nobody agreed to close: the dialog says 'open' and the tool kills.
+$script:confirmKill = @( [PSCustomObject]@{ Pid = 1 } )
+Close-Confirm
+if ($script:confirmKill) { Fail 'closing the dialog left a kill list behind - a later launch would kill sessions' }
+else { Pass 'closing the confirmation clears the kill list' }
 # --- THE READING PANE IS FOR READING ---------------------------------------
 # TOOL TRAFFIC OUTNUMBERS PROSE FIVE TO ONE, so a run of calls buries the
 # sentence above it. A run folds to one line; a short run does not, because two
