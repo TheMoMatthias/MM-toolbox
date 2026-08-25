@@ -2983,7 +2983,15 @@ $ui.CfOk.Add_Click({ Invoke-Guarded {
     Close-Confirm
     if ($kill -and @($kill).Count) {
         $n = Stop-SRSessions -Items $kill
-        Set-Status ("closed {0} session(s) - reopening" -f $n)
+        # A session spared at the last moment must be SAID. It keeps whatever the
+        # relaunch was meant to fix, and the operator would otherwise believe it was
+        # dealt with -- the same failure as a silent skip, arriving later.
+        $late = @($script:relaunchLate)
+        if ($late.Count) {
+            Set-Status ("closed {0} - {1} started working while you decided and were left alone: {2}" -f $n, $late.Count, ($late -join ', ')) 'warn'
+        } else {
+            Set-Status ("closed {0} session(s) - reopening" -f $n)
+        }
         # The liveness table still says they are running. Clearing it here stops the
         # relaunch being judged against processes that no longer exist.
         foreach ($it in @($kill)) { $script:running.Remove("$($it.S.sessionId)".ToLower()) }

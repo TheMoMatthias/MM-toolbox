@@ -234,6 +234,23 @@ function Get-RelaunchPlan {
             if (-not $s.enabled) { continue }
             $id = "$($s.sessionId)".ToLower()
             $a  = $script:agents[$id]
+            # 🔴 THE LIVE NAME OUTRANKS THE REGISTRY, and getting this wrong UNDOES the
+            # operator's own work. A session renamed by hand reports the new name
+            # through `claude agents --json` while the registry still holds whatever
+            # discovery last read -- measured 2026-08-24: `skill-adjustment` live
+            # against `(untitled)` recorded. Relaunching from the registry would have
+            # passed the stale title to -n and renamed it BACK, silently, as part of
+            # an action the operator pressed to FIX names.
+            #
+            # claude is the authority on what a running conversation is called. The
+            # registry learns from it here, so the relaunch, the row and the saved
+            # title all agree afterwards. Only for RUNNING sessions, and never toward
+            # an empty or placeholder name.
+            if ($a -and "$($a.Name)" -and "$($a.Name)" -ne '(untitled)' -and "$($a.Name)" -ne "$($s.title)") {
+                Write-SRLog ("  [ok]   adopting the live name '{0}' over the recorded '{1}'" -f $a.Name, $s.title)
+                Set-SessionField $s 'title' "$($a.Name)"
+                $script:dirty = $true
+            }
             $it = [PSCustomObject]@{ S = $s; D = $d; Pid = $(if ($a) { [int]$a.Pid } else { 0 }) }
             if ($a -and $a.Pid) {
                 # 'busy' is claude's own word for a turn in progress. Anything
@@ -314,6 +331,7 @@ function Invoke-RelaunchTicked {
 # parent on any weaker evidence could close a terminal the operator is using.
 function Stop-SRSessions { param($Items)
     $killed = 0
+    $script:relaunchLate = @()
     foreach ($it in @($Items)) {
         $procId = [int]$it.Pid
         if ($procId -le 0) { continue }
@@ -322,6 +340,19 @@ function Stop-SRSessions { param($Items)
         # A pid is reusable: confirm THIS one is still the claude that owns the
         # session before killing anything. The same guard Send-SRSessionInput makes.
         if (-not $proc -or $proc.Name -ne 'claude.exe') { continue }
+        # 🔴 RE-CHECK MID-TURN AT THE MOMENT OF THE KILL. The plan is built when the
+        # button is pressed and the kill happens when the dialog is confirmed, so a
+        # session that was idle while the operator read the list and started working
+        # while he decided would have been killed on the strength of a stale status.
+        # The whole promise of this button is that it does not take a session
+        # mid-turn, and a promise checked only at plan time is not that promise.
+        $now = $null
+        try { $now = (Get-SRAgentStatus -Refresh)["$($it.S.sessionId)".ToLower()] } catch { }
+        if ($now -and "$($now.Status)" -eq 'busy') {
+            Write-SRLog ("  [skip] {0} started working while the dialog was open - left alone" -f $now.Name)
+            $script:relaunchLate += "$($now.Name)"
+            continue
+        }
         $parent = $null
         try { $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.ParentProcessId)" -ErrorAction Stop } catch { }
         try { Stop-Process -Id $procId -Force -ErrorAction Stop; $killed++ } catch { continue }
