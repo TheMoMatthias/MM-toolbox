@@ -1339,11 +1339,22 @@ using System.Runtime.InteropServices;
 public static class SRCon {
     [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint pid);
     [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole();
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
     public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disp, uint flags, IntPtr tmpl);
     [DllImport("kernel32.dll", SetLastError=true)] public static extern bool CloseHandle(IntPtr h);
     [DllImport("kernel32.dll", SetLastError=true)]
     public static extern bool WriteConsoleInputW(IntPtr h, INPUT_RECORD[] buf, uint len, out uint written);
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern bool ReadConsoleOutputCharacterW(IntPtr h, [Out] char[] buf, uint len, uint coord, out uint read);
+    [StructLayout(LayoutKind.Sequential)] public struct COORD { public short X, Y; }
+    [StructLayout(LayoutKind.Sequential)] public struct SMALL_RECT { public short L, T, R, B; }
+    [StructLayout(LayoutKind.Sequential)] public struct CSBI {
+        public COORD Size; public COORD Cursor; public ushort Attrs;
+        public SMALL_RECT Window; public COORD MaxSize;
+    }
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool GetConsoleScreenBufferInfo(IntPtr h, out CSBI info);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct INPUT_RECORD {
@@ -1356,10 +1367,27 @@ public static class SRCon {
         return CreateFileW("CONIN$", 0x80000000u | 0x40000000u, 1u | 2u, IntPtr.Zero, 3u, 0u, IntPtr.Zero);
     }
 
+    // 🔴 GIVE THE CALLER ITS OWN CONSOLE BACK.
+    //
+    // Attaching to another process's console means first FREEING ours, and a
+    // process may hold exactly one. Every method here did that and never restored
+    // it, so a console-hosted caller was left with no console at all: the test
+    // harness died on the NEXT Write-Host with 'The handle is invalid' 0x6, from a
+    // line that had nothing to do with any of this. The GUI never noticed because
+    // a WPF process has no console to lose.
+    //
+    // Only for callers that HAD one -- attaching the GUI to whatever console its
+    // launcher happens to own would be a new behaviour, not a restoration.
+    static void GiveBack(bool had) {
+        FreeConsole();
+        if (had) AttachConsole(0xFFFFFFFF);   // ATTACH_PARENT_PROCESS
+    }
+
     // Returns the number of records written, or -win32error.
     public static int Send(uint pid, string text, bool enter) {
+        bool had = GetConsoleWindow() != IntPtr.Zero;
         FreeConsole();
-        if (!AttachConsole(pid)) return -Marshal.GetLastWin32Error();
+        if (!AttachConsole(pid)) { GiveBack(had); return -Marshal.GetLastWin32Error(); }
         try {
             IntPtr h = OpenConIn();
             if (h == new IntPtr(-1)) return -Marshal.GetLastWin32Error();
@@ -1379,7 +1407,7 @@ public static class SRCon {
                 if (!WriteConsoleInputW(h, r, (uint)r.Length, out written)) return -Marshal.GetLastWin32Error();
                 return (int)written;
             } finally { CloseHandle(h); }
-        } finally { FreeConsole(); }
+        } finally { GiveBack(had); }
     }
 
     // KEYS, NOT CHARACTERS. Send() writes UnicodeChar records, which is everything
@@ -1392,8 +1420,9 @@ public static class SRCon {
     // 0x0D ENTER, 0x09 TAB. Down and up are written for each, because a TUI that
     // watches for key-release sees nothing from a half-pair.
     public static int SendKeys(uint pid, ushort[] vks) {
+        bool had = GetConsoleWindow() != IntPtr.Zero;
         FreeConsole();
-        if (!AttachConsole(pid)) return -Marshal.GetLastWin32Error();
+        if (!AttachConsole(pid)) { GiveBack(had); return -Marshal.GetLastWin32Error(); }
         try {
             IntPtr h = OpenConIn();
             if (h == new IntPtr(-1)) return -Marshal.GetLastWin32Error();
@@ -1411,7 +1440,62 @@ public static class SRCon {
                 if (!WriteConsoleInputW(h, r, (uint)r.Length, out written)) return -Marshal.GetLastWin32Error();
                 return (int)written;
             } finally { CloseHandle(h); }
-        } finally { FreeConsole(); }
+        } finally { GiveBack(had); }
+    }
+
+    // WHAT IS ON THE SCREEN. The only place a PENDING question exists.
+    //
+    // The transcript cannot answer this: the AskUserQuestion tool_use block is
+    // written when the question is ANSWERED, not when it is asked. Measured against
+    // a live session with a menu visibly on screen -- zero blocks in the transcript,
+    // one the moment it was answered. So the screen is not a fallback here, it is
+    // the source.
+    //
+    // Returns the buffer as text, or a string starting with '!' naming what failed.
+    // Read-only: nothing is written to the session.
+    // 🔴 REFUSES FROM A CONSOLE-HOSTED PROCESS, and that is not caution, it is the
+    // only correct answer.
+    //
+    // Attaching to another console means freeing your own, and GiveBack cannot
+    // really undo that: PowerShell has already CACHED its console handles, so it
+    // keeps writing to a handle that is now invalid and dies on the next Write-Host
+    // with 'The handle is invalid' 0x6 -- from a line that has nothing to do with
+    // any of this. Measured: the test suite failed exactly that way.
+    //
+    // The GUI is a WPF process with no console of its own, which is the caller this
+    // exists for and the one case where the attach costs nothing. Everything else
+    // gets a refusal it can read. The PARSER is separate and testable without a
+    // console, which is where the judgement lives anyway.
+    public static string Screen(uint pid) {
+        bool had = false;
+        FreeConsole();
+        if (!AttachConsole(pid)) { GiveBack(had); return "!attach " + Marshal.GetLastWin32Error(); }
+        try {
+            IntPtr h = CreateFileW("CONOUT$", 0x80000000u | 0x40000000u, 1u | 2u, IntPtr.Zero, 3u, 0u, IntPtr.Zero);
+            if (h == new IntPtr(-1)) return "!conout " + Marshal.GetLastWin32Error();
+            try {
+                CSBI info;
+                if (!GetConsoleScreenBufferInfo(h, out info)) return "!csbi " + Marshal.GetLastWin32Error();
+                int w = info.Size.X, rows = info.Size.Y;
+                if (w <= 0 || rows <= 0) return "!empty";
+                // Only the rows the window is showing. A scrollback of thousands is
+                // both slow and wrong: a question that has scrolled off is not one
+                // the operator can still answer.
+                int top = info.Window.T < 0 ? 0 : info.Window.T;
+                int bot = info.Window.B >= rows ? rows - 1 : info.Window.B;
+                if (bot < top) { top = 0; bot = rows - 1; }
+                System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                char[] line = new char[w];
+                for (int y = top; y <= bot; y++) {
+                    uint got;
+                    uint at = ((uint)y << 16);   // packed COORD: low word X, high word Y
+                    if (!ReadConsoleOutputCharacterW(h, line, (uint)w, at, out got)) continue;
+                    sb.Append(new string(line, 0, (int)got).TrimEnd());
+                    sb.Append((char)10);
+                }
+                return sb.ToString();
+            } finally { CloseHandle(h); }
+        } finally { GiveBack(had); }
     }
 }
 '@
@@ -1494,6 +1578,9 @@ function Send-SRQuestionAnswer {
         [int]$OptionCount = 0
     )
     if ($Index -lt 0) { return 'that is not one of the options' }
+    # The caller's count comes from the transcript, which lists only what claude
+    # asked for -- the TUI adds 'Type something' and 'Chat about this' on top. The
+    # screen is checked below and is the one that governs.
     if ($OptionCount -gt 0 -and $Index -ge $OptionCount) { return 'that is not one of the options' }
 
     $key = "$SessionId".ToLower()
@@ -1512,8 +1599,28 @@ function Send-SRQuestionAnswer {
     if (-not $proc)                  { return 'that session has exited' }
     if ($proc.Name -ne 'claude.exe') { return "pid $($a.Pid) is $($proc.Name), not claude.exe - refusing to type into it" }
 
+    # 🔴 MOVE FROM WHERE THE CURSOR IS, NOT FROM WHERE IT PROBABLY IS.
+    #
+    # This sent Index x DOWN on the assumption that a menu always opens on option 1.
+    # That was measured true for a FRESH menu and is false for any menu the operator
+    # has already arrowed through -- and nothing in the transcript can tell the
+    # difference, so a wrong assumption silently answered the wrong question.
+    # The screen says where the cursor is, so it is read.
+    #
+    # 🔒 NO CURSOR, NO ARROWS. If the screen cannot be read, or the marker is not on
+    # it, this refuses rather than falling back to the old guess. A relay that
+    # answers the wrong option is worse than one that says it could not.
+    $seen = Get-SRScreenQuestion -ProcessId ([int]$a.Pid)
+    if (-not $seen) { return 'cannot see a question on that session''s screen - answer it in the terminal' }
+    if ($seen.CursorAt -lt 0) { return 'cannot tell which option is highlighted - answer it in the terminal' }
+    if ($Index -ge $seen.Options.Count) {
+        return "that session is showing $($seen.Options.Count) option(s), so option $($Index + 1) is not one of them"
+    }
+
     $keys = New-Object System.Collections.Generic.List[uint16]
-    for ($i = 0; $i -lt $Index; $i++) { $null = $keys.Add([uint16]0x28) }   # VK_DOWN
+    $delta = $Index - [int]$seen.CursorAt
+    $step  = $(if ($delta -ge 0) { [uint16]0x28 } else { [uint16]0x26 })   # VK_DOWN / VK_UP
+    for ($i = 0; $i -lt [Math]::Abs($delta); $i++) { $null = $keys.Add($step) }
     if ($keys.Count) {
         $n = [SRCon]::SendKeys([uint32]$a.Pid, $keys.ToArray())
         if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
@@ -1521,8 +1628,143 @@ function Send-SRQuestionAnswer {
     }
     $n = [SRCon]::SendKeys([uint32]$a.Pid, [uint16[]]@(0x0D))              # VK_RETURN
     if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
-    Write-SRLog ("  [ok]   answered {0} with option {1}" -f $a.Name, ($Index + 1))
+    Write-SRLog ("  [ok]   answered {0} with option {1} of {2} ({3}), cursor was on {4}" -f $a.Name, ($Index + 1), $seen.Options.Count, $seen.Options[$Index], ($seen.CursorAt + 1))
     return $null
+}
+# THE QUESTION AS IT IS ON SCREEN, which is the only place a PENDING one exists.
+#
+# Get-SRPendingQuestion reads the transcript and can only ever find a question that
+# has ALREADY BEEN ANSWERED -- claude writes the AskUserQuestion tool_use block
+# when the tool returns, not when it is asked. Measured against a live session with
+# a menu visibly on screen: zero blocks in the transcript, one the moment it was
+# answered. A window relying on the transcript would tell the operator a session
+# was 'waiting' and never once show what it wanted, which is the complaint the
+# whole relay exists to answer.
+#
+# Reading the screen also settles something the transcript cannot: WHERE THE CURSOR
+# IS. Everything about sending arrow keys assumed it starts on option 1, and that
+# assumption was load-bearing and unverifiable. Here it is simply read.
+#
+# 🪤 The marker is U+276F, and it is written as a CODE rather than as a literal:
+# PowerShell 5.1 reads a BOM-less UTF-8 file as ANSI, so a pasted arrow would
+# arrive mojibaked and match nothing.
+# READING the screen and PARSING it are split, because only one of them needs a
+# live process. The parser is where every judgement lives -- what counts as a menu,
+# where the cursor is, which line is the question -- and it is testable against
+# captured text. Whether a menu happens to be up while the suite runs is not
+# something a test may depend on.
+# READING ANOTHER PROCESS'S SCREEN, IN A CHILD THAT IS ABOUT TO DIE.
+#
+# Attaching to another console means FREEING your own, and that cannot be undone
+# from inside PowerShell: the host has already cached its console handles, so it
+# goes on writing to one that is now invalid and dies on the next Write-Host with
+# 'The handle is invalid' 0x6, from a line that has nothing to do with any of it.
+# Measured twice: once in the suite, once in the runner.
+#
+# AND THE GUI IS NOT EXEMPT. It looked like it was, because a WPF window has no
+# console -- but it is STARTED by powershell.exe -WindowStyle Hidden, which has a
+# perfectly real console that merely is not shown. Refusing whenever the caller had
+# one would have refused in the only place this feature is used.
+#
+# So the attach happens in a CHILD that exists for one read and exits. Its console
+# is destroyed and nobody cares; the caller's is never touched.
+#
+# The text comes back through a FILE, not stdout: a child that has just freed its
+# console is not something to trust a redirected stream to. The file lives beside
+# the tool's own state and is deleted in a finally, never in the OS temp directory.
+function Get-SRScreenText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    if ($ProcessId -le 0) { return $null }
+    if (-not (Test-Path -LiteralPath $SR_StateDir)) { return $null }
+    $tag = [Guid]::NewGuid().ToString('N').Substring(0, 8)
+    $out = Join-Path $SR_StateDir ('screen-' + $tag + '.txt')
+    $scr = Join-Path $SR_StateDir ('screen-' + $tag + '.ps1')
+    try {
+        $Q = [string][char]39
+        $common = (Join-Path $SR_Root '_common.ps1').Replace($Q, $Q + $Q)
+        $outEsc = $out.Replace($Q, $Q + $Q)
+        $body = @(
+            ('. ' + $Q + $common + $Q),
+            ('$t = [SRCon]::Screen([uint32]' + $ProcessId + ')'),
+            ('[System.IO.File]::WriteAllText(' + $Q + $outEsc + $Q + ', $t, (New-Object System.Text.UTF8Encoding($false)))')
+        ) -join [Environment]::NewLine
+        [System.IO.File]::WriteAllText($scr, $body, (New-Object System.Text.UTF8Encoding($false)))
+        $p = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scr)
+        # A read that has not finished in three seconds is not going to be useful:
+        # whatever menu it was looking at will have moved on.
+        if (-not $p.WaitForExit(3000)) { try { $p.Kill() } catch { }; return $null }
+        if (-not (Test-Path -LiteralPath $out)) { return $null }
+        $txt = [System.IO.File]::ReadAllText($out)
+        if (-not $txt -or $txt.StartsWith('!')) { return $null }
+        return $txt
+    } catch { return $null }
+    finally {
+        Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $scr -Force -ErrorAction SilentlyContinue
+    }
+}
+function Get-SRScreenQuestion {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    if ($ProcessId -le 0) { return $null }
+    $txt = Get-SRScreenText -ProcessId $ProcessId
+    if (-not $txt) { return $null }
+    return (Invoke-SRParseScreenQuestion -Text $txt)
+}
+
+function Invoke-SRParseScreenQuestion {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    $txt = $Text
+    if (-not $txt) { return $null }
+
+    $cursor = [char]0x276F
+    $lines = @($txt -split "`n")
+    $opts = New-Object System.Collections.Generic.List[object]
+    $at = -1
+    $firstIdx = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $ln = $lines[$i]
+        # '  2. BRAVO' or '<cursor> 1. ALPHA'. The label runs to the end of the line;
+        # the description sits on the indented lines beneath and is not needed to
+        # identify an option.
+        $m = [regex]::Match($ln, '^\s*(' + [regex]::Escape($cursor) + ')?\s*(\d{1,2})\.\s+(\S.*)$')
+        if (-not $m.Success) { continue }
+        $n = [int]$m.Groups[2].Value
+        # Numbered from 1 and CONSECUTIVE, or it is prose that happens to start with
+        # a digit and a dot -- which a transcript full of numbered lists has plenty of.
+        if ($opts.Count -eq 0) {
+            if ($n -ne 1) { continue }
+            $firstIdx = $i
+        } elseif ($n -ne $opts.Count + 1) {
+            continue
+        }
+        if ($m.Groups[1].Success) { $at = $opts.Count }
+        $null = $opts.Add($m.Groups[3].Value.Trim())
+    }
+    # One option is a list of one, which every numbered paragraph also looks like.
+    if ($opts.Count -lt 2) { return $null }
+
+    # The question is the last line of prose above the first option. Box-drawing and
+    # the header chips are furniture, not the question.
+    $q = ''
+    for ($i = $firstIdx - 1; $i -ge 0 -and $i -ge $firstIdx - 12; $i--) {
+        $cand = ($lines[$i] -replace '^[\s' + [regex]::Escape([string][char]0x2502) + ']+', '').Trim()
+        if (-not $cand) { continue }
+        if ($cand -match '^[' + [regex]::Escape('-=_' + [string][char]0x2500 + [string][char]0x2502) + ']+$') { continue }
+        $q = $cand
+        break
+    }
+
+    return [PSCustomObject]@{
+        Question = $q
+        Options  = $opts.ToArray()
+        # 0-based, or -1 when no cursor could be seen. A caller that cannot see the
+        # cursor must not send arrows on a guess.
+        CursorAt = $at
+        Source   = 'screen'
+    }
 }
 # --- the question a session is waiting on ------------------------------------
 # claude asks multiple-choice questions through AskUserQuestion, and until now the

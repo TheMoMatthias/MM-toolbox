@@ -352,36 +352,61 @@ function Update-AskPanel {
     if (-not $s) { return }
 
     $sid = "$($s.sessionId)"
+    $a = $script:agents[$sid.ToLower()]
+
+    # 🔴 THE SCREEN FIRST, because the transcript CANNOT hold a pending question.
+    # claude writes the AskUserQuestion block when the tool RETURNS, so the
+    # transcript only ever proves what was already answered -- a panel built on it
+    # would say a session was waiting and never once show what it wanted, which is
+    # the complaint this whole feature exists to answer.
+    #
+    # The transcript is still read, second: it names the header and the descriptions,
+    # and it is all there is for a session that has since moved on.
+    $screen = $null
+    if ($a -and $a.Pid -and $a.Kind -eq 'interactive') {
+        try { $screen = Get-SRScreenQuestion -ProcessId ([int]$a.Pid) } catch { }
+    }
     $j = Get-SRTranscriptPath -Dir (Get-SessionCwd $s $script:readDir) -SessionId $sid -Recorded $s.jsonl
     $q = $null
     try { $q = Get-SRPendingQuestion -JsonlPath $j } catch { }
-    if (-not $q -or -not $q.Questions.Count) { return }
+    if (-not $screen -and (-not $q -or -not $q.Questions.Count)) { return }
 
-    $first = $q.Questions[0]
-    $script:askPending = $q
-    $ui.AskHeader.Text = $(if ($first.header) { "IT IS ASKING YOU  -  $($first.header)".ToUpper() } else { 'IT IS ASKING YOU' })
-    $ui.AskText.Text   = "$($first.question)"
+    $first = $(if ($q -and $q.Questions.Count) { $q.Questions[0] } else { $null })
+    $script:askPending = $(if ($screen) { $screen } else { $q })
+    $head = $(if ($first -and $first.header) { "$($first.header)" } else { '' })
+    $ui.AskHeader.Text = $(if ($head) { "IT IS ASKING YOU  -  $head".ToUpper() } else { 'IT IS ASKING YOU' })
+    $ui.AskText.Text   = $(if ($screen -and $screen.Question) { "$($screen.Question)" }
+                           elseif ($first) { "$($first.question)" } else { '' })
 
-    $a = $script:agents[$sid.ToLower()]
-    $canAnswer = ($a -and $a.Pid -and $a.Kind -eq 'interactive' -and "$($a.Status)" -eq 'waiting')
+    $canAnswer = ($a -and $a.Pid -and $a.Kind -eq 'interactive' -and "$($a.Status)" -eq 'waiting' -and $screen)
 
     # 🔒 MULTI-SELECT IS SHOWN, NOT ANSWERED. Ticking several options means Space
     # on each and then Enter, and that choreography was never verified against a
     # live TUI -- only single-select was. Half-answering a question from here would
     # leave the session in a state nobody can see, so it says so and offers the
     # terminal instead. This is the pre-agreed fallback, not a shortcut.
-    $multi = [bool]$first.multiSelect
+    $multi = $(if ($first) { [bool]$first.multiSelect } else { $false })
+
+    # 🪤 THE SCREEN LISTS MORE OPTIONS THAN THE TRANSCRIPT. 'Type something' and
+    # 'Chat about this' are added by the TUI and appear in no tool input, so a menu
+    # claude asked three questions about is five items on screen. Driving it from
+    # the transcript's count would be arithmetic against the wrong menu.
+    $labels = $(if ($screen) { @($screen.Options) }
+                elseif ($first) { @($first.options | ForEach-Object { "$($_.label)" }) }
+                else { @() })
+    $descs = @{}
+    if ($first) { foreach ($o in @($first.options)) { $descs["$($o.label)"] = "$($o.description)" } }
 
     $i = 0
-    foreach ($opt in @($first.options)) {
+    foreach ($lab in $labels) {
         $b = New-Object System.Windows.Controls.Button
         $b.Style = $window.FindResource('Btn')
         $b.HorizontalAlignment = 'Stretch'
         $b.HorizontalContentAlignment = 'Left'
         $b.Margin = New-Object System.Windows.Thickness (0, 0, 0, 5)
-        $b.Content = "$($i + 1).  $($opt.label)"
+        $b.Content = "$($i + 1).  $lab"
         $b.Tag = $i
-        $b.ToolTip = $(if ($opt.description) { "$($opt.description)" } else { "$($opt.label)" })
+        $b.ToolTip = $(if ($descs["$lab"]) { $descs["$lab"] } else { "$lab" })
         $b.IsEnabled = ($canAnswer -and -not $multi)
         $b.Add_Click({ param($sender, $e) Invoke-Guarded { Invoke-AskAnswer ([int]$sender.Tag) } 'answering it' })
         $null = $ui.AskOptions.Items.Add($b)
@@ -406,17 +431,35 @@ function Invoke-AskAnswer { param([int]$Index)
     $s = $script:readSession
     if (-not $s -or -not $script:askPending) { Set-Status 'there is no question open' 'warn'; return }
     $sid = "$($s.sessionId)"
-    $j = Get-SRTranscriptPath -Dir (Get-SessionCwd $s $script:readDir) -SessionId $sid -Recorded $s.jsonl
+    $a = $script:agents[$sid.ToLower()]
+    if (-not $a -or -not $a.Pid) { Set-Status 'that session is not running any more' 'warn'; Update-AskPanel; return }
+
+    # 🪤 RE-READ THE SCREEN, NOT THE TRANSCRIPT. This used to compare a tool_use id
+    # from the transcript against the one the panel was drawn from -- and a PENDING
+    # question has no tool_use in the transcript at all, so the comparison could only
+    # ever fail and every click would silently refuse to send. The screen is what the
+    # panel is drawn from now, so the screen is what has to still agree.
     $now = $null
-    try { $now = Get-SRPendingQuestion -JsonlPath $j } catch { }
-    if (-not $now -or "$($now.Id)" -ne "$($script:askPending.Id)") {
-        Set-Status 'that question is no longer the one on screen - nothing was sent' 'warn'
+    try { $now = Get-SRScreenQuestion -ProcessId ([int]$a.Pid) } catch { }
+    if (-not $now) {
+        Set-Status 'that question is no longer on screen - nothing was sent' 'warn'
         Update-AskPanel
         return
     }
-    $opts = @($now.Questions[0].options)
-    $label = $(if ($Index -lt $opts.Count) { "$($opts[$Index].label)" } else { "option $($Index + 1)" })
-    $why = Send-SRQuestionAnswer -SessionId $sid -Index $Index -OptionCount $opts.Count
+    # SAME MENU, not merely A menu. Comparing the option list catches the case that
+    # matters: it answered, moved on, and asked something else while the pane sat
+    # open. Sending into that would answer a question the operator never read.
+    $wasOpts = @($script:askPending.Options)
+    $nowOpts = @($now.Options)
+    if (($wasOpts -join '|') -ne ($nowOpts -join '|')) {
+        Set-Status 'it is asking something different now - nothing was sent' 'warn'
+        Update-AskPanel
+        return
+    }
+    if ($Index -ge $nowOpts.Count) { Set-Status 'that option is not on the menu any more' 'warn'; Update-AskPanel; return }
+
+    $label = "$($nowOpts[$Index])"
+    $why = Send-SRQuestionAnswer -SessionId $sid -Index $Index -OptionCount $nowOpts.Count
     if ($why) { Set-Status $why 'bad'; return }
     Set-Status "answered: $label"
     $ui.AskPanel.Visibility = $V_Hide

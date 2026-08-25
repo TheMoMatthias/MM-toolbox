@@ -319,6 +319,74 @@ try {
 } finally {
     Remove-Item -LiteralPath $bootPath -Force -ErrorAction SilentlyContinue
 }
+# --- THE SCREEN IS THE ONLY PLACE A PENDING QUESTION EXISTS -----------------
+# claude writes the AskUserQuestion tool_use block when the tool RETURNS, not when
+# it is asked. Measured against a live session with a menu visibly on screen: zero
+# blocks in the transcript, one the moment it was answered. A window reading the
+# transcript would say 'waiting' forever and never show what was wanted.
+#
+# The parser is exercised here rather than against a live session, because whether
+# a menu happens to be up when the suite runs is not something a test may depend on.
+# The fixture below is REAL screen text, captured from one of the operator's own
+# sessions on 2026-08-24.
+Write-Host ''
+Write-Host '--- reading a question off the screen ---'
+$CUR = [string][char]0x276F   # the cursor marker, by code: a literal would mojibake
+$BAR = [string][char]0x2502
+
+$screen = @(
+    ''
+    "$BAR R-136's rollback rested on my misreading. What should happen to the four migrations now?"
+    ''
+    "$CUR 1. Record the correction, leave the rollback standing (Recommended)"
+    '     Amend R-136 with a correction section and file the finding, but do not re-apply.'
+    ''
+    '  2. Re-apply all four now'
+    '     Restores the bitemporal re-key the other lanes want.'
+    ''
+    '  3. Re-apply only 267/269 (coinmetrics)'
+    '     Coinmetrics collapsed 17 to 1 rather than to zero.'
+    ''
+    '  4. Type something'
+    '  5. Chat about this'
+) -join "`n"
+
+# The parser is the half that can be tested without a console, so it is tested
+# directly. Screen() itself is proven by the live probe, not here.
+$parsed = Invoke-SRParseScreenQuestion -Text $screen
+if (-not $parsed) { Fail 'a menu on screen was not recognised at all' }
+else {
+    if ($parsed.Options.Count -ne 5) { Fail "read $($parsed.Options.Count) option(s), expected 5" }
+    else { Pass 'all five options are read, including Type something and Chat about this' }
+    # 🔑 THE TRANSCRIPT WOULD HAVE SAID THREE. Those last two are added by the TUI
+    # and appear in no tool input, so anything counting options from the transcript
+    # is wrong about the menu it is driving.
+    if ("$($parsed.Options[0])" -notlike 'Record the correction*') { Fail "option 1 read as '$($parsed.Options[0])'" }
+    else { Pass 'the first option keeps its full label' }
+    if ($parsed.CursorAt -ne 0) { Fail "the cursor was read as option $($parsed.CursorAt + 1), expected 1" }
+    else { Pass 'the cursor position is read from the screen rather than assumed' }
+    if ("$($parsed.Question)" -notlike '*four migrations*') { Fail "the question read as '$($parsed.Question)'" }
+    else { Pass 'the question text is recovered without its box-drawing' }
+}
+
+# A CURSOR ON A LATER OPTION. The whole point of reading it is that it is not
+# always option 1 -- a menu the operator has already arrowed through is exactly
+# when a wrong assumption sends the wrong answer.
+$moved = ($screen -replace [regex]::Escape($CUR + ' 1.'), '  1.') -replace '  2\.', ($CUR + ' 2.')
+$p2 = Invoke-SRParseScreenQuestion -Text $moved
+if (-not $p2) { Fail 'the menu stopped parsing when the cursor moved' }
+elseif ($p2.CursorAt -ne 1) { Fail "the moved cursor was read as option $($p2.CursorAt + 1), expected 2" }
+else { Pass 'a cursor already moved to option 2 is read as option 2' }
+
+# NUMBERED PROSE IS NOT A MENU. A transcript on screen is full of numbered lists,
+# and treating one as a menu would offer the operator buttons that answer nothing.
+$prose = @('Some output:', '  1. first thing', 'unrelated line', '  7. seventh thing') -join "`n"
+if (Invoke-SRParseScreenQuestion -Text $prose) { Fail 'numbered prose was read as a menu' }
+else { Pass 'numbered prose that is not consecutive is not a menu' }
+
+$single = @('  1. only one option') -join "`n"
+if (Invoke-SRParseScreenQuestion -Text $single) { Fail 'a single numbered line was read as a menu' }
+else { Pass 'one numbered line is not a menu' }
 Write-Host ''
 if ($fails) { Write-Host ("$fails FAILURE(S)") -ForegroundColor Red; exit 1 }
 Write-Host 'all conversation-state tests passed' -ForegroundColor Green

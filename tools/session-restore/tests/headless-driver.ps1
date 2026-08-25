@@ -1001,9 +1001,16 @@ try {
     else { Pass 'all three options are drawn as buttons' }
     if ("$($ui.AskText.Text)" -ne 'which schema?') { Fail "the question text is '$($ui.AskText.Text)'" }
     else { Pass 'the question itself is on screen, not just that one exists' }
+    # 🔒 NO SCREEN, NO CLICKING. The fixture session has a made-up pid, so its screen
+    # cannot be read -- and answering means driving a menu blind, which is exactly
+    # what must never happen. The options are still DRAWN, because seeing what a
+    # session asks is useful even when this window cannot answer it; they are simply
+    # not clickable. That is the rule, so it is what is asserted.
     $enabled = @($ui.AskOptions.Items | Where-Object { $_.IsEnabled }).Count
-    if ($enabled -ne 3) { Fail "$enabled of 3 options are clickable on a waiting session" }
-    else { Pass 'every option is clickable while the session is waiting' }
+    if ($enabled) { Fail "$enabled option(s) are clickable on a session whose screen cannot be read" }
+    else { Pass 'a session whose screen cannot be read is shown but not answerable' }
+    if ($ui.AskOptions.Items.Count -ne 3) { Fail 'the options stopped being drawn when they became unclickable' }
+    else { Pass 'the options are still drawn, so you can see what it is asking' }
 
     # 🔒 MULTI-SELECT IS SHOWN, NOT ANSWERED. Space-then-Enter was never verified
     # against a live TUI, and half-answering would leave the session somewhere
