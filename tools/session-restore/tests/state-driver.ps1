@@ -292,6 +292,33 @@ try {
     $script:SR_AgentCache   = $savedCache
     $script:SR_AgentCacheAt = $savedAt
 }
+# --- A REMOTE NAME MUST SURVIVE A RE-REGISTRATION ---------------------------
+# --remote-control <name> names one registration. Sign in to another account, or
+# re-enable Remote Control by hand, and claude names the new registration ITSELF
+# from a prefix that defaults to the HOSTNAME -- so every session on the machine
+# arrives in the app under the same one. The operator had twenty and could not
+# tell them apart.
+Write-Host ''
+Write-Host '--- the remote name survives a re-registration ---'
+$bootTitle = "Q-lane's test"   # an apostrophe, because it goes into a quoted literal
+$bootPath = New-SRBootScript -Dir $here -SessionId '11111111-2222-3333-4444-555555555555' -Title $bootTitle
+try {
+    $boot = Get-Content -LiteralPath $bootPath -Raw
+    if ($boot -notmatch 'CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX') {
+        Fail 'the boot script does not set the remote-control name prefix - a re-registration would fall back to the hostname'
+    } else { Pass 'the boot script sets the remote-control name prefix' }
+    # The prefix has to be THIS conversation's title, or it is just a different
+    # thing that is the same for every session.
+    if ($boot -notmatch [regex]::Escape("PREFIX = 'Q-lane''s test'")) {
+        Fail 'the prefix is not the session title, correctly quoted'
+    } else { Pass 'the prefix is the session title, with the quote escaped' }
+    # And the explicit name still goes on the command, because it is what wins
+    # while the registration lasts.
+    if ($boot -notmatch '--remote-control') { Fail 'the launch no longer names the remote session explicitly' }
+    else { Pass 'the explicit --remote-control name is still passed' }
+} finally {
+    Remove-Item -LiteralPath $bootPath -Force -ErrorAction SilentlyContinue
+}
 Write-Host ''
 if ($fails) { Write-Host ("$fails FAILURE(S)") -ForegroundColor Red; exit 1 }
 Write-Host 'all conversation-state tests passed' -ForegroundColor Green

@@ -2243,6 +2243,21 @@ foreach ($v in @(__SCRUBVARS__)) {
     if (Test-Path "Env:$v") { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
 }
 Set-Location -LiteralPath '__DIR__'
+# 🔴 THE NAME HAS TO SURVIVE A RE-REGISTRATION, NOT JUST THE LAUNCH.
+#
+# --remote-control <name> names THIS remote registration and nothing else. Sign in
+# to a different account, or drop and re-enable Remote Control by hand, and that
+# registration is replaced by one claude names ITSELF -- from
+# --remote-control-session-name-prefix, which defaults to the HOSTNAME. Every
+# session on the machine then shows up under the same prefix, which is how the
+# operator ended up with twenty remote sessions and no way to tell them apart.
+#
+# Setting the prefix to this conversation's own title fixes the fallback rather
+# than the launch: the explicit --remote-control below still wins while it lasts,
+# and if it is ever replaced the auto-generated name starts with the title instead
+# of the hostname. Purely additive -- it is only ever read when there is no
+# explicit name to use.
+$env:CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX = '__TITLE__'
 # -n writes a DURABLE custom-title into the conversation (precedence rule 2);
 # --remote-control names only THIS remote session (rule 1). Both are needed.
 __CLAUDELINE__

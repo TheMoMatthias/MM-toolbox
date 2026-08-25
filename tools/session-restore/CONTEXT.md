@@ -64,6 +64,26 @@ at logon. A group header says "9 armed"; if the project is off it says
 "9 ticked, PROJECT OFF" instead, because those are different facts about tomorrow
 morning.
 
+**THREE NAMES, NOT ONE.** A conversation carries three, and they are set by
+different flags with different lifetimes — conflating them is why remote sessions
+lose their identity:
+
+1. `-n <name>` — the DURABLE title, written into the conversation. It survives a
+   restart, an account switch, everything. `claude agents --json` reports it, so
+   the window is never wrong about a name.
+2. `--remote-control <name>` — names ONE remote registration. Sign in to a
+   different account, or re-enable Remote Control by hand, and this is gone.
+3. `--remote-control-session-name-prefix` (env:
+   `CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX`) — the prefix claude uses when it has
+   to name a registration ITSELF. It defaults to the HOSTNAME, which is identical
+   for every session on the machine.
+
+Measured 2026-08-24: after an account switch the operator had 20 remote sessions
+and could not tell them apart, while `claude agents --json` still reported every
+local name correctly. Nothing was lost — only (2) was, and (3) had no idea what the
+session was called. The boot script sets (3) to the conversation's own title, so a
+registration claude makes for itself is still recognisable.
+
 **relaunch** — closing the ticked conversations and opening them again. Not a
 refresh: a running claude reads the login token at STARTUP, so after a token
 expiry every open session sits at its own login prompt and signing in once does
