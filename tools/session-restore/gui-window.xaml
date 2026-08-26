@@ -841,7 +841,6 @@
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="20"/>
           <ColumnDefinition Width="*" MinWidth="240"/>
-          <ColumnDefinition Width="196"/>
           <ColumnDefinition Width="212"/>
           <ColumnDefinition Width="64"/>
           <ColumnDefinition Width="1"/>
@@ -920,6 +919,18 @@
                      TextDecorations="{Binding NameDecorations}"
                      ToolTip="{Binding NameTip}"
                      TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+          <!-- THE LANE, only where it adds something. Not on `main`, and not
+               when it just repeats the name the row already carries. This is
+               what replaced a 196px PROJECT / LANE column that said "AlgoTrader
+               / V-INGEST" beside a row called "V-INGEST". -->
+          <Border Visibility="{Binding LaneTagVisibility}"
+                  Margin="10,0,0,0" Padding="5,1,5,1" CornerRadius="2"
+                  Background="{StaticResource PanelHi}" VerticalAlignment="Center">
+            <TextBlock Text="{Binding LaneTag}"
+                       FontFamily="{StaticResource FontSmall}" FontSize="10.5"
+                       Foreground="{StaticResource TextLow}"
+                       TextTrimming="CharacterEllipsis"/>
+          </Border>
           <TextBlock Text="{Binding Note}" Margin="12,0,0,0" FontSize="11.5"
                      FontFamily="{StaticResource FontSmall}"
                      Foreground="{Binding NoteBrush}" VerticalAlignment="Center"/>
@@ -939,15 +950,15 @@
                      FontSize="10.5" Margin="10,1,0,0" VerticalAlignment="Center"/>
         </StackPanel>
 
-        <!-- 4: PROJECT / LANE. Was two levels of hierarchy; one column says the
-             same thing on every row without spending a row to say it. -->
-        <TextBlock Grid.Column="4" Text="{Binding Project}" Margin="0,0,12,0"
-                   VerticalAlignment="Center"
-                   FontFamily="{StaticResource FontSmall}" FontSize="11.5"
-                   Foreground="{StaticResource TextDim}"
-                   TextTrimming="CharacterEllipsis"/>
+        <!-- PROJECT / LANE IS GONE, and the lane moved into the name panel above
+             as a tag. The column printed "AlgoTrader / V-INGEST" on a row whose
+             own name was "V-INGEST", underneath a fold captioned "AlgoTrader":
+             the project stated three times and the lane twice, for 196px on
+             every row. Saying which project a row is in is the entire reason the
+             tree is a tree, so the tag carries the lane alone, and only where
+             the lane adds something.
 
-        <!-- 5: STATE - two questions in one column, still told apart.
+             4: STATE - two questions in one column, still told apart.
              LEFT of the middot: is anyone HOLDING it. A filled dot and bold LIVE
              is a process carrying the id; a hollow dot and lower-case live is
              inferred from a transcript that just moved; a drawn X and GONE is a
@@ -956,7 +967,7 @@
              case, with its own stroke glyphs. Nothing on the left is a stroke
              figure and nothing on the right is round, so the halves cannot be
              read as one another even sharing a column. -->
-        <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
+        <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
           <Ellipse Width="7" Height="7" Margin="0,0,7,0" VerticalAlignment="Center"
                    Fill="{Binding DotFill}" Stroke="{Binding DotStroke}" StrokeThickness="1.2"
                    Visibility="{Binding DotVisibility}"/>
@@ -987,19 +998,19 @@
                      TextTrimming="CharacterEllipsis"/>
         </StackPanel>
 
-        <!-- 6: WHEN -->
-        <TextBlock Grid.Column="6" Text="{Binding Age}" Margin="0,0,12,0"
+        <!-- 5: WHEN -->
+        <TextBlock Grid.Column="5" Text="{Binding Age}" Margin="0,0,12,0"
                    HorizontalAlignment="Right" VerticalAlignment="Center"
                    FontFamily="{StaticResource FontMono}"
                    FontSize="11.5" Foreground="{Binding AgeBrush}"/>
 
-        <!-- 7: the rule that fences the actions off from everything else -->
-        <Rectangle Grid.Column="7" Width="1" Fill="{StaticResource HairlineHi}"
+        <!-- 6: the rule that fences the actions off from everything else -->
+        <Rectangle Grid.Column="6" Width="1" Fill="{StaticResource HairlineHi}"
                    HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
 
-        <!-- 8: actions. Opens it this second, tick or no tick. On the row you
+        <!-- 7: actions. Opens it this second, tick or no tick. On the row you
              are pointing at, and on the selected one. -->
-        <Grid Grid.Column="8" Style="{StaticResource RowActions}">
+        <Grid Grid.Column="7" Style="{StaticResource RowActions}">
         <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
           <Button Style="{StaticResource BtnRow}" Tag="launch"
                   Visibility="{Binding ActionVisibility}"
@@ -1018,7 +1029,7 @@
         <!-- OUTSIDE the hover style: the age window's own row is the one thing
              on the list that must be visible without being pointed at, or the
              58 conversations it is hiding stay hidden. -->
-        <Button Grid.Column="8" Style="{StaticResource BtnRow}" Tag="more"
+        <Button Grid.Column="7" Style="{StaticResource BtnRow}" Tag="more"
                 Visibility="{Binding MoreVisibility}"
                 Content="{Binding MoreLabel}"
                 HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0"
@@ -1471,18 +1482,23 @@
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="20"/>
           <ColumnDefinition Width="*" MinWidth="240"/>
-          <ColumnDefinition Width="196"/>
           <ColumnDefinition Width="212"/>
           <ColumnDefinition Width="64"/>
           <ColumnDefinition Width="1"/>
           <ColumnDefinition Width="140"/>
         </Grid.ColumnDefinitions>
+        <!-- THE HEADINGS MUST MATCH THE COLUMNS EXACTLY, and one of them no
+             longer has a column. PROJECT / LANE is gone from the row, so its
+             heading goes with it. What a heading pointing at something the
+             operator cannot see does is already recorded here: it showed
+             "WHEN v2" with no "^1" anywhere, a rank digit for a key with no way
+             to unset it. A heading that sorts by a column nobody can read is the
+             same bug wearing a different hat. -->
         <Button Grid.Column="0" Tag="logon"   Style="{StaticResource SortCap}" HorizontalAlignment="Center" Content="LOGON"/>
         <Button Grid.Column="3" Tag="name"    Style="{StaticResource SortCap}" Content="CONVERSATION"/>
-        <Button Grid.Column="4" Tag="project" Style="{StaticResource SortCap}" Content="PROJECT / LANE"/>
-        <Button Grid.Column="5" Tag="state"   Style="{StaticResource SortCap}" Content="STATE"/>
-        <Button Grid.Column="6" Tag="when"    Style="{StaticResource SortCap}" HorizontalAlignment="Right" Margin="0,0,12,0" Content="WHEN"/>
-        <TextBlock Grid.Column="8" Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="10,0,0,0"/>
+        <Button Grid.Column="4" Tag="state"   Style="{StaticResource SortCap}" Content="STATE"/>
+        <Button Grid.Column="5" Tag="when"    Style="{StaticResource SortCap}" HorizontalAlignment="Right" Margin="0,0,12,0" Content="WHEN"/>
+        <TextBlock Grid.Column="7" Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="10,0,0,0"/>
       </Grid>
     </Border>
 

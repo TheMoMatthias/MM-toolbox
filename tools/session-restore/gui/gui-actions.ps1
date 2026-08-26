@@ -35,7 +35,7 @@ function Get-CastCandidates {
             $out += [PSCustomObject]@{
                 Session = $sn
                 Name    = (Get-SessionTitle $sn $d)
-                Project = (Split-Path $d.path -Leaf)
+                Project = (Get-ProjectLabel $d)
                 Dialog  = [bool]($a.WaitingFor -match 'dialog')
                 What    = $(if ($cv) { "$($cv.State)" } else { '' })
             }

@@ -137,10 +137,24 @@ foreach ($k in @($StagedAgents.Keys)) { if ($StagedAgents[$k].Pid) { $script:run
 $script:live = @{ $ids[4].ToLower() = $true }
 
 # lastActive drives the sort inside a band, so stage it to match the states.
+#
+# 🔴 ALL SIX, NOT TWO. This staged only ids[0] and ids[5] and then asserted that
+# ids[5] leads the NEEDS band -- but ids[1] is in that band too, and it kept
+# whatever lastActive the REAL registry had. Whenever ids[1] happened to land on
+# a conversation that was being written at that moment (this tool's own session
+# is one, and its transcript moves every few seconds), it was newer than either
+# staged value and led the band correctly, and the suite failed.
+#
+# That is the intermittent headless failure that has been passing on a re-run
+# and blamed on a stale window since 2026-08-23. It was never the window: the
+# test was asserting an ACCIDENT of registry order, and it failed honestly.
+# A fixture has to own every input its assertion reads.
 $stagedById = @{}
 foreach ($d in $script:dirs) { foreach ($s in @($d.sessions)) { if ($s.sessionId) { $stagedById["$($s.sessionId)".ToLower()] = $s } }}
-$stagedById[$ids[0].ToLower()].lastActive = (Get-Date).AddMinutes(-2).ToString('o')
-$stagedById[$ids[5].ToLower()].lastActive = (Get-Date).AddMinutes(-1).ToString('o')
+$stagedAges = @(40, 30, 3, 20, 5, 1)   # minutes ago, one per staged session
+for ($k = 0; $k -lt 6; $k++) {
+    $stagedById[$ids[$k].ToLower()].lastActive = (Get-Date).AddMinutes(-1 * $stagedAges[$k]).ToString('o')
+}
 
 # --- build it ---------------------------------------------------------------
 try { Update-List -ToTop } catch { Fail "Update-List threw: $($_.Exception.Message)" }
@@ -292,6 +306,31 @@ foreach ($pr in $projRows) {
 if ($soloLane) { Fail "$soloLane project(s) carry a single lane row - a row that says nothing under a row that says the same thing" }
 else { Pass 'no project carries a lone lane row' }
 
+# 🔴 AND THE OTHER HALF OF THE SAME RULE, which cost 31 rows before anyone
+# checked it. The test above asks whether the PROJECT has more than one lane. It
+# never asked whether the LANE has more than one conversation -- and AlgoTrader
+# has 35 lanes of which THIRTY-ONE hold exactly one. The roster drew
+# "V-INGEST  1 - 1 armed" and then, directly underneath, "V-INGEST". Thirty-one
+# times, which is most of what made 196 conversations render as 257 rows.
+#
+# A header groups more than one thing or it is not a header.
+$thinLane = @()
+foreach ($lr in $laneRows) {
+    $kids = 0
+    $started = $false
+    foreach ($r in $allRows) {
+        if ($r -eq $lr) { $started = $true; continue }
+        if (-not $started) { continue }
+        if ($r.Kind -ne 'session') { break }
+        if ($r.Depth -le $lr.Depth) { break }
+        $kids++
+    }
+    if ($kids -eq 1) { $thinLane += "$($lr.Name)" }
+}
+if ($thinLane.Count) {
+    Fail ("$($thinLane.Count) lane row(s) head exactly one conversation, repeating its own name: " + (@($thinLane | Select-Object -First 6) -join ', '))
+} else { Pass "every one of the $($laneRows.Count) lane row(s) groups more than one conversation" }
+
 $sessionRows = @($allRows | Where-Object { $_.Kind -eq 'session' })
 if ($sessionRows.Count -lt $script:totalCount) {
     Pass "the age window shows $($sessionRows.Count) of $($script:totalCount) conversations"
@@ -399,9 +438,42 @@ for ($i = 0; $i -lt $def.Count; $i++) {
 }
 if ($notGrouped) { Fail "$notGrouped group(s) appear in more than one run - the rows are not grouped" }
 elseif ($outOfOrder) { Fail "$outOfOrder row(s) are older than the row above them inside one project" }
-else { Pass "the default order is project A-Z then newest first ($($seen.Count) groups)" }
+else { Pass "the default order is newest-first inside each group ($($seen.Count) groups)" }
+
+# THE PROJECTS THEMSELVES ARE ORDERED BY WHEN THEY WERE LAST WORKED IN. This was
+# alphabetical, which had nothing to do with the question the operator asks the
+# roster -- "where was I working?" -- and is what made him describe scrolling an
+# endless list to find a repo by luck. The hazard alphabetical order was really
+# guarding against is that eight projects have the leaf name "repo"; that is
+# fixed at the cause by Update-ProjectLabels, and asserted separately below.
+$projRows = @($script:rows | Where-Object { $_.Kind -eq 'project' })
+$projBad = 0
+for ($i = 1; $i -lt $projRows.Count; $i++) {
+    if ((Get-DirLastActive $projRows[$i - 1].Dir) -lt (Get-DirLastActive $projRows[$i].Dir)) { $projBad++ }
+}
+if ($projRows.Count -lt 2) { Fail 'not enough projects to prove an order' }
+elseif ($projBad) { Fail "$projBad project(s) sit above one that was worked in more recently" }
+else { Pass "the $($projRows.Count) projects are ordered by when they were last worked in" }
+
+# ...and every one of them is distinguishable, which is what makes that order
+# safe. Eight projects called "repo" scattered down a recency-ordered list would
+# give "where is my repo" eight identical answers.
+$labels = @($projRows | ForEach-Object { "$($_.Name)" })
+$dupLabels = @($labels | Group-Object | Where-Object { $_.Count -gt 1 })
+if ($dupLabels.Count) {
+    Fail ("$($dupLabels.Count) project label(s) appear more than once: " + (@($dupLabels | ForEach-Object { "'$($_.Name)' x$($_.Count)" }) -join ', '))
+} else { Pass "all $($labels.Count) project labels are unique on screen" }
 
 # ONE KEY: newest across EVERYTHING, which is the thing a tree could not do.
+#
+# 🪤 CLICK OFF THE KEY FIRST. "Clicking the column that is already the only key
+# flips it", and WHEN is now the roster's DEFAULT sole key -- so clicking it
+# here reversed the order instead of setting it, and both this assertion and the
+# reverse-it one below failed with the same 71 rows. Nothing about the sort was
+# broken; the test had been assuming a default that changed underneath it.
+# Landing on WHEN from somewhere else makes the click a SET, which is what the
+# next two assertions are actually about.
+Invoke-SortHead -Key 'name' -Add $false
 Invoke-SortHead -Key 'when' -Add $false
 $byWhen = AllSessions
 # 🔴 WITHIN A GROUP, NOT ACROSS EVERYTHING. Sorting newest-first across every

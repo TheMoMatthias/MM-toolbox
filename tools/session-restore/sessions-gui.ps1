@@ -297,6 +297,21 @@ namespace SRGui
         private Brush _noteBrush;
         public Brush NoteBrush { get { return _noteBrush; } set { if (_noteBrush != value) { _noteBrush = value; N("NoteBrush"); } } }
 
+        // WHICH LANE, on the roster, as a tag beside the name rather than a
+        // column of its own.
+        //
+        // It had a 196px column that printed "AlgoTrader / V-INGEST" on a row
+        // whose name was already "V-INGEST", sitting under a fold already
+        // captioned "AlgoTrader". The project is the third statement of a fact
+        // the tree exists to make, and the lane was usually the second statement
+        // of the row's own name -- so the tag is EMPTY unless the lane adds
+        // something: not on `main`, and not when it merely repeats the name.
+        private string _laneTag = "";
+        public string LaneTag { get { return _laneTag; } set { if (_laneTag != value) { _laneTag = value; N("LaneTag"); } } }
+
+        private Visibility _laneTagVisibility = Visibility.Collapsed;
+        public Visibility LaneTagVisibility { get { return _laneTagVisibility; } set { if (_laneTagVisibility != value) { _laneTagVisibility = value; N("LaneTagVisibility"); } } }
+
         private string _counts = "";
         public string Counts { get { return _counts; } set { if (_counts != value) { _counts = value; N("Counts"); } } }
 
@@ -635,10 +650,17 @@ $script:SortDefault = @{
     # The inbox is already grouped by band; within a band the only question is
     # what happened most recently.
     inbox = @( @{ Key = 'when'; Desc = $true } )
-    # All reads like the tree it replaced - a project's conversations together,
-    # newest at the top - and both keys have a heading, so the mechanic is
-    # visible from the first frame.
-    all   = @( @{ Key = 'project'; Desc = $false }, @{ Key = 'when'; Desc = $true } )
+    # 🪤 THE ROSTER'S GROUPING IS NOT ITS SORT, and having both said "project"
+    # made the sort do nothing useful. The tree already puts a project's
+    # conversations together, so a leading 'project' key could only ever order
+    # them BY LANE NAME within that group -- which is why, with the duplicate
+    # lane headers gone, AlgoTrader's thirty-odd loose conversations came out
+    # AN1, AN2, AN3, AUDIT-1, CI1... an alphabet of worktrees with no relation to
+    # anything the operator did. Inside a group the only question is the same one
+    # the inbox asks: what happened most recently.
+    #
+    # PROJECT / LANE is still a heading and still sorts, for anyone who wants it.
+    all   = @( @{ Key = 'when'; Desc = $true } )
 }
 $script:sortKeysByView = @{}
 foreach ($v in @($script:SortDefault.Keys)) {
@@ -1134,8 +1156,7 @@ function Get-SortValue { param($Pick, [string]$Key)
             # ordered the list by something that is not on screen. A column
             # heading has to sort by its column.
             $lane = $(if ($Pick.L) { "$($Pick.L.Name)" } else { 'main' })
-            $proj = Split-Path $Pick.D.path -Leaf
-            return $(if ($lane -and $lane -ne 'main') { "$proj / $lane" } else { $proj }).ToLowerInvariant()
+            return (Get-HomeLabel $Pick.D $lane).ToLowerInvariant()
         }
         'logon'   { return $(if ($Pick.S.enabled) { 0 } else { 1 }) }
         'state'   {
@@ -1265,13 +1286,24 @@ function Build-Rows {
     $matched = 0; $total = 0; $older = 0
     $cut = (Get-Date).AddDays(-$script:listDays)
 
-    # 🪤 ORDERED BY NAME, NOT BY RECENCY RANK. $script:dirs is newest-project-first,
-    # which is the right order for a list you SCAN and the wrong one for a list you
-    # SEARCH -- and it splits projects that share a leaf name. Eight of these are
-    # called "repo" (Millwright-experiments uns\R* epo), so recency order scatters
-    # them down the screen and the answer to "where is my repo" becomes eight
-    # answers. Name first, path second so the order is total and stable.
-    $rosterDirs = @($script:dirs | Sort-Object @{ E = { Split-Path $_.path -Leaf } }, @{ E = { [string]$_.path } })
+    # ORDERED BY WHEN YOU LAST WORKED THERE. This was alphabetical, and the note
+    # defending that named the real hazard rather than the real requirement:
+    # eight projects have the leaf name "repo", so any non-alphabetical order
+    # scattered eight identical-looking rows down the screen.
+    #
+    # That is fixed at the cause now -- Update-ProjectLabels gives every project a
+    # label that is unique on screen, so "repo" is "R12 / repo" -- which frees the
+    # order to answer the question the operator actually asks it: *where was I
+    # working?* Alphabetical order could never answer that, and it is what made
+    # him describe scrolling an endless list to find a repo by luck.
+    #
+    # The label breaks ties, and the path breaks those, so the order is still
+    # total and still stable across repaints: two projects touched in the same
+    # millisecond must not swap places between frames.
+    $rosterDirs = @($script:dirs | Sort-Object `
+        @{ E = { Get-DirLastActive $_ }; Descending = $true }, `
+        @{ E = { Get-ProjectLabel $_ }; Descending = $false }, `
+        @{ E = { [string]$_.path }; Descending = $false })
     foreach ($d in $rosterDirs) {
         # ASSIGN, THEN WRAP: Get-Lanes returns ",@(...)".
         $lanes = Get-Lanes $d
@@ -1313,31 +1345,61 @@ function Build-Rows {
         # searched for is the one thing a filter must never do.
         if ((-not $filtering) -and [bool]$script:fold[$projKey]) { continue }
 
-        # 🪤 ONE LANE IS NOT A HIERARCHY. This was a tree once: 143 conversations
-        # became 195 rows because ELEVEN OF FIFTEEN projects had a single lane
-        # called 'main' -- a row that said nothing, under a row that said the same
-        # thing. That is what retired it. A lane row is emitted only where a
-        # project genuinely HAS more than one, which is where it carries
-        # information: AlgoTrader's 23 lanes group, and a single-lane project goes
-        # straight to its conversations.
-        $showLanes = ($kept.Count -gt 1)
+        # 🪤 A HEADER MUST GROUP MORE THAN ONE THING, OR IT IS NOT A HEADER.
+        #
+        # This was a tree once: 143 conversations became 195 rows because ELEVEN OF
+        # FIFTEEN projects had a single lane called 'main' -- a row that said
+        # nothing, under a row that said the same thing. The rule that retired it
+        # asked only whether the PROJECT had more than one lane, and that turned
+        # out to be half the question.
+        #
+        # Measured on 2026-08-26: AlgoTrader has 35 lanes and THIRTY-ONE OF THEM
+        # HOLD EXACTLY ONE CONVERSATION. So the roster drew "V-INGEST  1 - 1 armed"
+        # and then, directly underneath it, "V-INGEST". Thirty-one times. 196
+        # conversations rendered as 257 rows, and it is the single largest reason
+        # the operator described scrolling an endless list to find a repo by luck.
+        #
+        # BOTH conditions, because either one alone reintroduces the other bug:
+        #   the project must have more than one lane   (or the lane row repeats the
+        #                                               project row, as before)
+        #   the lane must hold more than one conversation (or it repeats its child)
+        #
+        # A conversation whose lane fails that test is LOOSE: it hangs directly
+        # under the project, keeping its lane as a label on the row rather than as
+        # a header above it. Nothing is hidden and nothing moves project.
+        $multiLane = ($kept.Count -gt 1)
+        $loose  = New-Object System.Collections.Generic.List[object]
+        $groups = New-Object System.Collections.Generic.List[object]
         foreach ($grp in $kept) {
-            if ($showLanes) {
-                $laneKey = "$projKey|$($grp.Lane.Name)"
-                $laneRow = New-Row 'lane' "lane|$laneKey" $d $grp.Lane $null
-                # 🪤 NOT @($grp.Items).Count. Items is a List[object], and wrapping one
-                # in @() throws "Argument types do not match" on PowerShell 5.1. Ask
-                # the list for its own Count, or enumerate it with .ToArray().
-                $laneRow.GroupTotal = $grp.Items.Count
-                $laneRow.TickCount = @($grp.Items.ToArray() | Where-Object { [bool]$_.S.enabled }).Count
-                $laneRow.Depth = 1
-                $out.Add($laneRow)
-                if ((-not $filtering) -and [bool]$script:fold[$laneKey]) { continue }
-            }
-            $sorted = Sort-Picked $grp.Items.ToArray()
-            foreach ($pk in @($sorted)) {
+            # 🪤 NOT @($grp.Items).Count. Items is a List[object], and wrapping one
+            # in @() throws "Argument types do not match" on PowerShell 5.1. Ask
+            # the list for its own Count, or enumerate it with .ToArray().
+            if ($multiLane -and $grp.Items.Count -gt 1) { $groups.Add($grp); continue }
+            foreach ($it in $grp.Items.ToArray()) { $loose.Add($it) }
+        }
+
+        # LOOSE FIRST, and it is not arbitrary. A lane holding one conversation is
+        # a single piece of work -- a worktree opened for one task -- and those are
+        # the newest thing in the project by a wide margin: AlgoTrader's lone lanes
+        # were hours old while its `main` lane was days. Putting the 50-strong
+        # `main` header first would bury every recent thing under it.
+        foreach ($pk in @(Sort-Picked $loose.ToArray())) {
+            $srow = New-Row 'session' "$($pk.D.path)|$($pk.L.Name)|$($pk.S.sessionId)" $pk.D $pk.L $pk.S
+            $srow.Depth = 1
+            $out.Add($srow)
+        }
+
+        foreach ($grp in $groups) {
+            $laneKey = "$projKey|$($grp.Lane.Name)"
+            $laneRow = New-Row 'lane' "lane|$laneKey" $d $grp.Lane $null
+            $laneRow.GroupTotal = $grp.Items.Count
+            $laneRow.TickCount = @($grp.Items.ToArray() | Where-Object { [bool]$_.S.enabled }).Count
+            $laneRow.Depth = 1
+            $out.Add($laneRow)
+            if ((-not $filtering) -and [bool]$script:fold[$laneKey]) { continue }
+            foreach ($pk in @(Sort-Picked $grp.Items.ToArray())) {
                 $srow = New-Row 'session' "$($pk.D.path)|$($pk.L.Name)|$($pk.S.sessionId)" $pk.D $pk.L $pk.S
-                $srow.Depth = $(if ($showLanes) { 2 } else { 1 })
+                $srow.Depth = 2
                 $out.Add($srow)
             }
         }
@@ -1528,25 +1590,17 @@ function Update-FilterSources {
     try {
         $script:suppress = $true
 
-        # Two repos can share a leaf name. Where they do, the label carries the
-        # parent as well, because a dropdown with two identical rows is worse
-        # than no dropdown at all.
-        $leaves = @{}
-        foreach ($d in @($script:dirs)) {
-            $leaf = Split-Path $d.path -Leaf
-            $leaves[$leaf] = [int]$leaves[$leaf] + 1
-        }
-
+        # Two repos can share a leaf name, and a dropdown with two identical rows
+        # is worse than no dropdown at all. This had its own rule for that --
+        # "repo  (R12)" -- which was right and is now the ONE rule, shared with
+        # the roster header and the PROJECT / LANE column: three places naming
+        # the same project three different ways is its own kind of confusing.
+        # A-Z here on purpose: a dropdown is something you SEARCH, unlike the
+        # roster, which is something you SCAN.
         $ui.ProjectFilter.Items.Clear()
         $null = $ui.ProjectFilter.Items.Add((New-Object SRGui.Choice '(any project)', $null))
-        foreach ($d in @($script:dirs | Sort-Object { Split-Path $_.path -Leaf })) {
-            $leaf = Split-Path $d.path -Leaf
-            $label = $leaf
-            if ($leaves[$leaf] -gt 1) {
-                $parent = Split-Path (Split-Path $d.path -Parent) -Leaf
-                if ($parent) { $label = "$leaf  ($parent)" }
-            }
-            $null = $ui.ProjectFilter.Items.Add((New-Object SRGui.Choice $label, $d.path))
+        foreach ($d in @($script:dirs | Sort-Object { Get-ProjectLabel $_ })) {
+            $null = $ui.ProjectFilter.Items.Add((New-Object SRGui.Choice (Get-ProjectLabel $d), $d.path))
         }
 
         $laneNames = @{}
@@ -2080,6 +2134,10 @@ function Set-Registry { param($Registry, $Config)
     # Before the sort, not after: the cache holds the OLD session objects, and
     # sorting on them would order the new list by the previous scan's timestamps.
     $script:dirs = @($script:reg.directories | Sort-Object { Get-Newest (Get-Visible $_) } -Descending)
+    # Before anything reads a project name. Eight projects here are called
+    # "repo", and every label on screen -- the roster header, the PROJECT / LANE
+    # column, the filter dropdown -- comes from this table.
+    Update-ProjectLabels
     Sync-FoldState
     # NOTHING EVER CALLED THIS. Update-FilterSources fills the PROJECT and LANE
     # dropdowns from the registry, and it had no caller anywhere in the file --

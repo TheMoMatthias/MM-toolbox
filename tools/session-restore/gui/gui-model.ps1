@@ -146,6 +146,106 @@ function Get-SessionCwd { param($Session, $Dir)
     if ($Session.cwd) { return $Session.cwd }
     return $Dir.path
 }
+
+# ---------------------------------------------------------------------------
+# WHAT TO CALL A PROJECT, given that eight of them are called the same thing.
+#
+# The roster used to order projects ALPHABETICALLY, and the note defending that
+# named the real hazard: `Millwright-experiments\runs\R*\repo` produces eight
+# projects whose leaf name is "repo", so any order that is not alphabetical
+# scatters eight identical-looking rows down the screen and "where is my repo"
+# has eight answers.
+#
+# Alphabetical order solved the symptom by making the duplicates adjacent. It
+# also made the list useless for its actual question -- "where was I working?" --
+# which is what the operator asked for. So solve the CAUSE instead: give every
+# project a label that is unique on screen, and then order however is useful.
+#
+# Walk up the path one segment at a time, and only as far as it takes:
+#   AlgoTrader                              stays "AlgoTrader"        (unique)
+#   ...\runs\R12\repo                       becomes "R12 / repo"      (leaf is not)
+#   ...\runs\R08\repo                       becomes "R08 / repo"
+# A project whose name is already unique is untouched, so 24 of 26 rows read
+# exactly as they did before.
+function Update-ProjectLabels {
+    $script:projLabel = @{}
+    $paths = @($script:dirs | ForEach-Object { [string]$_.path } | Where-Object { $_ })
+    if (-not $paths.Count) { return }
+
+    # How many segments each path needs. Start at one and widen only the ones
+    # that still collide, so a widened label never drags an unrelated project
+    # wider with it.
+    $depth = @{}
+    foreach ($p in $paths) { $depth[$p] = 1 }
+
+    function Get-Tail { param([string]$Path, [int]$N)
+        $parts = @("$Path".TrimEnd('\') -split '\\' | Where-Object { $_ })
+        if (-not $parts.Count) { return "$Path" }
+        $take = [Math]::Min($N, $parts.Count)
+        return (@($parts[($parts.Count - $take)..($parts.Count - 1)]) -join ' / ')
+    }
+
+    # Bounded: a path has finitely many segments, and 8 is deeper than any real
+    # one here. Without the bound, two paths that are genuinely identical would
+    # widen forever.
+    for ($round = 0; $round -lt 8; $round++) {
+        $byLabel = @{}
+        foreach ($p in $paths) {
+            $lab = Get-Tail $p $depth[$p]
+            if (-not $byLabel.ContainsKey($lab)) { $byLabel[$lab] = New-Object System.Collections.Generic.List[object] }
+            $byLabel[$lab].Add($p)
+        }
+        $widened = $false
+        foreach ($kv in $byLabel.GetEnumerator()) {
+            if ($kv.Value.Count -le 1) { continue }
+            foreach ($p in $kv.Value.ToArray()) {
+                $segs = @("$p".TrimEnd('\') -split '\\' | Where-Object { $_ }).Count
+                if ($depth[$p] -lt $segs) { $depth[$p] = $depth[$p] + 1; $widened = $true }
+            }
+        }
+        if (-not $widened) { break }
+    }
+
+    foreach ($p in $paths) { $script:projLabel[$p.ToLowerInvariant()] = (Get-Tail $p $depth[$p]) }
+}
+
+# The label, or the leaf if labels have not been computed yet -- which is the
+# case for any caller that runs before the first Set-Registry, and for the
+# fixtures a test builds by hand.
+function Get-ProjectLabel { param($Dir)
+    $p = $(if ($Dir -is [string]) { $Dir } else { [string]$Dir.path })
+    if (-not $p) { return '' }
+    if ($script:projLabel) {
+        $hit = $script:projLabel[$p.ToLowerInvariant()]
+        if ($hit) { return $hit }
+    }
+    return (Split-Path $p -Leaf)
+}
+
+# Project and lane as ONE string, which is what the roster's PROJECT / LANE
+# column shows and what its heading sorts by. In one place so the column, the
+# sort and the inbox's label can never disagree about what a conversation's
+# home is called.
+function Get-HomeLabel { param($Dir, $LaneName)
+    $proj = Get-ProjectLabel $Dir
+    $lane = "$LaneName"
+    if ($lane -and $lane -ne 'main') { return "$proj / $lane" }
+    return $proj
+}
+
+# When the project was last worked in: the newest conversation under it. This is
+# what the roster orders by, and it deliberately reads the same field the WHEN
+# column shows, so the first project on screen is the one whose top row has the
+# smallest age.
+function Get-DirLastActive { param($Dir)
+    $best = [datetime]'1970-01-01'
+    foreach ($s in @(Get-Visible $Dir)) {
+        if (-not $s.lastActive) { continue }
+        try { $at = [datetime]$s.lastActive } catch { continue }
+        if ($at -gt $best) { $best = $at }
+    }
+    return $best
+}
 # ---------------------------------------------------------------------------
 # What a conversation is CALLED, in one place, in strict order of who said so.
 #

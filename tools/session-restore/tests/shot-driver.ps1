@@ -84,6 +84,32 @@ Write-Host ''
 Write-Host "  registry: $($script:totalCount) conversation(s), $(@($script:dirs).Count) project(s)" -ForegroundColor DarkGray
 Write-Host "  into    : $shotDir" -ForegroundColor DarkGray
 
+# 🔴 A SHOT WITHOUT A PROBE PASS LIES ABOUT WHICH COLUMNS ARE EMPTY.
+#
+# The harness runs -NoScan, so nothing fills $script:conv -- and Update-RowConv
+# returns early with a blank STATE and a blank WHAT IT LAST SAID for every row.
+# The screenshot then shows two wide, entirely empty columns, and the obvious
+# conclusion is to delete them. They are not empty in the real window: the
+# background pass reads every conversation in the registry, not just the live
+# ones, and measures at about 3 ms each.
+#
+# So read them here too. This is the whole point of drawing the REAL registry:
+# a picture that disagrees with the running window is worse than no picture.
+$shotSw = [Diagnostics.Stopwatch]::StartNew()
+$shotConv = @{}
+$shotRead = 0
+foreach ($shotDir2 in @($script:dirs)) {
+    foreach ($shotS in @(Get-Visible $shotDir2)) {
+        if (-not $shotS.sessionId -or -not $shotS.jsonl) { continue }
+        try { $shotConv["$($shotS.sessionId)".ToLower()] = Get-SRConversationState -JsonlPath $shotS.jsonl; $shotRead++ } catch { }
+    }
+}
+$script:conv = $shotConv
+try { $script:agents = Get-SRAgentStatus } catch { }
+Write-Host "  probed  : $shotRead conversation(s) in $([int]$shotSw.ElapsedMilliseconds) ms, $(@($script:agents.Keys).Count) agent(s)" -ForegroundColor DarkGray
+# No repaint needed here: every Set-ViewMode below rebuilds through Update-List,
+# which paints each row's state and last-said from exactly this table.
+
 # --- the two views, as they open -------------------------------------------
 Set-ViewMode 'inbox'
 Save-Shot 'now'

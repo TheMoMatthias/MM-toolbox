@@ -172,9 +172,7 @@ function Update-InboxRow { param($Row)
     # The project as a LABEL. A worktree lane is named after the worktree, and
     # that distinction matters more than the repo name when two lanes of the same
     # repo are both live.
-    $proj = Split-Path $Row.Dir.path -Leaf
-    if ($Row.Lane -and $Row.Lane.Name -and $Row.Lane.Name -ne 'main') { $proj = "$proj / $($Row.Lane.Name)" }
-    $Row.Project = $proj
+    $Row.Project = Get-HomeLabel $Row.Dir $(if ($Row.Lane) { "$($Row.Lane.Name)" } else { 'main' })
     $Row.ProjectVisibility = $V_Show
 
     $moved = Test-Moved $s
@@ -506,7 +504,10 @@ function Update-RowStatic { param($Row)
         'project' {
             $Row.RowHeight = 32
             $Row.Indent = New-Object System.Windows.Thickness (8, 6, 0, 0)
-            $Row.Name = Split-Path $Row.Dir.path -Leaf
+            # NOT the bare leaf. Eight projects here are called "repo", and the
+            # roster is ordered by recency now, so they no longer sit next to each
+            # other where the duplication was at least obvious.
+            $Row.Name = Get-ProjectLabel $Row.Dir
             $Row.NameWeight = $FW_Semi
             $Row.NameSize = 13
             $Row.NameBrush = $Pal.TextHigh
@@ -571,9 +572,22 @@ function Update-RowStatic { param($Row)
             # PROJECT / LANE, which used to be two rows of hierarchy above this
             # one. Same string the inbox row uses, so the two views name a
             # conversation's home identically.
+            # THE LANE, AND ONLY WHERE IT SAYS SOMETHING NEW. The tree says which
+            # project this is in, so the tag carries the lane alone -- and not
+            # even that when the lane is `main` (the default, and the answer for
+            # half the registry) or when it merely repeats the row's own name,
+            # which is what "V-INGEST  [V-INGEST]" would have been for 31 of
+            # AlgoTrader's 35 lanes.
             $lane = $(if ($Row.Lane) { "$($Row.Lane.Name)" } else { 'main' })
-            $proj = Split-Path $Row.Dir.path -Leaf
-            $Row.Project = $(if ($lane -and $lane -ne 'main') { "$proj / $lane" } else { $proj })
+            $Row.LaneTag = ''
+            $Row.LaneTagVisibility = $V_Hide
+            if ($lane -and $lane -ne 'main' -and $lane -ne "$($Row.Name)") {
+                $Row.LaneTag = $lane
+                $Row.LaneTagVisibility = $V_Show
+            }
+            # Still resolved, because the tooltip and the footer name a
+            # conversation's home in full even though the row no longer does.
+            $Row.Project = Get-HomeLabel $Row.Dir $lane
         }
         'more' {
             $Row.RowHeight = 40
