@@ -303,11 +303,24 @@ try {
     if ("$($iBoth.AiTitle)" -eq 'Some generated words') { Pass 'and the generated one is kept beside it, not merged' }
     else { Fail "aiTitle came back as '$($iBoth.AiTitle)' when a customTitle was also present" }
 
-    # 3. 🪤 THE TITLE IS USUALLY NOWHERE NEAR THE TAIL. Measured over the 97:
-    #    the aiTitle record sits at a MEDIAN 14.3% into the file. Reading only the
-    #    256 KB tail found 60 of the 76 that have one. This fixture puts the title
-    #    at the very top behind more than a tail's worth of padding, which is the
-    #    shape that silently cost 16 conversations their names.
+    # 3. 🔴 THE MEASURED LIMIT, ASSERTED AS A LIMIT.
+    #
+    #    A title above the tail is NOT found, and that is deliberate. The record
+    #    sits at a MEDIAN 14.3% into the file, so reading the whole file would
+    #    catch more of them in principle -- and it was tried, and measured, and
+    #    it caught exactly NONE: the registry named 60 conversations with a
+    #    whole-file fallback and 60 without it, because every conversation it
+    #    could have helped belongs to a project whose folder has been deleted and
+    #    which discovery refuses before this function is reached.
+    #
+    #    What it did cost was an uncached walk reading whole files for every
+    #    conversation with no aiTitle at all, which pushed that walk past the
+    #    FIVE SECOND life of the agent cache it consults at the end -- breaking a
+    #    correct test about something else entirely.
+    #
+    #    So the contract is: the tail, and only the tail. This pins it, so that
+    #    widening it again is a deliberate act with a measurement attached rather
+    #    than an accident.
     $bulk = @()
     $filler = '{"type":"attachment","uuid":"' + ('x' * 900) + '"}'
     for ($i = 0; $i -lt 400; $i++) { $bulk += $filler }
@@ -316,10 +329,10 @@ try {
     $iTop = Get-SRSessionInfo -JsonlPath $fTop
     if ($topLen -le $SR_TailBytes) {
         Fail "the fixture is only $topLen bytes - it does not exceed the $SR_TailBytes-byte tail, so it proves nothing"
-    } elseif ("$($iTop.AiTitle)" -eq 'Named at the very top') {
-        Pass "a title $([int]($topLen/1KB)) KB above the tail is still found"
+    } elseif ("$($iTop.AiTitle)") {
+        Fail "a title $([int]($topLen/1KB)) KB above the tail came back as '$($iTop.AiTitle)' - something is reading past the tail again, and that was measured to cost a whole-file read per nameless conversation for zero extra names"
     } else {
-        Fail "a title outside the $([int]($SR_TailBytes/1KB)) KB tail was missed - 16 conversations lost their names to exactly this"
+        Pass "a title above the $([int]($SR_TailBytes/1KB)) KB tail is knowingly NOT found - the tail is the whole contract"
     }
 
     # 4. Nothing at all. It must say so plainly rather than inventing something:
@@ -388,8 +401,27 @@ try {
     $script:SR_AgentCacheAt = Get-Date
 
     $cfgNow2 = Get-SRConfig
+    # 🪤 WITH A CACHE, THE WAY PRODUCTION CALLS IT.
+    #
+    # This passed no cache, so the walk re-read every transcript on the machine --
+    # and Get-SRDiscovered consults the agent list at the END of that walk, while
+    # the agent cache seeded above lives for FIVE SECONDS. A walk slower than that
+    # evicted the ghost before anything looked for it, and the suite reported "the
+    # tool cannot find what it launched" about a tool that finds it perfectly well.
+    #
+    # It is also just wrong as a test: every real caller passes the previous scan's
+    # results, which is what makes a repeat scan nearly free. Testing the one shape
+    # production never uses measured the wrong thing slowly.
+    $ghostCache = @{}
+    foreach ($cd in @($reg.directories)) {
+        foreach ($cs in @($cd.sessions)) {
+            if ($cs.sessionId -and $cs.stamp -and $cs.cwd) {
+                $ghostCache[$cs.sessionId] = @{ Cwd = $cs.cwd; Title = $cs.title; Stamp = $cs.stamp; AutoTitle = $cs.autoTitle }
+            }
+        }
+    }
     # ASSIGN, THEN WRAP -- the house rule, and it is correct against either shape.
-    $discRaw = Get-SRDiscovered -Config $cfgNow2
+    $discRaw = Get-SRDiscovered -Config $cfgNow2 -Cache $ghostCache
     $disc = @($discRaw)
     $ghost = @($disc | Where-Object { "$($_.SessionId)".ToLower() -eq $ghostId })
     if (-not $ghost.Count) {
@@ -479,6 +511,73 @@ else {
     if ("$($parsed.Question)" -notlike '*four migrations*') { Fail "the question read as '$($parsed.Question)'" }
     else { Pass 'the question text is recovered without its box-drawing' }
 }
+
+# --- A REAL MULTI-SELECT MENU, CAPTURED ------------------------------------
+# 🔑 THESE ARE THE ACTUAL BYTES. Read off a live multi-select menu in this tool's
+# own session on 2026-08-26 by attaching to its console, and it settled three
+# things that had been guessed at for days:
+#
+#   the box is ASCII "[ ]"      not U+25A1. A parser tuned to a Unicode box would
+#                               have matched NOTHING on the real thing.
+#   the cursor is the same      U+276F, exactly as on a single-select menu.
+#   there is a Submit row       unnumbered, indented, under the last option, and
+#                               navigable -- so it is a cursor stop.
+#
+# The whole feature waited on this capture rather than being guessed at, and this
+# fixture is why the guess is no longer necessary.
+$multi = @(
+    ''
+    "$BAR The signed plan is complete. Which of these should I pick up next?"
+    "$BAR (Pick as many as you want.)"
+    ''
+    "$CUR 1. [ ] Finish multi-select answering"
+    '  Right now a question that takes several answers is shown but not clickable.'
+    '  2. [ ] Environment hygiene sweep'
+    '  Clear OS-temp entries older than two days and prune stale shell snapshots.'
+    '  3. [ ] Polish the roster visually'
+    '  4. [ ] Audit today''s changes for interaction bugs'
+    '  5. [ ] Type something'
+    '     Submit'
+    ('-' * 40)
+    '  6. Chat about this'
+    ''
+    'Enter to select   up/down to navigate   Esc to cancel'
+) -join "`n"
+
+$pm = Invoke-SRParseScreenQuestion -Text $multi
+if (-not $pm) { Fail 'a real multi-select menu was not recognised at all' }
+else {
+    if (-not $pm.Multi) { Fail 'the captured menu was not recognised as multi-select' }
+    else { Pass 'a real multi-select menu is recognised by its boxes' }
+    if ($pm.Options.Count -ne 6) { Fail "read $($pm.Options.Count) option(s), expected 6" }
+    else { Pass 'all six options are read, Chat about this included' }
+    # THE BOX MUST NOT END UP IN THE LABEL. The label is what gets shown and
+    # compared, and "[ ] Environment hygiene sweep" is not what was asked.
+    if ("$($pm.Options[1])" -ne 'Environment hygiene sweep') { Fail "option 2 read as '$($pm.Options[1])'" }
+    else { Pass "the box is stripped from the label: '$($pm.Options[1])'" }
+    if ($pm.SubmitAt -ne 6) { Fail "Submit read as stop $($pm.SubmitAt), expected 6 - one past the last option" }
+    else { Pass 'the Submit row is one cursor stop past the last option' }
+    if (@($pm.Ticked).Count -ne 0) { Fail "$(@($pm.Ticked).Count) option(s) read as ticked on a menu where none are" }
+    else { Pass 'an empty box does not read as ticked' }
+    if ($pm.CursorAt -ne 0) { Fail "the highlight read as option $($pm.CursorAt + 1), expected 1" }
+    else { Pass 'the highlight is read from a multi-select menu too' }
+}
+
+# ...and with two of them ticked, which is the state nobody had captured.
+$multiOn = $multi.Replace('1. [ ] Finish', '1. [x] Finish').Replace('3. [ ] Polish', '3. [x] Polish')
+$pm2 = Invoke-SRParseScreenQuestion -Text $multiOn
+if (-not $pm2) { Fail 'a multi-select menu with ticks was not recognised' }
+elseif (@($pm2.Ticked).Count -ne 2) { Fail "read $(@($pm2.Ticked).Count) ticked option(s), expected 2" }
+elseif ([int]@($pm2.Ticked)[0] -ne 0 -or [int]@($pm2.Ticked)[1] -ne 2) { Fail "ticked options read as $((@($pm2.Ticked)) -join ', '), expected 0, 2" }
+else { Pass 'a ticked box is read back as ticked, by index' }
+
+# A SINGLE-SELECT MENU MUST NOT LOOK MULTI. Everything downstream branches on
+# this, and getting it wrong would send a relay hunting for a Submit row that
+# does not exist.
+$pmSingle = Invoke-SRParseScreenQuestion -Text $screen
+if ($pmSingle.Multi) { Fail 'a single-select menu was read as multi-select' }
+elseif ($pmSingle.SubmitAt -ne -1) { Fail "a single-select menu reported a Submit row at $($pmSingle.SubmitAt)" }
+else { Pass 'a menu with no boxes is not multi-select, and has no Submit row' }
 
 # A CURSOR ON A LATER OPTION. The whole point of reading it is that it is not
 # always option 1 -- a menu the operator has already arrowed through is exactly

@@ -39,7 +39,24 @@
 param(
     [Parameter(Mandatory)][string]$Out,
     [int]$Cursor = 0,
-    [int]$TimeoutSeconds = 90
+    [int]$TimeoutSeconds = 90,
+
+    # Render the MULTI-SELECT shape instead: an ASCII "[ ]" box in front of every
+    # option and an unnumbered Submit row under the last one.
+    #
+    # 🔴 THE SHAPE IS A REAL CAPTURE. The layout, the ASCII boxes, the cursor
+    # marker and the position of Submit were read off a live multi-select menu on
+    # 2026-08-26 (scratchpad\multi\menu-213319.txt).
+    #
+    # 🔒 THE BEHAVIOUR IS NOT MEASURED, and that distinction is the whole point.
+    # The captured footer says "Enter to select", which READS as: Enter toggles
+    # the highlighted option, Enter on Submit commits. That is what this
+    # implements, and a test against it therefore proves the NAVIGATION -- that
+    # the relay finds Submit by reading the cursor rather than counting rows, and
+    # ticks the options it was asked for -- and proves NOTHING about whether the
+    # real TUI toggles on Enter. Until somebody measures that, nothing here may
+    # be pointed at a live session.
+    [switch]$Multi
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,6 +78,12 @@ $options = @(
 
 $sel = [Math]::Max(0, [Math]::Min($Cursor, $options.Count - 1))
 
+# Multi-select adds one more STOP after the last option: the Submit row. It is
+# navigable and unnumbered, exactly as captured.
+$ticked = New-Object 'System.Collections.Generic.HashSet[int]'
+$submitAt = $options.Count          # the index the cursor is on when Submit is highlighted
+$stops = $(if ($Multi) { $options.Count + 1 } else { $options.Count })
+
 function Show-Menu {
     Clear-Host
     Write-Host ''
@@ -68,8 +91,21 @@ function Show-Menu {
     Write-Host ''
     for ($i = 0; $i -lt $options.Count; $i++) {
         $mark = $(if ($i -eq $sel) { $CUR } else { ' ' })
-        Write-Host ("{0} {1}. {2}" -f $mark, ($i + 1), $options[$i].Label)
+        if ($Multi) {
+            # "[ ]" and "[x]", ASCII, as captured. NOT a Unicode box: the real
+            # menu uses square brackets, and a parser tuned to U+25A1 would have
+            # matched nothing at all on the real thing.
+            $box = $(if ($ticked.Contains($i)) { '[x]' } else { '[ ]' })
+            Write-Host ("{0} {1}. {2} {3}" -f $mark, ($i + 1), $box, $options[$i].Label)
+        } else {
+            Write-Host ("{0} {1}. {2}" -f $mark, ($i + 1), $options[$i].Label)
+        }
         if ($options[$i].Desc) { Write-Host ("     " + $options[$i].Desc) }
+        Write-Host ''
+    }
+    if ($Multi) {
+        $mark = $(if ($sel -eq $submitAt) { $CUR } else { ' ' })
+        Write-Host ("{0}    Submit" -f $mark)
         Write-Host ''
     }
     Write-Host '  (replica of an AskUserQuestion menu - this is a test fixture)'
@@ -85,13 +121,28 @@ while ((Get-Date) -lt $deadline) {
     if (-not [Console]::KeyAvailable) { Start-Sleep -Milliseconds 40; continue }
     $k = [Console]::ReadKey($true)
     switch ($k.Key) {
-        'DownArrow' { if ($sel -lt $options.Count - 1) { $sel++ }; Show-Menu }
+        'DownArrow' { if ($sel -lt $stops - 1) { $sel++ }; Show-Menu }
         'UpArrow'   { if ($sel -gt 0) { $sel-- }; Show-Menu }
         'Enter'     {
-            [System.IO.File]::WriteAllText($Out,
-                ("{0}|{1}" -f ($sel + 1), $options[$sel].Label),
-                (New-Object System.Text.UTF8Encoding($false)))
-            exit 0
+            if (-not $Multi) {
+                [System.IO.File]::WriteAllText($Out,
+                    ("{0}|{1}" -f ($sel + 1), $options[$sel].Label),
+                    (New-Object System.Text.UTF8Encoding($false)))
+                exit 0
+            }
+            # MULTI-SELECT, on the inferred reading of "Enter to select": Enter
+            # acts on whatever row is highlighted. On an option that means TOGGLE;
+            # on Submit it means COMMIT. Inferred, not measured -- see -Multi.
+            if ($sel -eq $submitAt) {
+                $chosen = @()
+                foreach ($i in 0..($options.Count - 1)) { if ($ticked.Contains($i)) { $chosen += ($i + 1) } }
+                [System.IO.File]::WriteAllText($Out,
+                    ("SUBMIT|" + ($chosen -join ',')),
+                    (New-Object System.Text.UTF8Encoding($false)))
+                exit 0
+            }
+            if ($ticked.Contains($sel)) { $null = $ticked.Remove($sel) } else { $null = $ticked.Add($sel) }
+            Show-Menu
         }
     }
 }

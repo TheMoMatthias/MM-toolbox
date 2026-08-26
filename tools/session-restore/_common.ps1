@@ -239,32 +239,27 @@ function Get-SRSessionInfo {
         # fallback would pull a 100 MB file into memory, reintroducing exactly the
         # unbounded cost this function was rewritten to remove.
         #
-        # aiTitle comes along for the ride, and needs to. Measured over the 97
-        # nameless conversations: the title record sits at a MEDIAN 14.3% into the
-        # file, so for anything over about 2 MB it is nowhere near the tail. Reading
-        # only the tail found 60 of the 76 that have one; this recovers the rest for
-        # the price of a read that was already going to happen whenever cwd was
-        # missing, and happens at most once per transcript because the answer --
-        # including "there is no aiTitle", recorded as an empty string -- is cached
-        # against the file's mtime and length from then on.
+        # 🔴 THIS BRIEFLY ALSO CHASED aiTitle, AND IT WAS A PURE COST. The reasoning
+        # was sound -- the title record sits at a MEDIAN 14.3% into the file, so on
+        # anything over about 2 MB it is nowhere near the tail -- and the measurement
+        # disagreed: the registry named exactly 60 conversations with the fallback
+        # and exactly 60 without it. Every candidate it could have helped belonged
+        # to a project whose folder had been deleted, so discovery refuses them
+        # before this function is ever called.
+        #
+        # What it did do was make an UNCACHED walk read whole files for every
+        # conversation that has no aiTitle at all, which is most of them once the
+        # ones that have one are cached. That walk consults the agent list at the
+        # end, and the agent cache has a FIVE SECOND life -- so the walk got slow
+        # enough to evict the very thing the walk was about to read. It cost a
+        # correct test its pass and gained nothing measurable.
+        #
+        # Widen this again only with a measurement in hand.
         $full = (Get-Item -LiteralPath $JsonlPath).Length
-        if ((-not $cwd -or -not $aiTitle) -and $take -lt $full -and $full -le 8MB) {
+        if (-not $cwd -and $take -lt $full -and $full -le 8MB) {
             $all = [System.IO.File]::ReadAllText($JsonlPath)
-            if (-not $cwd) {
-                $m = [regex]::Matches($all, '"cwd":"(.*?)(?<!\\)"')
-                if ($m.Count) { $cwd = $m[$m.Count - 1].Groups[1].Value.Replace('\\', '\').Replace('\"', '"') }
-            }
-            if (-not $aiTitle) {
-                $m = [regex]::Matches($all, '"aiTitle":"(.*?)(?<!\\)"')
-                if ($m.Count) { $aiTitle = $m[$m.Count - 1].Groups[1].Value.Replace('\\', '\').Replace('\"', '"') }
-            }
-            # customTitle too, for the same reason and at no extra cost: a name the
-            # operator CHOSE is the one thing here that must not be missed because
-            # it happened to be written early in a long conversation.
-            if (-not $title) {
-                $m = [regex]::Matches($all, '"customTitle":"(.*?)(?<!\\)"')
-                if ($m.Count) { $title = $m[$m.Count - 1].Groups[1].Value.Replace('\\', '\').Replace('\"', '"') }
-            }
+            $m = [regex]::Matches($all, '"cwd":"(.*?)(?<!\\)"')
+            if ($m.Count) { $cwd = $m[$m.Count - 1].Groups[1].Value.Replace('\\', '\').Replace('\"', '"') }
         }
     } catch { }
 
@@ -1798,6 +1793,102 @@ function Invoke-SRAnswerOnScreen {
     Write-SRLog ("  [ok]   answered {0} with option {1} of {2} ({3}), cursor was on {4}" -f $Who, ($Index + 1), $seen.Options.Count, $seen.Options[$Index], ($seen.CursorAt + 1))
     return $null
 }
+
+# ---------------------------------------------------------------------------
+# SEVERAL ANSWERS AT ONCE.
+#
+# 🔒 NOT WIRED TO ANYTHING THAT CAN REACH A LIVE SESSION, and that is deliberate.
+# The SHAPE of a multi-select menu is measured -- captured off a real one on
+# 2026-08-26: ASCII "[ ]" boxes on every option, the same U+276F cursor, an
+# unnumbered navigable Submit row under the last option, and a footer reading
+# "Enter to select". The BEHAVIOUR is not. That footer READS as "Enter acts on
+# the highlighted row: toggle on an option, commit on Submit", and reading is
+# not measuring. An attempt to measure it by driving this tool's own session was
+# refused by the permission classifier, which is the right call for a background
+# process synthesising keystrokes into a live claude.
+#
+# So this exists, is tested against a replica built from the real capture, and is
+# called by NOTHING in the GUI. What the replica proves is the NAVIGATION -- that
+# Submit is found by reading the cursor rather than by counting rows, that the
+# options asked for are the ones toggled, and that an option already ticked is
+# left alone rather than turned off again. What it cannot prove is the premise.
+#
+# TO FINISH IT: confirm what ENTER does to a real multi-select menu. One
+# observation is enough.
+# ---------------------------------------------------------------------------
+function Invoke-SRAnswerMultiOnScreen {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$ProcessId,
+        # 0-based option indices to end up TICKED.
+        [Parameter(Mandatory)][int[]]$Indexes,
+        [string]$Who = '',
+        # Every move re-reads the screen, so a menu that repaints slowly cannot
+        # desynchronise the walk. 24 is far more than any real menu needs.
+        [int]$MaxMoves = 24
+    )
+    if ($ProcessId -le 0) { return 'there is no console to answer in' }
+    # 🪤 NOT `-not $Indexes`. PowerShell unrolls a ONE-ELEMENT array to its
+    # element, so @(0) is 0 is FALSE -- and "@(0)" is how you ask for the FIRST
+    # option. The guard fired on the single most likely request there is, and the
+    # refusal said "nothing was chosen" about a perfectly good choice. Caught by
+    # a test that expected a different refusal and got this one.
+    if ($null -eq $Indexes -or @($Indexes).Count -lt 1) { return 'nothing was chosen' }
+
+    $seen = Get-SRScreenQuestion -ProcessId $ProcessId
+    if (-not $seen) { return 'cannot see a question on that session''s screen - answer it in the terminal' }
+    if (-not $seen.Multi) { return 'that is not a multi-select question' }
+    if ($seen.CursorAt -lt 0) { return 'cannot tell which option is highlighted - answer it in the terminal' }
+    if ($seen.SubmitAt -lt 0) { return 'that menu has no Submit row, so there is no way to commit it from here' }
+    foreach ($ix in $Indexes) {
+        if ($ix -lt 0 -or $ix -ge $seen.Options.Count) {
+            return "that session is showing $($seen.Options.Count) option(s), so option $($ix + 1) is not one of them"
+        }
+    }
+
+    # WHAT ACTUALLY NEEDS TOGGLING. An option already ticked is left ALONE:
+    # pressing ENTER on it would turn it back off, and the caller asked for it to
+    # end up ON. This is why Ticked is parsed at all.
+    $already = @{}
+    foreach ($t in @($seen.Ticked)) { $already[[int]$t] = $true }
+    $todo = New-Object System.Collections.Generic.List[object]
+    foreach ($ix in ($Indexes | Sort-Object -Unique)) { if (-not $already[[int]$ix]) { $null = $todo.Add([int]$ix) } }
+
+    function Step-ToStop {
+        param([int]$Target, [int]$Pid2, [int]$Budget)
+        for ($i = 0; $i -lt $Budget; $i++) {
+            $now = Get-SRScreenQuestion -ProcessId $Pid2
+            if (-not $now) { return 'the menu went away mid-answer' }
+            if ($now.CursorAt -lt 0) { return 'lost sight of the highlight mid-answer' }
+            if ([int]$now.CursorAt -eq $Target) { return $null }
+            $vk = $(if ($Target -gt [int]$now.CursorAt) { [uint16]0x28 } else { [uint16]0x26 })
+            $r = [SRCon]::SendKeys([uint32]$Pid2, [uint16[]]@($vk))
+            if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
+            Start-Sleep -Milliseconds 180
+        }
+        return 'could not get the highlight where it needed to go'
+    }
+
+    foreach ($ix in $todo.ToArray()) {
+        $why = Step-ToStop -Target $ix -Pid2 $ProcessId -Budget $MaxMoves
+        if ($why) { return $why }
+        $r = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@(0x0D))       # toggle, on the inferred reading
+        if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
+        Start-Sleep -Milliseconds 220
+    }
+
+    # COMMIT LAST, and only after re-reading: Submit's index is one past the last
+    # option, and the menu may have repainted since the first read.
+    $final = Get-SRScreenQuestion -ProcessId $ProcessId
+    if (-not $final) { return 'the menu went away before it could be submitted' }
+    if ($final.SubmitAt -lt 0) { return 'the Submit row disappeared mid-answer' }
+    $why = Step-ToStop -Target ([int]$final.SubmitAt) -Pid2 $ProcessId -Budget $MaxMoves
+    if ($why) { return $why }
+    $r = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@(0x0D))
+    if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
+    Write-SRLog ("  [ok]   answered {0} with {1} of {2} option(s) ticked, then Submit" -f $Who, $Indexes.Count, $final.Options.Count)
+    return $null
+}
 # THE QUESTION AS IT IS ON SCREEN, which is the only place a PENDING one exists.
 #
 # Get-SRPendingQuestion reads the transcript and can only ever find a question that
@@ -1876,6 +1967,21 @@ function Get-SRScreenQuestion {
     param([Parameter(Mandatory)][int]$ProcessId)
     if ($ProcessId -le 0) { return $null }
     $txt = Get-SRScreenText -ProcessId $ProcessId
+    # ONE RETRY, because a failed read is not the same as no question.
+    #
+    # Get-SRScreenText does its work in a child process with a 3-second budget,
+    # and on a machine already running several of them that budget is sometimes
+    # missed while the menu is still perfectly well on screen. Refusing on the
+    # first miss made the relay say "cannot see a question" about a question it
+    # could see a second later -- measured once in the relay suite, and it would
+    # read as a broken feature rather than as a busy machine.
+    #
+    # A retry only ever RE-READS. It never assumes, so the guards downstream are
+    # exactly as strict as before.
+    if (-not $txt) {
+        Start-Sleep -Milliseconds 300
+        $txt = Get-SRScreenText -ProcessId $ProcessId
+    }
     if (-not $txt) { return $null }
     return (Invoke-SRParseScreenQuestion -Text $txt)
 }
@@ -1891,6 +1997,9 @@ function Invoke-SRParseScreenQuestion {
     $opts = New-Object System.Collections.Generic.List[object]
     $at = -1
     $firstIdx = -1
+    # Multi-select state, filled in as the options are read.
+    $isMulti = $false
+    $ticked = New-Object System.Collections.Generic.List[object]
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $ln = $lines[$i]
         # '  2. BRAVO' or '<cursor> 1. ALPHA'. The label runs to the end of the line;
@@ -1908,10 +2017,50 @@ function Invoke-SRParseScreenQuestion {
             continue
         }
         if ($m.Groups[1].Success) { $at = $opts.Count }
-        $null = $opts.Add($m.Groups[3].Value.Trim())
+
+        # 🔑 A MULTI-SELECT OPTION CARRIES A BOX, AND IT IS ASCII.
+        #
+        # Captured off a real one on 2026-08-26: "❯ 1. [ ] Finish multi-select
+        # answering". Square brackets, not U+25A1 -- a parser tuned to a Unicode
+        # box would have matched nothing on the real thing, which is exactly why
+        # this waited for a capture instead of being guessed at.
+        #
+        # The box is stripped from the label, because the label is what gets shown
+        # and compared, and "[ ] Environment hygiene sweep" is not what the
+        # question asked. Whether it was ticked is kept separately.
+        $label = $m.Groups[3].Value.Trim()
+        $bm = [regex]::Match($label, '^\[(.?)\]\s*(.*)$')
+        if ($bm.Success) {
+            $isMulti = $true
+            if ("$($bm.Groups[1].Value)".Trim()) { $null = $ticked.Add($opts.Count) }
+            $label = $bm.Groups[2].Value.Trim()
+        }
+        $null = $opts.Add($label)
     }
     # One option is a list of one, which every numbered paragraph also looks like.
     if ($opts.Count -lt 2) { return $null }
+
+    # THE SUBMIT ROW. Unnumbered, indented, sitting under the last option -- and
+    # navigable, so it is a cursor STOP like any option. Its index matters: the
+    # relay reaches it by reading the cursor, and needs to know what it is looking
+    # for. Only ever present on a multi-select.
+    $submitAt = -1
+    if ($isMulti) {
+        for ($i = $firstIdx; $i -lt $lines.Count; $i++) {
+            $onIt = ($lines[$i] -match [regex]::Escape($cursor))
+            $bare = ($lines[$i] -replace [regex]::Escape($cursor), '').Trim()
+            if ($bare -ne 'Submit') { continue }
+            # It is one stop past the last option, because it is navigable.
+            $submitAt = $opts.Count
+            # AND IT CAN HOLD THE CURSOR. A menu whose highlight is already on
+            # Submit reports CursorAt past the last option, and a caller that
+            # assumed the cursor was always on an option would compute its
+            # distance from the wrong place -- the same mistake, in the same
+            # function, that reading the screen exists to prevent.
+            if ($onIt) { $at = $submitAt }
+            break
+        }
+    }
 
     # The question is the last line of prose above the first option. Box-drawing and
     # the header chips are furniture, not the question.
@@ -1930,6 +2079,15 @@ function Invoke-SRParseScreenQuestion {
         # 0-based, or -1 when no cursor could be seen. A caller that cannot see the
         # cursor must not send arrows on a guess.
         CursorAt = $at
+        # Does every option carry a "[ ]" box? Then several answers are wanted and
+        # one ENTER on an option is not the end of it.
+        Multi    = $isMulti
+        # Which options are ALREADY ticked, 0-based. A relay that toggles must
+        # know what it is toggling FROM: pressing ENTER on an option that is
+        # already ticked turns it OFF.
+        Ticked   = $ticked.ToArray()
+        # The cursor stop that commits, one past the last option, or -1.
+        SubmitAt = $submitAt
         Source   = 'screen'
     }
 }
