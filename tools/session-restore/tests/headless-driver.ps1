@@ -446,9 +446,14 @@ else { Pass "the default order is newest-first inside each group ($($seen.Count)
 # endless list to find a repo by luck. The hazard alphabetical order was really
 # guarding against is that eight projects have the leaf name "repo"; that is
 # fixed at the cause by Update-ProjectLabels, and asserted separately below.
+# 🪤 WITHIN A TIER. Recency is the SECOND key, not the first: somewhere you can
+# still work outranks somewhere you cannot however recently it was touched, so
+# the home folder at 2 days sits below real projects at 4. Comparing across the
+# boundary asserts the opposite of what the ordering is for.
 $projRows = @($script:rows | Where-Object { $_.Kind -eq 'project' })
 $projBad = 0
 for ($i = 1; $i -lt $projRows.Count; $i++) {
+    if ((Get-ProjectTier $projRows[$i - 1].Dir) -ne (Get-ProjectTier $projRows[$i].Dir)) { continue }
     if ((Get-DirLastActive $projRows[$i - 1].Dir) -lt (Get-DirLastActive $projRows[$i].Dir)) { $projBad++ }
 }
 if ($projRows.Count -lt 2) { Fail 'not enough projects to prove an order' }
@@ -463,6 +468,39 @@ $dupLabels = @($labels | Group-Object | Where-Object { $_.Count -gt 1 })
 if ($dupLabels.Count) {
     Fail ("$($dupLabels.Count) project label(s) appear more than once: " + (@($dupLabels | ForEach-Object { "'$($_.Name)' x$($_.Count)" }) -join ', '))
 } else { Pass "all $($labels.Count) project labels are unique on screen" }
+
+# SOMEWHERE YOU CAN WORK OUTRANKS SOMEWHERE YOU CANNOT, whatever the clock says.
+# A project whose folder has been deleted holds conversations that discovery
+# refuses and nothing can launch -- 18 of them here -- and the home directory is
+# where a conversation lands when it started nowhere in particular. Both are
+# KEPT and both are last: this is an order, not a filter.
+$tierBad = 0
+for ($i = 1; $i -lt $projRows.Count; $i++) {
+    if ((Get-ProjectTier $projRows[$i - 1].Dir) -gt (Get-ProjectTier $projRows[$i].Dir)) { $tierBad++ }
+}
+if ($tierBad) { Fail "$tierBad project(s) that cannot be opened sit above one that can" }
+else { Pass 'projects you can still work in come before the ones you cannot' }
+
+# ...and each demoted one SAYS why on its own header. A group pushed to the
+# bottom without a reason reads as a list that has lost its order -- and for a
+# deleted folder it is the only warning that the ticks under it can never fire.
+$mute = @()
+foreach ($pr in $projRows) {
+    if ((Get-ProjectTier $pr.Dir) -eq 0) { continue }
+    $why = Get-ProjectTierNote $pr.Dir
+    if (-not $why -or "$($pr.Counts)" -notlike "*$why*") { $mute += "$($pr.Name)" }
+}
+if ($mute.Count) { Fail ("$($mute.Count) demoted project(s) do not say why: " + ($mute -join ', ')) }
+else { Pass 'every demoted project says why on its own header' }
+
+# NOTHING WAS EXCLUDED TO ACHIEVE ANY OF THAT. 06391a0 stopped excluding the
+# home directory and recovered three conversations of 20-28 MB; this must never
+# quietly undo it.
+$demotedRows = 0
+foreach ($pr in $projRows) { if ((Get-ProjectTier $pr.Dir) -gt 0) { $demotedRows += [int]$pr.GroupTotal } }
+$reachable = @($script:dirs | Where-Object { (Get-ProjectTier $_) -gt 0 }).Count
+if ($reachable -and -not $projRows.Count) { Fail 'demoted projects vanished from the roster entirely' }
+else { Pass "$($reachable) demoted project(s) are still on the roster, holding $demotedRows conversation(s)" }
 
 # ONE KEY: newest across EVERYTHING, which is the thing a tree could not do.
 #

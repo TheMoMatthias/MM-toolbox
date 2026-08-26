@@ -627,6 +627,15 @@ function Update-GroupCaption { param($Row)
     $bits = @("$n")
     if ($t) { $bits += $(if ($off) { "$t ticked, PROJECT OFF" } else { "$t armed" }) }
     elseif ($off) { $bits += 'project off' }
+    # WHY IT IS AT THE BOTTOM. A group that has been demoted without saying so
+    # reads as a list that has lost its order. "folder is gone" is also the only
+    # warning that 18 ticks under it can never fire: nothing can launch a
+    # conversation whose working directory was deleted, and the header is the
+    # one place that can be said.
+    if ($Row.Kind -eq 'project') {
+        $why = Get-ProjectTierNote $Row.Dir
+        if ($why) { $bits += $why }
+    }
     # 🪤 ASCII ONLY. A middle dot here rendered as "93 Â· 9 armed": PowerShell 5.1
     # reads a BOM-less UTF-8 file as ANSI, so every non-ASCII character in a
     # string literal arrives mojibaked. The comments above survive because

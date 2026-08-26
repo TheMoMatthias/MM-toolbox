@@ -117,6 +117,19 @@ Save-Shot 'now'
 Set-ViewMode 'all'
 Save-Shot 'roster'
 
+# THE ORDER, IN WORDS. A 1480x980 shot holds about twenty rows, so everything
+# this ordering is meant to push DOWN is off the bottom of the picture -- which
+# is the point, and also means the picture cannot show that it worked. Print it.
+Write-Host ''
+Write-Host '  roster order:' -ForegroundColor DarkGray
+foreach ($shotP in @($script:rows | Where-Object { $_.Kind -eq 'project' })) {
+    Write-Host ("    {0,-28} {1,-24} {2}" -f
+        "$($shotP.Name)",
+        "$($shotP.Counts)",
+        "last worked $(Get-Age (Get-DirLastActive $shotP.Dir).ToString('o')) ago") -ForegroundColor DarkGray
+}
+Write-Host ''
+
 # --- the roster, fully unfolded, which is the shape being complained about --
 # Every fold open is the worst case for scanning, and the one the operator hits
 # after clicking a project open to look for something.

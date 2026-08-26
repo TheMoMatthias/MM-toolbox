@@ -215,6 +215,11 @@ function Update-ProjectLabels {
 function Get-ProjectLabel { param($Dir)
     $p = $(if ($Dir -is [string]) { $Dir } else { [string]$Dir.path })
     if (-not $p) { return '' }
+    # THE HOME DIRECTORY IS NOT CALLED "mauri". Its leaf is the account name,
+    # which reads like a project nobody remembers creating -- and it is where a
+    # conversation lands when it started nowhere in particular, which is the
+    # thing the operator wanted to be able to tell apart.
+    if ($p.TrimEnd('\') -ieq "$env:USERPROFILE".TrimEnd('\')) { return 'home folder' }
     if ($script:projLabel) {
         $hit = $script:projLabel[$p.ToLowerInvariant()]
         if ($hit) { return $hit }
@@ -231,6 +236,64 @@ function Get-HomeLabel { param($Dir, $LaneName)
     $lane = "$LaneName"
     if ($lane -and $lane -ne 'main') { return "$proj / $lane" }
     return $proj
+}
+
+# ---------------------------------------------------------------------------
+# IS THIS SOMETHING YOU COULD GO BACK TO WORKING IN?
+#
+# The operator: "I'm oftentimes seeing a lot of untitled conversations or
+# conversations that I have simply started in my main Drive directory and not in
+# any project directory which I then also shown, which in theory is correct, but
+# it kind of makes it a bit difficult for me to understand what projects I need
+# to open up."
+#
+# Correct, and in the way. Two kinds of row are competing for the top of a
+# recency-ordered list without being places anyone can work:
+#
+#   tier 2  THE DIRECTORY IS GONE. Millwright-experiments uns R12 epo holds
+#           EIGHTEEN conversations and the folder was deleted. Discovery already
+#           refuses them -- their cwd does not resolve -- so not one of them can
+#           be launched, ticked or relaunched, ever. Eighteen rows of dead weight
+#           in the middle of the list.
+#   tier 1  NOT A PROJECT. The home directory is where a conversation started
+#           when it started nowhere in particular. Three of them here.
+#
+# NOTHING IS EXCLUDED. Commit 06391a0 stopped excluding the home directory and
+# recovered three conversations of 20-28 MB, and that stands: this is an ORDER,
+# not a filter, and every row is still reachable, searchable and tickable. They
+# just stop outranking places the operator actually works.
+function Get-ProjectTier { param($Dir)
+    if (-not $Dir) { return 0 }
+    if ($script:projTier) {
+        $hit = $script:projTier["$($Dir.path)".ToLowerInvariant()]
+        if ($null -ne $hit) { return [int]$hit }
+    }
+    return 0
+}
+
+function Update-ProjectTiers {
+    $script:projTier = @{}
+    $homeDir = "$env:USERPROFILE".TrimEnd('\')
+    foreach ($d in @($script:dirs)) {
+        $p = "$($d.path)".TrimEnd('\')
+        $tier = 0
+        # Test-Path ONCE PER SCAN, not once per repaint. This runs from
+        # Set-Registry; a row painter that touched the disk would hit it 26 times
+        # a frame for an answer that cannot change between frames.
+        if ([bool]$d.missing -or -not (Test-Path -LiteralPath $p -PathType Container)) { $tier = 2 }
+        elseif ($p -and ($p -ieq $homeDir -or $p -match '^[A-Za-z]:$')) { $tier = 1 }
+        $script:projTier[$p.ToLowerInvariant()] = $tier
+    }
+}
+
+# Why a project was demoted, in the fewest words that are still true. Empty for
+# an ordinary project, which is almost all of them.
+function Get-ProjectTierNote { param($Dir)
+    switch (Get-ProjectTier $Dir) {
+        2 { return 'folder is gone' }
+        1 { return 'not a project' }
+    }
+    return ''
 }
 
 # When the project was last worked in: the newest conversation under it. This is

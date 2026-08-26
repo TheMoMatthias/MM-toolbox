@@ -135,18 +135,34 @@ if (-not $target) {
 
 # --- the cache, which is what makes a renamed tab still reachable -----------
 Write-Host ''
-$probe = @($tabs)[0]
-$fake = '11111111-2222-3333-4444-555555555555'
-$n = Update-SRTabIndex -Titles @{ $fake = $probe.Name }
-if ($n -ge 1) { Pass "Update-SRTabIndex remembered $n tab(s) by title" }
-else { Fail 'Update-SRTabIndex remembered nothing' }
+# 🪤 A TAB WHOSE TITLE IS UNIQUE, not simply the first one enumerated.
+#
+# Update-SRTabIndex remembers a tab only when EXACTLY ONE carries the title --
+# two tabs sharing one are not an identification, which is deliberate and is
+# measured behaviour. This picked $tabs[0], and on this machine five terminal
+# tabs are called "C:\WINDOWS\SYSTEM32\cmd.exe": whenever one of them happened
+# to enumerate first, the suite reported "remembered nothing" and the next
+# assertion failed with it. Nothing was wrong either time; the test was asserting
+# an accident of enumeration order.
+$byName = @{}
+foreach ($t in @($tabs)) { $byName["$($t.Name)"] = [int]$byName["$($t.Name)"] + 1 }
+$probe = @($tabs | Where-Object { $byName["$($_.Name)"] -eq 1 })[0]
+if (-not $probe) {
+    Note 'no terminal tab has a title of its own right now - the cache cannot be tested'
+} else {
+    Note "probing with '$($probe.Name)', the first tab whose title is unique"
+    $fake = '11111111-2222-3333-4444-555555555555'
+    $n = Update-SRTabIndex -Titles @{ $fake = $probe.Name }
+    if ($n -ge 1) { Pass "Update-SRTabIndex remembered $n tab(s) by title" }
+    else { Fail 'Update-SRTabIndex remembered nothing' }
 
 # Now ask for a title that does NOT exist, for a session whose element IS
 # cached. It must still land, via the remembered element, and say that it did.
-$why = Invoke-SRJumpToSession -SessionId $fake -Title 'THIS-TITLE-DOES-NOT-EXIST'
-if ($why) { Fail "the cached element did not save a drifted title: $why" }
-elseif ($script:SR_JumpNote -match 'last seen') { Pass "a renamed tab is still reachable: $($script:SR_JumpNote)" }
-else { Fail 'it landed but did not say it used the remembered tab' }
+    $why = Invoke-SRJumpToSession -SessionId $fake -Title 'THIS-TITLE-DOES-NOT-EXIST'
+    if ($why) { Fail "the cached element did not save a drifted title: $why" }
+    elseif ($script:SR_JumpNote -match 'last seen') { Pass "a renamed tab is still reachable: $($script:SR_JumpNote)" }
+    else { Fail 'it landed but did not say it used the remembered tab' }
+}
 
 # And an UNCACHED session with a bad title must still refuse.
 $why = Invoke-SRJumpToSession -SessionId '99999999-8888-7777-6666-555555555555' -Title 'ALSO-NOT-REAL'

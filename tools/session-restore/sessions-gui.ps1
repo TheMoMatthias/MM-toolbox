@@ -1300,7 +1300,13 @@ function Build-Rows {
     # The label breaks ties, and the path breaks those, so the order is still
     # total and still stable across repaints: two projects touched in the same
     # millisecond must not swap places between frames.
+    # TIER FIRST, and only then recency. A project whose folder has been deleted
+    # cannot be opened, ticked or relaunched by anything here -- discovery
+    # refuses it, because its cwd does not resolve -- so however recently it was
+    # worked in, it must not sit above somewhere that can. Eighteen of these were
+    # landing in the middle of the list.
     $rosterDirs = @($script:dirs | Sort-Object `
+        @{ E = { Get-ProjectTier $_ }; Descending = $false }, `
         @{ E = { Get-DirLastActive $_ }; Descending = $true }, `
         @{ E = { Get-ProjectLabel $_ }; Descending = $false }, `
         @{ E = { [string]$_.path }; Descending = $false })
@@ -2039,6 +2045,18 @@ function Sync-FoldState {
     $script:fold = @{}
     foreach ($d in @($script:dirs)) {
         if ([bool]$d.folded) { $script:fold[[string]$d.path] = $true }
+        # A PROJECT WHOSE FOLDER IS GONE ARRIVES FOLDED, and the operator can
+        # open it like any other. Eighteen conversations under a deleted
+        # directory are worth KEEPING -- the registry is the only record they
+        # have -- and are worth nobody scrolling past: not one of them can be
+        # opened or relaunched, because there is no directory to open them in.
+        #
+        # It is a DEFAULT, not a rule. The moment the fold is touched, `folded`
+        # is written on the project and the branch above takes over, so an
+        # operator who wants it open keeps it open.
+        elseif ($null -eq $d.PSObject.Properties['folded'] -and (Get-ProjectTier $d) -eq 2) {
+            $script:fold[[string]$d.path] = $true
+        }
         foreach ($ln in @($d.foldedLanes)) {
             if ($ln) { $script:fold["$($d.path)|$ln"] = $true }
         }
@@ -2138,6 +2156,10 @@ function Set-Registry { param($Registry, $Config)
     # "repo", and every label on screen -- the roster header, the PROJECT / LANE
     # column, the filter dropdown -- comes from this table.
     Update-ProjectLabels
+    # Which projects are places you could actually go back to working in, and
+    # which are only history. One disk check per project per scan, never per
+    # repaint.
+    Update-ProjectTiers
     Sync-FoldState
     # NOTHING EVER CALLED THIS. Update-FilterSources fills the PROJECT and LANE
     # dropdowns from the registry, and it had no caller anywhere in the file --
