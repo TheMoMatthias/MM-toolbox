@@ -166,6 +166,8 @@ function Update-InboxRow { param($Row)
     $Row.CountsVisibility = $V_Hide
     $Row.NameSize = 12.5
     $Row.Name = "$(Get-SessionTitle $s $Row.Dir)"
+    # Same rule as the roster: a generated name leans, a chosen one stands up.
+    $Row.NameStyle = $(if (Test-DerivedTitle $s) { $Italic } else { $Upright })
 
     # The project as a LABEL. A worktree lane is named after the worktree, and
     # that distinction matters more than the repo name when two lanes of the same
@@ -293,6 +295,12 @@ function Update-RowTicks { param($Row)
 function Update-RowName { param($Row)
     if ($Row.Kind -ne 'session') { return }
     $d = $Row.Dir; $s = $Row.Session
+
+    # Slant first, and outside the 'gone' return below: a conversation whose
+    # transcript has been deleted still shows the last name it was known by, and
+    # whether that name was chosen or generated is exactly as true then as now.
+    $Row.NameStyle = $(if (Test-DerivedTitle $s) { $Italic } else { $Upright })
+
     $st = Get-SessionState $s
     if ($st -eq 'gone') {
         $Row.NameBrush = $Pal.TextDim

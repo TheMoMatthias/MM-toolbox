@@ -146,10 +146,46 @@ function Get-SessionCwd { param($Session, $Dir)
     if ($Session.cwd) { return $Session.cwd }
     return $Dir.path
 }
+# ---------------------------------------------------------------------------
+# What a conversation is CALLED, in one place, in strict order of who said so.
+#
+#   1. title      somebody chose it: -n, a rename, an adopted live agent name.
+#   2. autoTitle  claude generated it from what the conversation is about.
+#   3. cwd leaf   nothing named it, but it is at least somewhere.
+#   4. (untitled) nothing is known.
+#
+# 🪤 "(untitled)" IS A SENTINEL STORED IN `title`, NOT AN EMPTY FIELD. Discovery
+# writes that literal string when a transcript has no customTitle, so the old
+# IsNullOrWhiteSpace test never fired and the cwd fallback below had, in
+# practice, never run once. 97 of the operator's 204 conversations were called
+# "(untitled)" on screen while their own transcripts held a perfectly good name.
+#
+# Steps 1 and 2 are deliberately not merged: a name that was CHOSEN and a name
+# that was GUESSED are different things, the row draws them differently, and
+# keeping them in separate fields is what guarantees the guess can never win.
+$script:UntitledMark = '(untitled)'
+
+function Test-RealTitle { param([string]$Text)
+    return ([bool]"$Text".Trim() -and "$Text".Trim() -ne $script:UntitledMark)
+}
+
 function Get-SessionTitle { param($Session, $Dir)
-    $t = $Session.title
-    if ([string]::IsNullOrWhiteSpace($t)) { $t = (Split-Path (Get-SessionCwd $Session $Dir) -Leaf) }
-    return $t
+    if (Test-RealTitle $Session.title) { return $Session.title }
+    if (Test-RealTitle $Session.autoTitle) { return $Session.autoTitle }
+    $leaf = Split-Path (Get-SessionCwd $Session $Dir) -Leaf
+    if ("$leaf".Trim()) { return $leaf }
+    return $script:UntitledMark
+}
+
+# Is the name on the row a guess rather than a choice? The row draws a derived
+# name in a lighter weight, because "Diagnose and optimize slow PC performance"
+# is claude describing the conversation and "F2-SPINE" is the operator naming it,
+# and telling them apart at a glance is the difference between a list you trust
+# and one you have to re-read.
+function Test-DerivedTitle { param($Session)
+    if (-not $Session) { return $false }
+    if (Test-RealTitle $Session.title) { return $false }
+    return (Test-RealTitle $Session.autoTitle)
 }
 
 # Ported: Test-JustLaunched. The optimistic mark expires on the CLOCK,
@@ -314,7 +350,12 @@ function Test-RowMatch { param($Session, $Dir, $Lane)
     if ($script:filter) {
         $f = $script:filter
         $hit = $false
-        foreach ($hay in @($Session.title, $Session.sessionId, $Lane, (Split-Path $Dir.path -Leaf), $Dir.path)) {
+        # autoTitle IS IN HERE BECAUSE IT IS ON SCREEN. A conversation whose row
+        # reads "Fix session history loss in spawned Claude sessions" and which
+        # cannot be found by typing "session history" is worse than one with no
+        # name at all: the operator can see it, so a search that misses it reads
+        # as a broken search rather than a missing field.
+        foreach ($hay in @($Session.title, $Session.autoTitle, $Session.sessionId, $Lane, (Split-Path $Dir.path -Leaf), $Dir.path)) {
             if ("$hay" -like "*$f*") { $hit = $true; break }
         }
         if (-not $hit) { return $false }

@@ -278,6 +278,19 @@ namespace SRGui
         private double _nameSize = 12.5;
         public double NameSize { get { return _nameSize; } set { if (_nameSize != value) { _nameSize = value; N("NameSize"); } } }
 
+        // ITALIC MEANS NOBODY CHOSE THIS NAME -- it is claude's own generated
+        // title for the conversation, shown because the alternative was the word
+        // "(untitled)" on 97 of 204 rows.
+        //
+        // It has to be a channel of its own. NameBrush is already carrying four
+        // separate facts (project disabled, live, unticked, stale) and NameSize
+        // carries the tree depth, so overloading either would make two unrelated
+        // things look the same. Slant is orthogonal to both, and it survives this
+        // window being monochrome by design -- which is why nothing here is ever
+        // told apart by colour.
+        private FontStyle _nameStyle = FontStyles.Normal;
+        public FontStyle NameStyle { get { return _nameStyle; } set { if (!_nameStyle.Equals(value)) { _nameStyle = value; N("NameStyle"); } } }
+
         private string _note = "";
         public string Note { get { return _note; } set { if (_note != value) { _note = value; N("Note"); } } }
 
@@ -517,6 +530,13 @@ namespace SRGui
 $Pal = @{}
 $Clear = [System.Windows.Media.Brushes]::Transparent
 $Strike = [System.Windows.TextDecorations]::Strikethrough
+
+# Slant, for a name that was GENERATED rather than chosen. Resolved once here
+# for the same reason every other shared value in this block is: a row painter
+# runs per row per repaint, and [System.Windows.FontStyles]::Italic resolved
+# inline 200 times a paint is 200 type lookups for one constant.
+$Italic  = [System.Windows.FontStyles]::Italic
+$Upright = [System.Windows.FontStyles]::Normal
 
 # The fold chevron is drawn, not typed, so it is one mark at two angles rather
 # than two different characters that a font substitution could take apart.

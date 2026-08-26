@@ -192,7 +192,7 @@ $SR_TailBytes = 262144
 function Get-SRSessionInfo {
     param([Parameter(Mandatory)][string]$JsonlPath)
 
-    $cwd = $null; $title = $null
+    $cwd = $null; $title = $null; $aiTitle = $null
     try {
         # FileShare ReadWrite: a live session is appending to this file right now.
         $fs = [System.IO.File]::Open($JsonlPath, 'Open', 'Read', 'ReadWrite')
@@ -212,19 +212,63 @@ function Get-SRSessionInfo {
         $m = [regex]::Matches($text, '"customTitle":"(.*?)(?<!\\)"')
         if ($m.Count) { $title = $m[$m.Count - 1].Groups[1].Value.Replace('\\', '\').Replace('\"', '"') }
 
+        # 🔴 THE NAME WAS ALWAYS IN THIS BUFFER AND NOBODY LOOKED AT IT.
+        #
+        # claude writes TWO title records: customTitle, which -n and a rename set,
+        # and aiTitle, which it generates for every conversation from what the
+        # conversation is about. This function read only the first, so a session
+        # started without -n was called "(untitled)" forever -- 97 of 204 in the
+        # operator's registry, which is what made the roster read as an endless
+        # list of nothing.
+        #
+        # Measured across those 97 on 2026-08-26: 76 carry an aiTitle, 4 a
+        # customTitle, 17 neither. Every one of the 76 has its last aiTitle inside
+        # the tail ALREADY READ ABOVE, so this costs one more regex over a string
+        # in memory and no additional I/O at all.
+        #
+        # They are kept APART on purpose and merged nowhere near here. customTitle
+        # is a name somebody CHOSE; aiTitle is a guess. The guess is allowed to
+        # fill an empty label and is never allowed to overwrite a chosen one --
+        # see autoTitle in Update-SRRegistryCore, and 087c5f0 for what happens
+        # when a derived name is let into the field the operator owns.
+        $m = [regex]::Matches($text, '"aiTitle":"(.*?)(?<!\\)"')
+        if ($m.Count) { $aiTitle = $m[$m.Count - 1].Groups[1].Value.Replace('\\', '\').Replace('\"', '"') }
+
         # A transcript may hold its cwd only near the top. If the tail had none, read
         # the whole file -- but ONLY when it is small. Without the size bound this
         # fallback would pull a 100 MB file into memory, reintroducing exactly the
         # unbounded cost this function was rewritten to remove.
+        #
+        # aiTitle comes along for the ride, and needs to. Measured over the 97
+        # nameless conversations: the title record sits at a MEDIAN 14.3% into the
+        # file, so for anything over about 2 MB it is nowhere near the tail. Reading
+        # only the tail found 60 of the 76 that have one; this recovers the rest for
+        # the price of a read that was already going to happen whenever cwd was
+        # missing, and happens at most once per transcript because the answer --
+        # including "there is no aiTitle", recorded as an empty string -- is cached
+        # against the file's mtime and length from then on.
         $full = (Get-Item -LiteralPath $JsonlPath).Length
-        if (-not $cwd -and $take -lt $full -and $full -le 8MB) {
+        if ((-not $cwd -or -not $aiTitle) -and $take -lt $full -and $full -le 8MB) {
             $all = [System.IO.File]::ReadAllText($JsonlPath)
-            $m = [regex]::Matches($all, '"cwd":"(.*?)(?<!\\)"')
-            if ($m.Count) { $cwd = $m[$m.Count - 1].Groups[1].Value.Replace('\\', '\').Replace('\"', '"') }
+            if (-not $cwd) {
+                $m = [regex]::Matches($all, '"cwd":"(.*?)(?<!\\)"')
+                if ($m.Count) { $cwd = $m[$m.Count - 1].Groups[1].Value.Replace('\\', '\').Replace('\"', '"') }
+            }
+            if (-not $aiTitle) {
+                $m = [regex]::Matches($all, '"aiTitle":"(.*?)(?<!\\)"')
+                if ($m.Count) { $aiTitle = $m[$m.Count - 1].Groups[1].Value.Replace('\\', '\').Replace('\"', '"') }
+            }
+            # customTitle too, for the same reason and at no extra cost: a name the
+            # operator CHOSE is the one thing here that must not be missed because
+            # it happened to be written early in a long conversation.
+            if (-not $title) {
+                $m = [regex]::Matches($all, '"customTitle":"(.*?)(?<!\\)"')
+                if ($m.Count) { $title = $m[$m.Count - 1].Groups[1].Value.Replace('\\', '\').Replace('\"', '"') }
+            }
         }
     } catch { }
 
-    return [PSCustomObject]@{ Cwd = $cwd; Title = $title }
+    return [PSCustomObject]@{ Cwd = $cwd; Title = $title; AiTitle = $aiTitle }
 }
 
 # Win32_Process is a WMI round trip costing ~100 ms. Asking once per conversation
@@ -351,14 +395,35 @@ function Get-SRDiscovered {
         foreach ($f in $files) {
             $stamp = "{0}:{1}" -f $f.LastWriteTimeUtc.Ticks, $f.Length
 
-            $cwd = $null; $title = $null
-            if ($Cache -and $Cache.ContainsKey($f.BaseName) -and $Cache[$f.BaseName].Stamp -eq $stamp) {
-                $cwd   = $Cache[$f.BaseName].Cwd
-                $title = $Cache[$f.BaseName].Title
+            $cwd = $null; $title = $null; $autoTitle = $null
+
+            # 🪤 THREE STATES, NOT TWO, AND THE MIGRATION TURNS ON THE THIRD.
+            #
+            #   $null  nobody has looked yet   -- re-read, and never written back
+            #   ''     looked, there is none   -- a real answer; stops the re-read
+            #   text   the name
+            #
+            # Without the empty-string state this was a no-op. The cache is keyed
+            # on mtime+length, a repeat scan is nearly all hits by design, and the
+            # first scan after autoTitle shipped hit on all 204 -- so it carried
+            # forward a $null that had never been read from anything, and named
+            # exactly zero conversations. Requiring the field to be PRESENT for a
+            # hit re-reads each transcript once, which is the same one-time
+            # migration `cwd` above already does for v2 entries, and the 17
+            # conversations that genuinely have no aiTitle record that fact rather
+            # than being re-read on every scan forever.
+            $hit = ($Cache -and $Cache.ContainsKey($f.BaseName) -and
+                    $Cache[$f.BaseName].Stamp -eq $stamp -and
+                    $null -ne $Cache[$f.BaseName].AutoTitle)
+            if ($hit) {
+                $cwd       = $Cache[$f.BaseName].Cwd
+                $title     = $Cache[$f.BaseName].Title
+                $autoTitle = $Cache[$f.BaseName].AutoTitle
             } else {
-                $info  = Get-SRSessionInfo -JsonlPath $f.FullName
-                $cwd   = $info.Cwd
-                $title = $info.Title
+                $info      = Get-SRSessionInfo -JsonlPath $f.FullName
+                $cwd       = $info.Cwd
+                $title     = $info.Title
+                $autoTitle = "$($info.AiTitle)"   # never $null: we looked
             }
 
             if (-not $cwd) { continue }
@@ -382,6 +447,7 @@ function Get-SRDiscovered {
                 Jsonl      = $f.FullName
                 LastActive = $f.LastWriteTime
                 Title      = $title
+                AutoTitle  = $autoTitle
                 Stamp      = $stamp
             }
         }
@@ -424,6 +490,12 @@ function Get-SRDiscovered {
             Jsonl      = (Get-SRTranscriptPath -Dir $acwd -SessionId ([string]$kv.Key))
             LastActive = $(if ($a.StartedAt) { $a.StartedAt } else { Get-Date })
             Title      = $(if ($a.Name) { "$($a.Name)" } else { '(untitled)' })
+            # A session known only from the agent list has written no transcript,
+            # so there is no aiTitle to derive one from yet. Stated rather than
+            # left missing: every other row in $found carries this property, and a
+            # shape that varies by branch is how a $null becomes an exception
+            # somewhere that never expected the difference.
+            AutoTitle  = $null
             # Not an mtime+length: there is no file. Keyed on the pid so the row is
             # re-read once the session actually writes something.
             Stamp      = "agent:$($a.Pid)"
@@ -609,7 +681,13 @@ function Update-SRRegistryCore {
             # cwd is required for a hit: a v2 entry has none, so it is re-read once
             # and cached from then on.
             if ($cs.sessionId -and $cs.stamp -and $cs.cwd) {
-                $cache[$cs.sessionId] = @{ Cwd = $cs.cwd; Title = $cs.title; Stamp = $cs.stamp }
+                $cache[$cs.sessionId] = @{
+                    Cwd = $cs.cwd; Title = $cs.title; Stamp = $cs.stamp
+                    # Carried so a cache hit keeps the derived name. A scan is
+                    # nearly all cache hits by design, so omitting this would blank
+                    # almost every derived name on the very next pass.
+                    AutoTitle = $cs.autoTitle
+                }
             }
         }
     }
@@ -770,7 +848,42 @@ function Update-SRRegistryCore {
             if ($known.ContainsKey($r.SessionId)) {
                 $s = $known[$r.SessionId]
                 $s.lastActive = $r.LastActive.ToString('o')
-                $s.title      = $r.Title
+
+                # 🔴 A SCAN MUST NOT RENAME A CONVERSATION TO "(untitled)".
+                #
+                # This was an unconditional `$s.title = $r.Title`. Discovery emits
+                # the sentinel "(untitled)" whenever a transcript carries no
+                # customTitle -- so every scan overwrote a name the operator had
+                # given the session with the placeholder, unless -n happened to
+                # have written a customTitle into the transcript itself. That is
+                # the same class of mistake as 087c5f0, where a relaunch undid the
+                # operator's own renames, and it is why he reported losing every
+                # name after reconnecting remote control.
+                #
+                # A real discovered title still wins -- renaming a session with -n
+                # must still show up here. The sentinel just no longer counts as
+                # one.
+                if ("$($r.Title)" -and "$($r.Title)" -ne '(untitled)') { $s.title = $r.Title }
+
+                # autoTitle is claude's own generated name, kept in its OWN field so
+                # that choosing what to display happens once, at the point of
+                # display, and is never a guess that has already overwritten the
+                # operator's answer.
+                #
+                # ONLY WHEN SOMEBODY LOOKED. $null means no transcript was read --
+                # a row from the agent list has none -- and writing that back would
+                # blank a name derived on an earlier pass, so the row would lose
+                # its name the moment the session started running, which is the
+                # moment the operator is most likely to be looking at it. An EMPTY
+                # STRING is a real answer ("read it, there is no aiTitle") and is
+                # stored, because that is what stops the transcript being re-read
+                # on every scan from here on.
+                if ($null -ne $r.AutoTitle) {
+                    if ($null -eq $s.PSObject.Properties['autoTitle']) {
+                        $s | Add-Member -NotePropertyName autoTitle -NotePropertyValue $r.AutoTitle -Force
+                    } else { $s.autoTitle = $r.AutoTitle }
+                }
+
                 # cwd/lane/worktree can all change under a session (it can be moved
                 # into a worktree), so refresh them rather than trusting first sight.
                 foreach ($kv in @(
@@ -791,6 +904,9 @@ function Update-SRRegistryCore {
             $dir.sessions += [PSCustomObject]@{
                 sessionId  = $r.SessionId
                 title      = $r.Title
+                # claude's own name for the conversation, or $null. Never merged
+                # into `title`: that field belongs to whoever named the session.
+                autoTitle  = $r.AutoTitle
                 enabled    = $false
                 pinned     = $false
                 lastActive = $r.LastActive.ToString('o')
@@ -957,7 +1073,22 @@ function Get-SRSelected {
                 Lane       = $(if ($s.lane) { $s.lane } else { 'main' })
                 Worktree   = $s.worktree
                 SessionId  = $s.sessionId
-                Title      = $s.title
+                # THE NAME THIS SESSION WILL REOPEN UNDER, and it must not be the
+                # placeholder. This feeds --title, -n and the remote-control name
+                # prefix, so a session whose title is the "(untitled)" sentinel used
+                # to come back as a tab called "(untitled)" and register remotely
+                # under the same -- which is exactly the complaint that over twenty
+                # reconnected sessions were unidentifiable.
+                #
+                # A chosen name still wins. This only fills in where there was
+                # nothing to show, and claude's own generated title is a far better
+                # answer than the placeholder for every one of the 76 conversations
+                # measured as having one.
+                Title      = $(
+                    if ("$($s.title)".Trim() -and "$($s.title)".Trim() -ne '(untitled)') { $s.title }
+                    elseif ("$($s.autoTitle)".Trim()) { $s.autoTitle }
+                    else { $s.title }
+                )
                 # The transcript as the scan actually found it. Callers must not
                 # re-derive this from Path -- see Get-SRTranscriptPath.
                 Jsonl      = $s.jsonl

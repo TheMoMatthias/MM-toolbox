@@ -254,6 +254,117 @@ $tempish = Join-Path $env:TEMP 'claude'
 if (-not (Test-SRExcluded -Path $tempish -Config $cfgNow)) {
     Fail "a temp path ($tempish) is no longer excluded - the fix went too wide"
 } else { Pass 'temp paths are still excluded' }
+
+# --- A CONVERSATION NOBODY NAMED STILL HAS A NAME ---------------------------
+# claude writes TWO title records. customTitle is what -n and a rename set;
+# aiTitle is the one it generates from what the conversation is about. This
+# function read only the first, so 97 of the operator's 204 conversations were
+# called "(untitled)" on screen while their own transcripts held a good name.
+#
+# The two must come back SEPARATELY. A name somebody chose and a name that was
+# guessed are treated differently everywhere downstream -- the guess is drawn in
+# italic, it never reaches the `title` field, and it loses every tie -- and all
+# of that rests on this function not merging them here.
+Write-Host ''
+Write-Host '--- a conversation nobody named still has a name ---'
+$ttmp = Join-Path $here ('.state\title-fixtures-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$null = New-Item -ItemType Directory -Path $ttmp -Force
+try {
+    $cwdRec = '{"type":"user","cwd":"' + ($here -replace '\\', '\\') + '"}'
+    $pad = @()
+    for ($i = 0; $i -lt 40; $i++) { $pad += '{"type":"attachment","uuid":"p' + $i + '"}' }
+
+    function New-TitleFixture { param([string]$Name, [string[]]$Records)
+        $p = Join-Path $ttmp ($Name + '.jsonl')
+        [System.IO.File]::WriteAllLines($p, $Records, (New-Object System.Text.UTF8Encoding($false)))
+        return $p
+    }
+
+    # 1. Generated only: the case that covers 76 of the operator's 97.
+    # 🪤 THE ARGUMENT MUST BE PARENTHESISED. `New-TitleFixture 'ai' @($a) + $b`
+    # parses as a CALL taking @($a), whose result is then added to $b and echoed
+    # to the host -- so the fixture is written with one record in it and the test
+    # fails for a reason that has nothing to do with what it is testing.
+    $fAi = New-TitleFixture 'ai' (@($cwdRec) + $pad + @('{"type":"summary","aiTitle":"Diagnose a slow disk"}') + $pad)
+    $iAi = Get-SRSessionInfo -JsonlPath $fAi
+    if ("$($iAi.AiTitle)" -eq 'Diagnose a slow disk') { Pass "the generated name is read: '$($iAi.AiTitle)'" }
+    else { Fail "aiTitle came back as '$($iAi.AiTitle)' - a conversation nobody named stays '(untitled)'" }
+    if (-not "$($iAi.Title)") { Pass 'and it is NOT reported as a chosen name' }
+    else { Fail "aiTitle leaked into Title as '$($iAi.Title)' - a guess would outrank -n" }
+
+    # 2. Both present. The chosen one must survive alongside, not replace or be
+    #    replaced: whichever wins is decided at the point of display, not here.
+    $fBoth = New-TitleFixture 'both' (@($cwdRec) + $pad +
+        @('{"type":"summary","aiTitle":"Some generated words"}',
+          '{"type":"summary","customTitle":"F2-SPINE"}') + $pad)
+    $iBoth = Get-SRSessionInfo -JsonlPath $fBoth
+    if ("$($iBoth.Title)" -eq 'F2-SPINE') { Pass 'a chosen name is still read as the chosen name' }
+    else { Fail "customTitle came back as '$($iBoth.Title)' - a rename would be lost" }
+    if ("$($iBoth.AiTitle)" -eq 'Some generated words') { Pass 'and the generated one is kept beside it, not merged' }
+    else { Fail "aiTitle came back as '$($iBoth.AiTitle)' when a customTitle was also present" }
+
+    # 3. 🪤 THE TITLE IS USUALLY NOWHERE NEAR THE TAIL. Measured over the 97:
+    #    the aiTitle record sits at a MEDIAN 14.3% into the file. Reading only the
+    #    256 KB tail found 60 of the 76 that have one. This fixture puts the title
+    #    at the very top behind more than a tail's worth of padding, which is the
+    #    shape that silently cost 16 conversations their names.
+    $bulk = @()
+    $filler = '{"type":"attachment","uuid":"' + ('x' * 900) + '"}'
+    for ($i = 0; $i -lt 400; $i++) { $bulk += $filler }
+    $fTop = New-TitleFixture 'top' (@($cwdRec, '{"type":"summary","aiTitle":"Named at the very top"}') + $bulk)
+    $topLen = (Get-Item -LiteralPath $fTop).Length
+    $iTop = Get-SRSessionInfo -JsonlPath $fTop
+    if ($topLen -le $SR_TailBytes) {
+        Fail "the fixture is only $topLen bytes - it does not exceed the $SR_TailBytes-byte tail, so it proves nothing"
+    } elseif ("$($iTop.AiTitle)" -eq 'Named at the very top') {
+        Pass "a title $([int]($topLen/1KB)) KB above the tail is still found"
+    } else {
+        Fail "a title outside the $([int]($SR_TailBytes/1KB)) KB tail was missed - 16 conversations lost their names to exactly this"
+    }
+
+    # 4. Nothing at all. It must say so plainly rather than inventing something:
+    #    21 of the operator's conversations genuinely have no generated title.
+    $fNone = New-TitleFixture 'none' (@($cwdRec) + $pad)
+    $iNone = Get-SRSessionInfo -JsonlPath $fNone
+    if (-not "$($iNone.AiTitle)" -and -not "$($iNone.Title)") { Pass 'a transcript with neither reports neither' }
+    else { Fail "invented a name from nothing: Title '$($iNone.Title)', AiTitle '$($iNone.AiTitle)'" }
+} finally {
+    Remove-Item -LiteralPath $ttmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --- WHAT A SESSION REOPENS UNDER ------------------------------------------
+# Get-SRSelected feeds --title, -n and the remote-control name prefix. A session
+# whose title is the "(untitled)" sentinel used to come back as a tab called
+# "(untitled)" and register remotely under the same -- which is precisely the
+# complaint that twenty-odd reconnected sessions were unidentifiable.
+$selReg = [PSCustomObject]@{
+    version = 2; lastScan = $null
+    directories = @(
+        [PSCustomObject]@{
+            path = $here; enabled = $true; missing = $false
+            sessions = @(
+                [PSCustomObject]@{ sessionId = 'aaaa1111'; title = 'CHOSEN'; autoTitle = 'generated words'
+                                   enabled = $true; pinned = $true; gone = $false; lane = 'main'
+                                   cwd = $here; jsonl = 'x'; lastActive = (Get-Date).ToString('o') },
+                [PSCustomObject]@{ sessionId = 'bbbb2222'; title = '(untitled)'; autoTitle = 'Fix the slow disk'
+                                   enabled = $true; pinned = $true; gone = $false; lane = 'main'
+                                   cwd = $here; jsonl = 'x'; lastActive = (Get-Date).ToString('o') },
+                [PSCustomObject]@{ sessionId = 'cccc3333'; title = '(untitled)'; autoTitle = ''
+                                   enabled = $true; pinned = $true; gone = $false; lane = 'main'
+                                   cwd = $here; jsonl = 'x'; lastActive = (Get-Date).ToString('o') }
+            )
+        }
+    )
+}
+$sel = Get-SRSelected -Registry $selReg -Config $cfgNow
+$byId = @{}
+foreach ($row in @($sel)) { $byId["$($row.SessionId)"] = $row }
+if ("$($byId['aaaa1111'].Title)" -eq 'CHOSEN') { Pass 'a chosen name is what the session reopens under' }
+else { Fail "reopens as '$($byId['aaaa1111'].Title)' - a generated name outranked one somebody chose" }
+if ("$($byId['bbbb2222'].Title)" -eq 'Fix the slow disk') { Pass 'a nameless session reopens under its generated name, not "(untitled)"' }
+else { Fail "reopens as '$($byId['bbbb2222'].Title)' - the tab and the remote registration are both unidentifiable" }
+if ("$($byId['cccc3333'].Title)" -eq '(untitled)') { Pass 'with nothing to go on it still reopens, under the placeholder' }
+else { Fail "reopens as '$($byId['cccc3333'].Title)' - a session with no name at all must still launch" }
 # --- A SESSION THAT HAS NEVER BEEN PROMPTED --------------------------------
 # claude writes the transcript on the FIRST MESSAGE, so a window just opened and
 # not yet typed into has no .jsonl anywhere -- and a walk over transcripts cannot

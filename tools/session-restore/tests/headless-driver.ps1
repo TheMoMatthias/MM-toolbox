@@ -1087,6 +1087,67 @@ else {
     Update-List
 }
 
+# --- A NAME NOBODY CHOSE IS STILL A NAME, AND IT LOOKS LIKE ONE -------------
+# 97 of the operator's 204 conversations were drawn as the word "(untitled)"
+# while their own transcripts held a perfectly good generated name. Showing that
+# name is only half the fix: a GENERATED name and a CHOSEN one must stay
+# distinguishable at a glance, or the list trades one kind of uninformative for
+# another. Slant carries it, because this window is monochrome by design and
+# NameBrush is already saying four other things.
+$titleVictim = $null
+foreach ($r in $script:rows) { if ($r.Kind -eq 'session') { $titleVictim = $r; break } }
+if (-not $titleVictim) { Fail 'no conversation row to test naming against' }
+else {
+    $ts = $titleVictim.Session
+    $keepTitle = $ts.title
+    $keepAuto  = $(if ($null -ne $ts.PSObject.Properties['autoTitle']) { $ts.autoTitle } else { $null })
+    try {
+        # 1. A chosen name wins outright, and stands upright.
+        Set-SessionField $ts 'title' 'CHOSEN-NAME'
+        Set-SessionField $ts 'autoTitle' 'a generated description'
+        if ((Get-SessionTitle $ts $titleVictim.Dir) -eq 'CHOSEN-NAME') { Pass 'a chosen name outranks a generated one' }
+        else { Fail "the row shows '$(Get-SessionTitle $ts $titleVictim.Dir)' - a guess outranked -n" }
+        if (-not (Test-DerivedTitle $ts)) { Pass 'and it is not marked as derived' }
+        else { Fail 'a chosen name is marked derived - it would be drawn in italic' }
+
+        # 2. 🪤 "(untitled)" IS A SENTINEL IN `title`, NOT AN EMPTY FIELD. That is
+        #    why the old IsNullOrWhiteSpace test never fired once in 204 rows.
+        Set-SessionField $ts 'title' '(untitled)'
+        if ((Get-SessionTitle $ts $titleVictim.Dir) -eq 'a generated description') { Pass 'the placeholder falls through to the generated name' }
+        else { Fail "the row still shows '$(Get-SessionTitle $ts $titleVictim.Dir)' - the sentinel was treated as a real name" }
+        if (Test-DerivedTitle $ts) { Pass 'and it IS marked derived, so the row draws it in italic' }
+        else { Fail 'a generated name is not marked derived - it would be indistinguishable from one somebody chose' }
+
+        Update-RowStatic $titleVictim
+        Update-RowName $titleVictim
+        if ($titleVictim.NameStyle -eq $Italic) { Pass 'the painted row leans' }
+        else { Fail "the row's NameStyle is '$($titleVictim.NameStyle)', not italic" }
+
+        # 3. IT MUST BE FINDABLE BY WHAT IT SAYS. A row the operator can read but
+        #    cannot search for reads as a broken search, not a missing field.
+        Set-ViewMode 'all'
+        $script:filter = 'generated description'
+        Update-List
+        $hits = @($script:rows | Where-Object { $_.Kind -eq 'session' -and "$($_.Session.sessionId)" -eq "$($ts.sessionId)" }).Count
+        $script:filter = ''
+        Update-List
+        if ($hits -ge 1) { Pass 'searching for the generated name finds the conversation' }
+        else { Fail 'a conversation cannot be found by the name shown on its own row' }
+
+        # 4. Nothing at all: it falls back to somewhere, never to blank.
+        Set-SessionField $ts 'autoTitle' ''
+        $bare = Get-SessionTitle $ts $titleVictim.Dir
+        if ("$bare".Trim()) { Pass "with neither name it still says something: '$bare'" }
+        else { Fail 'a conversation with no name at all draws an empty row' }
+    } finally {
+        Set-SessionField $ts 'title' $keepTitle
+        if ($null -ne $keepAuto) { Set-SessionField $ts 'autoTitle' $keepAuto }
+        Update-RowStatic $titleVictim
+        Update-RowName $titleVictim
+        Update-List
+    }
+}
+
 # The right-click menu exists on BOTH lists, with the actions the operator asked
 # for. A menu on one list only is the discoverability bug all over again.
 foreach ($pair in @(@{ N = 'roster'; L = $ui.RowList }, @{ N = 'inbox'; L = $ui.InboxList })) {
