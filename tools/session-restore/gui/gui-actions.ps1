@@ -274,7 +274,7 @@ function Invoke-RelaunchTicked {
     # 🔴 RELAUNCH RESTARTS; IT DOES NOT OPEN. This took Restart + Fresh, which on the
     # operator's machine meant restarting 12 running conversations AND opening 17
     # more that happened to be ticked -- 29 tabs from a button pressed to fix the
-    # names on the 12. Opening the rest is what `Launch everything ticked` is for,
+    # names on the 12. Opening the rest is what `Open the ones not running` is for,
     # and pressing both gives the whole ticked set up and signed in.
     #
     # It stays inside the ticked set either way, which is the rule that was agreed;
@@ -304,7 +304,7 @@ function Invoke-RelaunchTicked {
     # NOT a skip, and said as such: these are simply not running, so a relaunch has
     # nothing to do to them. Naming the button that DOES open them stops this
     # reading as something withheld.
-    if (@($plan.Fresh).Count) { $note += "{0} more are ticked but not running - use 'Launch everything ticked' to open those." -f @($plan.Fresh).Count }
+    if (@($plan.Fresh).Count) { $note += "{0} more are ticked but not running - use 'Open the ones not running' for those." -f @($plan.Fresh).Count }
     if ($over) { $note += "{0} more are ticked but over the maxSessions cap of {1}, so they are skipped." -f $over, $cap }
 
     # 🔴 NAME WHAT WILL BE CLOSED. The dialog carried the list and showed a COUNT,

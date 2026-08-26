@@ -232,15 +232,15 @@ try {
             (New-Object System.Windows.Automation.PropertyCondition(
                 [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
                 [System.Windows.Automation.ControlType]::Button)))
-        foreach ($b in $btns) { if ("$($b.Current.Name)" -match 'Launch everything ticked') { $launch = $b; break } }
-        if ($launch -and -not $launch.Current.IsOffscreen) { Pass 'All shows "Launch everything ticked"' }
-        else { Fail 'All does not show "Launch everything ticked" - the logon furniture did not follow the retired view' }
+        foreach ($b in $btns) { if ("$($b.Current.Name)" -match 'Open the ones not running') { $launch = $b; break } }
+        if ($launch -and -not $launch.Current.IsOffscreen) { Pass 'All shows "Open the ones not running"' }
+        else { Fail 'All does not show "Open the ones not running" - the logon furniture did not follow the retired view' }
 
         $inbox.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
         Start-Sleep -Seconds 3
-        if ($launch -and $launch.Current.IsOffscreen) { Pass 'the inbox hides "Launch everything ticked"' }
+        if ($launch -and $launch.Current.IsOffscreen) { Pass 'the inbox hides "Open the ones not running"' }
         elseif (-not $launch) { Note 'no launch button to re-check' }
-        else { Fail 'the inbox is still showing "Launch everything ticked"' }
+        else { Fail 'the inbox is still showing "Open the ones not running"' }
 
         # Back in the inbox, it must have rebuilt too -- the same trap in the
         # other direction.

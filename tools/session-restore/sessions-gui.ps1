@@ -25,7 +25,7 @@
                  reads the tick.
 
     Opposite ends, two headings, two control shapes, two rules. Nothing here
-    launches until an OPEN / New session / Launch everything ticked button is
+    launches until an OPEN / New session / Open the ones not running button is
     pressed.
 
     Keys:  / or Ctrl+F find    ESC clear the filter    SPACE tick+pin    U unpin
@@ -1097,7 +1097,7 @@ function Set-Status { param([string]$Message, [string]$Tone = 'info')
 # TRAP: PowerShell SWALLOWS an exception thrown inside a WPF event handler. It is
 # not on any pipeline, so it reaches neither the console nor the dispatcher's
 # unhandled-exception path -- the button simply does nothing, forever, and says
-# nothing about why. Measured 2026-08-22: "Launch everything ticked" was inert and
+# nothing about why. Measured 2026-08-22: the launch-everything button was inert and
 # left no trace anywhere. Every handler goes through here instead, so a failure
 # lands on the status line and in .state\restore.log.
 function Invoke-Guarded { param([Parameter(Mandatory)][scriptblock]$Body, [string]$What = 'that')
@@ -1735,7 +1735,7 @@ function Update-Header {
     })
     # Two facts, not three. The auto-tick rule is a standing rule that never
     # changes -- it was a sentence of teaching text on the one line that also has
-    # to hold every action, and it pushed "Launch everything ticked" off the
+    # to hold every action, and it pushed the logon buttons off the
     # window. It lives in the legend now, behind the "?", with the rest of the
     # things you read once.
     # "pinned" is a restore concept -- it means the hourly auto-tick roll leaves

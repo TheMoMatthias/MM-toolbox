@@ -1301,15 +1301,22 @@
           <CheckBox x:Name="WorktreeToggle" Style="{StaticResource TickBox}" Margin="0,0,8,0"
                     ToolTip="Show a lane for each git worktree. Writes includeWorktrees to the config and rescans."/>
           <TextBlock x:Name="WorktreeCaption" Text="worktrees" VerticalAlignment="Center" Foreground="{StaticResource TextMid}" FontSize="12.5" Margin="0,0,18,0"/>
-          <TextBlock x:Name="NowCaption" Text="RIGHT NOW" Style="{StaticResource PoleCaption}" Margin="0,0,12,0"/>
-          <Button x:Name="LaunchTicked" Style="{StaticResource BtnNow}" Content="Launch everything ticked"
-                  ToolTip="Open every ticked conversation that is not already open, up to the maxSessions cap"/>
+          <!-- TWO BUTTONS THAT SOUND THE SAME AND DO OPPOSITE THINGS.
+               "Launch everything ticked" and "Relaunch ticked" differ by three
+               letters, and the operator had to ASK where the relaunch button
+               was. One opens what is NOT running; the other closes what IS and
+               opens it again. Name them after the half of the ticked set each
+               one actually touches, and caption the pair with the question they
+               answer rather than with "RIGHT NOW", which says when, not what. -->
+          <TextBlock x:Name="NowCaption" Text="THE TICKED SET" Style="{StaticResource PoleCaption}" Margin="0,0,12,0"/>
+          <Button x:Name="LaunchTicked" Style="{StaticResource BtnNow}" Content="Open the ones not running"
+                  ToolTip="Open every ticked conversation that is not already open, up to the maxSessions cap. Anything already running is left exactly as it is."/>
           <!-- AFTER SIGNING IN AGAIN. A running session reads the login token at
                STARTUP, so signing in once does not reach the sessions already open:
                they each sit at their own login prompt until restarted. This closes the
                ticked ones and opens them again, which is the only thing that works. -->
-          <Button x:Name="RelaunchTicked" Style="{StaticResource Btn}" Content="Relaunch ticked" Margin="9,0,0,0"
-                  ToolTip="Close the ticked conversations and open them again. Use it after signing in: a running session only reads your login at startup. Anything mid-turn is left alone and named."/>
+          <Button x:Name="RelaunchTicked" Style="{StaticResource Btn}" Content="Restart the ones running" Margin="9,0,0,0"
+                  ToolTip="Close the ticked conversations that ARE running and open them again. This is the button for the morning after your login token expires: a running session only reads your login at startup, so signing in does not reach it. Anything mid-turn is left alone and named."/>
         </StackPanel>
         </Grid>
         <TextBlock x:Name="Unattributed" Text="" Foreground="{StaticResource TextMid}" FontSize="12"

@@ -49,17 +49,34 @@ the Start Menu shortcut uses. `Sessions.bat` is the one to run from a terminal;
 `Sessions.bat` opens a single window for every conversation on the machine, across
 every repo, in two views:
 
-- **Inbox** — what is running or was, grouped by what it wants from you:
-  **Needs you** / **Working** / **Idle** / **Not running**, each row carrying the
-  one line that conversation last said.
-- **Roster** — what comes back at logon. Every conversation from the last
-  `listDays` (7), grouped by project and then by worktree, each group collapsible
-  and its header carrying the count, how many are armed, and whether the project
-  itself is switched off. Ticking is the point of this screen, so the tick column,
-  the ticked / not-ticked filter and **Launch everything ticked** all live here —
-  as does the warning that `maxSessions` will not fit everything you have ticked.
-  Click a column heading to sort within each group; shift-click to sort by one
-  thing and then another. Searching and filtering ignore folds.
+- **Now** — the control surface: what is running or was, grouped by what it wants
+  from you (**Needs you** / **Working** / **Idle** / **Not running**), each row
+  carrying the one line that conversation last said. No ticks here; nothing on
+  this screen is about tomorrow morning.
+- **Roster** — the relaunch surface: what comes back at logon. Every conversation
+  from the last `listDays` (7), grouped by project, each group collapsible and its
+  header carrying the count, how many are armed, and whether the project itself is
+  switched off. Ticking is the point of this screen, so the tick column, the
+  ticked / not-ticked filter and the two logon buttons all live here — as does the
+  warning that `maxSessions` will not fit everything you have ticked. Click a
+  column heading to sort within each group; shift-click to sort by one thing and
+  then another. Searching and filtering ignore folds.
+
+**The roster is ordered by where you last worked, not A–Z.** The project you
+touched most recently is at the top, and a project you cannot work in any more is
+at the bottom saying why: `folder is gone` for a directory that has been deleted
+(nothing under it can ever be launched, so it also arrives folded), `not a
+project` for the home folder, where a conversation lands when it started nowhere
+in particular. Nothing is ever excluded to achieve that — it is an order, not a
+filter, and every row stays reachable, searchable and tickable.
+
+**A conversation nobody named still has a name.** claude writes its own title for
+every conversation; where you have not set one with `-n`, the roster shows that
+generated title *in italic* rather than the word `(untitled)`. Upright means
+somebody chose the name; a slant means claude guessed it from what the
+conversation is about. A generated name never overwrites one you set, and a
+session reopens under whichever of the two is showing — so its terminal tab and
+its remote-control registration are identifiable too.
 
 Selecting a row opens the conversation underneath the list, with a box to reply
 into it — and the reply box stays dead until what is on screen is what that session
@@ -72,12 +89,17 @@ records is a real selection. It refuses if the session has moved on since you
 looked, and a question that takes several answers at once is shown but not
 answered from here — that one is still a trip to the terminal.
 
-**After signing in again, press Relaunch ticked.** A running session reads your
-login token when it STARTS, so signing in once does not reach the sessions that
-are already open — they each sit at their own login prompt until restarted. The
-button closes the ticked conversations and opens them again, which is the only
-thing that fixes it. Anything mid-turn is left alone and named in the
-confirmation, because killing a session loses the reply it was writing.
+**The roster has two logon buttons, and they touch opposite halves of the ticked
+set.** `Open the ones not running` starts the ticked conversations that are not
+already open and leaves anything running exactly as it is. `Restart the ones
+running` does the reverse.
+
+**After signing in again, press `Restart the ones running`.** A running session
+reads your login token when it STARTS, so signing in once does not reach the
+sessions that are already open — they each sit at their own login prompt until
+restarted. The button closes those ticked conversations and opens them again,
+which is the only thing that fixes it. Anything mid-turn is left alone and named
+in the confirmation, because killing a session loses the reply it was writing.
 
 Right-click any row, in either view, to tick it for logon, untick it, hide it, open
 it, or jump to its terminal. Hiding is a flag and never a deletion: **Bulk › Show

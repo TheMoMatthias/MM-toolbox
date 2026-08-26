@@ -97,14 +97,22 @@ Write-Host "  into    : $shotDir" -ForegroundColor DarkGray
 # a picture that disagrees with the running window is worse than no picture.
 $shotSw = [Diagnostics.Stopwatch]::StartNew()
 $shotConv = @{}
+$shotSaid = @{}
 $shotRead = 0
 foreach ($shotDir2 in @($script:dirs)) {
     foreach ($shotS in @(Get-Visible $shotDir2)) {
         if (-not $shotS.sessionId -or -not $shotS.jsonl) { continue }
-        try { $shotConv["$($shotS.sessionId)".ToLower()] = Get-SRConversationState -JsonlPath $shotS.jsonl; $shotRead++ } catch { }
+        $shotKey = "$($shotS.sessionId)".ToLower()
+        try { $shotConv[$shotKey] = Get-SRConversationState -JsonlPath $shotS.jsonl; $shotRead++ } catch { }
+        # WHAT IT ACTUALLY SAID, which is the widest column in the Now view and
+        # the whole reason that view exists. Without this the shot fell back to
+        # the state DETAIL -- "input needed", "running" -- on every row, and Now
+        # looked far more repetitive on paper than it is on screen.
+        try { $shotSaid[$shotKey] = Get-SRLastSaid -JsonlPath $shotS.jsonl } catch { }
     }
 }
 $script:conv = $shotConv
+$script:said = $shotSaid
 try { $script:agents = Get-SRAgentStatus } catch { }
 Write-Host "  probed  : $shotRead conversation(s) in $([int]$shotSw.ElapsedMilliseconds) ms, $(@($script:agents.Keys).Count) agent(s)" -ForegroundColor DarkGray
 # No repaint needed here: every Set-ViewMode below rebuilds through Update-List,

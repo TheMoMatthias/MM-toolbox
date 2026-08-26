@@ -49,6 +49,37 @@ by SCOPE — and scope is a filter, not a screen, which is why All felt like a d
 *Internally the modes are still `inbox` and `all`; renaming them would be churn
 across a hundred call sites for no behaviour.*
 
+**autoTitle** — claude's own generated name for a conversation, read out of its
+transcript's `aiTitle` record. Kept in its OWN registry field, never merged into
+`title`: `title` belongs to whoever NAMED the session (`-n`, a rename, an adopted
+live agent name) and a guess must never overwrite a choice. The row draws a
+derived name in *italic* for exactly that reason — upright means chosen. 97 of
+204 conversations read "(untitled)" while their own transcripts held a perfectly
+good name; 60 of them are named now.
+*Aliases to avoid: "the title". Say `title` or `autoTitle` — which one is the
+whole point.*
+
+**tier** — whether a project is somewhere you could still go back to working in.
+Ordered ahead of recency on the roster: an existing directory, then the **home
+folder** (`not a project` — where a conversation lands when it started nowhere in
+particular), then a directory that has been DELETED (`folder is gone` — discovery
+refuses every conversation under it, so nothing there can ever be opened, ticked
+or relaunched, and it arrives folded). It is an ORDER, NOT A FILTER: nothing is
+excluded, and 06391a0 must not be quietly undone.
+
+**project label** — what a project row is called. The LEAF name, widened one path
+segment at a time until it is unique on screen: eight projects here are called
+`repo`, so they read `R12 / repo`, `R08 / repo`. One rule, shared by the roster
+header, the sort key and the filter dropdown, which each grew their own before.
+This is what makes ordering the roster by recency safe.
+
+**loose** — a conversation whose lane holds only it, hanging directly under its
+project instead of under a lane row, with the lane shown as a tag beside the name.
+A lane row is emitted only where the project has more than one lane AND that lane
+has more than one conversation. AlgoTrader has 35 lanes and 31 hold exactly one:
+without both halves of that rule the roster drew "V-INGEST  1 - 1 armed" and then,
+directly under it, "V-INGEST", thirty-one times.
+
 **fold** — a collapsed group on the roster. Lives on the project (`folded`, and
 `foldedLanes` for the lanes under it), so it survives a restart. FILTERING IGNORES
 FOLDS — hiding the rows that were searched for is the one thing a filter must
@@ -110,8 +141,10 @@ reads off the headings as `STATE ↑1  WHEN ↓2`.
 project, grouped into bands and ordered by what it wants from you. The bands are
 not a sort key and cannot be sorted away: they are what this screen *is*.
 
-**ROSTER** (internally `all`) — what comes back at logon. Grouped project then
-lane, collapsible, ticks as the primary control, and the tick summary says what
+**ROSTER** (internally `all`) — what comes back at logon. Grouped by project,
+ordered by WHERE YOU LAST WORKED (never A–Z; see **project label** and **tier**
+for why that is safe), lanes only where they group more than one conversation,
+collapsible, ticks as the primary control, and the tick summary says what
 the `maxSessions` cap will DROP before it drops it.
 
 They differed only by SCOPE until 2026-08-24, and scope is a filter, not a screen.
@@ -188,6 +221,39 @@ logon and most ticked conversations are not running.
 ---
 
 ## The traps this codebase keeps walking into
+
+**A CACHE THAT IS ALL HITS MIGRATES NOTHING.** The discovery cache is keyed on a
+transcript's mtime+length, and a repeat scan is nearly all hits by design. So the
+first scan after `autoTitle` shipped hit on all 204, carried forward a `$null`
+that had never been read from anything, and named EXACTLY ZERO conversations —
+silently, with the feature working perfectly on any file that happened to change.
+A new field needs a THIRD state to migrate: `$null` = nobody looked (re-read,
+never write it back), `''` = looked and there is none (a real answer; stops the
+re-read), value = the answer. `cwd` already did this for v2 entries; copy it.
+
+**THE TAIL IS NOT WHERE THE INTERESTING RECORDS ARE.** Tail-reading a transcript
+is right for what a conversation is DOING and wrong for what it IS. The `aiTitle`
+record sits at a MEDIAN 14.3% into the file, so a 256 KB tail found 60 of the 76
+conversations that had one. The bounded full read (≤8 MB, only when the tail came
+up short) exists for exactly this, and it is nearly free because the answer is
+then cached against mtime+length forever.
+
+**A TEST THAT ASSERTS AN ACCIDENT FAILS HONESTLY AND GETS BLAMED ON THE WEATHER.**
+Two of these were being re-run until green for days. `headless` staged
+`lastActive` for two of six conversations and then asserted the ordering of a band
+holding THREE — the third kept its real timestamp, so whenever it landed on a
+conversation being written at that moment the assertion failed correctly. `jump`
+probed the tab cache with `$tabs[0]`, and five tabs on this machine are called
+`C:\WINDOWS\SYSTEM32\cmd.exe`, which `Update-SRTabIndex` deliberately refuses as
+ambiguous. **A fixture has to own every input its assertion reads.** If a suite
+passes alone and fails in a sweep, that is a fact about the fixture, not the
+machine.
+
+**A HEADING FOR A COLUMN NOBODY CAN SEE.** Already recorded once as "WHEN v2 with
+no ^1 anywhere", and walked into again from the other direction: deleting the
+`PROJECT / LANE` column while leaving its sort heading would have left a heading
+that orders the list by something not on screen. The header bar and the row
+template share one set of `ColumnDefinitions` by hand — change one, change both.
 
 **`,@()` on return.** Six instances so far, two of them shipped. `,@(...)` stops a
 ONE-element array unrolling to a scalar — and makes `@(f)` at the call site an

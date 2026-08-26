@@ -263,7 +263,7 @@ foreach ($mode in @('all', 'inbox')) {
     if ($n -lt 1) { Fail "'$mode' left an EMPTY list - the rebuild did not happen"; continue }
     # The logon furniture is what used to make Restore a separate view.
     if ($ui.LaunchTicked.Visibility -ne $(if ($inbox) { $V_Hide } else { $V_Show })) {
-        Fail "'$mode' has the wrong idea about 'Launch everything ticked'"; continue
+        Fail "'$mode' has the wrong idea about the logon buttons"; continue
     }
     Pass "'$mode' shows the right list, with $n rows, and the right chrome"
 }
@@ -1003,7 +1003,7 @@ try {
 # RELAUNCH RESTARTS, IT DOES NOT OPEN. A ticked conversation that is NOT running
 # has no stale token and no stale remote registration, so there is nothing to fix
 # about it -- and taking it would have meant 29 tabs from a button pressed to
-# repair 12. Opening the rest is what `Launch everything ticked` is for.
+# repair 12. Opening the rest is what `Open the ones not running` is for.
 $notRunningId = 'eeeeeeee-4444-4444-4444-444444444444'
 $savedAgents2 = $script:agents
 $savedDirs2 = $script:dirs
