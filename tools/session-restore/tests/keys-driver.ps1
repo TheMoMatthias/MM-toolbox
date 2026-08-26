@@ -129,6 +129,47 @@ if (-not (FocusInWindow)) {
 }
 Pass 'keyboard focus is inside the GUI window'
 
+# THE ROSTER OPENS FOLDED NOW, which is the whole point of it: 26 project rows on
+# one screen instead of two hundred. That is a list which FITS, and this suite
+# needs one that SCROLLS -- the comment at the top of this file records exactly
+# what happens when it is aimed at a list that fits (every scroll assertion
+# reports -1%, and three working keyboard shortcuts read as broken for a day).
+#
+# So open the first project with RIGHT, the documented fold key, which puts its
+# hundred-odd conversations on the list. Two things proven for one keystroke: the
+# fold key does what the help says, and everything below has something to scroll.
+#
+# AFTER THE FOCUS CHECK, deliberately. A key pressed before focus is confirmed
+# would report "RIGHT did nothing" when the truth is that the keyboard was
+# somewhere else entirely -- which is the trap this file already documents.
+# 🪤 COUNT THE VIEWPORT, NOT THE ROWS. The list is VIRTUALIZED, so FindAll over
+# its children returns only what is currently realised -- 18, whether the list
+# holds 27 rows or 227. A row count cannot see a fold open at all.
+# VerticalViewSize is the fraction of the list on screen, so it falls as the list
+# grows, and it is computed from the real extent rather than from what has been
+# realised.
+function ViewSize {
+    try { return [math]::Round($list.GetCurrentPattern(
+        [System.Windows.Automation.ScrollPattern]::Pattern).Current.VerticalViewSize, 1) }
+    catch { return -1 }
+}
+$vsShut = ViewSize
+Press '{RIGHT}'
+Start-Sleep -Seconds 1
+$vsOpen = ViewSize
+if ($vsShut -lt 0 -or $vsOpen -lt 0) {
+    Write-Host 'FAIL  the roster list exposes no scroll pattern - nothing below can be measured' -ForegroundColor Red
+    Stop-Process -Id $guiPid -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+if ($vsOpen -ge $vsShut) {
+    Write-Host "FAIL  RIGHT did not open the group under the cursor - the list still shows $vsOpen% of itself (was $vsShut%)" -ForegroundColor Red
+    Stop-Process -Id $guiPid -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+Pass "RIGHT opens the group under the cursor (the list went from showing $vsShut% of itself to $vsOpen%)"
+$list.SetFocus(); Start-Sleep -Milliseconds 500
+
 $s0 = SelId; $v0 = Scroll
 Note "start          sel=$($s0.Substring(0,[Math]::Min(20,$s0.Length)))  scroll=$v0%"
 

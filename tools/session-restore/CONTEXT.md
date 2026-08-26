@@ -85,6 +85,23 @@ directly under it, "V-INGEST", thirty-one times.
 FOLDS — hiding the rows that were searched for is the one thing a filter must
 never do.
 
+**THE ROSTER OPENS FOLDED**, and that is the answer to "an endless list". Ordering
+by recency alone could not be: AlgoTrader holds 107 of 204 conversations, so the
+most-recently-worked project is also the one that buries the other twenty-five
+under a hundred rows. Folded, the whole roster is 26 project rows on one screen,
+newest-worked first, each carrying its count and how many are armed — which is
+the question the roster is opened to answer. A DEFAULT, not a rule: a project with
+no `folded` recorded arrives shut, and the moment a fold is touched `folded` is
+written and the operator's answer wins forever, in both directions.
+
+**LEFT / RIGHT fold and unfold the group under the cursor**, and only fall through
+to the age window on a conversation row, where there is nothing to fold. 🚨 They
+were wired straight to the age window with a comment saying "there is nothing to
+fold in a flat list" — stale since the grouping came back, and wrong in the window's
+own help, the README and this file, all three of which said LEFT/RIGHT fold. It
+went unnoticed until the roster started opening folded and the documented way to
+open a group from the keyboard turned out to do something else.
+
 **hidden** — a conversation the operator has asked not to see. A FLAG, never a
 deletion: `Show hidden` brings every one back. The gate sits ahead of the search,
 because hiding outranks a filter that would otherwise match — not even a search

@@ -283,7 +283,51 @@ foreach ($old in @('tree', 'restore')) {
 # and every lane took a row of its own, and eleven of the fifteen projects had
 # exactly one lane called "main". It was also unbounded - registryWindowDays
 # caps what is TRACKED at 30 days and nothing capped what was SHOWN.
+# EVERYTHING FROM HERE IS ABOUT THE GROUPING AND THE SORT, so open the folds
+# first. The roster now OPENS FOLDED -- 26 project rows on one screen, which is
+# the answer to "an endless list" -- and a folded roster has no lane rows and no
+# conversation rows at all, so every assertion below would be measuring the fold
+# default rather than the thing it is named after.
+#
+# The default itself is asserted separately, further down, from a clean rebuild.
+function Open-EveryFold {
+    foreach ($k in @($script:fold.Keys)) { $script:fold[$k] = $false }
+    Update-List
+}
+
 Set-ViewMode 'all'
+
+# --- THE DEFAULT ITSELF, before anything opens it ---------------------------
+# The roster is opened to answer "where was I working?", and with AlgoTrader
+# holding 107 of 204 conversations, recency ordering alone could not answer it:
+# the most-recently-worked project is also the one that buries the other
+# twenty-five under a hundred rows. Folded, the answer is the first screenful.
+# 🪤 PIPED, NOT WRAPPED. $script:rows is a List[object] and @($list) throws
+# "Argument types do not match" on PowerShell 5.1 -- the trap CONTEXT.md names,
+# walked into again three lines after reading it.
+$shutProj = @($script:rows | Where-Object { $_.Kind -eq 'project' }).Count
+$shutConv = @($script:rows | Where-Object { $_.Kind -eq 'session' }).Count
+if ($shutProj -lt 2) { Fail "the folded roster shows $shutProj project row(s) - it is not listing the projects" }
+elseif ($shutConv -gt 0) { Fail "the roster opens with $shutConv conversation row(s) showing - it is not folded by default" }
+else { Pass "the roster opens folded: $shutProj projects, no conversations, one screenful" }
+
+# A FOLD THE OPERATOR SET MUST OUTRANK THE DEFAULT, in BOTH directions, or the
+# default is a rule and opening a project would not stick.
+$openMe = @($script:dirs)[0]
+try {
+    Set-SessionField $openMe 'folded' $false
+    Sync-FoldState
+    Update-List
+    $mine = @($script:rows | Where-Object { $_.Kind -eq 'session' -and $_.Dir -eq $openMe }).Count
+    if ($mine -lt 1) { Fail "a project explicitly recorded as open ($(Get-ProjectLabel $openMe)) still came back folded" }
+    else { Pass "a project you opened stays open across a rebuild ($mine conversation(s))" }
+} finally {
+    $openMe.PSObject.Properties.Remove('folded')
+    Sync-FoldState
+    Update-List
+}
+
+Open-EveryFold
 $allRows = @(); foreach ($r in $script:rows) { $allRows += $r }
 $kinds = @($allRows | ForEach-Object { $_.Kind } | Sort-Object -Unique)
 # 🔴 THIS ASSERTION USED TO SAY THE OPPOSITE, and the reversal was deliberate.

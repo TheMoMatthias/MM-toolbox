@@ -62,6 +62,12 @@ every repo, in two views:
   column heading to sort within each group; shift-click to sort by one thing and
   then another. Searching and filtering ignore folds.
 
+**The roster opens folded**, so all 26 projects sit on one screen with their
+counts and how many are armed. Click one open, or press RIGHT; LEFT shuts it
+again. Whatever you open stays open, across restarts. Ordering by recency alone
+could not fix the endless-list problem on its own, because the project you worked
+in most recently is also the one holding half the conversations.
+
 **The roster is ordered by where you last worked, not A–Z.** The project you
 touched most recently is at the top, and a project you cannot work in any more is
 at the bottom saying why: `folder is gone` for a directory that has been deleted
@@ -130,7 +136,7 @@ ticking something does not launch it. Nothing launches until you press `L` or `X
 | `X` | launch everything ticked, skipping whatever is already open |
 | `SPACE` | tick/untick (and pin, so the hourly roll leaves it alone) |
 | `U` | unpin — hand the row back to the roll |
-| `←` `→` | fold a project or lane away |
+| `←` `→` | shut / open the project or lane under the cursor. On a conversation, where there is nothing to fold, they are the age window instead |
 | `PGUP` `PGDN` | move by a full page; `HOME` `END` jump to the ends |
 | the selected row | carries a full-width band, not just a `>`. A brighter foreground is not enough to find yourself in a 47-row list |
 | `A` `N` | tick all / none |

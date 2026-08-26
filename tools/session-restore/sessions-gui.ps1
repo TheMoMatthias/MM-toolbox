@@ -2045,16 +2045,21 @@ function Sync-FoldState {
     $script:fold = @{}
     foreach ($d in @($script:dirs)) {
         if ([bool]$d.folded) { $script:fold[[string]$d.path] = $true }
-        # A PROJECT WHOSE FOLDER IS GONE ARRIVES FOLDED, and the operator can
-        # open it like any other. Eighteen conversations under a deleted
-        # directory are worth KEEPING -- the registry is the only record they
-        # have -- and are worth nobody scrolling past: not one of them can be
-        # opened or relaunched, because there is no directory to open them in.
+        # THE ROSTER OPENS FOLDED, and that is the answer to the complaint that
+        # started this rework: "it feels like you're clicking through an endless
+        # list and by luck find the repo that you have been working on".
         #
-        # It is a DEFAULT, not a rule. The moment the fold is touched, `folded`
-        # is written on the project and the branch above takes over, so an
-        # operator who wants it open keeps it open.
-        elseif ($null -eq $d.PSObject.Properties['folded'] -and (Get-ProjectTier $d) -eq 2) {
+        # Ordering by recency alone could not fix it, because AlgoTrader holds
+        # 107 of the 204 conversations -- so the most-recently-worked project is
+        # also the one that buries the other twenty-five under a hundred rows.
+        # Folded, the whole roster is 26 project rows, newest-worked first, on one
+        # screen: which is exactly the question this list is opened to answer.
+        # One click, or RIGHT, opens one.
+        #
+        # It is a DEFAULT, not a rule. The moment a fold is touched, `folded` is
+        # written on the project and the branch above takes over -- so a project
+        # the operator opens stays open, across restarts, forever.
+        elseif ($null -eq $d.PSObject.Properties['folded']) {
             $script:fold[[string]$d.path] = $true
         }
         foreach ($ln in @($d.foldedLanes)) {
@@ -2130,7 +2135,10 @@ function Set-ViewMode { param([string]$Mode)
     $null = (Get-ActiveList).Focus()
     Set-Status $(switch ($Mode) {
         'inbox' { 'Now: every conversation that is running or was, grouped by what it needs from you.' }
-        'all'   { "Roster: what reopens at logon, grouped by project. Fold a repo you are not working in; tick what should come back. Searching ignores folds." }
+        # THE INSTRUCTION HAS TO MATCH THE DEFAULT. This said "fold a repo you are
+        # not working in" while the roster now opens with every repo already
+        # folded -- telling the operator to do the one thing already done for him.
+        'all'   { "Roster: what reopens at logon. Newest-worked project first, all folded - click one open, or press RIGHT. Tick what should come back. Searching ignores folds." }
     }) 'info'
 }
 
@@ -3201,11 +3209,32 @@ $window.Add_PreviewKeyDown({ param($s, $e)
                 else { $ui.CancelBtn.RaiseEvent((New-Object System.Windows.RoutedEventArgs ([System.Windows.Controls.Button]::ClickEvent))) }
             }
             'Space'  { if ($row -and -not $script:busy) { $e.Handled = $true; Set-RowTick -Row $row -Value $null } }
-            # LEFT / RIGHT folded a project away. There is nothing to fold in a
-            # flat list, so they are the age window instead: the same gesture,
-            # aimed at the thing that is actually making the list long.
-            'Left'   { $e.Handled = $true; if ($script:showOlder) { $script:showOlder = $false; Update-List } }
-            'Right'  { $e.Handled = $true; if (-not $script:showOlder) { $script:showOlder = $true;  Update-List } }
+            # LEFT / RIGHT FOLD AGAIN, because there is something to fold again.
+            #
+            # 🪤 THE COMMENT HERE SAID "there is nothing to fold in a flat list",
+            # and it had been wrong since the grouping came back. The keys were
+            # quietly the age window while the window's own help, the README and
+            # CONTEXT.md all still said LEFT/RIGHT fold. That mattered the moment
+            # the roster started opening FOLDED: the documented way to open a
+            # group from the keyboard did something else entirely.
+            #
+            # On a group row they fold. On a conversation, where there is nothing
+            # to fold, they stay the age window -- the same gesture aimed at the
+            # thing that is actually making the list long.
+            'Left'   {
+                $e.Handled = $true
+                if ($row -and ($row.Kind -eq 'project' -or $row.Kind -eq 'lane')) {
+                    $key = $(if ($row.Kind -eq 'project') { [string]$row.Dir.path } else { "$($row.Dir.path)|$($row.Lane.Name)" })
+                    if (-not [bool]$script:fold[$key]) { Invoke-RowFold $row }
+                } elseif ($script:showOlder) { $script:showOlder = $false; Update-List }
+            }
+            'Right'  {
+                $e.Handled = $true
+                if ($row -and ($row.Kind -eq 'project' -or $row.Kind -eq 'lane')) {
+                    $key = $(if ($row.Kind -eq 'project') { [string]$row.Dir.path } else { "$($row.Dir.path)|$($row.Lane.Name)" })
+                    if ([bool]$script:fold[$key]) { Invoke-RowFold $row }
+                } elseif (-not $script:showOlder) { $script:showOlder = $true; Update-List }
+            }
             'L'      { if ($row -and -not $script:busy) { $e.Handled = $true; Invoke-RowLaunch $row } }
             # G for "go to": the terminal itself, as opposed to ENTER, which
             # reads the conversation inside this window.
