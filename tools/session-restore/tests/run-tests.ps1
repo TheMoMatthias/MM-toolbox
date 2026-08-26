@@ -61,7 +61,10 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('keys', 'state', 'inbox', 'jump', 'headless')]
+    # `shot` is the odd one out: it draws the real window to PNG and asserts
+    # almost nothing. It never runs in a full sweep -- only when asked for by
+    # name -- because its output is something to LOOK at, not something to pass.
+    [ValidateSet('keys', 'state', 'inbox', 'jump', 'headless', 'shot')]
     [string]$Only,
     [switch]$NoGui,
 
@@ -215,6 +218,18 @@ if (-not $Only -or $Only -eq 'headless') {
     $out | ForEach-Object { Write-Host $_ }
     Record 'headless' $LASTEXITCODE @($out)
     Remove-Item Env:\SR_TEST_SHOT -ErrorAction SilentlyContinue
+}
+
+# --- shot: the real registry, drawn to PNG, never shown ---------------------
+# BY NAME ONLY. It is not part of `all suites passed`: it renders the operator's
+# own 204 conversations so a layout change can be looked at at real density,
+# which is where every clipped pill and mojibaked caption has actually hidden.
+if ($Only -eq 'shot') {
+    Write-Host "`n=== shot (the real window, drawn to PNG) ===" -ForegroundColor Cyan
+    $h = New-GuiHarness -Driver 'shot-driver.ps1' -OutFile 'shot-test.ps1'
+    $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'shot' $LASTEXITCODE @($out)
 }
 
 # --- inbox: drives the GUI, needs a desktop ---------------------------------
