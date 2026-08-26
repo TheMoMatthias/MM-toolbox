@@ -64,7 +64,7 @@ param(
     # `shot` is the odd one out: it draws the real window to PNG and asserts
     # almost nothing. It never runs in a full sweep -- only when asked for by
     # name -- because its output is something to LOOK at, not something to pass.
-    [ValidateSet('keys', 'state', 'inbox', 'jump', 'headless', 'shot')]
+    [ValidateSet('keys', 'state', 'inbox', 'jump', 'headless', 'relay', 'shot')]
     [string]$Only,
     [switch]$NoGui,
 
@@ -218,6 +218,19 @@ if (-not $Only -or $Only -eq 'headless') {
     $out | ForEach-Object { Write-Host $_ }
     Record 'headless' $LASTEXITCODE @($out)
     Remove-Item Env:\SR_TEST_SHOT -ErrorAction SilentlyContinue
+}
+
+# --- relay: the question round trip, against a live console -----------------
+# Spawns a REPLICA of claude's menu in a real console and answers it through the
+# shipped code. It puts a minimized window on the desktop for a few seconds and
+# writes real key events into it, so -NoSteal skips it -- but it never touches a
+# claude session, and it kills what it started in a finally.
+if ((-not $Only -or $Only -eq 'relay') -and -not $NoSteal) {
+    Write-Host "`n=== relay (reading and answering a menu on a live console) ===" -ForegroundColor Cyan
+    $h = New-CommonHarness -Driver 'relay-driver.ps1' -OutFile 'relay-test.ps1'
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $h 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'relay' $LASTEXITCODE @($out)
 }
 
 # --- shot: the real registry, drawn to PNG, never shown ---------------------

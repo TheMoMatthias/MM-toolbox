@@ -493,6 +493,27 @@ foreach ($pr in $projRows) {
 if ($mute.Count) { Fail ("$($mute.Count) demoted project(s) do not say why: " + ($mute -join ', ')) }
 else { Pass 'every demoted project says why on its own header' }
 
+# .claude IS SOMEWHERE A PROJECT KEEPS THINGS, NOT A PROJECT. Scratch space is
+# BUSY by definition, so a recency-ordered list put Millwright-agency's
+# .claude\scratch and its spawn-probe subfolder in the first seven rows -- and
+# one of them was TICKED, reopening a throwaway session every morning.
+#
+# 🪤 A WORKTREE LANE MUST NOT BE CAUGHT BY THIS. A conversation in
+# AlgoTrader\.claude\worktrees\GOV-1 resolves to the REPO ROOT, so its registry
+# path is AlgoTrader and it is a LANE. If this ever demotes AlgoTrader, the rule
+# has started eating real projects.
+$dotClaude = @($script:dirs | Where-Object { "$($_.path)".ToLowerInvariant() -like '*\.claude\*' })
+if (-not $dotClaude.Count) {
+    Note 'no conversation lives inside a .claude folder right now - the scratch rule is untested here'
+} else {
+    $wrong = @($dotClaude | Where-Object { (Get-ProjectTier $_) -eq 0 })
+    if ($wrong.Count) { Fail ("$($wrong.Count) scratch folder(s) still rank as projects: " + (@($wrong | ForEach-Object { Get-ProjectLabel $_ }) -join ', ')) }
+    else { Pass "$($dotClaude.Count) folder(s) inside .claude are ranked as scratch, not as projects" }
+}
+$eaten = @($script:dirs | Where-Object { (Get-ProjectTierNote $_) -eq 'scratch space' -and "$($_.path)".ToLowerInvariant() -notlike '*\.claude\*' })
+if ($eaten.Count) { Fail ("the scratch rule demoted $($eaten.Count) project(s) that are not under .claude: " + (@($eaten | ForEach-Object { Get-ProjectLabel $_ }) -join ', ')) }
+else { Pass 'and no repository was demoted by it' }
+
 # NOTHING WAS EXCLUDED TO ACHIEVE ANY OF THAT. 06391a0 stopped excluding the
 # home directory and recovered three conversations of 20-28 MB; this must never
 # quietly undo it.

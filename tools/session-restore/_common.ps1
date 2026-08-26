@@ -1730,6 +1730,39 @@ function Send-SRQuestionAnswer {
     if (-not $proc)                  { return 'that session has exited' }
     if ($proc.Name -ne 'claude.exe') { return "pid $($a.Pid) is $($proc.Name), not claude.exe - refusing to type into it" }
 
+    $why = Invoke-SRAnswerOnScreen -ProcessId ([int]$a.Pid) -Index $Index -Who "$($a.Name)"
+    return $why
+}
+
+# ---------------------------------------------------------------------------
+# THE CHOREOGRAPHY, ON ITS OWN, BECAUSE IT IS THE HALF THAT COULD NOT BE TESTED.
+#
+# Send-SRQuestionAnswer above is welded to a real claude session: it demands an
+# agent record, a status of 'waiting', and a process actually called claude.exe.
+# Those guards are right and they are why the risky part -- read the live screen,
+# work out how far to move, send arrows, commit -- had never once run against a
+# live console under test. Both halves were proven SEPARATELY: the parser against
+# captured text, the key send against a real menu on 2026-08-24. Never together,
+# and that was the last unknown in this feature for three days.
+#
+# Split out, it can be driven against any console showing a menu, so
+# tests\relay-driver.ps1 stands up a replica built from REAL captured screen text
+# and proves the whole round trip -- including that a NON-DEFAULT option is the
+# one that commits, which is the only outcome a bug here would get wrong quietly.
+#
+# It deliberately does NOT check what the process is. Its caller does that.
+# ---------------------------------------------------------------------------
+function Invoke-SRAnswerOnScreen {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$ProcessId,
+        # 0-based, as the options are indexed on screen.
+        [Parameter(Mandatory)][int]$Index,
+        [string]$Who = ''
+    )
+    if ($ProcessId -le 0) { return 'there is no console to answer in' }
+    if ($Index -lt 0) { return 'that is not one of the options' }
+
     # 🔴 MOVE FROM WHERE THE CURSOR IS, NOT FROM WHERE IT PROBABLY IS.
     #
     # This sent Index x DOWN on the assumption that a menu always opens on option 1.
@@ -1741,7 +1774,7 @@ function Send-SRQuestionAnswer {
     # 🔒 NO CURSOR, NO ARROWS. If the screen cannot be read, or the marker is not on
     # it, this refuses rather than falling back to the old guess. A relay that
     # answers the wrong option is worse than one that says it could not.
-    $seen = Get-SRScreenQuestion -ProcessId ([int]$a.Pid)
+    $seen = Get-SRScreenQuestion -ProcessId $ProcessId
     if (-not $seen) { return 'cannot see a question on that session''s screen - answer it in the terminal' }
     if ($seen.CursorAt -lt 0) { return 'cannot tell which option is highlighted - answer it in the terminal' }
     if ($Index -ge $seen.Options.Count) {
@@ -1753,13 +1786,16 @@ function Send-SRQuestionAnswer {
     $step  = $(if ($delta -ge 0) { [uint16]0x28 } else { [uint16]0x26 })   # VK_DOWN / VK_UP
     for ($i = 0; $i -lt [Math]::Abs($delta); $i++) { $null = $keys.Add($step) }
     if ($keys.Count) {
-        $n = [SRCon]::SendKeys([uint32]$a.Pid, $keys.ToArray())
+        $n = [SRCon]::SendKeys([uint32]$ProcessId, $keys.ToArray())
         if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
+        # THE MOVES MUST LAND BEFORE THE COMMIT. Sent in one burst, ENTER can be
+        # read before the TUI has repainted the highlight, and the answer is
+        # whatever was highlighted when it arrived.
         Start-Sleep -Milliseconds 250
     }
-    $n = [SRCon]::SendKeys([uint32]$a.Pid, [uint16[]]@(0x0D))              # VK_RETURN
+    $n = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@(0x0D))          # VK_RETURN
     if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
-    Write-SRLog ("  [ok]   answered {0} with option {1} of {2} ({3}), cursor was on {4}" -f $a.Name, ($Index + 1), $seen.Options.Count, $seen.Options[$Index], ($seen.CursorAt + 1))
+    Write-SRLog ("  [ok]   answered {0} with option {1} of {2} ({3}), cursor was on {4}" -f $Who, ($Index + 1), $seen.Options.Count, $seen.Options[$Index], ($seen.CursorAt + 1))
     return $null
 }
 # THE QUESTION AS IT IS ON SCREEN, which is the only place a PENDING one exists.

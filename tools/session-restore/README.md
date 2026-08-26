@@ -87,7 +87,14 @@ its options appear there too, and clicking one answers it.** The window presses
 the option in that session's own menu rather than typing anything, so what it
 records is a real selection. It refuses if the session has moved on since you
 looked, and a question that takes several answers at once is shown but not
-answered from here — that one is still a trip to the terminal.
+answered from here — that one is still a trip to the terminal, and will stay one
+until somebody captures what a multi-select menu actually looks like on screen.
+Guessing at it would look exactly like working.
+
+The single-answer round trip is proven end to end: `run-tests.ps1 -Only relay`
+stands up a replica of the menu in a real console and answers it through the
+shipped code, checking that an option which is **not** the default is the one
+that commits — moving both down and up from wherever the highlight happens to be.
 
 **The roster has two logon buttons, and they touch opposite halves of the ticked
 set.** `Open the ones not running` starts the ticked conversations that are not

@@ -310,6 +310,34 @@ against. Drive the real entry point, and start from a sentinel.
 **The registry these tests run against is the operator's real one.** Restore
 anything you touch.
 
+**relay** proves the question round trip against a LIVE console, which is the
+assertion that was missing for the three days the feature shipped without it.
+Both halves were proven separately and honestly — the parser against captured
+text, the key send against a real menu on 2026-08-24 — and read-the-screen →
+measure-the-distance → send-arrows → commit had never run as one sequence.
+
+Six attempts to prove it by driving a real claude session all died on the
+harness rather than the code. **The way through was to drive a REPLICA**:
+`tests\menu-replica.ps1` paints the same characters claude paints, in a real
+console, and moves the same highlight with the same keys, so everything between
+the test and the answer is shipped code — `ReadConsoleOutputCharacterW` on a real
+screen buffer, the real parser, the real `WriteConsoleInputW`. Its menu text is a
+VERBATIM capture, sharing its lines with the `state` fixtures.
+
+`Invoke-SRAnswerOnScreen` exists for this. `Send-SRQuestionAnswer` is welded to a
+real claude session — agent record, status `waiting`, a process actually named
+`claude.exe` — and those guards are right, and are precisely why the risky half
+could never be exercised. The guards stay in the caller.
+
+**Assert that a NON-DEFAULT option commits, in BOTH directions.** A relay that
+always answers option 1 passes any test that only asks "did something get
+answered", and answers the wrong question every time.
+
+**Multi-select is shown and not answerable, on purpose.** There is no real
+capture of that menu, and a replica built from a guess would prove the guess
+against itself while reading as verification. It needs one captured screen to
+move, not more code.
+
 ## Four more traps, each of which cost a run
 
 **THE COMMA-WRAPPED RETURN HAS NOW SHIPPED SEVEN TIMES.** `return ,$out` protects

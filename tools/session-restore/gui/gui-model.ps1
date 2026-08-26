@@ -265,7 +265,11 @@ function Get-HomeLabel { param($Dir, $LaneName)
 function Get-ProjectTier { param($Dir)
     if (-not $Dir) { return 0 }
     if ($script:projTier) {
-        $hit = $script:projTier["$($Dir.path)".ToLowerInvariant()]
+        # TrimEnd HERE TOO. Update-ProjectTiers stores the key trimmed, and a
+        # registry path that happens to carry a trailing backslash would miss the
+        # lookup and come back tier 0 -- silently promoting a deleted folder back
+        # to the top of the list.
+        $hit = $script:projTier["$($Dir.path)".TrimEnd('\').ToLowerInvariant()]
         if ($null -ne $hit) { return [int]$hit }
     }
     return 0
@@ -273,25 +277,50 @@ function Get-ProjectTier { param($Dir)
 
 function Update-ProjectTiers {
     $script:projTier = @{}
+    $script:projWhy  = @{}
     $homeDir = "$env:USERPROFILE".TrimEnd('\')
     foreach ($d in @($script:dirs)) {
         $p = "$($d.path)".TrimEnd('\')
-        $tier = 0
+        $key = $p.ToLowerInvariant()
+        $tier = 0; $why = ''
         # Test-Path ONCE PER SCAN, not once per repaint. This runs from
         # Set-Registry; a row painter that touched the disk would hit it 26 times
         # a frame for an answer that cannot change between frames.
-        if ([bool]$d.missing -or -not (Test-Path -LiteralPath $p -PathType Container)) { $tier = 2 }
-        elseif ($p -and ($p -ieq $homeDir -or $p -match '^[A-Za-z]:$')) { $tier = 1 }
-        $script:projTier[$p.ToLowerInvariant()] = $tier
+        if ([bool]$d.missing -or -not (Test-Path -LiteralPath $p -PathType Container)) {
+            $tier = 2; $why = 'folder is gone'
+        } elseif ($p -and ($p -ieq $homeDir -or $p -match '^[A-Za-z]:$')) {
+            $tier = 1; $why = 'not a project'
+        } elseif ($key -like "*\.claude\*") {
+            # SCRATCH SPACE IS NOT A PROJECT, and it was sitting near the top of
+            # a recency-ordered list because scratch is BUSY by definition.
+            # Millwright-agency\.claude\scratch and its spawn-probe subfolder came
+            # out as two project rows in the first seven, and one of them was
+            # TICKED -- reopening a throwaway session every single morning.
+            #
+            # 🪤 THIS CANNOT CATCH A WORKTREE LANE, and that is worth stating
+            # because it looks like it should. A conversation in
+            # AlgoTrader\.claude\worktrees\GOV-1 is not a project at all:
+            # Get-SRWorktreeInfo resolves it to the REPO ROOT, and the registry
+            # path here is AlgoTrader. GOV-1 is a lane, and lanes never reach
+            # this function.
+            $tier = 1; $why = 'scratch space'
+        }
+        $script:projTier[$key] = $tier
+        $script:projWhy[$key]  = $why
     }
 }
 
 # Why a project was demoted, in the fewest words that are still true. Empty for
 # an ordinary project, which is almost all of them.
+#
+# Stored beside the tier rather than derived FROM it: two different things are
+# both "not somewhere you work" without being the same thing, and a header that
+# called scratch space "not a project" would be true and useless.
 function Get-ProjectTierNote { param($Dir)
-    switch (Get-ProjectTier $Dir) {
-        2 { return 'folder is gone' }
-        1 { return 'not a project' }
+    if (-not $Dir) { return '' }
+    if ($script:projWhy) {
+        $hit = $script:projWhy["$($Dir.path)".TrimEnd('\').ToLowerInvariant()]
+        if ($hit) { return $hit }
     }
     return ''
 }
