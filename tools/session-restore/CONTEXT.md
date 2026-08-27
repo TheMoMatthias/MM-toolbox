@@ -554,6 +554,48 @@ matches a path, and a directory rename drags the file out from under it:
 Nothing here needs the antivirus UI. An exclusion for the repo is still the
 tidier long-term answer, but it is a preference, not a prerequisite.
 
+### Stopping it being flagged — what works, and what does not
+
+**Measured 2026-08-27.** `Get-MpComputerStatus` reports Defender in **SxS Passive
+Mode** with real-time protection OFF, so Defender exclusions change nothing on
+this machine: **Bitdefender is the only engine in play.** It ships no exclusion
+CLI — `C:\Program Files\Bitdefender\Bitdefender Security` holds 24 executables
+and the only candidates are `bdreinit.exe` and an MITM install tool — so this is
+a UI change and cannot be scripted.
+
+🔴 **CODE SIGNING DOES NOT FIX THIS, and the reasoning that says it should is
+wrong twice over.** First, SmartScreen is not involved at all: the exe is
+compiled locally by `app\build.ps1`, so it carries **no Mark-of-the-Web**
+(verified — no `Zone.Identifier` stream), and SmartScreen only fires on files
+that do. Second, the 2026-08-23 quarantine was `Atc4.Detection` — Advanced Threat
+Defense, which scores **behaviour**, not signatures. A signed binary that walks
+`Shell_TrayWnd` through UIA, synthesises keystrokes into other processes and
+kills what it started scores exactly the same. Engines that weight signatures at
+all weight *publicly-trusted, widely-seen* ones; a self-signed certificate with
+zero prevalence moves nothing. **This tool is malware-shaped by function, and no
+certificate changes what it does.**
+
+**What actually works — the exception, in the Bitdefender UI:**
+
+    Protection -> Antivirus -> Open -> Settings -> Manage exceptions
+    -> + Add an Exception
+
+Add the **folder** `…\MM-toolbox\tools\session-restore`, and — this is the part
+that matters — tick **Advanced Threat Defense** among the protection features the
+exception applies to. An Antivirus-only exception does not cover the module that
+did the quarantining. Add `Sessions.exe` as a second, process-level exception.
+
+**What that exception does NOT cover, honestly.** ATD scores the *running
+process*, and the test suite's process is `powershell.exe`, which must never be
+excluded. So the suites keep whatever risk they had; what the folder exception
+protects is the **scripts on disk**, which is precisely what was taken last time
+(`sessions-gui.ps1`, `run-tests.ps1`, `tray-driver.ps1`). The most aggressive
+offender, the `tray` suite, is retired.
+
+**Scope it to the subsystem, not the whole repo.** Excluding
+`tools\session-restore` covers everything that behaves this way; excluding all of
+`MM-toolbox` would also stop scanning code that has no reason to be trusted.
+
 **Which is why `Sessions.exe` is a build output with a fallback, and not the only
 way in.** A freshly compiled, unsigned binary that starts consoles and
 synthesises keystrokes is the exact shape a behavioural engine scores, and this
