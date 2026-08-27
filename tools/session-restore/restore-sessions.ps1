@@ -412,7 +412,7 @@ function Invoke-Install {
     Write-Host ("  The control panel   :  double-click '{0}'          (or the desktop button)" -f $(if ($haveExe) { 'Sessions.exe' } else { 'Sessions.bat ' }))
     Write-Host "                         see what is live, L opens any conversation now, S starts a new one,"
     Write-Host "                         and the ticks decide what comes back at logon"
-    Write-Host "  Bring back the ticked:  double-click 'Restore Sessions.bat'  (or the desktop button)"
+    Write-Host ("  Bring back the ticked:  {0}  (or the desktop button)" -f $(if ($haveExe) { "'Sessions.exe -Restore'      " } else { "double-click 'Restore Sessions.bat'" }))
     Write-Host "  Open one by name    :  open the panel, then type in the search box and press Open"
     if ($haveExe) {
     Write-Host "  When something is wrong: Sessions.bat runs the same window with a console attached"
