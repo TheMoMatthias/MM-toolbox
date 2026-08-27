@@ -22,13 +22,14 @@ From then on the tool is two double-clicks:
 | double-click | does |
 |---|---|
 | `Sessions.exe` | **the session console** — every conversation, what each last said, what is waiting on you |
-| `Restore Sessions.bat` | bring back everything you ticked, in one go |
+| `Sessions.exe -Restore` | bring back everything you ticked, in one go (the second desktop button) |
 | `Enable Auto Logon.bat` | let the PC sign itself in, so the restore runs with nobody at the keyboard |
 
-The desktop buttons point at those same files, so there is one launch path. They
-pass arguments through (`Restore Sessions.bat -DryRun`) and pause only when
-double-clicked, so the output stays readable. Set `SR_NOPAUSE=1` to drive them from
-a script.
+Both desktop buttons are that one binary, so there is one launch path and one
+icon. They pass arguments through (`Sessions.exe -Restore -DryRun`), and the
+restore gets a console and pauses when it was double-clicked rather than started
+from a terminal — asked of the OS, not guessed from a command line. Set
+`SR_NOPAUSE=1` to drive it from a script.
 
 **One screen, one entry point.** There have been three duplicates of it over time
 and all three are gone: `Select Sessions.bat` (a second name for the same panel,
@@ -52,10 +53,35 @@ still what the tests drive. What changed is the wrapper:
 | Alt-Tab, taskbar, desktop | the PowerShell logo (`IconLocation = 'powershell.exe,0'`) | its own icon |
 | double-clicking it twice | two windows over one registry | raises the one that is open |
 | a failure before the window | `.state\restore.log`, and nowhere else | a dialog, **and** the log |
+| the first seconds | a blank desktop | a splash carrying the icon, gone the moment the window is up |
+| the two desktop buttons | two launchers, both showing the PowerShell logo | one binary: `Sessions.exe` and `Sessions.exe -Restore` |
 
-**It is not faster once the window is up.** The WPF and the PowerShell inside it are
-byte for byte what they were; what is saved is a process launch and the console
-host's startup, and what is gained is that it stops behaving like a script.
+**It is barely faster, and these docs are not going to pretend otherwise.**
+Measured 2026-08-27, medians over seven runs:
+
+| route | median of 7 |
+|---|---|
+| `wscript.exe` (noop) | 144.6 ms |
+| `powershell.exe -Command exit` | 608.5 ms |
+| **old prelude** | **753.1 ms** |
+| `Sessions.exe` start + file check | 580.1 ms |
+| runspace `CreateDefault2` + `Open` | 7.7 ms |
+| **new prelude** | **587.8 ms** |
+
+**~165 ms, and that is an upper bound** — the path measured for the exe returns
+before `System.Management.Automation` loads, which a real launch pays for. Note
+that the exe's own start (580 ms) is within noise of `powershell.exe`'s (608 ms):
+the CLR is the cost, not the console host, and nearly all of the saving is the
+removed `wscript.exe` hop. Against 5.8 s from double-click to window it is about
+3%. **Speed is not what this bought** — the identity, the single instance, the
+error dialog and the splash are.
+
+The splash is why the 5.8 s stopped mattering more than the 165 ms ever did. The
+host paints it on its own thread — deliberately not the main one, which is about
+to be handed to the runspace and will be executing PowerShell solidly until the
+window appears, so anything drawn there would be a frozen rectangle. It closes by
+*watching for the real window*, so it needs no cooperation from the PowerShell and
+there is nothing to keep in sync when that script changes.
 
 Build it with `app\build.ps1` — `Install Session Restore.bat` already does. It
 compiles with `csc.exe`, which ships with the .NET Framework, so there is no SDK and
@@ -70,7 +96,7 @@ console up so a startup error is on screen rather than in `.state\restore.log`.
 
 ## The session console
 
-`Sessions.bat` opens a single window for every conversation on the machine, across
+`Sessions.exe` opens a single window for every conversation on the machine, across
 every repo, in two views:
 
 - **Now** — the control surface: what is running or was, grouped by what it wants
@@ -557,7 +583,7 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
 | `app/` | what it is built from — `SessionsHost.cs` (hosts the runspace) · `build.ps1` (draws the icon, runs `csc.exe`) |
 | `Sessions.bat` | the same window with a console attached — the one to run when something is wrong (`SR_GUI_SHOW=1`) |
 | `Sessions GUI.vbs` | the same window with no console flash, through `powershell.exe` — the fallback when the exe is unavailable |
-| `Restore Sessions.bat` | reopen the ticked conversations without showing the panel |
+| `Restore Sessions.bat` | the same restore through `powershell.exe` — the fallback, and what the logon task still runs |
 | `Enable Auto Logon.bat` | self-elevating wrapper for `enable-autologon.ps1` |
 | `_common.ps1` | discovery, registry, the rolling auto-tick, guards, launching — shared, so there is one copy |
 | `restore-sessions.ps1` | restore · `-Scan` · `-New` · `-Install` · `-Uninstall` |

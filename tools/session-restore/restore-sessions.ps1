@@ -369,10 +369,23 @@ function Invoke-Install {
     $haveExe  = Test-Path -LiteralPath $exe
     $iconFrom = $(if ($haveExe) { "$exe,0" } else { 'powershell.exe,0' })
 
-    $l1 = New-SRShortcut -LinkName $LnkRestore -Target (Join-Path $SR_Root 'Restore Sessions.bat') `
-            -Arguments '' -Icon $iconFrom `
+    # Both buttons are the SAME BINARY when there is one. Restoring is a
+    # different action, not a second window, so the app takes -Restore and runs
+    # this script instead: no single-instance lock, no splash, and a console --
+    # because "Restore Sessions.bat" has always printed what it launched and
+    # paused so you could read it, and folding it into the app must not quietly
+    # take that away.
+    #
+    # THE LOGON TASK IS DELIBERATELY NOT MOVED. It still runs
+    # restore-sessions.ps1 through powershell.exe. Putting the unattended path
+    # behind a freshly compiled unsigned binary, on a machine whose antivirus
+    # has quarantined this repo before, risks a logon that silently restores
+    # nothing -- and nobody is at the keyboard to see it fail.
+    $l1 = New-SRShortcut -LinkName $LnkRestore `
+            -Target $(if ($haveExe) { $exe } else { Join-Path $SR_Root 'Restore Sessions.bat' }) `
+            -Arguments $(if ($haveExe) { '-Restore' } else { '' }) -Icon $iconFrom `
             -Description 'Restore the Claude conversations you have selected'
-    Write-SROk "desktop: $LnkRestore"
+    Write-SROk ("desktop: $LnkRestore" + $(if ($haveExe) { ' -> Sessions.exe -Restore' } else { ' -> Restore Sessions.bat' }))
     $l2 = New-SRShortcut -LinkName $LnkSelect `
             -Target $(if ($haveExe) { $exe } else { Join-Path $SR_Root 'Sessions.bat' }) `
             -Arguments '' -Icon $iconFrom `

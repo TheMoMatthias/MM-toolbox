@@ -407,7 +407,44 @@ parse after an edit, scan it for control bytes before reading the diff.
 
 ---
 
-## Three traps from building the host
+## Five traps from building the host
+
+**🔴 `AddArgument` DOES NOT PASS PARAMETER NAMES, AND SAYS NOTHING.** The host
+forwarded its command line to the script with the obvious wrapper —
+`AddScript("param($p,$a) & $p @a")` plus `AddArgument` — and it mis-binds
+**silently**. Probed 2026-08-27 against a stub with `restore-sessions.ps1`'s own
+param shape, passing `-DryRun -Place -3440,0`:
+
+    AddScript + AddArgument     DryRun=False   Place=[-DryRun]
+    AddScript + AddParameter    DryRun=False   Place=[-DryRun]
+    a built command string      DryRun=True    Place=[-3440,0]
+
+Both API routes pass every token **positionally**. A parameter NAME is never
+recognised, so `-DryRun` arrived as a string VALUE bound to the next positional
+parameter. No error, no warning, no error record. **The measured cost was a
+restore asked for as a dry run launching two real Claude sessions**, and
+`-NoScan` never reaching the GUI at all — including inside the test that passes
+`-NoScan` specifically to protect the registry.
+
+So the invocation is built as TEXT, the way a command line is. A token is left
+unquoted only when it is unmistakably a parameter name — a leading dash, then
+letters, digits and hyphens, nothing else — and everything else is single-quoted
+with its quotes doubled. That keeps `-Place '-3440,0'` working, where a VALUE
+starts with a dash and must stay quoted. `app-driver.ps1` now asserts
+`-Restore -DryRun` prints `DRY RUN`, because this shipped for exactly as long as
+nothing tested it.
+
+**🔴 DPI AWARENESS IS FIXED BY THE FIRST HWND, AND A SPLASH IS AN HWND.**
+`sessions-gui.ps1` calls `SetProcessDpiAwarenessContext` before it creates its
+first window, and its own comment says why that position matters. Adding a
+splash to the host put a window on screen *first*, which would have pinned the
+process DPI-unaware and gone soft on every non-96-DPI screen — with nothing
+failing and nothing to read, on a machine whose two monitors are both 96 DPI and
+would therefore never have shown it. The host now makes the call itself before
+any window, and **if that call fails there is no splash at all**: a few seconds
+of blank desktop is a far smaller price than a blurry window nobody can explain.
+
+
 
 **A `param()` NAME OWNS THAT NAME FOR THE WHOLE FUNCTION, CASE-INSENSITIVELY.**
 `New-AppIcon` took `[string]$Path` and later did

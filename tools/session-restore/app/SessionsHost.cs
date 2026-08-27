@@ -11,37 +11,50 @@
 // WHY IT EXISTS: launching through powershell.exe cost four things that the .vbs
 // wrapper hides but cannot fix.
 //
-//   1. A SECOND PROCESS. wscript.exe started powershell.exe, which built a
-//      console host, parsed a command line and only then loaded a runspace.
-//      Hosting the runspace here removes that whole layer.
-//   2. THE IDENTITY. Alt-Tab, the taskbar and the desktop button all showed the
+//   1. THE IDENTITY. Alt-Tab, the taskbar and the desktop button all showed the
 //      PowerShell logo, because the shortcut literally said IconLocation =
 //      'powershell.exe,0'. An icon is embedded here, so the app looks like
 //      itself everywhere Windows shows it.
-//   3. A SECOND WINDOW ON EVERY DOUBLE-CLICK. Nothing held a single-instance
-//      lock, so a second launch built a second view of one registry file.
-//      See the mutex below.
-//   4. SILENT FAILURE. A throw before the window appeared went to
+//   2. A SECOND WINDOW ON EVERY DOUBLE-CLICK. Nothing held a single-instance
+//      lock, so a second launch built a second view of one registry. See the
+//      two guards below.
+//   3. SILENT FAILURE. A throw before the window appeared went to
 //      .state\restore.log and nowhere else. Here it is also a dialog.
+//   4. NOTHING ON SCREEN FOR SECONDS. See "THE SPLASH".
 //
-// HONEST ABOUT WHAT IT DOES NOT DO: the window is not faster once it is up. The
-// WPF and the PowerShell inside it are byte for byte what they were. What is
-// saved is a process launch and the console host's startup; what is gained is
-// that it stops looking and behaving like a script.
+// AND A SMALL AMOUNT OF TIME. Measured 2026-08-27, medians over seven runs:
+//
+//      wscript.exe (noop)                144.6 ms  }  the old prelude,
+//      powershell.exe -Command exit      608.5 ms  }  753.1 ms
+//      Sessions.exe start + file check   580.1 ms  }  the new one,
+//      runspace CreateDefault2 + Open      7.7 ms  }  587.8 ms
+//
+// So ~165 ms, and that figure is an UPPER BOUND: the path measured for the exe
+// returns before System.Management.Automation is loaded, which a real launch
+// pays for. Note the exe's own start (580 ms) is within noise of
+// powershell.exe's (608 ms) -- the CLR is the cost, not the console host, and
+// nearly all of the saving is the removed wscript.exe hop. Against 5.8 s from
+// double-click to window it is about 3 per cent. SPEED IS NOT WHAT THIS BOUGHT,
+// and the docs say so.
 //
 // APARTMENT. WPF requires STA, and sessions-gui.ps1 defends itself by
 // re-launching through powershell.exe when it does not get one -- which here
-// would silently reintroduce the very process this file removes. Main is
-// [STAThread] and the runspace is pinned to this thread (UseCurrentThread), so
-// the script's guard sees STA, does nothing, and the window's message loop is
-// this process's own.
+// would silently reintroduce the process this file removes. Main is [STAThread]
+// and the runspace is pinned to this thread (UseCurrentThread), so the script's
+// guard sees STA, does nothing, and the window's message loop is this process's
+// own.
 //
-// DPI, deliberately not handled here. sessions-gui.ps1 calls
-// SetProcessDpiAwarenessContext before it creates its first window, and that
-// call only works while nothing has pinned awareness in the executable's
-// manifest. csc.exe embeds a default manifest that says nothing about DPI, so
-// the script's runtime call still wins. Adding a dpiAware entry to a manifest
-// here would break it.
+// 🔴 DPI, AND WHY IT IS HANDLED HERE NOW. sessions-gui.ps1 calls
+// SetProcessDpiAwarenessContext before it creates its first window, and its own
+// comment says why that position matters: process DPI awareness is fixed when
+// the first HWND is created and cannot be changed afterwards. THE SPLASH IS AN
+// HWND, and it exists first -- so without the call below, adding a splash would
+// have silently pinned this process as DPI-unaware and gone soft on every
+// non-96-DPI screen, with nothing failing and nothing to read. The host makes
+// the call itself, before any window; the script's own call then returns false
+// harmlessly, which it already tolerates. If the call FAILS, there is no splash
+// at all: a few seconds of blank desktop is a far smaller price than a blurry
+// window nobody can explain.
 // ---------------------------------------------------------------------------
 
 using System;
@@ -62,33 +75,43 @@ namespace MMToolbox.SessionRestore
         // over their own registry, and neither blocks the other.
         private const string MutexName = @"Local\MMToolbox.SessionRestore.Gui";
 
-        // Must match Title= in gui-window.xaml. Used ONLY to raise the window of
-        // an instance that is already running. If the title ever drifts the
-        // worst case is that a second launch exits quietly without bringing the
-        // first one forward -- never a second window, which the mutex prevents
-        // regardless of this string.
-        private const string WindowTitle = "Claude sessions";
+        // Must match Title= in gui-window.xaml. Used to raise an instance that is
+        // already running, and by the splash to know when to get out of the way.
+        internal const string WindowTitle = "Claude sessions";
 
-        private const string ScriptName = "sessions-gui.ps1";
+        private const string GuiScript = "sessions-gui.ps1";
+        private const string RestoreScript = "restore-sessions.ps1";
 
         [STAThread]
         private static int Main(string[] argv)
         {
             string baseDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
-            string script = Path.Combine(baseDir, ScriptName);
 
             // SR_GUI_SHOW is the existing contract for "put the startup error on
             // screen rather than in the log"; Sessions.bat honours the same
             // variable. A winexe has no console at all, so make one.
-            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SR_GUI_SHOW")))
+            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SR_GUI_SHOW")) &&
+                GetConsoleWindow() == IntPtr.Zero)
             {
                 AllocConsole();
+                AttachStdIo();
             }
 
+            // -Restore runs the OTHER script, so one binary is both desktop
+            // buttons and both carry the app's icon. It is a different action,
+            // not a second window: no mutex, no splash, and a console because
+            // restoring prints what it launched and you are meant to read it.
+            string[] rest;
+            if (TakeSwitch(argv, "-Restore", out rest))
+            {
+                return RunRestore(baseDir, rest);
+            }
+
+            string script = Path.Combine(baseDir, GuiScript);
             if (!File.Exists(script))
             {
                 Fail(baseDir,
-                     ScriptName + " is not next to this application." +
+                     GuiScript + " is not next to this application." +
                      Environment.NewLine + Environment.NewLine +
                      "Looked in:" + Environment.NewLine + baseDir,
                      null);
@@ -122,9 +145,17 @@ namespace MMToolbox.SessionRestore
                 try { Directory.SetCurrentDirectory(baseDir); }
                 catch (Exception) { /* not fatal: $PSScriptRoot resolves first anyway */ }
 
+                // Read the comment at the top of this file before moving either
+                // of these two lines, or reordering them.
+                bool dpiOk = TrySetPerMonitorDpi();
+                if (dpiOk && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SR_NO_SPLASH")))
+                {
+                    Splash.Start();
+                }
+
                 try
                 {
-                    return Run(script, argv);
+                    return Run(script, rest);
                 }
                 catch (Exception ex)
                 {
@@ -136,6 +167,7 @@ namespace MMToolbox.SessionRestore
                 }
                 finally
                 {
+                    Splash.Stop();
                     single.ReleaseMutex();
                 }
             }
@@ -143,6 +175,116 @@ namespace MMToolbox.SessionRestore
 
         // -------------------------------------------------------------------
         private static int Run(string script, string[] argv)
+        {
+            using (Runspace rs = NewRunspace())
+            using (PowerShell ps = PowerShell.Create())
+            {
+                ps.Runspace = rs;
+
+                // Invoked through & rather than dot-sourced so the script's
+                // closing `exit 0` ends the script instead of tearing down the
+                // pipeline underneath us. See BuildInvocation for why the
+                // arguments are text rather than AddArgument calls.
+                ps.AddScript(BuildInvocation(script, argv), false);
+
+                ps.Invoke();
+
+                if (ps.Streams.Error.Count > 0)
+                {
+                    Fail(Path.GetDirectoryName(script), Describe(ps.Streams.Error), null);
+                    return 1;
+                }
+            }
+            return 0;
+        }
+
+        // -------------------------------------------------------------------
+        // -Restore. The same runspace, the other script, and a console -- because
+        // "Restore Sessions.bat" has always printed what it launched and paused
+        // so you could read it, and folding it into the app must not quietly
+        // take that away.
+        private static int RunRestore(string baseDir, string[] argv)
+        {
+            string script = Path.Combine(baseDir, RestoreScript);
+            if (!File.Exists(script))
+            {
+                Fail(baseDir, RestoreScript + " is not next to this application.", null);
+                return 2;
+            }
+
+            // No console of our own means Explorer or a shortcut started us, so
+            // we make one AND pause at the end. Started from a terminal we
+            // inherit its console, print into it, and must not pause -- which is
+            // the same rule the .bat implemented by grepping %cmdcmdline%, done
+            // by asking the OS instead of by pattern-matching a command line.
+            bool ownConsole = GetConsoleWindow() == IntPtr.Zero;
+            if (ownConsole) { AllocConsole(); AttachStdIo(); }
+
+            try { Directory.SetCurrentDirectory(baseDir); }
+            catch (Exception) { }
+
+            int code = 0;
+            try
+            {
+                using (Runspace rs = NewRunspace())
+                using (PowerShell ps = PowerShell.Create())
+                {
+                    ps.Runspace = rs;
+
+                    // Write-Host in a hosted runspace goes to the INFORMATION
+                    // stream, not to a console -- so without this the restore
+                    // would run correctly and print absolutely nothing. Colours
+                    // are carried on the record and are reapplied, or the output
+                    // arrives as a wall of grey where it used to be readable.
+                    ps.Streams.Information.DataAdded += (s, e) =>
+                    {
+                        InformationRecord r = ps.Streams.Information[e.Index];
+                        HostInformationMessage hm = r.MessageData as HostInformationMessage;
+                        if (hm == null) { Console.WriteLine(r.MessageData); return; }
+                        ConsoleColor fg = Console.ForegroundColor;
+                        try
+                        {
+                            if (hm.ForegroundColor.HasValue) { Console.ForegroundColor = hm.ForegroundColor.Value; }
+                            if (hm.NoNewLine.HasValue && hm.NoNewLine.Value) { Console.Write(hm.Message); }
+                            else { Console.WriteLine(hm.Message); }
+                        }
+                        finally { Console.ForegroundColor = fg; }
+                    };
+                    ps.Streams.Warning.DataAdded += (s, e) =>
+                        WriteColoured(ConsoleColor.Yellow, "WARNING: " + ps.Streams.Warning[e.Index].Message);
+                    ps.Streams.Error.DataAdded += (s, e) =>
+                        WriteColoured(ConsoleColor.Red, ps.Streams.Error[e.Index].ToString());
+
+                    ps.AddScript(BuildInvocation(script, argv), false);
+
+                    ps.Invoke();
+
+                    // The script ends in `exit <n>`; under & that sets
+                    // $LASTEXITCODE rather than ending the process, so the exit
+                    // code has to be read back out of the runspace.
+                    object last = rs.SessionStateProxy.GetVariable("LASTEXITCODE");
+                    if (last != null) { int.TryParse(last.ToString(), out code); }
+                    if (ps.Streams.Error.Count > 0 && code == 0) { code = 1; }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteColoured(ConsoleColor.Red, "FATAL: " + ex.Message);
+                Fail(baseDir, "The restore could not run." + Environment.NewLine + ex.Message, ex);
+                code = 1;
+            }
+
+            if (ownConsole && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SR_NOPAUSE")))
+            {
+                Console.WriteLine();
+                Console.Write("Press any key to close this window...");
+                try { Console.ReadKey(true); } catch (Exception) { /* no real input handle */ }
+            }
+            return code;
+        }
+
+        // -------------------------------------------------------------------
+        private static Runspace NewRunspace()
         {
             InitialSessionState iss = InitialSessionState.CreateDefault2();
 
@@ -153,48 +295,98 @@ namespace MMToolbox.SessionRestore
             // Bypass on the old powershell.exe command line did.
             iss.ExecutionPolicy = Microsoft.PowerShell.ExecutionPolicy.Bypass;
 
-            using (Runspace rs = RunspaceFactory.CreateRunspace(iss))
+            Runspace rs = RunspaceFactory.CreateRunspace(iss);
+
+            // UseCurrentThread is the load-bearing line for the GUI. Without it
+            // the runspace spins up its own pipeline thread, the WPF window is
+            // created there, and this thread sits with nothing to pump -- so
+            // ShowDialog blocks on a thread Windows is not delivering messages
+            // to. On this thread, [STAThread] Main IS the UI thread.
+            rs.ThreadOptions = PSThreadOptions.UseCurrentThread;
+            rs.Open();
+            return rs;
+        }
+
+        // -------------------------------------------------------------------
+        // 🔴 HOW ARGUMENTS REACH THE SCRIPT, and why it is done the long way.
+        //
+        // The obvious way is a wrapper -- AddScript("param($p,$a) & $p @a")
+        // with AddArgument for each. IT SILENTLY MIS-BINDS, and this was shipped
+        // before it was measured. Probed 2026-08-27 against a stub with the same
+        // param shape as restore-sessions.ps1, passing -DryRun -Place -3440,0:
+        //
+        //   AddScript + AddArgument   DryRun=False  Place=[-DryRun]
+        //   AddScript + AddParameter  DryRun=False  Place=[-DryRun]
+        //   built command text        DryRun=True   Place=[-3440,0]
+        //
+        // Both API routes pass every token POSITIONALLY: a parameter NAME is
+        // never recognised, so "-DryRun" arrived as a string VALUE bound to the
+        // next positional parameter. No error, no warning. The measured cost of
+        // that was a restore asked for as a dry run launching two real Claude
+        // sessions, and -NoScan never reaching the GUI at all.
+        //
+        // So the invocation is built as TEXT, exactly as a command line would
+        // be. A token is left unquoted only when it is unmistakably a parameter
+        // name -- a leading dash, then letters, digits, hyphens and nothing else
+        // -- and everything else is single-quoted with its quotes doubled. That
+        // keeps -Place '-3440,0' working (a VALUE that starts with a dash, which
+        // must stay quoted) and leaves nothing shaped like an argument able to
+        // become code.
+        private static string BuildInvocation(string script, string[] argv)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append("& '").Append(script.Replace("'", "''")).Append("'");
+            foreach (string a in (argv ?? new string[0]))
             {
-                // UseCurrentThread is the load-bearing line. Without it the
-                // runspace spins up its own pipeline thread, the WPF window is
-                // created there, and this thread sits with nothing to pump --
-                // so ShowDialog blocks on a thread Windows is not delivering
-                // messages to. On this thread, [STAThread] Main IS the UI thread.
-                rs.ThreadOptions = PSThreadOptions.UseCurrentThread;
-                rs.Open();
-
-                using (PowerShell ps = PowerShell.Create())
-                {
-                    ps.Runspace = rs;
-
-                    // Invoked through & rather than dot-sourced, for two
-                    // reasons: the script's param() block binds properly (so
-                    // -NoScan arrives as a switch and not as a string), and its
-                    // closing `exit 0` ends the script instead of tearing down
-                    // the pipeline underneath us.
-                    ps.AddScript("param($path, $argv) & $path @argv", false)
-                      .AddArgument(script)
-                      .AddArgument(argv ?? new string[0]);
-
-                    ps.Invoke();
-
-                    if (ps.Streams.Error.Count > 0)
-                    {
-                        StringBuilder sb = new StringBuilder();
-                        foreach (ErrorRecord e in ps.Streams.Error)
-                        {
-                            sb.AppendLine(e.ToString());
-                            if (e.InvocationInfo != null)
-                            {
-                                sb.AppendLine("    at " + e.InvocationInfo.PositionMessage);
-                            }
-                        }
-                        Fail(Path.GetDirectoryName(script), sb.ToString(), null);
-                        return 1;
-                    }
-                }
+                if (string.IsNullOrEmpty(a)) { continue; }
+                if (LooksLikeParameterName(a)) { sb.Append(' ').Append(a); }
+                else { sb.Append(" '").Append(a.Replace("'", "''")).Append("'"); }
             }
-            return 0;
+            return sb.ToString();
+        }
+
+        private static bool LooksLikeParameterName(string a)
+        {
+            if (a.Length < 2 || a[0] != '-' || !char.IsLetter(a[1])) { return false; }
+            for (int i = 1; i < a.Length; i++)
+            {
+                char c = a[i];
+                if (!char.IsLetterOrDigit(c) && c != '-') { return false; }
+            }
+            return true;
+        }
+
+        private static string Describe(PSDataCollection<ErrorRecord> errors)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (ErrorRecord e in errors)
+            {
+                sb.AppendLine(e.ToString());
+                if (e.InvocationInfo != null) { sb.AppendLine("    at " + e.InvocationInfo.PositionMessage); }
+            }
+            return sb.ToString();
+        }
+
+        private static void WriteColoured(ConsoleColor c, string s)
+        {
+            ConsoleColor fg = Console.ForegroundColor;
+            try { Console.ForegroundColor = c; Console.WriteLine(s); }
+            finally { Console.ForegroundColor = fg; }
+        }
+
+        // Pulls the named switch out of the argument list, case-insensitively,
+        // and hands back everything else to forward to the script.
+        private static bool TakeSwitch(string[] argv, string name, out string[] rest)
+        {
+            bool found = false;
+            System.Collections.Generic.List<string> keep = new System.Collections.Generic.List<string>();
+            foreach (string a in (argv ?? new string[0]))
+            {
+                if (string.Equals(a, name, StringComparison.OrdinalIgnoreCase)) { found = true; }
+                else { keep.Add(a); }
+            }
+            rest = keep.ToArray();
+            return found;
         }
 
         // -------------------------------------------------------------------
@@ -205,6 +397,7 @@ namespace MMToolbox.SessionRestore
         // double-click.
         private static void Fail(string baseDir, string message, Exception ex)
         {
+            Splash.Stop();
             try
             {
                 string stateDir = Path.Combine(
@@ -234,7 +427,7 @@ namespace MMToolbox.SessionRestore
             {
                 System.Windows.Forms.MessageBox.Show(
                     message,
-                    "Claude sessions",
+                    WindowTitle,
                     System.Windows.Forms.MessageBoxButtons.OK,
                     System.Windows.Forms.MessageBoxIcon.Error);
             }
@@ -248,6 +441,30 @@ namespace MMToolbox.SessionRestore
             if (hwnd == IntPtr.Zero) { return; }
             if (IsIconic(hwnd)) { ShowWindow(hwnd, SW_RESTORE); }
             SetForegroundWindow(hwnd);
+        }
+
+        // PER_MONITOR_AWARE_V2. Wrapped because the entry point does not exist
+        // before Windows 10 1703, and because a process whose manifest already
+        // pinned awareness is refused -- in both cases the answer is false and
+        // the caller does without the splash.
+        private static bool TrySetPerMonitorDpi()
+        {
+            try { return SetProcessDpiAwarenessContext(new IntPtr(-4)); }
+            catch (Exception) { return false; }
+        }
+
+        // Console handles cached by the CLR before AllocConsole point at nothing,
+        // so stdout and stdin are reopened onto the console we just made.
+        private static void AttachStdIo()
+        {
+            try
+            {
+                StreamWriter w = new StreamWriter(Console.OpenStandardOutput());
+                w.AutoFlush = true;
+                Console.SetOut(w);
+                Console.SetIn(new StreamReader(Console.OpenStandardInput()));
+            }
+            catch (Exception) { }
         }
 
         private const int SW_RESTORE = 9;
@@ -264,7 +481,207 @@ namespace MMToolbox.SessionRestore
         [DllImport("user32.dll")]
         private static extern bool IsIconic(IntPtr hWnd);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool AllocConsole();
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetConsoleWindow();
+    }
+
+    // -----------------------------------------------------------------------
+    // THE SPLASH.
+    //
+    // Measured 2026-08-27: 5.8 seconds from double-click to window, of which the
+    // host is ~0.6. The rest is the GUI script -- WPF loading, 115 KB of XAML
+    // parsing, and a 208-conversation registry being read. During all of it the
+    // desktop showed NOTHING, which is the single loudest way this still read as
+    // a script: an application acknowledges the click.
+    //
+    // Deliberately NOT on the main thread. That thread is about to be handed to
+    // the runspace and will be executing PowerShell solidly until the real
+    // window appears, so anything drawn on it would be a frozen rectangle --
+    // worse than blank. This runs its own STA thread with its own message pump.
+    //
+    // It closes by WATCHING FOR THE REAL WINDOW rather than by being told, so it
+    // needs no cooperation from the PowerShell and there is nothing to keep in
+    // sync when that script changes. Belt and braces: a hard deadline closes it
+    // regardless, because a splash that outlives its cause is the worst outcome
+    // available here.
+    // -----------------------------------------------------------------------
+    internal static class Splash
+    {
+        private static Thread _thread;
+        private static System.Windows.Forms.Form _form;
+        private static volatile bool _stop;
+
+        private const int PollMs = 120;
+        private const int DeadlineMs = 180000;
+
+        internal static void Start()
+        {
+            _stop = false;
+            _thread = new Thread(Pump);
+            _thread.IsBackground = true;   // can never hold the process open
+            _thread.SetApartmentState(ApartmentState.STA);
+            _thread.Start();
+        }
+
+        internal static void Stop()
+        {
+            _stop = true;
+            try
+            {
+                System.Windows.Forms.Form f = _form;
+                if (f != null && f.IsHandleCreated && !f.IsDisposed)
+                {
+                    f.BeginInvoke((System.Windows.Forms.MethodInvoker)delegate
+                    {
+                        try { f.Close(); } catch (Exception) { }
+                    });
+                }
+            }
+            catch (Exception) { }
+        }
+
+        private static void Pump()
+        {
+            try
+            {
+                using (System.Windows.Forms.Form f = Build())
+                {
+                    _form = f;
+                    System.Windows.Forms.Application.Run(f);
+                }
+            }
+            catch (Exception) { /* a splash must never be able to fail the launch */ }
+            finally { _form = null; }
+        }
+
+        private static System.Windows.Forms.Form Build()
+        {
+            System.Drawing.Color plate = System.Drawing.Color.FromArgb(21, 22, 26);
+            System.Drawing.Color ink = System.Drawing.Color.FromArgb(233, 234, 236);
+            System.Drawing.Color dim = System.Drawing.Color.FromArgb(138, 143, 150);
+
+            System.Windows.Forms.Form f = new System.Windows.Forms.Form();
+            f.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
+            f.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
+            f.Size = new System.Drawing.Size(440, 132);
+            f.BackColor = plate;
+            f.TopMost = true;
+
+            // NO TASKBAR BUTTON AND NO TITLE, both on purpose. A titled window
+            // would become this process's MainWindowTitle, and the app-driver
+            // waits for exactly that string to decide the real window is up --
+            // a splash that answers for it would make the test pass early and
+            // measure nothing.
+            f.ShowInTaskbar = false;
+            f.Text = "";
+
+            f.Paint += delegate(object s, System.Windows.Forms.PaintEventArgs e)
+            {
+                using (System.Drawing.Pen p = new System.Drawing.Pen(System.Drawing.Color.FromArgb(60, 64, 70)))
+                {
+                    e.Graphics.DrawRectangle(p, 0, 0, f.Width - 1, f.Height - 1);
+                }
+            };
+
+            try
+            {
+                System.Drawing.Icon ico = System.Drawing.Icon.ExtractAssociatedIcon(
+                    System.Windows.Forms.Application.ExecutablePath);
+                if (ico != null)
+                {
+                    System.Windows.Forms.PictureBox pb = new System.Windows.Forms.PictureBox();
+                    pb.Image = ico.ToBitmap();
+                    pb.SizeMode = System.Windows.Forms.PictureBoxSizeMode.Zoom;
+                    pb.Bounds = new System.Drawing.Rectangle(30, 34, 48, 48);
+                    pb.BackColor = System.Drawing.Color.Transparent;
+                    f.Controls.Add(pb);
+                }
+            }
+            catch (Exception) { }
+
+            System.Windows.Forms.Label title = new System.Windows.Forms.Label();
+            title.Text = SessionsApp.WindowTitle;
+            title.ForeColor = ink;
+            title.Font = new System.Drawing.Font("Segoe UI", 15F, System.Drawing.FontStyle.Regular);
+            title.AutoSize = true;
+            title.Location = new System.Drawing.Point(100, 36);
+            title.BackColor = System.Drawing.Color.Transparent;
+            f.Controls.Add(title);
+
+            System.Windows.Forms.Label sub = new System.Windows.Forms.Label();
+            sub.Text = "starting";
+            sub.ForeColor = dim;
+            sub.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular);
+            sub.AutoSize = true;
+            sub.Location = new System.Drawing.Point(103, 70);
+            sub.BackColor = System.Drawing.Color.Transparent;
+            f.Controls.Add(sub);
+
+            int elapsed = 0;
+            int dots = 0;
+            System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
+            t.Interval = PollMs;
+            t.Tick += delegate
+            {
+                elapsed += PollMs;
+
+                // The dots are not decoration: a static panel for six seconds
+                // reads as hung, which is the thing this exists to prevent.
+                if (elapsed % 480 < PollMs)
+                {
+                    dots = (dots + 1) % 4;
+                    sub.Text = "starting" + new string('.', dots);
+                }
+
+                if (_stop || elapsed >= DeadlineMs || RealWindowIsUp(f.Handle))
+                {
+                    t.Stop();
+                    try { f.Close(); } catch (Exception) { }
+                }
+            };
+            f.Shown += delegate { t.Start(); };
+            return f;
+        }
+
+        // A top-level window of THIS process, titled like the real one, that is
+        // not the splash itself.
+        private static bool RealWindowIsUp(IntPtr splash)
+        {
+            IntPtr found = IntPtr.Zero;
+            uint me = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+            EnumWindows(delegate(IntPtr h, IntPtr l)
+            {
+                if (h == splash) { return true; }
+                uint owner;
+                GetWindowThreadProcessId(h, out owner);
+                if (owner != me) { return true; }
+                if (!IsWindowVisible(h)) { return true; }
+                StringBuilder sb = new StringBuilder(256);
+                GetWindowTextW(h, sb, sb.Capacity);
+                if (sb.ToString() == SessionsApp.WindowTitle) { found = h; return false; }
+                return true;
+            }, IntPtr.Zero);
+            return found != IntPtr.Zero;
+        }
+
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetWindowTextW")]
+        private static extern int GetWindowTextW(IntPtr hWnd, StringBuilder text, int count);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
     }
 }
