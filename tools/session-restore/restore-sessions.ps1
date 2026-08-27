@@ -359,7 +359,17 @@ function Invoke-Install {
         }
     } catch {
         Write-SRFail "Sessions.exe could not be built: $($_.Exception.Message)"
-        Write-SRSkip "the desktop button will use Sessions.bat instead"
+        # SAY WHICH OF THE TWO THINGS ACTUALLY HAPPENS. A build can fail with a
+        # perfectly good exe already sitting there -- most commonly because the
+        # app is RUNNING, which build.ps1 refuses rather than half-writing -- and
+        # the buttons below are wired from Test-Path, not from whether the build
+        # succeeded. Announcing a fallback that is not taken sends the operator
+        # looking for a problem that is not there.
+        if (Test-Path -LiteralPath $exe) {
+            Write-SRSkip "the existing Sessions.exe is kept and the buttons still point at it - close the session window and re-run to rebuild"
+        } else {
+            Write-SRSkip "there is no Sessions.exe, so the desktop button will use Sessions.bat instead"
+        }
     }
 
     # The desktop buttons point at the app, or at the .bat files when there is no

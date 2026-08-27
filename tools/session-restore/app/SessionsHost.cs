@@ -62,9 +62,35 @@ using System.Globalization;
 using System.IO;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+
+// ---------------------------------------------------------------------------
+// VERSION METADATA. Without this the exe reports FileVersion 0.0.0.0 and a blank
+// product, description and company -- which is what it did until 2026-08-27,
+// measured. That is not cosmetic:
+//
+//   * Task Manager and Details show a nameless entry, so the one process the
+//     operator most needs to recognise is the one they cannot.
+//   * right-click -> Properties -> Details is empty, which is the first place
+//     anyone looks when asking "what IS this thing on my desktop".
+//   * an unsigned binary with NO metadata at all scores worse with SmartScreen
+//     and with behavioural antivirus than an unsigned binary that says what it
+//     is -- and this repo has been quarantined once already (CONTEXT.md).
+//
+// AssemblyTitle becomes FileDescription, which is the column Task Manager and
+// the taskbar actually show. It is deliberately the same string as the window
+// title, so the process, the window and the taskbar all say one thing.
+// ---------------------------------------------------------------------------
+[assembly: AssemblyTitle("Claude sessions")]
+[assembly: AssemblyDescription("The session console: every Claude Code conversation on this machine, what each last said, and which of them reopen at logon.")]
+[assembly: AssemblyProduct("session-restore")]
+[assembly: AssemblyCompany("MM-toolbox")]
+[assembly: AssemblyCopyright("Local tool. No warranty, no telemetry, no network.")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
 
 namespace MMToolbox.SessionRestore
 {
