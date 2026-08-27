@@ -129,6 +129,31 @@ if (-not (FocusInWindow)) {
 }
 Pass 'keyboard focus is inside the GUI window'
 
+# 🪤 FOCUS IS CHECKED ONCE ABOVE, AND FOCUS CAN LEAVE AFTERWARDS. Every
+# assertion below reads "the selection did not move", which has two
+# explanations and only one of them is a bug: the key did nothing, or the key
+# went to a different window. Measured 2026-08-27 -- a sweep reported PAGEDOWN
+# and DOWN as FAILURES on a build that had changed neither, in a run whose own
+# RIGHT, END and HOME had already passed; two re-runs then gave PASS and
+# INCONCLUSIVE. The driver already knows how to say "inconclusive" and was only
+# saying it before the first keystroke.
+#
+# So a key that appears not to have worked re-asks the question it asked at the
+# start. A false FAIL here is worse than a false INCONCLUSIVE: it sends somebody
+# looking for a regression in code that is fine.
+function FailKey {
+    param([string]$m)
+    if (-not (FocusInWindow)) {
+        Write-Host ''
+        Write-Host "  CANNOT TEST: focus left the GUI window part-way through, at: $m" -ForegroundColor Yellow
+        Write-Host '  SendKeys went somewhere else, so this is a statement about the desktop' -ForegroundColor Yellow
+        Write-Host '  and not about the GUI. Reporting inconclusive rather than a failure.' -ForegroundColor Yellow
+        Stop-Process -Id $guiPid -Force -ErrorAction SilentlyContinue
+        exit 2
+    }
+    Fail $m
+}
+
 # THE ROSTER OPENS FOLDED NOW, which is the whole point of it: 26 project rows on
 # one screen instead of two hundred. That is a list which FITS, and this suite
 # needs one that SCROLLS -- the comment at the top of this file records exactly
@@ -176,36 +201,36 @@ Note "start          sel=$($s0.Substring(0,[Math]::Min(20,$s0.Length)))  scroll=
 Press '{END}'
 $s1 = SelId; $v1 = Scroll
 Note "after END      sel=$($s1.Substring(0,[Math]::Min(20,$s1.Length)))  scroll=$v1%"
-if ($s1 -eq $s0) { Fail 'END did not change the selection' }
-elseif ($v1 -lt 90) { Fail "END moved the selection but only scrolled to $v1%" }
+if ($s1 -eq $s0) { FailKey 'END did not change the selection' }
+elseif ($v1 -lt 90) { FailKey "END moved the selection but only scrolled to $v1%" }
 else { Pass "END jumps to the end (scroll $v0% -> $v1%)" }
 
 Press '{HOME}'
 $s2 = SelId; $v2 = Scroll
 Note "after HOME     sel=$($s2.Substring(0,[Math]::Min(20,$s2.Length)))  scroll=$v2%"
-if ($s2 -ne $s0) { Fail 'HOME did not return to the row END started from' }
-elseif ($v2 -gt 1) { Fail "HOME left the list scrolled to $v2%" }
+if ($s2 -ne $s0) { FailKey 'HOME did not return to the row END started from' }
+elseif ($v2 -gt 1) { FailKey "HOME left the list scrolled to $v2%" }
 else { Pass 'HOME jumps back to the top' }
 
 Press '{PGDN}'
 $s3 = SelId; $v3 = Scroll
 Note "after PGDN     sel=$($s3.Substring(0,[Math]::Min(20,$s3.Length)))  scroll=$v3%"
-if ($s3 -eq $s2) { Fail 'PAGEDOWN did not move the selection' } else { Pass "PAGEDOWN moves down a page (scroll $v2% -> $v3%)" }
+if ($s3 -eq $s2) { FailKey 'PAGEDOWN did not move the selection' } else { Pass "PAGEDOWN moves down a page (scroll $v2% -> $v3%)" }
 
 Press '{PGUP}'
 $s4 = SelId; $v4 = Scroll
 Note "after PGUP     sel=$($s4.Substring(0,[Math]::Min(20,$s4.Length)))  scroll=$v4%"
-if ($s4 -ne $s2) { Fail 'PAGEUP did not come back to where PAGEDOWN started' } else { Pass 'PAGEUP comes back' }
+if ($s4 -ne $s2) { FailKey 'PAGEUP did not come back to where PAGEDOWN started' } else { Pass 'PAGEUP comes back' }
 
 Press '{DOWN}'
 $s5 = SelId
 Press '{DOWN}'
 $s6 = SelId
-if ($s5 -eq $s4 -or $s6 -eq $s5) { Fail 'DOWN did not move the selection one row at a time' }
+if ($s5 -eq $s4 -or $s6 -eq $s5) { FailKey 'DOWN did not move the selection one row at a time' }
 else { Pass 'DOWN moves one row at a time' }
 
 Press '{UP}'
-if ((SelId) -ne $s5) { Fail 'UP did not step back one row' } else { Pass 'UP steps back one row' }
+if ((SelId) -ne $s5) { FailKey 'UP did not step back one row' } else { Pass 'UP steps back one row' }
 
 Stop-Process -Id $guiPid -Force -ErrorAction SilentlyContinue
 Write-Host ''

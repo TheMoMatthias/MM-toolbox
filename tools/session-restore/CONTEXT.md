@@ -474,6 +474,36 @@ window opened a SECOND view of one `sessions-registry.json`. The fix is that the
 host also looks for a window titled `Claude sessions` and raises it. Whenever a
 guard keys off something only one entry path has, check what the other paths do.
 
+## Two traps about measuring Windows, not about this code
+
+**COUNTING `conhost` CHILDREN DOES NOT TELL YOU WHETHER A PROCESS HAS A
+CONSOLE.** Which terminal host Windows hands a new console to is a system
+setting; on Windows 11 with Windows Terminal as the default it is not reliably a
+child of the process at all. Measured 2026-08-27: the heuristic reported "no
+console" for a process that had just called `AllocConsole` and plainly had one,
+marking a working `SR_GUI_SHOW` as broken. Ask the OS instead —
+`FreeConsole()` then `AttachConsole(pid)` from a **throwaway process**, which
+succeeds only if the target really owns a console. Both halves are required: a
+process may be attached to at most one console, so a caller that already has one
+is refused whatever the target, and attaching would cost the driver its own.
+`_common.ps1` does the same dance for screen reads.
+
+**`MainWindowTitle` IS A HEURISTIC AND GOES EMPTY.** It is the first top-level
+window the OS reports for a process, and it reads as blank while a window is
+being raised or while a transient child is up. Measured the same day: right
+after a second launch raised the first window, `MainWindowTitle` found nothing
+and the single-instance assertion failed against a process that was visibly
+showing its window. Count windows by enumerating top-level windows and matching
+the title, and count **distinct owning processes** — a modal dialog carries the
+same title on its own hwnd and would otherwise read as a second window.
+
+🪤 Both of these produced a RED test against code that was correct, which is the
+expensive direction: a false failure sends somebody hunting a regression that
+was never there. The same day, `keys` reported PAGEDOWN and DOWN as FAILURES
+because focus had left the window part-way through a run whose earlier keys had
+passed — it checked focus once, before the first keystroke. It now re-asks that
+question before calling any key dead, and says INCONCLUSIVE instead.
+
 ## The antivirus is part of the test environment
 
 **2026-08-23, measured.** A `tray` suite drove the LIVE Windows shell through UI

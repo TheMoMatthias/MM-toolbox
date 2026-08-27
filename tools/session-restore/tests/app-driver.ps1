@@ -57,9 +57,43 @@ $build    = Join-Path $tool 'app\build.ps1'
 $registry = Join-Path $tool 'sessions-registry.json'
 $WindowTitle = 'Claude sessions'
 
+# How many SESSION WINDOWS are open, counted by enumerating top-level windows
+# rather than by reading MainWindowTitle.
+#
+# MainWindowTitle is a HEURISTIC -- the first top-level window the OS reports for
+# the process -- and it goes momentarily empty while a window is being raised or
+# while a transient child is up. Measured 2026-08-27: immediately after the
+# second launch raised the first window, MainWindowTitle found nothing and the
+# single-instance assertion failed against a process that was plainly still
+# showing its window. Counting DISTINCT OWNING PROCESSES also means a modal
+# dialog, which carries the same title on its own hwnd, cannot count as a
+# second window.
+if (-not ('SRApp.Win' -as [type])) {
+    Add-Type -Namespace SRApp -Name Win -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr l);
+public delegate bool EnumWindowsProc(IntPtr h, IntPtr l);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, System.Text.StringBuilder s, int n);
+[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+'@
+}
 function Get-WindowCount {
-    @(Get-Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.MainWindowTitle -eq $WindowTitle }).Count
+    $owners = New-Object 'System.Collections.Generic.HashSet[uint32]'
+    $cb = [SRApp.Win+EnumWindowsProc]{
+        param($h, $l)
+        if ([SRApp.Win]::IsWindowVisible($h)) {
+            $sb = New-Object System.Text.StringBuilder 512
+            [void][SRApp.Win]::GetWindowTextW($h, $sb, 512)
+            if ($sb.ToString() -eq $WindowTitle) {
+                $owner = [uint32]0
+                [void][SRApp.Win]::GetWindowThreadProcessId($h, [ref]$owner)
+                $null = $owners.Add($owner)
+            }
+        }
+        return $true
+    }
+    [void][SRApp.Win]::EnumWindows($cb, [IntPtr]::Zero)
+    return $owners.Count
 }
 
 function Get-Children { param([int]$Ppid, [string]$Name)
@@ -70,6 +104,36 @@ function Get-Children { param([int]$Ppid, [string]$Name)
 function Get-Hash { param($p)
     if (-not (Test-Path -LiteralPath $p)) { return '(absent)' }
     (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash
+}
+
+# --- does that process own a console? ---------------------------------------
+# ASK THE OS, DO NOT COUNT conhost CHILDREN. Whether a console appears as a
+# conhost.exe child of the process depends on which terminal host Windows hands
+# it to -- on Windows 11 with Windows Terminal as the default that is not
+# reliably a child at all, so the child-count heuristic reports "no console" for
+# a process that plainly has one. Measured 2026-08-27: it did exactly that, and
+# marked a working SR_GUI_SHOW as broken. AttachConsole answers directly.
+#
+# In a THROWAWAY PROCESS, and FreeConsole first, both required: a process may be
+# attached to at most one console, so a caller that already has one is refused
+# with ERROR_ACCESS_DENIED whatever the target -- and attaching would cost this
+# driver its own console. _common.ps1 does the same dance for screen reads.
+$script:ConsoleProbe = $null
+function Test-HasConsole {
+    param([int]$Id)
+    if (-not $script:ConsoleProbe) {
+        $script:ConsoleProbe = Join-Path ([System.IO.Path]::GetTempPath()) ("sr-conprobe-" + [Guid]::NewGuid().ToString('N') + '.ps1')
+        $lines = @(
+            'param([int]$Id)',
+            '$sig = ''[DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint p); [DllImport("kernel32.dll", SetLastError = true)] public static extern bool FreeConsole();''',
+            'Add-Type -Namespace SRProbe -Name Con -MemberDefinition $sig',
+            '$null = [SRProbe.Con]::FreeConsole()',
+            'exit ([int](-not [SRProbe.Con]::AttachConsole([uint32]$Id)))'
+        )
+        [System.IO.File]::WriteAllText($script:ConsoleProbe, ($lines -join [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script:ConsoleProbe -Id $Id 2>&1 | Out-Null
+    return ($LASTEXITCODE -eq 0)
 }
 
 $started = $null
@@ -120,10 +184,13 @@ try {
     if (Test-Path -LiteralPath $exe) {
         $capture = Join-Path ([System.IO.Path]::GetTempPath()) ("sr-app-out-" + [Guid]::NewGuid().ToString('N') + '.txt')
         try {
+            $claudeBefore = @(Get-CimInstance Win32_Process -Filter "Name='claude.exe'" -ErrorAction SilentlyContinue).Count
             $env:SR_NOPAUSE = '1'
             $r = Start-Process -FilePath $exe -ArgumentList '-Restore', '-DryRun' `
                     -PassThru -Wait -NoNewWindow -RedirectStandardOutput $capture
             Remove-Item Env:\SR_NOPAUSE -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 700
+            $claudeAfter = @(Get-CimInstance Win32_Process -Filter "Name='claude.exe'" -ErrorAction SilentlyContinue).Count
             $text = $(if (Test-Path -LiteralPath $capture) { Get-Content -LiteralPath $capture -Raw } else { '' })
 
             if ($text -match 'Claude session restore') { Pass '-Restore runs restore-sessions.ps1, in this process' }
@@ -135,10 +202,18 @@ try {
                 Fail '-DryRun did NOT reach the script: the run was live, not a dry run'
             }
 
-            # The other half of the same claim: a VALUE that looks like a switch
-            # must stay a value. -Place '-3440,0' is the real case in this repo.
-            if ($text -notmatch 'restored [1-9]') { Pass 'nothing was launched by the probe' }
-            else { Fail 'the -DryRun probe LAUNCHED something' }
+            # 🪤 COUNT THE PROCESSES. Do NOT read this off the summary line:
+            # a dry run prints "restored 2 verified 2" because that counter is
+            # what it WOULD have done, and the step lines above it are the
+            # command lines it WOULD have run. Asserting on that wording marks
+            # a correct dry run as a failure, which is how this read on the
+            # first attempt. The only honest question is whether any claude.exe
+            # actually appeared.
+            if ($claudeAfter -eq $claudeBefore) {
+                Pass "nothing was launched by the probe (claude.exe $claudeBefore -> $claudeAfter)"
+            } else {
+                Fail "the -DryRun probe LAUNCHED something: claude.exe $claudeBefore -> $claudeAfter"
+            }
         } finally {
             Remove-Item -LiteralPath $capture -Force -ErrorAction SilentlyContinue
             Remove-Item Env:\SR_NOPAUSE -ErrorAction SilentlyContinue
@@ -207,10 +282,11 @@ try {
         if ($kids.Count) { Fail "$($kids.Count) powershell process(es) were spawned - the runspace is not hosted in-process" }
         else { Pass 'no powershell.exe spawned - the runspace is hosted in this process' }
 
-        # /target:winexe. An exe built as a console app gets a conhost even when
-        # the window is hidden, and that is what used to flash.
-        $con = Get-Children -Ppid $started.Id -Name 'conhost*'
-        if ($con.Count) { Fail "$($con.Count) conhost process(es) attached - this was built as a console app" }
+        # /target:winexe. An exe built as a console app gets a console even when
+        # the window is hidden, and that is what used to flash. PAIRED with the
+        # SR_GUI_SHOW case near the end, which makes one appear -- without that
+        # pair this could pass by never being able to see a console at all.
+        if (Test-HasConsole -Id $started.Id) { Fail 'the window process owns a console - this was built as a console app' }
         else { Pass 'no console allocated for the window' }
 
         # The splash must not still be up, and must never have answered for the
@@ -291,6 +367,52 @@ try {
         else { Pass 'a second launch raised the first window instead of opening another' }
     }
 
+    # --- the inverse, so "no console" is known to be falsifiable ------------
+    # Every "is not showing" assertion in this subsystem is paired with the
+    # case that makes it appear, or it can pass by finding nothing. SR_GUI_SHOW
+    # is the documented way to get a console attached to the window, and it is
+    # also the only thing that proves the check above is looking in the right
+    # place. Needs the first instance gone: the guard would otherwise just raise
+    # it and never start a second process.
+    if ($title -eq $WindowTitle) {
+        $null = $started.CloseMainWindow()
+        if (-not $started.WaitForExit(15000)) { $started | Stop-Process -Force }
+    }
+    # 🪤 WAIT FOR IT TO BE ACTUALLY GONE, not for a fixed sleep. A dying window
+    # is still found by the host's guard, so a launch that overlaps the previous
+    # instance's teardown raises the corpse and exits immediately -- taking its
+    # console with it and failing the assertion below for a reason that has
+    # nothing to do with SR_GUI_SHOW. That is exactly how this read first time.
+    $gone = [Diagnostics.Stopwatch]::StartNew()
+    while ($gone.Elapsed.TotalSeconds -lt 20 -and
+           (@(Get-Process -Name Sessions -ErrorAction SilentlyContinue).Count -gt 0 -or (Get-WindowCount) -gt 0)) {
+        Start-Sleep -Milliseconds 300
+    }
+    $gone.Stop()
+    if ((Get-WindowCount) -eq 0 -and @(Get-Process -Name Sessions -ErrorAction SilentlyContinue).Count -eq 0) {
+        $env:SR_GUI_SHOW = '1'
+        $shown = Start-Process -FilePath $exe -ArgumentList '-NoScan' -PassThru
+        Remove-Item Env:\SR_GUI_SHOW -ErrorAction SilentlyContinue
+        try {
+            $sw2 = [Diagnostics.Stopwatch]::StartNew()
+            $has = $false
+            while ($sw2.Elapsed.TotalSeconds -lt 30 -and -not $has) {
+                Start-Sleep -Milliseconds 400
+                if ($shown.HasExited) { break }
+                $has = Test-HasConsole -Id $shown.Id
+            }
+            if ($has) { Pass ("SR_GUI_SHOW attaches a console after {0:N1}s - so the check above can go red" -f $sw2.Elapsed.TotalSeconds) }
+            elseif ($shown.HasExited) { Fail "the SR_GUI_SHOW instance exited early (code $($shown.ExitCode)) - the console case was never reached" }
+            else { Fail 'SR_GUI_SHOW attached no console: the no-console assertion has never been shown capable of failing' }
+        } finally {
+            if (-not $shown.HasExited) {
+                $null = $shown.CloseMainWindow()
+                if (-not $shown.WaitForExit(10000)) { $shown | Stop-Process -Force }
+            }
+            Remove-Item Env:\SR_GUI_SHOW -ErrorAction SilentlyContinue
+        }
+    }
+
     # --- the registry was not touched ---------------------------------------
     $after = Get-Hash $registry
     if ($before -eq $after) { Pass 'sessions-registry.json is byte-identical - the test changed none of your selections' }
@@ -304,9 +426,11 @@ try {
     Get-Process -Name Sessions -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\SR_GUI_NODIALOG -ErrorAction SilentlyContinue
     Remove-Item Env:\SR_NOPAUSE -ErrorAction SilentlyContinue
+    Remove-Item Env:\SR_GUI_SHOW -ErrorAction SilentlyContinue
     # Never leave this behind: a temp directory per run is how a machine ends up
     # with 11,000 of them.
     if ($sandbox) { Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($script:ConsoleProbe) { Remove-Item -LiteralPath $script:ConsoleProbe -Force -ErrorAction SilentlyContinue }
 }
 
 Write-Host ''
