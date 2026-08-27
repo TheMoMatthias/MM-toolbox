@@ -11,6 +11,11 @@ written off. Account for what is open, settle the approach yourself, put the pic
 check the direction, then keep going and break what is in the way. Step 5 is the point;
 1–4 make it safe.
 
+🔴 **And it ends one of exactly two ways, decided by the NEXT line, not by how finished it
+feels** (§6): `NEXT (nothing outstanding)` ends on a sentence; **anything else on NEXT ends
+on a question you then implement**. Stopping with work on NEXT and no question is a failed
+realign — read §6 before you write the closing block, not after.
+
 **Honour `$ARGUMENTS`** — an area scopes the sweep and the board to it (say so); a steer for
 what to do next settles the ordering, so do not re-ask what they just told you. **And scale
 the effort to the board**: a one-item board needs no six-probe sweep across three tracks —
@@ -166,8 +171,16 @@ of the closing block.** [WALLS.md](WALLS.md) lists the shapes this takes.
 
 Say what you are doing in one line, then do it. **Do not narrate progress mid-run** — the
 board went up in step 3, and the account comes at the end. Close with this block, **omitting
-every line that has nothing in it**, then the sentence below it. Write it into the run-file
-or spec if the project keeps one, so it survives a compaction.
+every line that has nothing in it — except NEXT, which is never omitted** (see below), then
+the sentence below it. Write it into the run-file or spec if the project keeps one, so it
+survives a compaction.
+
+🔴 **NEXT IS ALWAYS WRITTEN, even when it is empty.** Write `NEXT  (nothing outstanding)`
+and mean it. Every other line may be dropped for having nothing in it; this one may not,
+because dropping it is how the ending rule below gets skipped without anyone deciding to
+skip it. An omitted NEXT reads as "no next items" to the next reader *and to you*, and you
+never have to look at whether that is true. Asserting emptiness out loud is the whole
+point — you cannot write those two words about a board that still has work on it.
 
 ```
 VERIFIED   what you re-checked, and how
@@ -182,12 +195,27 @@ NEXT       the remaining work per track, in the order you will now do it, markin
            Nothing leaves the sweep unaccounted, on any track.
 ```
 
-### The last thing you write is a sentence, not a field
+## 6. How a realign ends — there are exactly two endings, and NEXT picks which
 
-🔴 **End every realign with one or two plain sentences, outside the block** — never omitted,
-even when every line in the block was empty. The block is a reconciliation, dense on
-purpose; it is not an answer. Someone reading only the last line must still know what
-happens now.
+🔴 **Look at the NEXT line you just wrote. It decides the ending, and you do not get to
+choose.**
+
+| NEXT | the ending |
+|---|---|
+| `(nothing outstanding)` | block → **sentence** → stop |
+| anything at all | block → **sentence** → **`AskUserQuestion`** → **implement the answer** |
+
+**There is no third ending.** A realign that finishes with work on the NEXT line and no
+question **has failed**, however complete the block was and however good the sentence read.
+That is the single most common way this skill is got wrong: everything above is done well,
+and then it stops one move early — which just makes them invoke it again to be handed the
+same list a second time.
+
+### The sentence — always, both endings
+
+**One or two plain sentences, outside the block**, never omitted, even when every line in
+the block was empty. The block is a reconciliation, dense on purpose; it is not an answer.
+Someone reading only the last line must still know what happens now.
 
 - **Still open** — the next action, who takes it, and anything the user must do first. Name
   the thing: "next I run the migration, then phase 3", not "continuing with the outstanding
@@ -198,16 +226,31 @@ happens now.
 🪤 **Do not restate the block in prose, and do not hedge.** If the sentence lists five things
 it has become the block again; and if X "may need a look", X is the next action.
 
-### A non-empty NEXT is not an ending
+### The question — whenever NEXT is not empty
 
-🔁 **When work is still open, the sentence is followed by a question — not by silence.** Put
-the remaining items up: which to take now, or confirm the order you proposed. Then
-**implement the answer**, and when that lands the rule applies again. Handing back a list
-and stopping just makes them invoke the skill again to get the same list.
+🔁 Put the remaining items up: which to take now, or confirm the order you proposed. Then
+**implement the answer**, and when that lands this rule applies again to the new board.
 
 This does not re-open step 4 — those decisions stay locked; it chooses what comes *after*
-the work they governed. **One item left that plainly follows? Say so in a line and do it.**
-**Only when nothing is outstanding on any track does a realign end on the sentence alone.**
+the work they governed. **One item left that plainly follows? Say so in a line and do it** —
+that is doing the work, not skipping the question.
+
+🪤 **THE THREE WAYS THIS RULE GETS DODGED WITHOUT A DECISION.** All three feel like an
+ending. None is one:
+
+1. **The sentence feels terminal.** It is a good sentence, it names the next action, and
+   stopping after it feels complete. It is not: naming the next action is not the same as
+   asking which action to take, and the user is left having to type the answer to a question
+   nobody asked.
+2. **DEFERRED and DROPPED read as closure.** They are not NEXT. An item parked with a
+   trigger is *accounted for*, and the board can still be full of work that is not parked.
+   Only `NEXT (nothing outstanding)` closes a realign.
+3. **"I already asked in step 4."** Step 4 asked about DIRECTION for work that has now been
+   done. This question is about what comes next, and it is a different question. Having
+   asked earlier is not having asked now.
+
+🔴 **Before you stop, re-read your own NEXT line.** If there is anything on it and you have
+not called `AskUserQuestion`, you are not finished — go and ask.
 
 ## Example
 
