@@ -26,3 +26,12 @@ tools/session-restore/.state/
 # in it are local, so it is never committed.
 tools/session-restore/sessions-registry.json
 tools/session-restore/sessions-registry.json.tmp
+
+# session-restore application wrapper: BUILD OUTPUT, not source. Sessions.exe is
+# compiled from tools/session-restore/app/SessionsHost.cs by app/build.ps1, which
+# the installer runs. The .ico beside it is drawn by the same script. Both are
+# reproducible from what IS committed, so neither belongs in git -- and a stale
+# committed binary is worse than none, because it would launch instead of the
+# source everyone can read.
+tools/session-restore/Sessions.exe
+tools/session-restore/app/sessions.ico

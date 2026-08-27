@@ -294,13 +294,19 @@ function Invoke-NewSession {
 
 # ---------------------------------------------------------------------------
 function New-SRShortcut {
-    param([string]$LinkName, [string]$Target, [string]$Arguments, [string]$Description)
+    param(
+        [string]$LinkName, [string]$Target, [string]$Arguments, [string]$Description,
+        # The desktop said 'powershell.exe,0' for both buttons, which is how a
+        # tool ends up looking like a script no matter what it does. Callers pass
+        # Sessions.exe once it has been built.
+        [string]$Icon = 'powershell.exe,0'
+    )
     $p = Join-Path ([Environment]::GetFolderPath('Desktop')) $LinkName
     $s = (New-Object -ComObject WScript.Shell).CreateShortcut($p)
     $s.TargetPath       = $Target
     $s.Arguments        = $Arguments
     $s.WorkingDirectory = $SR_Root
-    $s.IconLocation     = 'powershell.exe,0'
+    $s.IconLocation     = $Icon
     $s.Description      = $Description
     $s.Save()
     return $p
@@ -335,16 +341,43 @@ function Invoke-Install {
         -Description 'Discover Claude Code project directories. Updates the selection registry only; launches nothing.' | Out-Null
     Write-SROk "task '$TaskScan' - hourly + at logon (scan only, launches nothing)"
 
-    # The desktop buttons point at the .bat files rather than at powershell.exe, so
-    # a double-click from Explorer and a double-click on the shortcut take the SAME
-    # path -- one launch route, one place to fix anything. The .bat pauses only when
-    # it was double-clicked, so the output stays readable.
+    # Build the application wrapper. Sessions.exe hosts the PowerShell runspace
+    # itself, so the window opens without a powershell.exe underneath it, carries
+    # its own icon everywhere Windows shows it, and opens ONCE however many times
+    # it is double-clicked. csc.exe ships with the .NET Framework, so this needs
+    # nothing fetched.
+    #
+    # NOT FATAL if it fails. The .bat and .vbs launch routes still work and the
+    # shortcut falls back to them -- an install that leaves the machine with no
+    # session console at all would be a far worse outcome than one that leaves it
+    # with the old-looking one.
+    $exe = Join-Path $SR_Root 'Sessions.exe'
+    try {
+        $null = & (Join-Path $SR_Root 'app\build.ps1') -Quiet
+        if (Test-Path -LiteralPath $exe) {
+            Write-SROk ("Sessions.exe built ({0} KB)" -f [Math]::Round((Get-Item -LiteralPath $exe).Length / 1KB, 1))
+        }
+    } catch {
+        Write-SRFail "Sessions.exe could not be built: $($_.Exception.Message)"
+        Write-SRSkip "the desktop button will use Sessions.bat instead"
+    }
+
+    # The desktop buttons point at the app, or at the .bat files when there is no
+    # app, so a double-click from Explorer and a double-click on the shortcut take
+    # the SAME path -- one launch route, one place to fix anything. The .bat pauses
+    # only when it was double-clicked, so the output stays readable.
+    $haveExe  = Test-Path -LiteralPath $exe
+    $iconFrom = $(if ($haveExe) { "$exe,0" } else { 'powershell.exe,0' })
+
     $l1 = New-SRShortcut -LinkName $LnkRestore -Target (Join-Path $SR_Root 'Restore Sessions.bat') `
-            -Arguments '' -Description 'Restore the Claude conversations you have selected'
+            -Arguments '' -Icon $iconFrom `
+            -Description 'Restore the Claude conversations you have selected'
     Write-SROk "desktop: $LnkRestore"
-    $l2 = New-SRShortcut -LinkName $LnkSelect -Target (Join-Path $SR_Root 'Sessions.bat') `
-            -Arguments '' -Description 'Every conversation across every repo: see what is live, open any of them now, and choose what reopens at logon'
-    Write-SROk "desktop: $LnkSelect"
+    $l2 = New-SRShortcut -LinkName $LnkSelect `
+            -Target $(if ($haveExe) { $exe } else { Join-Path $SR_Root 'Sessions.bat' }) `
+            -Arguments '' -Icon $iconFrom `
+            -Description 'Every conversation across every repo: see what is live, open any of them now, and choose what reopens at logon'
+    Write-SROk ("desktop: $LnkSelect" + $(if ($haveExe) { ' -> Sessions.exe' } else { ' -> Sessions.bat' }))
     $old = Join-Path ([Environment]::GetFolderPath('Desktop')) $LnkSelectOld
     if (Test-Path -LiteralPath $old) {
         [System.IO.File]::Delete($old)
@@ -363,11 +396,14 @@ function Invoke-Install {
     }
 
     Write-Host ""
-    Write-Host "  The control panel   :  double-click 'Sessions.bat'          (or the desktop button)"
+    Write-Host ("  The control panel   :  double-click '{0}'          (or the desktop button)" -f $(if ($haveExe) { 'Sessions.exe' } else { 'Sessions.bat ' }))
     Write-Host "                         see what is live, L opens any conversation now, S starts a new one,"
     Write-Host "                         and the ticks decide what comes back at logon"
     Write-Host "  Bring back the ticked:  double-click 'Restore Sessions.bat'  (or the desktop button)"
-    Write-Host "  Open one by name    :  Sessions.bat, then type in the search box and press Open"
+    Write-Host "  Open one by name    :  open the panel, then type in the search box and press Open"
+    if ($haveExe) {
+    Write-Host "  When something is wrong: Sessions.bat runs the same window with a console attached"
+    }
     Write-Host "  Preview first       :  restore-sessions.ps1 -DryRun"
     Write-Host "  Everything lives in :  $SR_Root"
     Write-Host ""

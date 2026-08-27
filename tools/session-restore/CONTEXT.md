@@ -29,6 +29,21 @@ AlgoTrader came back from exactly none of them.
 its OWN git index, which is why it gets its own lane and its own auto-tick
 budget instead of competing with main for one.
 
+**the host** — `Sessions.exe`, built from `app\SessionsHost.cs`. It opens a
+Windows PowerShell runspace **inside itself** and runs `sessions-gui.ps1` on its
+own STA thread. It is a WRAPPER, not a port: no PowerShell moved into C#, the
+scripts stay on disk beside it, and every test driver still runs them directly.
+Say "the host" for the exe and "the window" for what the PowerShell draws — they
+are two things and only one of them was added.
+*Not a "compiled version".* Nothing is compiled in; editing a `.ps1` needs no
+rebuild, only editing `SessionsHost.cs` does.
+
+**build output** — `Sessions.exe` and `app\sessions.ico`, both gitignored. They
+are produced by `app\build.ps1` from committed source, so a stale binary can
+never be what launches instead of the code somebody can read. The installer
+builds them; a build failure is not fatal and the desktop button falls back to
+`Sessions.bat`.
+
 **registry** — `sessions-registry.json`. What the tool knows: every conversation
 it has discovered, its tick, its pin, its `lastSeen`, its `note`. Written
 atomically under a named mutex, never half-written.
@@ -389,6 +404,39 @@ backslash becomes a carriage return, `ask-` becomes a BEL, and the file stops
 parsing somewhere that looks unrelated. It happened five times in one session.
 Write generated comments without backslashes, and if a file suddenly fails to
 parse after an edit, scan it for control bytes before reading the diff.
+
+---
+
+## Three traps from building the host
+
+**A `param()` NAME OWNS THAT NAME FOR THE WHOLE FUNCTION, CASE-INSENSITIVELY.**
+`New-AppIcon` took `[string]$Path` and later did
+`$path = New-Object System.Drawing.Drawing2D.GraphicsPath`. Those are the SAME
+variable — PowerShell does not distinguish `$Path` from `$path` — so the
+assignment was silently ignored in favour of nothing, and the error arrived four
+lines later as `[System.String] does not contain a method named 'AddArc'`. The
+message names the *type it found*, never the *assignment it lost*. When a method
+is missing from a type you did not expect, look for a parameter of that name
+before you look at the method.
+
+**NAMING AN ASSEMBLY `csc.exe` ALREADY REFERENCES IS AN ERROR, NOT A NO-OP.**
+Passing explicit `/reference:` paths for `System.dll` and
+`System.Windows.Forms.dll` — resolved honestly, from
+`[System.Windows.Forms.Form].Assembly.Location` — failed with **CS1703, "an
+assembly with the same identity has already been imported"**. `csc.exe` reads
+`csc.rsp` from its own directory unless told `/noconfig`, and that already
+references both; the GAC copy and the framework-directory copy are ONE assembly
+under two paths. Reference only what the response file does not: here, just
+`System.Management.Automation`.
+
+**ONE GUARD PER DOOR IS NOT ONE GUARD.** The host took a named mutex to stay
+single-instance, which is correct and was not enough: `Sessions.bat` and
+`Sessions GUI.vbs` run the same script under `powershell.exe` and never touch
+that mutex. Measured 2026-08-27 — launching the exe alongside a `.vbs`-started
+window opened a SECOND view of one `sessions-registry.json`. The fix is that the
+host also looks for a window titled `Claude sessions` and raises it. Whenever a
+guard keys off something only one entry path has, check what the other paths do.
+
 ## The antivirus is part of the test environment
 
 **2026-08-23, measured.** A `tray` suite drove the LIVE Windows shell through UI
@@ -438,6 +486,16 @@ matches a path, and a directory rename drags the file out from under it:
 
 Nothing here needs the antivirus UI. An exclusion for the repo is still the
 tidier long-term answer, but it is a preference, not a prerequisite.
+
+**Which is why `Sessions.exe` is a build output with a fallback, and not the only
+way in.** A freshly compiled, unsigned binary that starts consoles and
+synthesises keystrokes is the exact shape a behavioural engine scores, and this
+machine has an engine that has already quarantined files from this repo once. So:
+the exe is never the only route (`Sessions GUI.vbs` opens the same window through
+`powershell.exe`), the installer treats a failed build as non-fatal and points
+the desktop button back at `Sessions.bat`, and nothing was deleted to make room
+for it. If the app stops launching, check the quarantine before you check the
+code — `C:\ProgramData\Bitdefender\Desktop\Quarantine\cache.db`, as above.
 
 Three rules follow:
 

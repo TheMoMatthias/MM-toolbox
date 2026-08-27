@@ -33,6 +33,16 @@
               that view it FAILS rather than testing whatever is on screen -
               that fallback once made three working shortcuts look broken.
 
+      app     Sessions.exe, the application wrapper. Not the window -- the four
+              claims that shipping an exe makes: that it builds from source with
+              nothing installed, that NO powershell.exe is spawned (the whole
+              point), that no console is allocated, and that a second launch
+              raises the first window instead of opening a second view of one
+              registry. Its negative case runs the exe where the scripts are not
+              and requires exit 2, which is what makes the rest able to go red.
+              Needs a desktop, and refuses to judge anything while a session
+              window is already open.
+
       jump    finding and activating a conversation's real Windows Terminal tab.
               Runs against the live machine, since whether a real tab can be
               found and switched to is not something a fixture can answer. It
@@ -64,7 +74,7 @@ param(
     # `shot` is the odd one out: it draws the real window to PNG and asserts
     # almost nothing. It never runs in a full sweep -- only when asked for by
     # name -- because its output is something to LOOK at, not something to pass.
-    [ValidateSet('keys', 'state', 'inbox', 'jump', 'headless', 'relay', 'shot')]
+    [ValidateSet('keys', 'state', 'inbox', 'jump', 'headless', 'relay', 'shot', 'app')]
     [string]$Only,
     [switch]$NoGui,
 
@@ -261,6 +271,21 @@ if ((-not $Only -or $Only -eq 'jump') -and -not $NoGui -and -not $NoSteal) {
     $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $drv 2>&1
     $out | ForEach-Object { Write-Host $_ }
     Record 'jump' $LASTEXITCODE @($out)
+}
+
+# --- app: builds and launches Sessions.exe -----------------------------------
+# Puts the real window on the desktop for a few seconds and closes it again, so
+# it sits behind -NoSteal with the rest. It launches with -NoScan and hashes
+# sessions-registry.json either side: a test is not allowed to change which
+# conversations the operator has ticked.
+if ((-not $Only -or $Only -eq 'app') -and -not $NoGui -and -not $NoSteal) {
+    Write-Host "`n=== app (Sessions.exe) ===" -ForegroundColor Cyan
+    $drv = Join-Path $here 'app-driver.ps1'
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $drv 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    # 2 means a session window was already open, which is a statement about the
+    # desktop and not about the exe. Not a pass, deliberately not a failure.
+    Record 'app' $LASTEXITCODE @($out)
 }
 
 # --- summary ----------------------------------------------------------------

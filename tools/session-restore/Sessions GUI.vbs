@@ -1,4 +1,10 @@
-' Double-click THIS for the session window. Nothing flashes.
+' THE FALLBACK. Sessions.exe is the normal way in now -- it hosts the runspace
+' itself, so no powershell.exe is started at all, and it carries the app icon.
+' This file stays because the exe is BUILT rather than committed: on a machine
+' where csc.exe is missing, or where an antivirus has quarantined a freshly
+' compiled unsigned binary, this still opens the same window.
+'
+' Everything below is why a .vbs and not a .bat.
 '
 ' A .bat launcher opened two windows before the app appeared: cmd.exe has to
 ' create a console to run a batch file at all, and the PowerShell it starts gets

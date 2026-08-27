@@ -21,7 +21,7 @@ From then on the tool is two double-clicks:
 
 | double-click | does |
 |---|---|
-| `Sessions.bat` | **the session console** — every conversation, what each last said, what is waiting on you |
+| `Sessions.exe` | **the session console** — every conversation, what each last said, what is waiting on you |
 | `Restore Sessions.bat` | bring back everything you ticked, in one go |
 | `Enable Auto Logon.bat` | let the PC sign itself in, so the restore runs with nobody at the keyboard |
 
@@ -36,13 +36,37 @@ removed 2026-08-22), `Sessions GUI.bat` (a second launcher for the same window),
 and `select-sessions.ps1` — a hand-written terminal panel with its own painter and
 key loop, retired 2026-08-23 when the window overtook it. The window does
 everything the panel did and several things a console cannot: read a conversation,
-reply to it, and jump to its real terminal tab. **`Sessions.bat` is the entry
+reply to it, and jump to its real terminal tab. **`Sessions.exe` is the entry
 point; every other file here does a different job.**
 
-`Sessions GUI.vbs` opens the same window with no console flash at all, and is what
-the Start Menu shortcut uses. `Sessions.bat` is the one to run from a terminal;
-`SR_GUI_SHOW=1` keeps the console up so a startup error is on screen rather than in
-`.state\restore.log`.
+### It is an application, not a script that draws a window
+
+`Sessions.exe` **hosts the PowerShell runspace inside itself** and runs
+`sessions-gui.ps1` on its own STA thread. Nothing was rewritten — every line of the
+window is still the PowerShell you can open and read, still on disk beside the exe,
+still what the tests drive. What changed is the wrapper:
+
+| | before | now |
+|---|---|---|
+| processes | `wscript.exe` → `powershell.exe` → a runspace | one, hosting the runspace itself |
+| Alt-Tab, taskbar, desktop | the PowerShell logo (`IconLocation = 'powershell.exe,0'`) | its own icon |
+| double-clicking it twice | two windows over one registry | raises the one that is open |
+| a failure before the window | `.state\restore.log`, and nowhere else | a dialog, **and** the log |
+
+**It is not faster once the window is up.** The WPF and the PowerShell inside it are
+byte for byte what they were; what is saved is a process launch and the console
+host's startup, and what is gained is that it stops behaving like a script.
+
+Build it with `app\build.ps1` — `Install Session Restore.bat` already does. It
+compiles with `csc.exe`, which ships with the .NET Framework, so there is no SDK and
+nothing to fetch, and the icon is *drawn* by the build rather than checked in. The
+exe is a build output and is gitignored: `app\SessionsHost.cs` is the source.
+
+`Sessions GUI.vbs` opens the same window through `powershell.exe` with no console
+flash, and is the fallback for a machine where the exe will not build or an
+antivirus has taken it (see CONTEXT.md — that has happened to this repo). Run
+`Sessions.bat` from a terminal when something is wrong: `SR_GUI_SHOW=1` keeps a
+console up so a startup error is on screen rather than in `.state\restore.log`.
 
 ## The session console
 
@@ -470,14 +494,24 @@ permission-gating, so a *new* session can only be named at launch — which is w
 ## Tests
 
 `tests
-un-tests.ps1`. Three suites, each of which exists because something shipped
+un-tests.ps1`. Eight suites, each of which exists because something shipped
 broken.
 
 | suite | |
 |---|---|
-| `frame` | pure geometry — 112 frames across seven window sizes, with the filter line, the staleness warning and the unattributed warning all forced on. Never taller than the window, always shows a list row, cursor always on screen |
-| `paint` | its own console window, because `CursorTop` / `CursorVisible` / `KeyAvailable` mean nothing without one. Counts the painter's **writes** — 4 per arrow key against ~190 for a full repaint — and times a frame against the 33 ms key-repeat interval |
-| `keys` | drives the GUI through UI Automation: `HOME`, `END`, `PAGEUP`, `PAGEDOWN`, arrows. Needs a desktop; skip with `-NoGui` |
+| `state` | what a conversation is doing. Hand-built transcripts force every state, so the assertions fail regardless of what the machine happens to be running; then the same function over every real conversation |
+| `headless` | **the window built but never shown**, with fabricated states so every band, the agent, the dialog and the idle-with-a-reply case are all present. Nothing appears, nothing takes focus. This is where most of the checking belongs |
+| `relay` | reading a question off a live console and answering it — driven against a **replica** of claude's menu painted into a real screen buffer, so the parser and the key send run as one sequence with nothing stubbed between them |
+| `inbox` | drives the real window through UI Automation: the bands, the count pills, the view switch. Every "is not showing" assertion is paired with its inverse in another view, so none can pass by finding nothing |
+| `keys` | `HOME`, `END`, `PAGEUP`, `PAGEDOWN`, arrows, against the All view because it is the list long enough to scroll |
+| `jump` | finding and activating a conversation's real Windows Terminal tab, against the live machine. Restores whichever tab was active when it started |
+| `app` | `Sessions.exe`: that it builds from source with nothing installed, spawns **no** `powershell.exe`, allocates **no** console, and opens once however many times it is launched |
+| `shot` | by name only — draws the real registry to a PNG so a layout change can be looked at at real density. Asserts almost nothing; its output is something to *look at* |
+
+`-NoGui` skips everything needing a desktop; `-NoSteal` skips everything that puts a
+window on screen or sends real keys (`keys`, `inbox`, `jump`, `relay`, `app`) — use it
+while the machine is being used for something else. `frame` and `paint` were retired
+with the terminal panel they tested.
 
 The panel is one script ending in an interactive loop, so a harness is that script
 with the loop cut off and a driver bolted on. The runner splices from the **live**
@@ -518,9 +552,11 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
 
 | file | |
 |---|---|
-| `Install Session Restore.bat` | double-click to install just this tool — tasks + buttons, no profile changes |
-| `Sessions.bat` | **the entry point** — the session console. Double-clickable; the desktop button points here |
-| `Sessions GUI.vbs` | the same window with no console flash — what the Start Menu shortcut uses |
+| `Install Session Restore.bat` | double-click to install just this tool — tasks + buttons, builds the app, no profile changes |
+| `Sessions.exe` | **the entry point** — the session console as an application. Built, not committed; the desktop button points here |
+| `app/` | what it is built from — `SessionsHost.cs` (hosts the runspace) · `build.ps1` (draws the icon, runs `csc.exe`) |
+| `Sessions.bat` | the same window with a console attached — the one to run when something is wrong (`SR_GUI_SHOW=1`) |
+| `Sessions GUI.vbs` | the same window with no console flash, through `powershell.exe` — the fallback when the exe is unavailable |
 | `Restore Sessions.bat` | reopen the ticked conversations without showing the panel |
 | `Enable Auto Logon.bat` | self-elevating wrapper for `enable-autologon.ps1` |
 | `_common.ps1` | discovery, registry, the rolling auto-tick, guards, launching — shared, so there is one copy |
