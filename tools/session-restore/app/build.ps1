@@ -17,10 +17,14 @@
     driver keeps running them directly. Editing a .ps1 does not need a rebuild;
     only editing SessionsHost.cs does.
 
-    THE ICON IS DRAWN, not shipped as a binary blob. A chevron and a cursor bar
-    -- the same U+276F prompt marker the relay reads off real consoles. Drawing
-    it means the repo carries no checked-in binary and the icon can be changed by
-    editing arithmetic instead of opening an image editor.
+    THE ICON IS DRAWN, not shipped as a binary blob: a spark in Claude's clay
+    with a tick over it -- what the app is for, which conversations come back.
+    Drawing it means the repo carries no checked-in binary and the icon changes
+    by editing arithmetic rather than by opening an image editor.
+
+    It replaced a dark rounded square containing ">_", which was the Windows
+    Terminal icon in all but name and distinguished itself from none of the eight
+    terminals already on the taskbar.
 
 .PARAMETER Force
     Rebuild even when Sessions.exe is already newer than its sources.
@@ -64,9 +68,10 @@ function New-AppIcon {
 
     Add-Type -AssemblyName System.Drawing
 
-    $ink   = [System.Drawing.Color]::FromArgb(255, 233, 234, 236)  # the marks
+    $ink   = [System.Drawing.Color]::FromArgb(255, 240, 241, 243)  # the tick
     $panel = [System.Drawing.Color]::FromArgb(255,  21,  22,  26)  # the plate
     $edge  = [System.Drawing.Color]::FromArgb(255,  60,  64,  70)  # its rim
+    $clay  = [System.Drawing.Color]::FromArgb(255, 217, 119,  87)  # the spark
 
     $pngs = New-Object 'System.Collections.Generic.List[byte[]]'
 
@@ -102,23 +107,97 @@ function New-AppIcon {
             $rim.Dispose()
             $plate.Dispose()
 
-            # The prompt: chevron plus cursor bar. Round caps and a round join,
-            # or the corner of the chevron shears off at 16 px.
-            $pen = New-Object System.Drawing.Pen($ink, [float](25 * $s))
-            $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-            $pen.EndCap   = [System.Drawing.Drawing2D.LineCap]::Round
-            $pen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
+            # THE SPARK. Radiating tapered rays, in Claude's clay, because the
+            # previous icon was a dark rounded square containing ">_" -- which is
+            # the Windows Terminal icon. On a taskbar holding eight terminals it
+            # distinguished itself from none of them, which was the one job it
+            # had.
+            #
+            # It is a spark in the STYLE of Claude's mark, drawn from arithmetic
+            # here; it is not a copy of Anthropic's trademark and this is a local
+            # tool, not a product pretending to be one.
+            #
+            # 🪤 RAY COUNT DROPS WITH SIZE. Twelve rays at 256 px is the shape;
+            # twelve rays at 16 px is a smudge, because the gaps between them
+            # land inside one pixel. Each size is already drawn at its own size
+            # rather than downscaled, so it can simply use fewer.
+            # 🪤 THREE ATTEMPTS, AND THE WIDTH IS NEVER WHERE YOU THINK. A blade
+            # based at an inner radius measures 2*r*sin(half) across, so a small
+            # inner radius stays a hairline however wide the ANGLE -- attempt one
+            # (r=15) came out as sunburst clip-art. Widening the base instead
+            # (r=36, tip at 84, hub at 0.82r) made the blades shorter than the
+            # disc they stood on: a child's drawing of the sun. What works is a
+            # petal with no hub at all, widest partway out.
+            # 🪤 SMALL SIZES GET THEIR OWN GEOMETRY, NOT THE SAME SHAPE SCALED.
+            # At 16 px the tick drawn to the large proportions came out about two
+            # pixels of white and simply disappeared, leaving an orange smudge
+            # that says nothing about what the app decides. Below 48 px the spark
+            # gives up room, the blade count halves and the tick is drawn much
+            # heavier -- so the two marks stay legible as marks rather than
+            # becoming texture.
+            $small = ($size -lt 48)
 
-            $g.DrawLines($pen, [System.Drawing.PointF[]]@(
-                (New-Object System.Drawing.PointF([float](84 * $s),  [float](80 * $s))),
-                (New-Object System.Drawing.PointF([float](146 * $s), [float](128 * $s))),
-                (New-Object System.Drawing.PointF([float](84 * $s),  [float](176 * $s)))
-            ))
-            $g.DrawLine($pen,
-                [float](174 * $s), [float](176 * $s),
-                [float](202 * $s), [float](176 * $s))
+            $cx = $(if ($small) { 96 } else { 110 }) * $s
+            $cy = $(if ($small) { 92 }  else { 104 }) * $s
+            $rMid = $(if ($small) { 30 } else { 36 }) * $s   # where each blade is widest
+            $rOut = $(if ($small) { 78 } else { 96 }) * $s   # where it comes to a point
+            $rays = $(if ($small) { 8 } else { 12 })
+            $half = ([Math]::PI / $rays) * 0.85             # angular half-width at $rMid
 
-            $pen.Dispose()
+            # 🪤 EACH BLADE IS A PETAL, NOT A TRIANGLE ON A DISC. A triangle
+            # based at an inner radius needs a hub to hide the hole at the
+            # middle, and that hub is what made attempt two look like the sun and
+            # attempt three look like a starburst with a bead in it. A four-point
+            # petal -- centre, widest at $rMid, tip at $rOut, back to centre --
+            # converges on its own, so there is no hub and nothing to balance.
+            $sparkBrush = New-Object System.Drawing.SolidBrush($clay)
+            for ($k = 0; $k -lt $rays; $k++) {
+                $a = (($k / [double]$rays) * 2 * [Math]::PI) - ([Math]::PI / 2)
+                $pts = [System.Drawing.PointF[]]@(
+                    (New-Object System.Drawing.PointF([float]$cx, [float]$cy)),
+                    (New-Object System.Drawing.PointF(
+                        [float]($cx + $rMid * [Math]::Cos($a - $half)),
+                        [float]($cy + $rMid * [Math]::Sin($a - $half)))),
+                    (New-Object System.Drawing.PointF(
+                        [float]($cx + $rOut * [Math]::Cos($a)),
+                        [float]($cy + $rOut * [Math]::Sin($a)))),
+                    (New-Object System.Drawing.PointF(
+                        [float]($cx + $rMid * [Math]::Cos($a + $half)),
+                        [float]($cy + $rMid * [Math]::Sin($a + $half))))
+                )
+                $g.FillPolygon($sparkBrush, $pts)
+            }
+            $sparkBrush.Dispose()
+
+            # THE TICK, bottom right: what this app is actually for -- which of
+            # these comes back at logon. Drawn TWICE: a fat stroke in the plate
+            # colour first, so the tick punches a hole through whatever rays sit
+            # behind it, then the light stroke inside that. Without the knockout
+            # it reads as another ray at small sizes.
+            $tick = $(if ($small) {
+                [System.Drawing.PointF[]]@(
+                    (New-Object System.Drawing.PointF([float](132 * $s), [float](170 * $s))),
+                    (New-Object System.Drawing.PointF([float](166 * $s), [float](206 * $s))),
+                    (New-Object System.Drawing.PointF([float](232 * $s), [float](128 * $s)))
+                )
+            } else {
+                [System.Drawing.PointF[]]@(
+                    (New-Object System.Drawing.PointF([float](158 * $s), [float](180 * $s))),
+                    (New-Object System.Drawing.PointF([float](182 * $s), [float](204 * $s))),
+                    (New-Object System.Drawing.PointF([float](226 * $s), [float](150 * $s)))
+                )
+            })
+            foreach ($layer in @(
+                @{ Colour = $panel; Width = $(if ($small) { 64 } else { 38 }) },
+                @{ Colour = $ink;   Width = $(if ($small) { 38 } else { 21 }) }
+            )) {
+                $pen = New-Object System.Drawing.Pen($layer.Colour, [float]($layer.Width * $s))
+                $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+                $pen.EndCap   = [System.Drawing.Drawing2D.LineCap]::Round
+                $pen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
+                $g.DrawLines($pen, $tick)
+                $pen.Dispose()
+            }
         } finally { $g.Dispose() }
 
         $ms = New-Object System.IO.MemoryStream
