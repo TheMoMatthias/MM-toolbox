@@ -177,7 +177,7 @@ Get-ChildItem -LiteralPath "$RepoRoot\agents" -Directory | ForEach-Object {
 # NOT symlinked into ~/.claude: the scheduled task and the desktop shortcut point
 # at an absolute path, so they should point straight at this checkout. Clone the
 # repo anywhere, run install.ps1, and the task follows the clone.
-$SessionRestore = Join-Path $RepoRoot 'tools\session-restore\restore-sessions.ps1'
+$SessionRestore = Join-Path $RepoRoot 'tools\session-restore\lib\restore-sessions.ps1'
 if ($NoSessionRestore) {
     Write-Host "[skip]   session-restore (-NoSessionRestore)"
 } elseif (-not (Test-Path -LiteralPath $SessionRestore)) {

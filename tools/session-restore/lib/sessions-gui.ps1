@@ -678,7 +678,12 @@ function Set-SortKeys { param([string]$View, $Keys)
 }
 # Where each band sits when STATE is the key: the same order the inbox lists
 # them in, so sorting by state and reading the inbox give the same sequence.
-$script:BandOrder = @{ needs = 0; working = 1; idle = 2; quiet = 3 }
+# 🪤 EVERY BAND NEEDS A RANK HERE, and a missing one is silent: the lookup
+# returns $null, [int]$null is 0, and the band sorts as though it were the FIRST
+# one. Adding FINISHED without this line put finished conversations level with
+# NEEDS YOU in a state sort, and the suite caught it as a single row out of
+# order. Keep this in step with $script:InboxBands in gui\gui-rows.ps1.
+$script:BandOrder = @{ needs = 0; working = 1; done = 2; idle = 3; quiet = 4 }
 # The word on the heading, kept here rather than read back off the button: the
 # code appends an arrow to Content, so reading Content to rebuild Content
 # accumulates arrows.
@@ -1385,20 +1390,20 @@ function Build-Rows {
         }
 
         # 🔴 ONE LANE ROW IS THE BUG THIS BLOCK EXISTS TO PREVENT, and counting
-        # LANES was not enough to prevent it. $multiLane asks "does the project
-        # have more than one lane"; what actually reaches the screen is one row
-        # per lane that ALSO holds more than one conversation. A project with two
-        # lanes where only one of them is crowded therefore passed the guard and
-        # emitted exactly one lane header -- a row saying the same thing as the
-        # project row above it, which is precisely what retired the tree.
+        # LANES was not enough. $multiLane asks "does the project have more than
+        # one lane"; what reaches the screen is one row per lane that ALSO holds
+        # more than one conversation. A project with two lanes where only one is
+        # crowded emitted exactly ONE lane header -- a row saying the same thing
+        # as the project row above it, which is what retired the tree. Caught
+        # 2026-08-28 by the suite, on real data, after a worktree arrived holding
+        # a single conversation.
         #
-        # Caught 2026-08-28 by the suite's own assertion, on real data: a project
-        # had gained a second worktree holding a single conversation. The
-        # condition is data-shaped, so it was invisible until the data arrived.
-        #
-        # A lone group is dissolved back into the loose list. Nothing is hidden;
-        # those conversations hang under the project keeping their lane as a
-        # label on the row instead of a header above it.
+        # 🪤 THREE FIXES WERE TRIED AND TWO WERE WORSE. Promoting every lane to a
+        # header gave AlgoTrader 32 headers each introducing one conversation --
+        # the original disease. Suppressing only the header left two
+        # independently sorted runs at one indent, which reads as one run out of
+        # order. Dissolving the lone group into $loose is right, PROVIDED the
+        # loose pool then keeps each lane together: see below.
         if ($groups.Count -eq 1) {
             foreach ($it in $groups[0].Items.ToArray()) { $loose.Add($it) }
             $groups.Clear()
@@ -1409,10 +1414,21 @@ function Build-Rows {
         # the newest thing in the project by a wide margin: AlgoTrader's lone lanes
         # were hours old while its `main` lane was days. Putting the 50-strong
         # `main` header first would bury every recent thing under it.
-        foreach ($pk in @(Sort-Picked $loose.ToArray())) {
-            $srow = New-Row 'session' "$($pk.D.path)|$($pk.L.Name)|$($pk.S.sessionId)" $pk.D $pk.L $pk.S
-            $srow.Depth = 1
-            $out.Add($srow)
+        # 🔴 LANES STAY TOGETHER INSIDE THE LOOSE POOL. Sorting the whole pool by
+        # recency interleaves conversations from different worktrees, and the
+        # PROJECT / LANE column then shows one lane in two separate runs -- which
+        # is exactly what the grouping assertion caught when a dissolved group
+        # was poured in here unsorted. Lanes are ordered by their OWN newest
+        # conversation, so the loose-first intent survives: the worktree you
+        # touched an hour ago still leads a `main` you last saw on Tuesday.
+        foreach ($lg in @($loose.ToArray() |
+                    Group-Object { "$($_.L.Name)" } |
+                    Sort-Object { (@($_.Group | ForEach-Object { [datetime]$_.S.lastActive }) | Measure-Object -Maximum).Maximum } -Descending)) {
+            foreach ($pk in @(Sort-Picked $lg.Group)) {
+                $srow = New-Row 'session' "$($pk.D.path)|$($pk.L.Name)|$($pk.S.sessionId)" $pk.D $pk.L $pk.S
+                $srow.Depth = 1
+                $out.Add($srow)
+            }
         }
 
         foreach ($grp in $groups) {

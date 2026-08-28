@@ -27,7 +27,9 @@
 # ---------------------------------------------------------------------------
 
 $shotDir = $env:SR_SHOT_DIR
-if (-not $shotDir) { $shotDir = Join-Path $here '.state\shots' }
+# $SR_StateDir, not $here: the scripts live in lib\ now and $here is that
+# folder, so building the path from it would drop the shots into lib\.state.
+if (-not $shotDir) { $shotDir = Join-Path $SR_StateDir 'shots' }
 if (-not (Test-Path -LiteralPath $shotDir)) { $null = New-Item -ItemType Directory -Path $shotDir -Force }
 
 $shotW = 1480.0

@@ -1483,13 +1483,22 @@ else {
 if ((Get-FilterDimensionCount) -eq 1) { Pass 'the readout counts exactly one dimension' }
 else { Fail "the readout counts $(Get-FilterDimensionCount) dimensions, expected 1" }
 
-# OR within a dimension: adding 'Idle' must widen, not narrow.
-$n2 = ChipSet $ui.FbIdle $true
-if ($n2 -gt $n) { Pass "adding 'Idle' widens the list ($n -> $n2), so a dimension ORs" }
-else { Fail "adding 'Idle' did not widen the list ($n -> $n2)" }
+# OR within a dimension: adding a second band must widen, not narrow.
+#
+# 🪤 FINISHED, NOT IDLE, AND THE FIXTURE IS WHY. This ticked 'Idle' and only ever
+# passed because the real machine happened to hold an idle conversation - the
+# fixture never staged one. Its "idle" session is also Stale, which routes it to
+# NOT RUNNING. The FINISHED band then drained the idle band on a live machine
+# (conversations that hand work back now land in 'done'), the borrowed row
+# vanished, and the assertion failed against code that was correct. A fixture has
+# to own every input its assertion reads: session 6 is staged as a hand-back, so
+# 'done' is guaranteed non-empty here.
+$n2 = ChipSet $ui.FbDone $true
+if ($n2 -gt $n) { Pass "adding 'Finished' widens the list ($n -> $n2), so a dimension ORs" }
+else { Fail "adding 'Finished' did not widen the list ($n -> $n2)" }
 
 # Unticking must put it back.
-$null = ChipSet $ui.FbIdle $false
+$null = ChipSet $ui.FbDone $false
 $n3 = ChipSet $ui.FbWorking $false
 if ($n3 -eq $baseline) { Pass "unticking restores the full list ($n3 rows)" }
 else { Fail "unticking left $n3 rows, expected the original $baseline" }

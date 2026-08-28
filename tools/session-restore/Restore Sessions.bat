@@ -13,7 +13,7 @@ REM The detection cannot tell Explorer apart from a scripted `cmd /c "...bat"`, 
 REM anything automating this can set SR_NOPAUSE=1 and never risk a hang.
 if defined SR_NOPAUSE set "SR_PAUSE="
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0restore-sessions.ps1" %*
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0lib\restore-sessions.ps1" %*
 set SR_EXIT=%ERRORLEVEL%
 
 if defined SR_PAUSE (

@@ -99,11 +99,11 @@ console up so a startup error is on screen rather than in `.state\restore.log`.
 `Sessions.exe` opens a single window for every conversation on the machine, across
 every repo, in two views:
 
-- **Now** — the control surface: what is running or was, grouped by what it wants
-  from you (**Needs you** / **Working** / **Idle** / **Not running**), each row
+- **Work surface** — the control surface: what is running or was, grouped by what it wants
+  from you (**Needs you** / **Working** / **Finished** / **Idle** / **Not running**), each row
   carrying the one line that conversation last said. No ticks here; nothing on
   this screen is about tomorrow morning.
-- **Roster** — the relaunch surface: what comes back at logon. Every conversation
+- **Session manager** — the relaunch surface: what comes back at logon. Every conversation
   from the last `listDays` (7), grouped by project, each group collapsible and its
   header carrying the count, how many are armed, and whether the project itself is
   switched off. Ticking is the point of this screen, so the tick column, the
@@ -112,13 +112,13 @@ every repo, in two views:
   column heading to sort within each group; shift-click to sort by one thing and
   then another. Searching and filtering ignore folds.
 
-**The roster opens folded**, so all 26 projects sit on one screen with their
+**The session manager opens folded**, so all 26 projects sit on one screen with their
 counts and how many are armed. Click one open, or press RIGHT; LEFT shuts it
 again. Whatever you open stays open, across restarts. Ordering by recency alone
 could not fix the endless-list problem on its own, because the project you worked
 in most recently is also the one holding half the conversations.
 
-**The roster is ordered by where you last worked, not A–Z.** The project you
+**The session manager is ordered by where you last worked, not A–Z.** The project you
 touched most recently is at the top, and a project you cannot work in any more is
 at the bottom saying why: `folder is gone` for a directory that has been deleted
 (nothing under it can ever be launched, so it also arrives folded), `not a
@@ -576,6 +576,11 @@ for that". A suite that has never failed has never been shown capable of failing
 
 Everything lives in this folder — nothing is scattered elsewhere on the machine.
 
+**The scripts moved into `lib/` on 2026-08-28**, so what the folder shows is the
+app, the launchers and the docs rather than a wall of `.ps1`. Only the SOURCES
+moved: `.state/`, the config and `sessions-registry.json` are still anchored to
+this folder, because they are yours and not the tool's.
+
 | file | |
 |---|---|
 | `Install Session Restore.bat` | double-click to install just this tool — tasks + buttons, builds the app, no profile changes |
@@ -585,13 +590,13 @@ Everything lives in this folder — nothing is scattered elsewhere on the machin
 | `Sessions GUI.vbs` | the same window with no console flash, through `powershell.exe` — the fallback when the exe is unavailable |
 | `Restore Sessions.bat` | the same restore through `powershell.exe` — the fallback, and what the logon task still runs |
 | `Enable Auto Logon.bat` | self-elevating wrapper for `enable-autologon.ps1` |
-| `_common.ps1` | discovery, registry, the rolling auto-tick, guards, launching — shared, so there is one copy |
-| `restore-sessions.ps1` | restore · `-Scan` · `-New` · `-Install` · `-Uninstall` |
-| `sessions-gui.ps1` | the window itself: markup, `$ui`, handlers |
-| `gui/` | the rest of it — `gui-model` (what a conversation is) · `gui-rows` (what a row shows) · `gui-notify` (tray, toasts) · `gui-read` (reading and replying) · `gui-actions` |
+| `lib/_common.ps1` | discovery, registry, the rolling auto-tick, guards, launching — shared, so there is one copy |
+| `lib/restore-sessions.ps1` | restore · `-Scan` · `-New` · `-Install` · `-Uninstall` |
+| `lib/sessions-gui.ps1` | the window itself: markup, `$ui`, handlers |
+| `lib/gui/` | the rest of it — `gui-model` (what a conversation is) · `gui-rows` (what a row shows) · `gui-notify` (tray, toasts) · `gui-read` (reading and replying) · `gui-actions` |
 | `CONTEXT.md` | the shared vocabulary, and the traps this subsystem keeps walking into |
-| `enable-autologon.ps1` | auto-logon on/off, password into the LSA store — needs elevation |
-| `profile.ps1` | the `cc` / `ccr` / `ccs` functions; your PowerShell profile gets a single dot-source line pointing here |
+| `lib/enable-autologon.ps1` | auto-logon on/off, password into the LSA store — needs elevation |
+| `lib/profile.ps1` | the `cc` / `ccr` / `ccs` functions; your PowerShell profile gets a single dot-source line pointing here |
 | `session-restore.config.json` | `recencyDays`, `maxSessions`, `excludePatterns` |
 | `sessions-registry.json` | **your selections** (gitignored — the paths are local) |
 | `.state/` | log + generated boot scripts (gitignored, regenerated) |

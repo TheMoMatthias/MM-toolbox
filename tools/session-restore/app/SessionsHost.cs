@@ -105,8 +105,8 @@ namespace MMToolbox.SessionRestore
         // already running, and by the splash to know when to get out of the way.
         internal const string WindowTitle = "Claude sessions";
 
-        private const string GuiScript = "sessions-gui.ps1";
-        private const string RestoreScript = "restore-sessions.ps1";
+        private const string GuiScript = @"lib\sessions-gui.ps1";
+        private const string RestoreScript = @"lib\restore-sessions.ps1";
 
         [STAThread]
         private static int Main(string[] argv)

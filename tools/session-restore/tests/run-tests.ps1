@@ -100,6 +100,10 @@ $here = $PSScriptRoot
 if (-not $here -and $MyInvocation.MyCommand.Path) { $here = Split-Path -Parent $MyInvocation.MyCommand.Path }
 if (-not $here) { $here = (Get-Location).Path }
 $tool  = Split-Path -Parent $here
+# The scripts moved into lib\ on 2026-08-28 so the tool folder shows the app
+# rather than a wall of .ps1. $tool stays the TOOL root - .state, the config and
+# the registry are anchored there - and only the SOURCES moved.
+$lib   = Join-Path $tool 'lib'
 $state = Join-Path $tool '.state'
 if (-not (Test-Path $state)) { $null = New-Item -ItemType Directory -Path $state -Force }
 
@@ -118,7 +122,7 @@ function New-CommonHarness {
     param([string]$Driver, [string]$OutFile)
     $body = Get-Content -LiteralPath (Join-Path $here $Driver) -Raw
     $prefix = @(
-        "`$here = '$tool'",
+        "`$here = '$lib'",
         ". (Join-Path `$here '_common.ps1')",
         ''
     ) -join "`n"
@@ -136,7 +140,7 @@ function New-CommonHarness {
 function New-GuiHarness {
     param([string]$Driver, [string]$OutFile)
 
-    $src = @(Get-Content -LiteralPath (Join-Path $tool 'sessions-gui.ps1'))
+    $src = @(Get-Content -LiteralPath (Join-Path $lib 'sessions-gui.ps1'))
     $cut = -1
     for ($k = 0; $k -lt $src.Count; $k++) {
         if ($src[$k].Trim() -eq '$null = $window.ShowDialog()') { $cut = $k; break }
@@ -145,7 +149,7 @@ function New-GuiHarness {
 
     # $PSScriptRoot would be .state for a spliced harness, so pin the real folder.
     $prefix = @($src[0..($cut - 1)]) | ForEach-Object {
-        if ($_ -eq '$here = $PSScriptRoot') { "`$here = '$tool'" } else { $_ }
+        if ($_ -eq '$here = $PSScriptRoot') { "`$here = '$lib'" } else { $_ }
     }
 
     $body = Get-Content -LiteralPath (Join-Path $here $Driver) -Raw
@@ -165,7 +169,7 @@ function New-GuiHarness {
     # that only read the main file would have stopped seeing most of the names
     # it exists to protect, silently, on the day of the split.
     $allSrc = ($src -join "`n")
-    foreach ($part in @(Get-ChildItem -LiteralPath (Join-Path $tool 'gui') -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
+    foreach ($part in @(Get-ChildItem -LiteralPath (Join-Path $lib 'gui') -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
         $allSrc += "`n" + (Get-Content -LiteralPath $part.FullName -Raw)
     }
     $scriptNames = @{}

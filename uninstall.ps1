@@ -111,7 +111,7 @@ if (Test-Path "$RepoRoot\agents") {
 }
 
 # Session-restore tool: logon task, desktop shortcut, and the cc/ccr profile block.
-$SessionRestore = Join-Path $RepoRoot 'tools\session-restore\restore-sessions.ps1'
+$SessionRestore = Join-Path $RepoRoot 'tools\session-restore\lib\restore-sessions.ps1'
 if (Test-Path -LiteralPath $SessionRestore) {
     try { & $SessionRestore -Uninstall } catch { Write-Warning "[session-restore] $_" }
 }

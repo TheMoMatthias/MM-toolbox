@@ -28,7 +28,7 @@ function Note { param($m) Write-Host "        $m" -ForegroundColor DarkGray }
 
 # --- start it ---------------------------------------------------------------
 $null = Start-Process -FilePath powershell.exe -PassThru -WindowStyle Hidden `
-    -ArgumentList '-STA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tool\sessions-gui.ps1`""
+    -ArgumentList '-STA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tool\lib\sessions-gui.ps1`""
 
 $win = $null
 $deadline = [DateTime]::UtcNow.AddSeconds(70)
@@ -138,15 +138,34 @@ try {
     if (-not $waitBtn) { Fail 'the "waiting for you" pill is not a button' }
     else {
         Pass 'the "waiting for you" pill is a button'
+        # 🪤 IT FILTERS NOW, AND A FILTER LEFT ON POISONS EVERY LATER ASSERTION.
+        # This used to press the pill and walk away, because pressing it only
+        # SELECTED a row. Since 2026-08-28 it narrows the list, so the checks
+        # below were measuring a filtered screen and reporting that no row had
+        # an action button - on a screen that had almost no rows.
+        $rowsWide = @(RowsOf (ShownList)).Count
         Press $waitBtn
         Start-Sleep -Milliseconds 900
-        Pass 'pressing it did not throw'
+        $rowsNarrow = @(RowsOf (ShownList)).Count
+        if ($rowsNarrow -lt $rowsWide) { Pass "the pill filters the list ($rowsWide -> $rowsNarrow rows)" }
+        else { Note "the pill left $rowsNarrow rows of $rowsWide - nothing to narrow to right now" }
+        Press $waitBtn
+        Start-Sleep -Milliseconds 900
+        Pass 'and it is pressed back, so what follows sees the whole list'
     }
 
     # --- 4b. the row action, and what it says it will do --------------------
     # A background agent has no terminal, so its button must be DISABLED rather
     # than present-and-failing. An offer the tool cannot keep is worse than no
     # offer: you press it, nothing happens, and you learn to distrust the row.
+    # 🪤 RE-QUERY. $btns was captured before the pill was pressed, and pressing it
+    # rebuilds the list - so every element in that array is a handle to a row that
+    # no longer exists. It reported "no row has an action button" against a screen
+    # that had seventeen of them.
+    $btns = @($win.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        (New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::Button))))
     $goTo = 0; $agentBtn = 0; $agentEnabled = 0
     foreach ($b in $btns) {
         $n = "$($b.Current.Name)"

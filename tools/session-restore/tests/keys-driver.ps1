@@ -29,7 +29,7 @@ function Pass { param($m) Write-Host "  ok    $m" -ForegroundColor Green }
 function Note { param($m) Write-Host "  --    $m" -ForegroundColor DarkGray }
 
 $p = Start-Process -FilePath powershell.exe -PassThru -WindowStyle Hidden `
-    -ArgumentList '-STA','-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$dir\sessions-gui.ps1`""
+    -ArgumentList '-STA','-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$dir\lib\sessions-gui.ps1`""
 Write-Host "started pid $($p.Id)"
 
 $win = $null

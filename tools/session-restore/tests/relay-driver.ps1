@@ -36,9 +36,11 @@ function Fail { param($m) Write-Host "  FAIL  $m" -ForegroundColor Red; $script:
 function Pass { param($m) Write-Host "  ok    $m" -ForegroundColor Green }
 function Note { param($m) Write-Host "        $m" -ForegroundColor DarkGray }
 
-$replica = Join-Path $here 'tests\menu-replica.ps1'
+# $SR_Root, not $here. The harness sets $here to lib\ (where _common.ps1 now
+# lives) and tests\ is a sibling of lib\, not a child of it.
+$replica = Join-Path $SR_Root 'tests\menu-replica.ps1'
 if (-not (Test-Path -LiteralPath $replica)) {
-    Fail "menu-replica.ps1 is missing from $(Join-Path $here 'tests')"
+    Fail "menu-replica.ps1 is missing from $(Join-Path $SR_Root 'tests')"
     Write-Host ''
     Write-Host '1 FAILURE(S)' -ForegroundColor Red
     exit 1

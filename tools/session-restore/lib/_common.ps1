@@ -13,7 +13,21 @@
 # $PSScriptRoot inside a dot-sourced file is THAT file's directory, and it is
 # resolved in the body rather than in a param default -- which is empty under
 # `powershell.exe -File` and cost a silent morning failure once already.
+# 🔴 THE SCRIPTS LIVE IN lib\, THE TOOL DOES NOT. Everything the operator owns
+# -- .state, the config, and above all sessions-registry.json -- is anchored to
+# SR_Root, so leaving it as this file's own directory would have silently moved
+# the registry into lib\ the moment the scripts were tidied away, and the next
+# scan would have found no selections at all.
 $SR_Root       = $PSScriptRoot
+if ((Split-Path -Leaf $SR_Root) -eq 'lib') { $SR_Root = Split-Path -Parent $SR_Root }
+
+# WHERE THE SOURCES ARE, which is no longer where the tool is. Anything that has
+# to hand a SCRIPT PATH to another process needs this rather than $SR_Root -- and
+# getting that wrong is silent, because the child simply fails to dot-source and
+# comes back empty. It cost the whole relay: Get-SRScreenText builds a throwaway
+# script that dot-sources _common.ps1, and with $SR_Root it pointed at a file
+# that is one directory up from where it now lives.
+$SR_LibDir     = $PSScriptRoot
 $SR_Projects   = Join-Path $env:USERPROFILE '.claude\projects'
 $SR_StateDir   = Join-Path $SR_Root '.state'
 $SR_LogPath    = Join-Path $SR_StateDir 'restore.log'
@@ -2066,7 +2080,7 @@ function Get-SRScreenText {
     $scr = Join-Path $SR_StateDir ('screen-' + $tag + '.ps1')
     try {
         $Q = [string][char]39
-        $common = (Join-Path $SR_Root '_common.ps1').Replace($Q, $Q + $Q)
+        $common = (Join-Path $SR_LibDir '_common.ps1').Replace($Q, $Q + $Q)
         $outEsc = $out.Replace($Q, $Q + $Q)
         $body = @(
             ('. ' + $Q + $common + $Q),

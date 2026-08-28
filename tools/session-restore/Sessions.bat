@@ -33,7 +33,7 @@ REM WPF must have a single-threaded apartment. -STA is passed explicitly rather
 REM than relied on: powershell.exe defaults to STA, but nothing guarantees the
 REM host that starts this one does.
 if defined SR_GUI_SHOW (
-    powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File "%~dp0sessions-gui.ps1" %*
+    powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File "%~dp0lib\sessions-gui.ps1" %*
     echo.
     pause
     exit /b %ERRORLEVEL%
@@ -43,5 +43,5 @@ REM start "" detaches, so this console closes at once instead of sitting behind
 REM the window for as long as it is open. -WindowStyle Hidden keeps the
 REM PowerShell console off the screen. Anything that goes wrong is written to
 REM .state\restore.log -- that is the file to read if nothing appears.
-start "" powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0sessions-gui.ps1" %*
+start "" powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0lib\sessions-gui.ps1" %*
 exit /b 0

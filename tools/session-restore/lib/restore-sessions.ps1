@@ -329,7 +329,7 @@ function New-SRShortcut {
 }
 
 function Invoke-Install {
-    $restore = Join-Path $SR_Root 'restore-sessions.ps1'
+    $restore = Join-Path $SR_Root 'lib\restore-sessions.ps1'
 
     Write-Host ""
     Write-Host "Installing" -ForegroundColor Cyan

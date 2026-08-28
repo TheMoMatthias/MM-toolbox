@@ -17,7 +17,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 if (-not $here) { $here = Split-Path -Parent $MyInvocation.MyCommand.Path }
-. (Join-Path (Split-Path -Parent $here) '_common.ps1')
+. (Join-Path (Join-Path (Split-Path -Parent $here) 'lib') '_common.ps1')
 
 $fails = 0
 function Fail { param($m) Write-Host "  FAIL  $m" -ForegroundColor Red; $script:fails++ }

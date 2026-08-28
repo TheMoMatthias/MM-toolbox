@@ -87,7 +87,9 @@ $LockTask    = 'ClaudeSessionLockAfterLogon'
 # close before it is read -- and when it went wrong the evidence went with it. It
 # leaves a trail. NOTHING here is ever handed a password: the prompt reads into a
 # SecureString and no message carries it.
-$ALogPath = Join-Path (Join-Path $here '.state') 'autologon.log'
+# $SR_StateDir rather than $here: this script moved into lib\ and its log
+# belongs beside the tool's other state, not beside its source.
+$ALogPath = Join-Path $SR_StateDir 'autologon.log'
 function Write-ALog {
     param([string]$Message)
     try {
