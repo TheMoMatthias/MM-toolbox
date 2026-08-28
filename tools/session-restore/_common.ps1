@@ -1379,6 +1379,78 @@ function Close-SRTabsByName {
     return $closed
 }
 
+# ---------------------------------------------------------------------------
+# IS IT SAFE TO LAUNCH A QUEUE YET?
+#
+# 🔴 THE DAILY "AUTHORIZATION HAS FAILED" IS A STAMPEDE, not a broken account.
+# Measured 2026-08-28. The logon task fires 45 seconds after sign-in and launches
+# the whole ticked set about one per second. Claude Code counts consecutive
+# failures of its remote bridge and, on the seventh, writes
+# bridgeOauthDeadExpiresAt into ~/.claude.json and stops trying until that time
+# passes. Twelve sessions launched into a bridge whose auth is not warm yet burn
+# through seven failures in seven seconds -- so every session after that gets
+# nothing, and the operator sees "authorization has failed" all morning.
+#
+# The evidence it is a WINDOW and not a break: on the morning this was measured
+# the suppression expired at 07:32, sessions relaunched at 07:40 all registered
+# normally (13 of 14 carried a live bridgeSessionId; the fourteenth was sitting
+# on an open dialog), and that was an hour BEFORE any re-login. Re-logging in and
+# the window simply expiring look identical from the outside, which is why this
+# has read as an account problem for so long.
+#
+# So the restore now WAITS for the bridge instead of racing it.
+function Get-SRBridgeSuppression {
+    # The time the bridge is suppressed until, or $null when it is not.
+    $p = Join-Path $env:USERPROFILE '.claude.json'
+    if (-not (Test-Path -LiteralPath $p)) { return $null }
+    try {
+        $j = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json
+        if (-not $j.bridgeOauthDeadExpiresAt) { return $null }
+        $t = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$j.bridgeOauthDeadExpiresAt).LocalDateTime
+        if ($t -gt (Get-Date)) { return $t }
+        return $null
+    } catch { return $null }
+}
+
+function Test-SRAuthReady {
+    # `claude auth status` prints JSON and is the account's own answer, rather
+    # than this tool guessing from a credentials file it does not own.
+    try {
+        $out = & claude auth status 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { return $false }
+        $j = $out | ConvertFrom-Json -ErrorAction Stop
+        return [bool]$j.loggedIn
+    } catch { return $false }
+}
+
+function Wait-SRBridgeReady {
+    param([int]$MaxWaitSeconds = 300)
+
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $said = $false
+    while ($sw.Elapsed.TotalSeconds -lt $MaxWaitSeconds) {
+        $sup  = Get-SRBridgeSuppression
+        $auth = Test-SRAuthReady
+        if (-not $sup -and $auth) {
+            if ($said) { Write-SRLog ("  [ok]   the bridge is ready after {0:N0}s of waiting" -f $sw.Elapsed.TotalSeconds) }
+            return $true
+        }
+        if (-not $said) {
+            $why = @()
+            if ($sup)       { $why += ("the remote bridge is suppressed until {0}" -f $sup.ToString('HH:mm:ss')) }
+            if (-not $auth) { $why += 'claude does not report a signed-in account yet' }
+            Write-SRLog ("  [wait] holding the restore - {0}" -f ($why -join '; '))
+            $said = $true
+        }
+        Start-Sleep -Seconds 10
+    }
+    # 🔴 LAUNCH ANYWAY AT THE CAP. Sessions back without Remote Control is a far
+    # better morning than no sessions at all, and the cap keeps this well inside
+    # the scheduled task's execution limit.
+    Write-SRLog ("  [skip] the bridge was still not ready after {0}s - launching regardless" -f $MaxWaitSeconds)
+    return $false
+}
+
 # Bring a conversation's terminal tab to the front.
 # Returns $null when it landed, or a reason string when it did not. A reason is
 # always "nothing happened", never "something happened somewhere else".

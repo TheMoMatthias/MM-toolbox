@@ -128,6 +128,22 @@ function Invoke-Restore {
         return 1
     }
 
+    # 🔴 WAIT FOR THE REMOTE BRIDGE BEFORE LAUNCHING A QUEUE. Claude Code counts
+    # consecutive bridge failures and suppresses the bridge on the seventh, so a
+    # dozen sessions launched a second apart into an auth that is not warm yet
+    # burn the whole budget in seven seconds and every session after that comes
+    # up unauthorized. That is the daily "authorization has failed". See
+    # Wait-SRBridgeReady for the measurement.
+    #
+    # Not on a dry run: nothing is launched, so there is nothing to protect, and
+    # stalling a preview the operator is watching would be its own bug.
+    if (-not $DryRun) {
+        $null = Wait-SRBridgeReady -MaxWaitSeconds 300
+    } else {
+        $sup = Get-SRBridgeSuppression
+        if ($sup) { Write-SRWarn ("the remote bridge is suppressed until {0} - a real restore would wait for it" -f $sup.ToString('HH:mm:ss')) }
+    }
+
     # One line per directory that is about to get two or more sessions. They share a
     # single git index, so a bare `git commit` in either takes whatever the other
     # staged -- the mitigation is `git commit -- <paths>`, not avoiding this.
@@ -319,16 +335,25 @@ function Invoke-Install {
     Write-Host "Installing" -ForegroundColor Cyan
 
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+    # 20 minutes, not 10: the restore now WAITS for the remote bridge before it
+    # launches anything (up to 5 minutes), and a limit that could kill the task
+    # mid-wait would turn a slow morning into no sessions at all.
     $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-                    -ExecutionTimeLimit ([TimeSpan]::FromMinutes(10)) -MultipleInstances IgnoreNew
+                    -ExecutionTimeLimit ([TimeSpan]::FromMinutes(20)) -MultipleInstances IgnoreNew
 
     # 1) restore, at logon
     $trg = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
-    $trg.Delay = 'PT45S'
+    # 90 seconds, up from 45. The old delay put the launch queue on top of a
+    # bridge whose auth was not warm yet; the wait inside restore-sessions.ps1 is
+    # the real guard, and this just stops it being entered every single morning.
+    $trg.Delay = 'PT90S'
     Register-ScheduledTask -TaskName $TaskRestore -Force -Principal $principal -Settings $settings -Trigger $trg `
         -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ("-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"{0}`"" -f $restore)) `
         -Description 'Restore selected Claude Code conversations with Remote Control attached.' | Out-Null
-    Write-SROk "task '$TaskRestore' - at logon, 45s delay"
+    # Derived from the trigger, never retyped. It said "45s delay" for the first
+    # hour after the delay became 90s, which is exactly how a message stops being
+    # true without anyone editing it.
+    Write-SROk ("task '{0}' - at logon, {1} delay, waits for the remote bridge before launching" -f $TaskRestore, $trg.Delay)
 
     # 2) scan, hourly + at logon. It only refreshes the registry; it launches
     #    nothing, so a new project appears in the picker without any risk.
