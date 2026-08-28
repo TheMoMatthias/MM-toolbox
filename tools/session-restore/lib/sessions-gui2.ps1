@@ -444,24 +444,384 @@ function Update-Surface {
 }
 
 # ===========================================================================
-# Selection
+# THE OUTPUT PANE
+#
+# It renders the TRANSCRIPT, not a mirror of the terminal. 215 conversations
+# exist and 14 run, so a pane that only works while a session is live is a pane
+# that is blank most of the time. That is the constraint the whole surface is
+# built around, and the suite enforces it.
+#
+# The four rendering helpers below are PORTED from gui\gui-read.ps1 rather than
+# re-derived: they carry six shipped bugs' worth of comments, and reinventing
+# markdown handling and tool-run folding would earn every one of them again.
+# What is NOT ported is the coupling - they take a palette and return a
+# document, and know nothing about either window.
 # ===========================================================================
+
+$Pal = @{
+    Ink        = $window.FindResource('Ink')
+    Raised     = $window.FindResource('PanelHi')
+    HairlineHi = $window.FindResource('Hairline')
+    TextMax    = $window.FindResource('TextMax')
+    TextHigh   = $window.FindResource('TextHigh')
+    TextMid    = $window.FindResource('TextMid')
+    TextLow    = $window.FindResource('TextLow')
+    TextDim    = $window.FindResource('AccQuiet')
+}
+$script:UiFace   = $window.FindResource('FontUi')
+$script:MonoFace = $window.FindResource('FontMono')
+$FW_Semi   = [System.Windows.FontWeights]::SemiBold
+$FW_Normal = [System.Windows.FontWeights]::Normal
+
+# THE TAIL BUDGET. The biggest transcript on this machine is 2.5 MB and
+# FlowDocumentScrollViewer does not virtualize its blocks, so rendering a whole
+# conversation is a multi-second freeze on every selection. Start at the same
+# 256 KB Get-SRLastSaid uses; "load earlier" doubles it, and the pane says out
+# loud when it is showing only part.
+$script:TailBase = 262144
+$script:tailBytes = $script:TailBase
+
+function New-ReadRun {
+    param([string]$Text, $Brush, [double]$Size = 13, [string]$Weight = 'Normal', [switch]$Mono, [switch]$Italic)
+    $r = New-Object System.Windows.Documents.Run ([string]$Text)
+    if ($Brush) { $r.Foreground = $Brush }
+    $r.FontSize = $Size
+    if ($Mono)   { $r.FontFamily = $script:MonoFace }
+    if ($Italic) { $r.FontStyle = [System.Windows.FontStyles]::Italic }
+    $r.FontWeight = $(if ($Weight -eq 'SemiBold') { $FW_Semi } else { $FW_Normal })
+    return $r
+}
+
+# Markdown, but only the parts that change how a line READS: fenced code, a
+# heading, a bullet, and inline `code`. Anything more would be a markdown
+# engine, which is not what this needs to be.
+function Add-ReadProse {
+    param($Doc, [string]$Text, $Brush)
+    $lines = @($Text -replace "`r", '' -split "`n")
+    $i = 0
+    while ($i -lt $lines.Count) {
+        $ln = $lines[$i]
+        if ($ln.TrimStart().StartsWith('```')) {
+            $code = New-Object System.Collections.Generic.List[string]
+            $i++
+            while ($i -lt $lines.Count -and -not $lines[$i].TrimStart().StartsWith('```')) { $code.Add($lines[$i]); $i++ }
+            $i++
+            $p = New-Object System.Windows.Documents.Paragraph
+            $p.Margin = New-Object System.Windows.Thickness 0, 6, 0, 6
+            $p.Padding = New-Object System.Windows.Thickness 12, 8, 12, 8
+            $p.Background = $Pal.Raised
+            $p.BorderBrush = $Pal.HairlineHi
+            $p.BorderThickness = New-Object System.Windows.Thickness 2, 0, 0, 0
+            $p.Inlines.Add((New-ReadRun -Text ($code -join "`n") -Brush $Pal.TextHigh -Size 12 -Mono))
+            $Doc.Blocks.Add($p)
+            continue
+        }
+        $p = New-Object System.Windows.Documents.Paragraph
+        $p.Margin = New-Object System.Windows.Thickness 0, 3, 0, 3
+        $p.LineHeight = 21
+        $p.LineStackingStrategy = 'BlockLineHeight'
+        $body = $ln; $size = 14.5; $weight = 'Normal'; $indent = 0
+        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = 16 }
+        elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [char]0x2022 + '  ' + $Matches[1]; $indent = 14 }
+        elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.  ' + $Matches[2]; $indent = 14 }
+        if ($indent) { $p.Margin = New-Object System.Windows.Thickness $indent, 2, 0, 2 }
+        $rest = $body
+        while ($rest -match '^(.*?)(`([^`]+)`|\*\*([^*]+)\*\*)(.*)$') {
+            $before = $Matches[1]; $codeTxt = $Matches[3]; $boldTxt = $Matches[4]; $rest = $Matches[5]
+            if ($before)  { $p.Inlines.Add((New-ReadRun -Text $before -Brush $Brush -Size $size -Weight $weight)) }
+            if ($codeTxt) { $p.Inlines.Add((New-ReadRun -Text $codeTxt -Brush $Pal.TextMax -Size ($size - 1) -Mono)) }
+            elseif ($boldTxt) { $p.Inlines.Add((New-ReadRun -Text $boldTxt -Brush $Pal.TextMax -Size $size -Weight 'SemiBold')) }
+        }
+        if ($rest) { $p.Inlines.Add((New-ReadRun -Text $rest -Brush $Brush -Size $size -Weight $weight)) }
+        if ($p.Inlines.Count -eq 0) { $p.Inlines.Add((New-ReadRun -Text ' ' -Brush $Brush -Size $size)) }
+        $Doc.Blocks.Add($p)
+        $i++
+    }
+}
+
+# 🔴 TOOL TRAFFIC OUTNUMBERS PROSE FIVE TO ONE. Measured across six transcripts:
+# text 50, thinking 84, tool_use 129, tool_result 130. A RUN of them becomes ONE
+# line saying how many and naming the last, because the question a reader has
+# about a wall of tool calls is "how much of this is there, and where does the
+# conversation start again". Two or fewer are left alone: two lines are cheaper
+# to read than a summary of two lines.
+function Compress-ToolRuns { param($Blocks)
+    $out = New-Object System.Collections.Generic.List[object]
+    $arr = @($Blocks)
+    $i = 0
+    while ($i -lt $arr.Count) {
+        if ($arr[$i].Kind -ne 'tool' -and $arr[$i].Kind -ne 'result') { $out.Add($arr[$i]); $i++; continue }
+        $j = $i; $calls = 0; $lastHead = ''
+        while ($j -lt $arr.Count -and ($arr[$j].Kind -eq 'tool' -or $arr[$j].Kind -eq 'result')) {
+            if ($arr[$j].Kind -eq 'tool') { $calls++; $lastHead = "$($arr[$j].Head)" }
+            $j++
+        }
+        if ($calls -le 2) { for ($k = $i; $k -lt $j; $k++) { $out.Add($arr[$k]) } }
+        else {
+            $out.Add([PSCustomObject]@{ Kind = 'tools'; Head = "$calls tool calls"
+                                        Body = $(if ($lastHead) { "last: $lastHead" } else { '' }); Meta = '' })
+        }
+        $i = $j
+    }
+    # 🪤 A PLAIN ARRAY, never comma-wrapped. Wrapping makes @(f) at every call
+    # site a ONE-element array holding everything, and for an empty result a
+    # single empty array - so "nothing to render" becomes one phantom row. This
+    # codebase has shipped that bug six times.
+    return $out.ToArray()
+}
+
+function Build-ReadDocument {
+    param($Blocks, [bool]$Truncated = $false)
+    $doc = New-Object System.Windows.Documents.FlowDocument
+    $doc.FontFamily  = $script:UiFace
+    $doc.Background  = $Pal.Ink
+    $doc.Foreground  = $Pal.TextHigh
+    $doc.PagePadding = New-Object System.Windows.Thickness 26, 18, 26, 26
+    $doc.ColumnWidth = [double]::PositiveInfinity
+    $doc.IsOptimalParagraphEnabled = $false
+
+    if (-not @($Blocks).Count) {
+        $p = New-Object System.Windows.Documents.Paragraph
+        $p.Inlines.Add((New-ReadRun -Text 'Nothing readable in this transcript yet.' -Brush $Pal.TextMid -Size 13))
+        $doc.Blocks.Add($p)
+        return $doc
+    }
+
+    # SAY WHEN IT IS PARTIAL. A pane that silently shows the last slice of a
+    # conversation reads as the whole of a short one.
+    if ($Truncated) {
+        $p = New-Object System.Windows.Documents.Paragraph
+        $p.Margin = New-Object System.Windows.Thickness 0, 0, 0, 10
+        $p.Inlines.Add((New-ReadRun -Text ('showing the last {0} KB of a longer conversation - press L to load earlier' -f [int]($script:tailBytes / 1KB)) -Brush $Pal.TextDim -Size 11 -Italic))
+        $doc.Blocks.Add($p)
+    }
+
+    foreach ($b in @(Compress-ToolRuns $Blocks)) {
+        switch ($b.Kind) {
+            'you' {
+                $s = New-Object System.Windows.Documents.Section
+                $s.Margin = New-Object System.Windows.Thickness 0, 12, 0, 6
+                $s.Padding = New-Object System.Windows.Thickness 12, 2, 0, 2
+                $s.BorderBrush = $Pal.TextMax
+                $s.BorderThickness = New-Object System.Windows.Thickness 2, 0, 0, 0
+                $lab = New-Object System.Windows.Documents.Paragraph
+                $lab.Margin = New-Object System.Windows.Thickness 0, 0, 0, 3
+                $lab.Inlines.Add((New-ReadRun -Text 'YOU' -Brush $Pal.TextMax -Size 10.5 -Weight 'SemiBold'))
+                $s.Blocks.Add($lab)
+                $inner = New-Object System.Windows.Documents.FlowDocument
+                Add-ReadProse -Doc $inner -Text $b.Body -Brush $Pal.TextMax
+                # Blocks is a live collection: moving them while enumerating it
+                # silently drops every second one, hence the @() snapshot. And
+                # $null = on Remove is not tidiness - it returns a BOOL, and an
+                # uncaptured value would be emitted, so the function would return
+                # an array of $true with the document buried inside it.
+                foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $s.Blocks.Add($blk) }
+                $doc.Blocks.Add($s)
+            }
+            'said' {
+                $lab = New-Object System.Windows.Documents.Paragraph
+                $lab.Margin = New-Object System.Windows.Thickness 0, 14, 0, 4
+                $lab.Inlines.Add((New-ReadRun -Text 'CLAUDE' -Brush $Pal.TextLow -Size 10.5 -Weight 'SemiBold'))
+                $doc.Blocks.Add($lab)
+                $inner = New-Object System.Windows.Documents.FlowDocument
+                Add-ReadProse -Doc $inner -Text $b.Body -Brush $Pal.TextHigh
+                foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
+            }
+            'thinking' {
+                $head = @($b.Body -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 2) -join ' '
+                if ($head.Length -gt 170) { $head = $head.Substring(0, 167) + '...' }
+                $p = New-Object System.Windows.Documents.Paragraph
+                $p.Margin = New-Object System.Windows.Thickness 18, 3, 0, 6
+                $p.Inlines.Add((New-ReadRun -Text 'thinking   ' -Brush $Pal.TextDim -Size 10.5 -Weight 'SemiBold'))
+                $p.Inlines.Add((New-ReadRun -Text $head -Brush $Pal.TextDim -Size 12 -Italic))
+                $doc.Blocks.Add($p)
+            }
+            'tool' {
+                $p = New-Object System.Windows.Documents.Paragraph
+                $p.Margin = New-Object System.Windows.Thickness 4, 1, 0, 1
+                $p.Inlines.Add((New-ReadRun -Text ([char]0x203A + '  ') -Brush $Pal.TextLow -Size 12 -Mono))
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '  ') -Brush $Pal.TextMid -Size 11.5 -Weight 'SemiBold' -Mono))
+                $p.Inlines.Add((New-ReadRun -Text $b.Body -Brush $Pal.TextLow -Size 11.5 -Mono))
+                $doc.Blocks.Add($p)
+            }
+            'tools' {
+                $p = New-Object System.Windows.Documents.Paragraph
+                $p.Margin = New-Object System.Windows.Thickness 4, 3, 0, 3
+                $p.Inlines.Add((New-ReadRun -Text ([char]0x203A + '  ') -Brush $Pal.TextLow -Size 12 -Mono))
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextDim -Size 11 -Weight 'SemiBold' -Mono))
+                $p.Inlines.Add((New-ReadRun -Text $b.Body -Brush $Pal.TextDim -Size 11 -Mono))
+                $doc.Blocks.Add($p)
+            }
+            'result' {
+                $first = "$(@($b.Body -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1))"
+                if ($first.Length -gt 120) { $first = $first.Substring(0, 117) + '...' }
+                $p = New-Object System.Windows.Documents.Paragraph
+                $p.Margin = New-Object System.Windows.Thickness 22, 0, 0, 4
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextDim -Size 10.5 -Mono))
+                $p.Inlines.Add((New-ReadRun -Text $first -Brush $Pal.TextDim -Size 11 -Mono))
+                $doc.Blocks.Add($p)
+            }
+        }
+    }
+    return $doc
+}
+
+# ===========================================================================
+# THE PINNED QUESTION
+#
+# It sits at the FOOT of the pane, above the composer, and never inline in the
+# transcript: on a long conversation an inline question is a question you have
+# to go looking for.
+#
+# The options come off the LIVE CONSOLE, not the transcript - a question is only
+# answerable while something is sitting on it.
+# ===========================================================================
+function Update-Ask { param($R)
+    $ui.AskBox.Visibility = $V_Hide
+    $ui.AskOptions.ItemsSource = $null
+    if (-not $R -or -not $R.A -or -not $R.A.Pid) { return }
+
+    $q = $null
+    try { $q = Get-SRScreenQuestion -ProcessId ([int]$R.A.Pid) } catch { }
+    if (-not $q -or -not @($q.Options).Count) { return }
+
+    $ui.AskHeader.Text = $(if ("$($q.Header)") { "$($q.Header)".ToUpper() } else { 'IT IS ASKING' })
+    $ui.AskText.Text   = "$($q.Question)"
+
+    $btns = New-Object System.Collections.Generic.List[object]
+    $n = 0
+    foreach ($o in @($q.Options)) {
+        $b = New-Object System.Windows.Controls.Button
+        $b.Content = ('{0}.  {1}' -f ($n + 1), $o)
+        $b.Style = $window.FindResource('Btn')
+        $b.Margin = New-Object System.Windows.Thickness 0, 0, 0, 5
+        $b.HorizontalContentAlignment = 'Left'
+        $b.Tag = $n
+        $b.Add_Click({ param($s, $e) Invoke-Answer ([int]$s.Tag) })
+        $btns.Add($b)
+        $n++
+    }
+    $ui.AskOptions.ItemsSource = $btns
+
+    if ($q.Multi) {
+        $ui.AskNote.Text = 'Several answers. Ticking is wired on an INFERRED reading of the menu footer, and every send is recorded to .state so a wrong reading leaves evidence.'
+        $ui.AskNote.Visibility = $V_Show
+    } else {
+        $ui.AskNote.Visibility = $V_Hide
+    }
+    $ui.AskBox.Visibility = $V_Show
+}
+
+function Invoke-Answer { param([int]$Index)
+    $it = $ui.SessionList.SelectedItem
+    if (-not $it -or $it.Kind -ne 'session') { return }
+    $r = $it.Row
+    if (-not $r.A -or -not $r.A.Pid) { Set-Status 'that conversation is not running any more' 'warn'; return }
+    Set-Status 'answering...'
+    $why = $null
+    try { $why = Send-SRQuestionAnswer -SessionId $r.Id -Index $Index } catch { $why = $_.Exception.Message }
+    if ($why) { Set-Status $why 'bad' } else { Set-Status 'answered' 'ok'; $ui.AskBox.Visibility = $V_Hide }
+}
+
+# ===========================================================================
+# THE COMPOSER - honest about when it cannot send
+#
+# It LOOKS like chat and is not: it synthesises keystrokes into a real terminal.
+# So it says why it is disabled rather than silently dropping what was typed,
+# which is the worst outcome available here.
+# ===========================================================================
+function Update-SendState {
+    $it = $ui.SessionList.SelectedItem
+    $why = ''
+    if (-not $it -or $it.Kind -ne 'session') { $why = 'nothing is selected' }
+    else {
+        $r = $it.Row
+        if (-not $r.A -or -not $r.A.Pid) { $why = 'this conversation is not running, so there is nothing to type into' }
+        elseif ("$($r.A.Status)" -eq 'busy') { $why = 'it is mid-turn - wait for it to stop before typing' }
+        elseif ($r.A.Kind -and $r.A.Kind -ne 'interactive') { $why = 'a background agent has no console to type into' }
+    }
+    $ui.SendBtn.IsEnabled = (-not $why) -and "$($ui.SendBox.Text)".Trim()
+    $ui.SendBox.IsEnabled = (-not $why)
+    if ($why) { $ui.SendNote.Text = $why; $ui.SendNote.Visibility = $V_Show }
+    else { $ui.SendNote.Visibility = $V_Hide }
+}
+
+function Invoke-Send {
+    $it = $ui.SessionList.SelectedItem
+    if (-not $it -or $it.Kind -ne 'session') { return }
+    $r = $it.Row
+    $msg = "$($ui.SendBox.Text)".Trim()
+    if (-not $msg -or -not $r.A -or -not $r.A.Pid) { return }
+    Set-Status 'typing it in...'
+    $why = $null
+    try { $why = Send-SRSessionInput -SessionId $r.Id -Text $msg } catch { $why = $_.Exception.Message }
+    if ($why) { Set-Status $why 'bad' } else { $ui.SendBox.Text = ''; Set-Status 'sent' 'ok' }
+}
+
+# ===========================================================================
+# Selection, and following the selected transcript
+# ===========================================================================
+function Update-Document {
+    $it = $ui.SessionList.SelectedItem
+    if (-not $it -or $it.Kind -ne 'session') { return }
+    $r = $it.Row
+    $j = "$($r.S.jsonl)"
+    if (-not $j -or -not (Test-Path -LiteralPath $j)) {
+        $ui.PaneDoc.Document = $null
+        $ui.PaneEmpty.Text = 'This conversation has no transcript left on disk.'
+        $ui.PaneEmpty.Visibility = $V_Show
+        return
+    }
+    $truncated = $false
+    try { $truncated = ((Get-Item -LiteralPath $j).Length -gt $script:tailBytes) } catch { }
+    $blocks = @()
+    try { $blocks = Get-SRTranscriptBlocks -JsonlPath $j -MaxRecords 220 -MaxTailBytes $script:tailBytes } catch { }
+    $doc = Build-ReadDocument -Blocks $blocks -Truncated $truncated
+    if ($doc -isnot [System.Windows.Documents.FlowDocument]) {
+        throw ('Build-ReadDocument returned {0}, not a FlowDocument - something in it emitted to the pipeline' -f $doc.GetType().Name)
+    }
+    $ui.PaneDoc.Document = $doc
+    $ui.PaneEmpty.Visibility = $V_Hide
+}
+
 function Show-Selected {
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
     $script:selId = $it.Id
+    $script:tailBytes = $script:TailBase     # a new conversation starts at the budget
     $r = $it.Row
     $t = Get-Title $r.S $r.D
     $ui.PaneName.Text = $t.Text
     $b = @($script:Bands | Where-Object { $_.Key -eq "$($r.Band)" })
     $ui.PaneStateDot.Background = $(if ($b.Count) { $window.FindResource($b[0].Acc) } else { $window.FindResource('AccIdle') })
     $detail = $(if ($r.Conv -and "$($r.Conv.Detail)") { "$($r.Conv.Detail)" } else { 'no process is holding it' })
-    $ui.PaneState.Text = ('{0}   |   {1}' -f $(if ($b.Count) { $b[0].Label } else { '' }), $detail)
-    # Phase 3 fills the document. Until then the pane SAYS it is not built, so a
-    # blank surface does not read as a bug.
-    $ui.PaneEmpty.Text = 'The transcript renders here in phase 3.'
-    $ui.PaneEmpty.Visibility = $V_Show
+    $ui.PaneState.Text = ('{0}   |   {1}   |   {2}' -f $(if ($b.Count) { $b[0].Label } else { '' }), $detail, (Split-Path -Leaf "$($r.D.path)"))
+    Update-Document
+    Update-Ask $r
+    Update-SendState
+    $script:followStamp = $null
 }
+
+# FOLLOW ONLY THE SELECTED SESSION. One file, checked once a second, rather than
+# a watcher per conversation: 14 run today and the cost has to stay flat in that
+# number. Polling one file also has nothing to leak when the selection changes,
+# which a FileSystemWatcher does.
+$script:followStamp = $null
+$script:followTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:followTimer.Interval = [TimeSpan]::FromSeconds(1)
+$script:followTimer.Add_Tick({
+    $it = $ui.SessionList.SelectedItem
+    if (-not $it -or $it.Kind -ne 'session') { return }
+    $r = $it.Row
+    if (-not $r.Live) { return }
+    $j = "$($r.S.jsonl)"
+    if (-not $j -or -not (Test-Path -LiteralPath $j)) { return }
+    $now = $null
+    try { $fi = Get-Item -LiteralPath $j; $now = ('{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks) } catch { return }
+    if ($now -eq $script:followStamp) { return }
+    $script:followStamp = $now
+    try { Update-Document; Update-Ask $r; Update-SendState } catch { }
+})
 
 # ---------------------------------------------------------------------------
 # Wiring
@@ -498,6 +858,28 @@ $script:searchTimer.Interval = [TimeSpan]::FromMilliseconds(180)
 $script:searchTimer.Add_Tick({ $script:searchTimer.Stop(); Build-Sessions })
 $ui.Search.Add_TextChanged({ $script:searchTimer.Stop(); $script:searchTimer.Start() })
 
+$ui.SendBox.Add_TextChanged({ Update-SendState })
+$ui.SendBtn.Add_Click({ Invoke-Send })
+$ui.SendBox.Add_KeyDown({
+    param($sender, $e)
+    if ($e.Key -eq 'Return' -and $ui.SendBtn.IsEnabled) { Invoke-Send; $e.Handled = $true }
+})
+
+$ui.PaneGoTo.Add_Click({
+    $it = $ui.SessionList.SelectedItem
+    if (-not $it -or $it.Kind -ne 'session') { return }
+    $r = $it.Row
+    if (-not $r.A) { Set-Status 'that conversation is not running - there is no terminal to go to' 'warn'; return }
+    Set-Status 'finding its tab...'
+    $why = $null
+    try { $why = Invoke-SRJumpToSession -SessionId $r.S.sessionId -Title "$($r.A.Name)" -RaiseAnyway } catch { $why = $_.Exception.Message }
+    if ($why) { Set-Status $why 'warn' } else { Set-Status ('went to {0}' -f $ui.PaneName.Text) 'ok' }
+})
+
+$ui.PaneRelaunch.Add_Click({
+    Set-Status 'relaunching one conversation is phase 4 work - use the session manager for now' 'warn'
+})
+
 $ui.Rescan.Add_Click({
     Set-Status 'rescanning...'
     try { $null = Update-SRRegistry -Config $script:cfg -Quiet } catch { }
@@ -515,6 +897,14 @@ $window.Add_PreviewKeyDown({
     }
     if ($ui.Search.IsKeyboardFocusWithin -or $ui.SendBox.IsKeyboardFocusWithin) { return }
     if ($e.Key -eq 'Oem2') { $null = $ui.Search.Focus(); $e.Handled = $true; return }
+    if ($e.Key -eq 'L') {
+        # LOAD EARLIER. The pane starts at a tail budget because a 2.5 MB
+        # conversation is a multi-second freeze; this doubles it on demand.
+        $script:tailBytes = $script:tailBytes * 2
+        Update-Document
+        Set-Status ('loaded the last {0} KB' -f [int]($script:tailBytes / 1KB))
+        $e.Handled = $true; return
+    }
 })
 
 # ---------------------------------------------------------------------------
@@ -528,6 +918,8 @@ Set-Breakpoint
 $window.Add_ContentRendered({
     Set-Breakpoint
     $null = $ui.SessionList.Focus()
+    $script:followTimer.Start()
 })
+$window.Add_Closed({ try { $script:followTimer.Stop() } catch { } })
 
 $null = $window.ShowDialog()
