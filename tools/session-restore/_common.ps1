@@ -1325,6 +1325,60 @@ function Get-SRTerminalTabs {
     return ,@($out.ToArray())
 }
 
+# ---------------------------------------------------------------------------
+# Close the terminal TABS belonging to sessions that have just been killed.
+#
+# 🔴 KILLING THE PROCESSES DOES NOT CLOSE THE TAB, and for a long time this tool
+# assumed it did. Stop-SRSessions kills claude.exe and then its boot shell, on
+# the reasoning that a tab dies with its root process. Measured 2026-08-28 on the
+# operator's machine after one relaunch: 40 tabs for 18 live sessions -- every
+# one of 14 conversations had TWO tabs, the dead one and the new one, all in a
+# single window. The relaunch had honestly reported "closed 15 session(s)"; the
+# processes were gone and the tabs were not. The parent kill was additionally
+# wrapped in -ErrorAction SilentlyContinue, so a failure there could never be
+# seen.
+#
+# So the tab is closed EXPLICITLY, through the close button UI Automation exposes
+# on it, rather than as a hoped-for consequence of killing something else.
+#
+# 🪤 CALL THIS ONLY BETWEEN THE KILL AND THE RELAUNCH. It matches tabs by TITLE,
+# and a title is only unambiguous while the session that owned it is dead: once
+# the relaunch has opened a new tab under the same name, this cannot tell them
+# apart and would close the new one.
+function Close-SRTabsByName {
+    param([string[]]$Names)
+
+    $want = @{}
+    foreach ($n in @($Names)) { if ("$n".Trim()) { $want["$n".Trim().ToLower()] = $true } }
+    if (-not $want.Count) { return 0 }
+
+    try { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop }
+    catch { Write-SRLog "  [skip] cannot close tabs - UI Automation is unavailable"; return 0 }
+
+    $closed = 0
+    # Piped, not @(). Get-SRTerminalTabs returns ,@(...) and @() on that yields a
+    # ONE-element array holding the array -- the trap this file documents.
+    foreach ($t in (Get-SRTerminalTabs | ForEach-Object { $_ })) {
+        if (-not $want.ContainsKey("$($t.Name)".Trim().ToLower())) { continue }
+        try {
+            $cond = New-Object System.Windows.Automation.PropertyCondition(
+                        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                        [System.Windows.Automation.ControlType]::Button)
+            $btn = $t.Element.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+            if (-not $btn) { Write-SRLog ("  [skip] tab '{0}' has no close button in its UI tree" -f $t.Name); continue }
+            $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            $closed++
+            # The tab strip re-lays out after each close; without a beat the next
+            # element handle is stale and the invoke throws.
+            Start-Sleep -Milliseconds 140
+        } catch {
+            Write-SRLog ("  [skip] tab '{0}' would not close: {1}" -f $t.Name, $_.Exception.Message)
+        }
+    }
+    if ($closed) { Write-SRLog ("  [ok]   closed {0} dead terminal tab(s)" -f $closed) }
+    return $closed
+}
+
 # Bring a conversation's terminal tab to the front.
 # Returns $null when it landed, or a reason string when it did not. A reason is
 # always "nothing happened", never "something happened somewhere else".

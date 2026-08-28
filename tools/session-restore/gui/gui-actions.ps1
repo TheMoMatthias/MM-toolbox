@@ -332,6 +332,10 @@ function Invoke-RelaunchTicked {
 function Stop-SRSessions { param($Items)
     $killed = 0
     $script:relaunchLate = @()
+    # The tab titles of everything actually killed, so the dead tabs can be closed
+    # once the loop is done. Reset per call, or a second relaunch would try to
+    # close tabs from the first.
+    $script:relaunchTabs = @()
     foreach ($it in @($Items)) {
         $procId = [int]$it.Pid
         if ($procId -le 0) { continue }
@@ -356,8 +360,19 @@ function Stop-SRSessions { param($Items)
         $parent = $null
         try { $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.ParentProcessId)" -ErrorAction Stop } catch { }
         try { Stop-Process -Id $procId -Force -ErrorAction Stop; $killed++ } catch { continue }
+
+        # The tab title comes from claude, so the live name is the one that will
+        # match a tab. Fall back to the recorded title only when there is no
+        # agent record to ask.
+        $tabName = $(if ($now -and "$($now.Name)") { "$($now.Name)" } else { Get-SessionTitle $it.S $it.D })
+        if ("$tabName".Trim()) { $script:relaunchTabs += "$tabName" }
+
         if ($parent -and $parent.Name -eq 'powershell.exe' -and "$($parent.CommandLine)" -like '*.state*boot-*') {
-            try { Stop-Process -Id ([int]$parent.ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+            # 🔴 NOT SilentlyContinue. This used to swallow its own failure, so a
+            # boot shell that refused to die left a tab behind and said nothing --
+            # which is half of how 14 dead tabs accumulated unnoticed.
+            try { Stop-Process -Id ([int]$parent.ProcessId) -Force -ErrorAction Stop }
+            catch { Write-SRLog ("  [skip] the boot shell for '{0}' would not close: {1}" -f $tabName, $_.Exception.Message) }
         }
     }
     if ($killed) {
@@ -365,6 +380,15 @@ function Stop-SRSessions { param($Items)
         # The launch that follows opens fresh tabs; give the console host a beat to
         # release the pids so the new ones are not fighting the old for the window.
         Start-Sleep -Milliseconds 700
+
+        # 🔴 AND NOW THE TABS, EXPLICITLY. Killing the processes does not close
+        # them -- measured 2026-08-28: 40 tabs for 18 live sessions after one
+        # relaunch, every conversation carrying a dead tab beside its new one.
+        # This runs HERE, after the kill and before the relaunch, because it
+        # matches on title and a title only identifies a dead tab while the
+        # session that owned it is still dead.
+        try { $null = Close-SRTabsByName -Names $script:relaunchTabs }
+        catch { Write-SRLog ("  [skip] closing dead tabs failed: {0}" -f $_.Exception.Message) }
     }
     return $killed
 }
