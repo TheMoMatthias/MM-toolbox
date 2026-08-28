@@ -161,11 +161,12 @@ try {
     else { Fail "$agentEnabled background-agent row(s) offer an action that cannot work" }
 
     # --- 5. the view switch actually switches ------------------------------
-    # The segments are named Now and Roster on screen. This suite drives them BY
+    # The segments are named 'Work surface' and 'Session manager' on screen (they
+    # were 'Now' and 'Roster' until 2026-08-28). This suite drives them BY
     # NAME through UI Automation, so a rename that missed here would not fail
     # loudly - it would find nothing and quietly test whatever was already up.
-    $tree = ByName 'Roster' ([System.Windows.Automation.ControlType]::RadioButton)
-    $inbox = ByName 'Now' ([System.Windows.Automation.ControlType]::RadioButton)
+    $tree = ByName 'Session manager' ([System.Windows.Automation.ControlType]::RadioButton)
+    $inbox = ByName 'Work surface' ([System.Windows.Automation.ControlType]::RadioButton)
     # TWO, not three. Restore was retired because it rendered row-for-row
     # identical rows to Projects; asserting that a retired view is still on
     # screen is asserting the duplication is still there.
@@ -173,7 +174,7 @@ try {
     if ($restore) { Fail 'the retired Restore view is still on screen' }
     elseif (-not $tree -or -not $inbox) { Fail 'the two view buttons are not both present' }
     else {
-        Pass 'Now and Roster are present, and Restore is gone'
+        Pass 'Work surface and Session manager are present, and Restore is gone'
 
         # WHICH list is on screen, by position in the pair, not by identity.
         # Comparing runtime ids inline was a precedence trap: PowerShell parses
@@ -232,15 +233,15 @@ try {
             (New-Object System.Windows.Automation.PropertyCondition(
                 [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
                 [System.Windows.Automation.ControlType]::Button)))
-        foreach ($b in $btns) { if ("$($b.Current.Name)" -match 'Open the ones not running') { $launch = $b; break } }
-        if ($launch -and -not $launch.Current.IsOffscreen) { Pass 'All shows "Open the ones not running"' }
-        else { Fail 'All does not show "Open the ones not running" - the logon furniture did not follow the retired view' }
+        foreach ($b in $btns) { if ("$($b.Current.Name)" -match 'Open not running') { $launch = $b; break } }
+        if ($launch -and -not $launch.Current.IsOffscreen) { Pass 'the session manager shows "Open not running"' }
+        else { Fail 'the session manager does not show "Open not running" - the logon furniture did not follow the retired view' }
 
         $inbox.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
         Start-Sleep -Seconds 3
-        if ($launch -and $launch.Current.IsOffscreen) { Pass 'the inbox hides "Open the ones not running"' }
+        if ($launch -and $launch.Current.IsOffscreen) { Pass 'the work surface hides "Open not running"' }
         elseif (-not $launch) { Note 'no launch button to re-check' }
-        else { Fail 'the inbox is still showing "Open the ones not running"' }
+        else { Fail 'the work surface is still showing "Open not running"' }
 
         # Back in the inbox, it must have rebuilt too -- the same trap in the
         # other direction.

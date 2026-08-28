@@ -1014,7 +1014,7 @@ foreach ($n in @(
     # element it was -- so keep the two in step.
     'WaitSummary','FilterCount','ClearFilters','ProjectFilter','LaneFilter',
     'FlLive','FlNot','FlGone',
-    'FbNeeds','FbWorking','FbIdle','FbQuiet',
+    'FbNeeds','FbWorking','FbDone','FbIdle','FbQuiet',
     'FtOn','FtOff','FpPin','FpFree','FaRecent','FaStale',
     'ListShift','NeedsBand','NeedsLabel','NeedsList',
     'ReadPane','ReadName','ReadWhat','ReadView','ReadBack','ReadRefresh','ReadOpen',
@@ -1476,6 +1476,7 @@ function Update-BandChips {
     foreach ($pair in @(
         @{ C = $ui.FbNeeds;   K = 'needs';   L = 'Needs you' }
         @{ C = $ui.FbWorking; K = 'working'; L = 'Working' }
+        @{ C = $ui.FbDone;    K = 'done';    L = 'Finished' }
         @{ C = $ui.FbIdle;    K = 'idle';    L = 'Idle' }
         @{ C = $ui.FbQuiet;   K = 'quiet';   L = 'Not running' }
     )) {
@@ -1574,7 +1575,7 @@ function Update-FilterReadout {
 
 function Get-ChipControls {
     return @(
-        $ui.FbNeeds, $ui.FbWorking, $ui.FbIdle, $ui.FbQuiet,
+        $ui.FbNeeds, $ui.FbWorking, $ui.FbDone, $ui.FbIdle, $ui.FbQuiet,
         $ui.FlLive, $ui.FlNot, $ui.FlGone,
         $ui.FtOn, $ui.FtOff, $ui.FpPin, $ui.FpFree,
         $ui.FaRecent, $ui.FaStale
@@ -1761,11 +1762,21 @@ function Update-Header {
     # "pinned" is a restore concept -- it means the hourly auto-tick roll leaves
     # this conversation alone -- so it only earns space in the view that owns the
     # tick. Everywhere else the stamp is just how fresh this screen is.
+    # 🪤 AN ABSOLUTE TIME CANNOT SHOW ITS OWN STALENESS. "as of 08:15:03" beside a
+    # screen that has not refreshed in three quarters of an hour reads exactly
+    # like a clock that has stopped -- which is how it was reported. The age is
+    # appended once the stamp is old enough to be worth doubting, so a stale
+    # screen says it is stale instead of looking broken.
+    $stampAge = ''
+    if ($script:probedAt) {
+        $mins = [int]((Get-Date) - [datetime]$script:probedAt).TotalMinutes
+        if ($mins -ge 2) { $stampAge = "  ({0}m ago)" -f $mins }
+    }
     $ui.ProbeStamp.Text  = $(if (-not $script:probedAt) { '' }
         elseif ($script:viewMode -eq 'all') {
-            "{0} pinned   |   as of {1}" -f $pinned, ([datetime]$script:probedAt).ToString('HH:mm:ss')
+            "{0} pinned   |   as of {1}{2}" -f $pinned, ([datetime]$script:probedAt).ToString('HH:mm:ss'), $stampAge
         } else {
-            "as of {0}" -f ([datetime]$script:probedAt).ToString('HH:mm:ss')
+            "as of {0}{1}" -f ([datetime]$script:probedAt).ToString('HH:mm:ss'), $stampAge
         })
 
     # Keep each pill's ACCESSIBLE name equal to the text it is showing. A Button
@@ -2860,8 +2871,28 @@ function Show-InboxBand { param([string]$Band)
     $null = $ui.InboxList.Focus()
 }
 
-$ui.LivePill.Add_Click({ Invoke-Guarded { Show-InboxBand 'working' } 'show what is running' })
-$ui.WaitPill.Add_Click({ Invoke-Guarded { Show-InboxBand 'needs' }   'show what is waiting' })
+# 🔴 THE PILLS FILTER; THEY USED TO JUMP. Show-InboxBand selected the first row
+# of a band -- which does nothing visible at all when that band is EMPTY, and
+# "0 working" is exactly when somebody clicks it to find out why. Reported as
+# "I click the pill and nothing happens", and it was doing what it was built to
+# do.
+#
+# They drive the SAME chips the SHOW row does rather than keeping a filter state
+# of their own, so the two controls can never disagree about what is on screen.
+$ui.LivePill.Add_Click({ Invoke-Guarded {
+    if ($script:viewMode -ne 'inbox') { Set-ViewMode 'inbox'; $ui.ModeInbox.IsChecked = $true }
+    $liveChips = @($ui.FbNeeds, $ui.FbWorking, $ui.FbDone, $ui.FbIdle)
+    # Already showing exactly the live set? Then this click means "put it back".
+    $already = ($ui.FbQuiet.IsChecked -ne $true) -and
+               -not @($liveChips | Where-Object { $_.IsChecked -ne $true }).Count
+    foreach ($c in $liveChips) { $c.IsChecked = (-not $already) }
+    $ui.FbQuiet.IsChecked = $false
+} 'filter to what is running' })
+
+$ui.WaitPill.Add_Click({ Invoke-Guarded {
+    if ($script:viewMode -ne 'inbox') { Set-ViewMode 'inbox'; $ui.ModeInbox.IsChecked = $true }
+    $ui.FbNeeds.IsChecked = ($ui.FbNeeds.IsChecked -ne $true)
+} 'filter to what is waiting on you' })
 $ui.TickPill.Add_Click({ Invoke-Guarded {
     # The tick lives in All, and the pill that counts it goes there.
     $ui.ModeAll.IsChecked = $true

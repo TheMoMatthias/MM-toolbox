@@ -1224,7 +1224,7 @@
           <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Hairline}"
                   BorderThickness="1" CornerRadius="7" Padding="3" Margin="0,0,16,0">
             <StackPanel Orientation="Horizontal">
-              <RadioButton x:Name="ModeInbox" Style="{StaticResource Seg}" Content="Now" IsChecked="True"
+              <RadioButton x:Name="ModeInbox" Style="{StaticResource Seg}" Content="Work surface" IsChecked="True"
                            ToolTip="What is happening: every conversation that is running or was, grouped by what it needs from you."/>
               <!-- RESTORE WAS A THIRD SEGMENT AND RENDERED THE SAME 195 ROWS AS
                    PROJECTS, in the same order, with the same keys. Compared row
@@ -1233,14 +1233,14 @@
                    of another, which is most of why the tool read as having more
                    places than it has ideas. The tick column and the launch
                    button live in All now. -->
-              <RadioButton x:Name="ModeAll" Style="{StaticResource Seg}" Content="Roster"
+              <RadioButton x:Name="ModeAll" Style="{StaticResource Seg}" Content="Session manager"
                            ToolTip="What comes back at logon: every conversation grouped by project and worktree, with the tick that decides. Fold a repo you are not working in; searching ignores folds."/>
             </StackPanel>
           </Border>
 
           <Button x:Name="LivePill" Style="{StaticResource Pill}"
                   AutomationProperties.Name="live now"
-                  ToolTip="Jump to the sessions that are running right now.">
+                  ToolTip="Filter the list to the sessions that are running right now. Click again to show everything.">
             <StackPanel Orientation="Horizontal">
               <Ellipse Width="7" Height="7" Fill="{StaticResource TextMax}" VerticalAlignment="Center" Margin="0,0,8,0"/>
               <TextBlock x:Name="LiveSummary" Text="live now" Foreground="{StaticResource TextHigh}" FontSize="12"/>
@@ -1248,7 +1248,7 @@
           </Button>
           <Button x:Name="WaitPill" Style="{StaticResource Pill}" Margin="9,0,0,0"
                   AutomationProperties.Name="waiting for you"
-                  ToolTip="Jump to whatever has stopped and is waiting on you.">
+                  ToolTip="Filter the list to whatever has stopped and is waiting on you. Click again to show everything.">
             <StackPanel Orientation="Horizontal">
               <Path Data="M 1,0 L 5.5,4.5 L 1,9" Width="6.5" Height="9" Stretch="None"
                     Stroke="{StaticResource TextMax}" StrokeThickness="1.5"
@@ -1309,13 +1309,13 @@
                one actually touches, and caption the pair with the question they
                answer rather than with "RIGHT NOW", which says when, not what. -->
           <TextBlock x:Name="NowCaption" Text="THE TICKED SET" Style="{StaticResource PoleCaption}" Margin="0,0,12,0"/>
-          <Button x:Name="LaunchTicked" Style="{StaticResource BtnNow}" Content="Open the ones not running"
+          <Button x:Name="LaunchTicked" Style="{StaticResource BtnNow}" Content="Open not running"
                   ToolTip="Open every ticked conversation that is not already open, up to the maxSessions cap. Anything already running is left exactly as it is."/>
           <!-- AFTER SIGNING IN AGAIN. A running session reads the login token at
                STARTUP, so signing in once does not reach the sessions already open:
                they each sit at their own login prompt until restarted. This closes the
                ticked ones and opens them again, which is the only thing that works. -->
-          <Button x:Name="RelaunchTicked" Style="{StaticResource Btn}" Content="Restart the ones running" Margin="9,0,0,0"
+          <Button x:Name="RelaunchTicked" Style="{StaticResource Btn}" Content="Relaunch sessions" Margin="9,0,0,0"
                   ToolTip="Close the ticked conversations that ARE running and open them again. This is the button for the morning after your login token expires: a running session only reads your login at startup, so signing in does not reach it. Anything mid-turn is left alone and named."/>
         </StackPanel>
         </Grid>
@@ -1376,8 +1376,10 @@
                           ToolTip="Stopped and waiting on you: a question, a permission dialog, or a blocked agent."/>
             <ToggleButton x:Name="FbWorking" Style="{StaticResource Chip}" Tag="band:working" Content="Working"
                           ToolTip="Busy right now. Nothing for you to do."/>
+            <ToggleButton x:Name="FbDone" Style="{StaticResource Chip}" Tag="band:done" Content="Finished"
+                          ToolTip="Handed work back and stopped. Nothing is pending - read it when you are ready."/>
             <ToggleButton x:Name="FbIdle" Style="{StaticResource Chip}" Tag="band:idle" Content="Idle"
-                          ToolTip="At its prompt with nothing pending. Yours to pick up."/>
+                          ToolTip="At its prompt, having said nothing worth reading. Yours to pick up."/>
             <ToggleButton x:Name="FbQuiet" Style="{StaticResource Chip}" Tag="band:quiet" Content="Not running"
                           ToolTip="No process is holding it. Ticking this widens the inbox to reach conversations it normally leaves out."/>
           </StackPanel>

@@ -1425,6 +1425,24 @@ if ("$($ui.LiveSummary.Text)" -match '^(\d+)') { $pillLive = [int]$Matches[1] }
 if ($pillLive -eq $bandLive) { Pass "the 'live now' pill ($pillLive) matches the live bands ($bandLive)" }
 else { Fail "the pill says $pillLive live but the bands hold $bandLive" }
 
+# --- 12c. and the pills actually FILTER -------------------------------------
+# They used to JUMP - select the first row of a band - which does nothing
+# visible when that band is empty, and "0 working" is precisely when somebody
+# clicks it to find out why. Reported as "I click it and nothing happens".
+function Click-Btn { param($b)
+    $b.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+}
+$rowsBefore = $script:inboxRows.Count
+Click-Btn $ui.WaitPill
+$rowsFiltered = $script:inboxRows.Count
+if ($ui.FbNeeds.IsChecked -eq $true) { Pass 'the waiting pill lights the SAME chip the SHOW row uses - one filter state, not two' }
+else { Fail 'the waiting pill did not set the needs filter' }
+if ($rowsFiltered -lt $rowsBefore) { Pass "the waiting pill narrows the list ($rowsBefore -> $rowsFiltered rows)" }
+else { Fail "the waiting pill left $rowsFiltered rows, unchanged from $rowsBefore" }
+Click-Btn $ui.WaitPill
+if ($script:inboxRows.Count -eq $rowsBefore) { Pass 'and clicking it again puts the list back' }
+else { Fail "clicking again left $($script:inboxRows.Count) rows, expected $rowsBefore" }
+
 # ...and so must the waiting/working pill. Three numbers on one strip, all
 # claiming to describe the rows underneath.
 function BandCount { param([string]$B)
@@ -1480,7 +1498,7 @@ else { Fail "unticking left $n3 rows, expected the original $baseline" }
 # count are the same number, because they are now the same call. The old DOING
 # chips said "waiting" over 110 conversations while the band called NEEDS YOU
 # held 6, and nothing in the suite could tell.
-$labels = @{ FbNeeds = 'needs'; FbWorking = 'working'; FbIdle = 'idle'; FbQuiet = 'quiet' }
+$labels = @{ FbNeeds = 'needs'; FbWorking = 'working'; FbDone = 'done'; FbIdle = 'idle'; FbQuiet = 'quiet' }
 $drift = @()
 foreach ($cn in @($labels.Keys)) {
     $chip = $ui.$cn
