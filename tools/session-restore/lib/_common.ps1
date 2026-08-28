@@ -1426,13 +1426,66 @@ function Get-SRBridgeSuppression {
     } catch { return $null }
 }
 
+# ---------------------------------------------------------------------------
+# RUNNING A CONSOLE PROGRAM WITHOUT GIVING THIS PROCESS A CONSOLE.
+#
+# 🔴 THIS IS WHY THE APP FLASHED A CONSOLE. Sessions.exe is built /target:winexe
+# precisely so no console is ever allocated - but PowerShell's native-command
+# pipeline (`& claude ...`) touches the console APIs to set up redirection, and
+# in a process that has none, Windows makes one. Measured 2026-08-28: a conhost
+# appeared as a child of Sessions.exe about two seconds after the first
+# `claude agents --json`, under BOTH windows. The old window only looked clean
+# because the suite happened to read the instant before it arrived.
+#
+# CreateProcess with CREATE_NO_WINDOW and redirected handles - which is what
+# .NET's Process gives us here - never allocates one. Same output, no console.
+#
+# 🪤 ReadToEnd BEFORE WaitForExit, both streams drained. Waiting first deadlocks
+# as soon as the child fills a pipe buffer, and `claude agents --json` on a busy
+# machine is comfortably big enough to do that.
+function Invoke-SRNativeText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [string[]]$Arguments = @(),
+        [int]$TimeoutMs = 20000
+    )
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    $psi.StandardErrorEncoding = New-Object System.Text.UTF8Encoding($false)
+    # PS 5.1 ships the .NET FRAMEWORK ProcessStartInfo, which has no ArgumentList -
+    # only the single Arguments string. Quote by CommandLineToArgvW rules, the same
+    # rules New-SRLaunchCommand already follows for wt.exe.
+    $psi.Arguments = (@($Arguments) | ForEach-Object {
+        if ($_ -match '[\s"]') { '"' + ($_ -replace '(\\*)"', '$1$1\"') + '"' } else { $_ }
+    }) -join ' '
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $psi
+    try {
+        $null = $p.Start()
+        $so = $p.StandardOutput.ReadToEnd()
+        $se = $p.StandardError.ReadToEnd()
+        if (-not $p.WaitForExit($TimeoutMs)) {
+            try { $p.Kill() } catch { }
+            return [PSCustomObject]@{ Out = $so; Err = $se; ExitCode = -1; TimedOut = $true }
+        }
+        return [PSCustomObject]@{ Out = $so; Err = $se; ExitCode = $p.ExitCode; TimedOut = $false }
+    } finally { try { $p.Dispose() } catch { } }
+}
+
 function Test-SRAuthReady {
     # `claude auth status` prints JSON and is the account's own answer, rather
     # than this tool guessing from a credentials file it does not own.
     try {
-        $out = & claude auth status 2>&1 | Out-String
-        if ($LASTEXITCODE -ne 0) { return $false }
-        $j = $out | ConvertFrom-Json -ErrorAction Stop
+        $exe = Get-Command claude -ErrorAction Stop
+        $r = Invoke-SRNativeText -FilePath $exe.Source -Arguments @('auth', 'status')
+        if ($r.ExitCode -ne 0) { return $false }
+        $j = $r.Out | ConvertFrom-Json -ErrorAction Stop
         return [bool]$j.loggedIn
     } catch { return $false }
 }
@@ -2593,17 +2646,22 @@ function Get-SRAgentStatus {
     $map = @{}
     try {
         $exe = Get-Command claude -ErrorAction Stop
-        # 2>$null on the native call, NOT 2>&1: a stderr line merged into stdout
-        # would break ConvertFrom-Json, and the failure would look like "claude
-        # reports no sessions" rather than like an error.
-        $raw = & $exe.Source agents --json 2>$null
-        if ($LASTEXITCODE -ne 0 -or -not $raw) { throw "claude agents --json exited $LASTEXITCODE" }
+        # stdout and stderr are kept APART, not merged: a stderr line inside the
+        # document would break ConvertFrom-Json, and the failure would look like
+        # "claude reports no sessions" rather than like an error. Invoke-SRNativeText
+        # separates them by construction - and, being a plain CreateProcess rather
+        # than PowerShell's native pipeline, it does not hand this process a console.
+        $r = Invoke-SRNativeText -FilePath $exe.Source -Arguments @('agents', '--json')
+        if ($r.ExitCode -ne 0 -or -not $r.Out) { throw "claude agents --json exited $($r.ExitCode)" }
+        $raw = $r.Out
 
         # Two traps in three lines, both measured rather than reasoned about.
         #
-        # 1. A native command's output arrives as an ARRAY OF LINES. Piping that
-        #    straight into ConvertFrom-Json parses each line on its own and every
-        #    one of them fails. Join it back into a document first.
+        # 1. PowerShell's native pipeline hands output back as an ARRAY OF LINES,
+        #    and piping that straight into ConvertFrom-Json parses each line on its
+        #    own so every one of them fails. Invoke-SRNativeText returns one string,
+        #    so the join is now a no-op - kept because it costs nothing and makes
+        #    this correct whichever shape arrives.
         # 2. ConvertFrom-Json in PowerShell 5.1 returns a JSON array as a SINGLE
         #    object rather than enumerating it, so `@(... | ConvertFrom-Json)` is
         #    an array of ONE element containing everything -- the same shape as

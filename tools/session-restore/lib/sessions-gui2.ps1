@@ -1007,11 +1007,219 @@ $ui.SaveBtn.Add_Click({
         Set-Status 'saved - those ticks decide what comes back at the next logon' 'ok'
     } catch { Set-Status ("could not save: " + $_.Exception.Message) 'bad' }
 })
-$ui.OpenNotRunning.Add_Click({
-    Set-Status 'the launch buttons are not ported yet - use the old window for those' 'warn'
+# ===========================================================================
+# THE TWO LOGON BUTTONS
+#
+# Both stay inside the TICKED set, and they do different things to it:
+#   Open not running  starts the ticked conversations nothing is holding.
+#   Relaunch sessions CLOSES the ticked ones that ARE running, then opens them
+#                     again - which is what you do after signing in, because a
+#                     session reads your login and its remote name at startup.
+#
+# A conversation mid-turn is never taken. The whole promise of relaunch is that
+# it does not interrupt work.
+# ===========================================================================
+function Set-Field { param($Obj, [string]$Name, $Value)
+    if ($null -eq $Obj.PSObject.Properties[$Name]) {
+        $Obj | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+    } else { $Obj.$Name = $Value }
+}
+
+# Ported from gui-model.ps1 Get-LaunchBlock. Every check is one the logon restore
+# already applies, so this button and restore-sessions.ps1 can never disagree
+# about what is launchable. $null means it would go; anything else is the reason.
+function Get-LaunchBlock { param($R)
+    $s = $R.S
+    if ($s.gone) { return 'its transcript is gone from disk' }
+    $cwd = $(if ("$($s.cwd)") { "$($s.cwd)" } else { "$($R.D.path)" })
+    if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { return "its directory no longer exists: $cwd" }
+    $jsonl = $null
+    try { $jsonl = Get-SRTranscriptPath -Dir $cwd -SessionId $s.sessionId -Recorded $s.jsonl } catch { }
+    if (-not $jsonl -or -not (Test-Path -LiteralPath $jsonl)) { return 'its transcript is missing - press Rescan' }
+    # A session opened seconds ago has no claude.exe yet: the boot shell is still
+    # starting one. Without this, pressing the button twice opens everything twice.
+    if ($script:justLaunched.ContainsKey($R.Id)) {
+        if (((Get-Date) - $script:justLaunched[$R.Id]).TotalSeconds -lt 90) { return 'it was launched a moment ago' }
+    }
+    return $null
+}
+
+function Get-TickedPlan {
+    $fresh = @(); $restart = @(); $busy = @(); $blocked = @()
+    foreach ($r in $script:model) {
+        if ($r.D.missing -or -not [bool]$r.D.enabled) { continue }
+        if (-not [bool]$r.S.enabled) { continue }
+        if ($r.A -and $r.A.Pid) {
+            # 🔴 THE LIVE NAME OUTRANKS THE REGISTRY, and getting this wrong UNDOES
+            # your own work. A conversation renamed by hand reports the new name
+            # through claude while the registry still holds whatever discovery last
+            # read. Relaunching from the registry would pass the stale title to -n
+            # and rename it BACK - silently, inside an action pressed to FIX names.
+            $ln = "$($r.A.Name)".Trim()
+            if ($ln -and $ln -ne '(untitled)' -and $ln -ne "$($r.S.title)") {
+                Write-SRLog ("  [ok]   adopting the live name '{0}' over the recorded '{1}'" -f $ln, $r.S.title)
+                Set-Field $r.S 'title' $ln
+                $script:dirty = $true
+            }
+            # 'busy' is claude's own word for a turn in progress. Anything else that
+            # is running - idle, waiting, at a login prompt - is safe to take.
+            if ("$($r.A.Status)" -eq 'busy') { $busy += $r } else { $restart += $r }
+            continue
+        }
+        $why = Get-LaunchBlock $r
+        if ($why) { $blocked += ([PSCustomObject]@{ R = $r; Why = $why }) } else { $fresh += $r }
+    }
+    $newest = { try { [datetime]$_.S.lastActive } catch { [datetime]0 } }
+    return [PSCustomObject]@{
+        Fresh   = @($fresh   | Sort-Object $newest -Descending)
+        Restart = @($restart | Sort-Object $newest -Descending)
+        Busy    = @($busy)
+        Blocked = @($blocked)
+    }
+}
+
+# The maxSessions cap, applied here and SAID OUT LOUD rather than silently - a
+# truncated list reads exactly like a complete one.
+function Limit-ToCap { param($Items)
+    $cap = 0
+    try { $cap = [int]$script:cfg.maxSessions } catch { }
+    $go = @($Items)
+    if ($cap -gt 0 -and $go.Count -gt $cap) {
+        return [PSCustomObject]@{ Go = @($go | Select-Object -First $cap); Over = ($go.Count - $cap); Cap = $cap }
+    }
+    return [PSCustomObject]@{ Go = $go; Over = 0; Cap = $cap }
+}
+
+# Launched ONE PER TICK rather than in a loop: Windows Terminal needs breathing
+# room between tabs, and a 500 ms sleep per conversation would freeze the window
+# for nine seconds over seventeen of them. This keeps the UI alive and reports
+# progress as it goes.
+$script:launchQueue = New-Object System.Collections.Generic.Queue[object]
+$script:launchDone = 0
+$script:justLaunched = @{}
+$script:launchTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:launchTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+$script:launchTimer.Add_Tick({
+    if (-not $script:launchQueue.Count) {
+        $script:launchTimer.Stop()
+        Set-Status ('opened {0} conversation(s)' -f $script:launchDone) 'ok'
+        Update-Model; Update-Surface
+        if ($script:surface -eq 'manage') { Build-Manager }
+        return
+    }
+    $r = $script:launchQueue.Dequeue()
+    $t = (Get-Title $r.S $r.D).Text
+    try {
+        $cwd = $(if ("$($r.S.cwd)") { "$($r.S.cwd)" } else { "$($r.D.path)" })
+        $boot = New-SRBootScript -Dir $cwd -SessionId "$($r.S.sessionId)" -Title $t
+        Start-SRSession -Dir $cwd -BootScript $boot -Title $t
+        Write-SRLog ('  [ok]   gui2 launch   {0}  {1}' -f $t, $r.Id)
+        $script:justLaunched[$r.Id] = Get-Date
+        $script:launchDone++
+    } catch {
+        Write-SRLog ('  [FAIL] gui2 launch   {0}  {1}' -f $t, $_.Exception.Message)
+        Set-Status ('{0} would not open: {1}' -f $t, $_.Exception.Message) 'bad'
+    }
+    Set-Status ('opening... {0} left' -f $script:launchQueue.Count)
 })
+
+function Start-LaunchQueue { param($Items)
+    # The ticks decide what comes back at the next logon, and the plan may have
+    # just adopted live names. Both belong on disk BEFORE anything is opened.
+    if ($script:dirty) {
+        try { Save-SRRegistry -Registry $script:reg; $script:dirty = $false }
+        catch { Write-SRLog ('  [FAIL] could not save before launching: {0}' -f $_.Exception.Message) }
+    }
+    $script:launchQueue.Clear()
+    $script:launchDone = 0
+    foreach ($r in @($Items)) { $script:launchQueue.Enqueue($r) }
+    if (-not $script:launchQueue.Count) { Set-Status 'nothing to open' 'warn'; return }
+    $script:launchTimer.Start()
+}
+
+function Confirm-Action { param([string]$Title, [string]$Body)
+    $r = [System.Windows.MessageBox]::Show($Body, $Title,
+            [System.Windows.MessageBoxButton]::OKCancel,
+            [System.Windows.MessageBoxImage]::Question)
+    return ($r -eq [System.Windows.MessageBoxResult]::OK)
+}
+
+$ui.OpenNotRunning.Add_Click({
+    $plan = Get-TickedPlan
+    $lim = Limit-ToCap $plan.Fresh
+    $go = @($lim.Go)
+    if (-not $go.Count) {
+        if (@($plan.Blocked).Count) {
+            Set-Status ('nothing to open - {0} ticked conversation(s) cannot be launched: {1}' -f `
+                @($plan.Blocked).Count, (@($plan.Blocked)[0].Why)) 'warn'
+        } else { Set-Status 'nothing to open - every ticked conversation is already running' 'warn' }
+        return
+    }
+    $names = (@($go | ForEach-Object { (Get-Title $_.S $_.D).Text }) | Sort-Object) -join ', '
+    $note = @()
+    if ($lim.Over) { $note += ('{0} more are ticked but over the maxSessions cap of {1}, so they are skipped.' -f $lim.Over, $lim.Cap) }
+    if (@($plan.Blocked).Count) { $note += ('{0} are ticked but cannot be launched (first: {1}).' -f @($plan.Blocked).Count, (@($plan.Blocked)[0].Why)) }
+    if (-not (Confirm-Action 'Open the ticked conversations that are not running' `
+        ("{0} will be opened, each in its own tab, half a second apart:`n`n{1}{2}" -f `
+            $go.Count, $names, $(if ($note.Count) { "`n`n" + ($note -join '  ') } else { '' })))) {
+        Set-Status 'nothing opened'; return
+    }
+    Start-LaunchQueue $go
+})
+
 $ui.RelaunchSessions.Add_Click({
-    Set-Status 'the launch buttons are not ported yet - use the old window for those' 'warn'
+    $plan = Get-TickedPlan
+    # 🔴 RELAUNCH RESTARTS; IT DOES NOT OPEN. Taking Fresh as well would mean
+    # pressing this to fix the names on 12 running conversations and getting 29
+    # tabs. Opening the rest is what the other button is for.
+    $lim = Limit-ToCap $plan.Restart
+    $go = @($lim.Go)
+    if (-not $go.Count) { Set-Status 'nothing to relaunch - no ticked conversation is running, or every one that is is mid-turn' 'warn'; return }
+    # 🔴 NAME WHAT WILL BE CLOSED. This kills live processes, and one of them may
+    # be the conversation you are talking to right now. A count cannot be checked
+    # against that; a list can.
+    $names = (@($go | ForEach-Object { (Get-Title $_.S $_.D).Text }) | Sort-Object) -join ', '
+    $note = @()
+    if (@($plan.Busy).Count) {
+        $bn = (@($plan.Busy) | ForEach-Object { (Get-Title $_.S $_.D).Text } | Select-Object -First 6) -join ', '
+        $note += ('{0} are mid-turn and will be LEFT ALONE: {1}. They keep the old login - run this again once they finish.' -f @($plan.Busy).Count, $bn)
+    }
+    # NOT a skip, and said as such: these are simply not running, so a relaunch has
+    # nothing to do to them.
+    if (@($plan.Fresh).Count) { $note += ("{0} more are ticked but not running - use 'Open not running' for those." -f @($plan.Fresh).Count) }
+    if ($lim.Over) { $note += ('{0} more are running but over the maxSessions cap of {1}, so they are skipped.' -f $lim.Over, $lim.Cap) }
+    if (-not (Confirm-Action ('Relaunch {0} running conversations' -f $go.Count) `
+        ("Each one is CLOSED and then opened again. Use this after signing in, or after reconnecting Remote Control: a running session reads your login AND its remote name at startup, so neither can be picked up without a restart.`n`nClosing: {0}{1}" -f `
+            $names, $(if ($note.Count) { "`n`n" + ($note -join '  ') } else { '' })))) {
+        Set-Status 'nothing relaunched'; return
+    }
+
+    Set-Status 'closing...'
+    $killed = 0
+    $tabs = New-Object System.Collections.Generic.List[string]
+    foreach ($r in $go) {
+        $procId = [int]$r.A.Pid
+        $proc = $null
+        try { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction Stop } catch { }
+        if (-not $proc -or $proc.Name -ne 'claude.exe') { continue }
+        $tabName = $(if ("$($r.A.Name)") { "$($r.A.Name)" } else { (Get-Title $r.S $r.D).Text })
+        $parent = $null
+        try { $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.ParentProcessId)" -ErrorAction Stop } catch { }
+        try { Stop-Process -Id $procId -Force -ErrorAction Stop; $killed++ } catch { continue }
+        if ("$tabName".Trim()) { $tabs.Add("$tabName") }
+        if ($parent -and $parent.Name -eq 'powershell.exe' -and "$($parent.CommandLine)" -like '*.state*boot-*') {
+            try { Stop-Process -Id ([int]$parent.ProcessId) -Force -ErrorAction Stop }
+            catch { Write-SRLog ("  [skip] the boot shell for '{0}' would not close: {1}" -f $tabName, $_.Exception.Message) }
+        }
+    }
+    Write-SRLog ('  [ok]   closed {0} session(s) for a relaunch' -f $killed)
+    Start-Sleep -Milliseconds 700
+    # KILLING THE PROCESSES DOES NOT CLOSE THE TAB. Measured 2026-08-28: 40 tabs
+    # for 18 live sessions after one relaunch. Close them explicitly, here,
+    # between the kill and the relaunch - a title only identifies a dead tab
+    # while the session that owned it is dead.
+    try { $null = Close-SRTabsByName -Names $tabs } catch { }
+    Start-LaunchQueue $go
 })
 
 $ui.SendBox.Add_TextChanged({ Update-SendState })

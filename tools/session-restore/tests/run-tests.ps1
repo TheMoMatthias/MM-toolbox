@@ -132,20 +132,30 @@ function New-CommonHarness {
 }
 
 # --- the GUI splice ---------------------------------------------------------
-# Same idea as New-Harness above, aimed at the other script. sessions-gui.ps1
+# Same idea as New-Harness above, aimed at the other script. The window script
 # builds its window and then calls ShowDialog; cut it at that line and the window
 # exists, fully wired, with nothing on screen. Add_ContentRendered never fires on
 # an unshown window, so no background scan starts and the state stays exactly
 # what the driver puts there.
+#
+# 🔴 READ THIS BEFORE TRUSTING A GREEN RUN.
+# Sessions.exe now launches lib\sessions-gui2.ps1. The suites that splice a
+# window - headless, inbox, keys, shot - still drive lib\sessions-gui.ps1, the
+# RETIRED one, because every assertion in them names elements that window2.xaml
+# does not have (RowList, InboxList, FbNeeds, ModeInbox, ReadPane, AskPanel,
+# NeedsBand...). Their green therefore means "the retired window still works".
+# It says NOTHING about the window that actually opens when you press the icon.
+# Porting them is the next job; until it is done, do not read this suite as
+# coverage of the shipped app.
 function New-GuiHarness {
-    param([string]$Driver, [string]$OutFile)
+    param([string]$Driver, [string]$OutFile, [string]$Gui = 'sessions-gui.ps1')
 
-    $src = @(Get-Content -LiteralPath (Join-Path $lib 'sessions-gui.ps1'))
+    $src = @(Get-Content -LiteralPath (Join-Path $lib $Gui))
     $cut = -1
     for ($k = 0; $k -lt $src.Count; $k++) {
         if ($src[$k].Trim() -eq '$null = $window.ShowDialog()') { $cut = $k; break }
     }
-    if ($cut -lt 0) { throw 'marker gone: sessions-gui.ps1 no longer ends with "$null = $window.ShowDialog()"' }
+    if ($cut -lt 0) { throw ('marker gone: {0} no longer ends with "$null = $window.ShowDialog()"' -f $Gui) }
 
     # $PSScriptRoot would be .state for a spliced harness, so pin the real folder.
     $prefix = @($src[0..($cut - 1)]) | ForEach-Object {

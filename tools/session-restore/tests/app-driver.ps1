@@ -16,7 +16,7 @@
       5. NO console is allocated for the window        (winexe, not exe)
       6. a SECOND launch does not open a second window (one registry, one view)
 
-    Plus the refusal: started where sessions-gui.ps1 is not, it must exit 2 and
+    Plus the refusal: started where sessions-gui2.ps1 is not, it must exit 2 and
     say so in the log rather than sitting there having done nothing. That case
     is what proves the other assertions are capable of failing.
 
@@ -233,12 +233,12 @@ try {
     $r = Start-Process -FilePath $orphan -PassThru -Wait
     Remove-Item Env:\SR_GUI_NODIALOG -ErrorAction SilentlyContinue
 
-    if ($r.ExitCode -ne 2) { Fail "with no sessions-gui.ps1 beside it the app exited $($r.ExitCode), expected 2" }
-    else { Pass 'refuses to start where sessions-gui.ps1 is not, exit 2' }
+    if ($r.ExitCode -ne 2) { Fail "with no sessions-gui2.ps1 beside it the app exited $($r.ExitCode), expected 2" }
+    else { Pass 'refuses to start where sessions-gui2.ps1 is not, exit 2' }
 
     $orphanLog = Join-Path $sandbox '.state\restore.log'
     if ((Test-Path -LiteralPath $orphanLog) -and
-        ((Get-Content -LiteralPath $orphanLog -Raw) -match 'sessions-gui\.ps1 is not next to')) {
+        ((Get-Content -LiteralPath $orphanLog -Raw) -match 'sessions-gui2\.ps1 is not next to')) {
         Pass 'and wrote the reason to .state\restore.log'
     } else { Fail 'the refusal left nothing in .state\restore.log' }
 
@@ -286,8 +286,25 @@ try {
         # the window is hidden, and that is what used to flash. PAIRED with the
         # SR_GUI_SHOW case near the end, which makes one appear -- without that
         # pair this could pass by never being able to see a console at all.
-        if (Test-HasConsole -Id $started.Id) { Fail 'the window process owns a console - this was built as a console app' }
-        else { Pass 'no console allocated for the window' }
+        #
+        # 🔴 KEEP WATCHING, DO NOT READ ONCE. A single reading taken the moment the
+        # window appears is a reading taken BEFORE the app has done anything, and
+        # this assertion passed that way for as long as it has existed. Measured
+        # 2026-08-28: a conhost arrived as a child of Sessions.exe about two
+        # seconds later, under both windows, the first time `claude agents --json`
+        # ran -- PowerShell's native-command pipeline allocates one when the
+        # process has none. The one-shot check reported a clean winexe throughout.
+        # _common.ps1 now runs those through Invoke-SRNativeText instead; this
+        # watches long enough to see it if it ever comes back.
+        $con = $false
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        while ($watch.Elapsed.TotalSeconds -lt 10 -and -not $started.HasExited) {
+            if (Test-HasConsole -Id $started.Id) { $con = $true; break }
+            Start-Sleep -Milliseconds 700
+        }
+        $watch.Stop()
+        if ($con) { Fail ("the window process owned a console after {0:N1}s - something allocated one" -f $watch.Elapsed.TotalSeconds) }
+        else { Pass ("no console allocated for the window, watched for {0:N1}s" -f $watch.Elapsed.TotalSeconds) }
 
         # The splash must not still be up, and must never have answered for the
         # real window: it is deliberately untitled and off the taskbar so that

@@ -601,7 +601,7 @@ this folder, because they are yours and not the tool's.
 | `sessions-registry.json` | **your selections** (gitignored — the paths are local) |
 | `.state/` | log + generated boot scripts (gitignored, regenerated) |
 
-## Ten traps worth knowing
+## Eleven traps worth knowing
 
 1. **`$PSScriptRoot` is empty while a `param()` default is evaluated** under
    `powershell.exe -File`, which is how the tasks run. Resolve the script directory
@@ -677,5 +677,18 @@ this folder, because they are yours and not the tool's.
    trap: `return ,($lines.ToArray())`. Blank lines are also built as a one-segment
    line holding an empty string rather than as an empty array, so there is nothing
    for the stream to swallow in the first place.
+11. **`/target:winexe` does not mean "no console" — PowerShell's native-command
+   pipeline allocates one.** `Sessions.exe` is built as a winexe precisely so nothing
+   ever flashes, and it starts with none. But `& claude agents --json` from inside the
+   hosted runspace makes PowerShell set up console redirection, and in a process that
+   has no console Windows creates one — measured 2026-08-28: a `conhost.exe` appeared
+   as a child of `Sessions.exe` about two seconds after startup, under **both** the
+   old window and the new. The suite's "no console allocated" assertion had passed for
+   as long as it existed because it took **one reading at the instant the window
+   appeared** — before the app had done anything. Native calls now go through
+   `Invoke-SRNativeText` (`CreateProcess` with `CREATE_NO_WINDOW` and redirected
+   handles, which never allocates), and the assertion **watches for ten seconds**
+   instead of glancing once. 🔑 Any "X never happens" test that samples once is
+   really testing when it sampled.
 
 If it ever seems to do nothing at logon, read `.state/restore.log` first.

@@ -105,7 +105,11 @@ namespace MMToolbox.SessionRestore
         // already running, and by the splash to know when to get out of the way.
         internal const string WindowTitle = "Claude sessions";
 
-        private const string GuiScript = @"lib\sessions-gui.ps1";
+        // THE SHIPPED WINDOW. sessions-gui.ps1 is the retired one it replaced; it
+        // stays on disk for one more commit because it is still the only window
+        // the headless/inbox/keys suites can drive. Point this back at it to roll
+        // the whole app back to the old surface in one line.
+        private const string GuiScript = @"lib\sessions-gui2.ps1";
         private const string RestoreScript = @"lib\restore-sessions.ps1";
 
         [STAThread]
