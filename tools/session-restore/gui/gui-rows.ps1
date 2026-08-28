@@ -37,9 +37,43 @@
 $script:InboxBands = @(
     @{ Key = 'needs';   Label = 'NEEDS YOU';   Tip = 'Stopped and waiting on you: a question, a permission dialog, or a blocked agent.' }
     @{ Key = 'working'; Label = 'WORKING';     Tip = 'Busy right now. Nothing for you to do.' }
-    @{ Key = 'idle';    Label = 'IDLE';        Tip = 'At its prompt with nothing pending. Yours to pick up.' }
+    @{ Key = 'done';    Label = 'FINISHED';    Tip = 'Handed work back and stopped. Nothing is pending - read it when you are ready.' }
+    @{ Key = 'idle';    Label = 'IDLE';        Tip = 'At its prompt, having said nothing worth reading. Yours to pick up.' }
     @{ Key = 'quiet';   Label = 'NOT RUNNING'; Tip = 'Active recently, but no process is holding it now.' }
 )
+
+# ---------------------------------------------------------------------------
+# HAS THIS CONVERSATION HANDED WORK BACK?
+#
+# 🔴 CLAUDE DOES NOT REPORT "FINISHED". Its own status field carries exactly
+# three values -- busy, idle, waiting -- verified 2026-08-28 against all 14 live
+# sessions, where this tool's classification matched claude's for every one. So a
+# session that has just written a closing summary and one that is sitting at an
+# empty prompt are BOTH 'idle' upstream, and the difference has to be derived
+# here or not at all.
+#
+# It matters because those two want opposite things from the operator. Twelve
+# rows in one IDLE band, some of them finished work waiting to be read and some
+# of them nothing at all, is the pile this band exists to break up.
+#
+# 🪤 THIS IS A HEURISTIC AND IS LABELLED AS ONE. There is no flag in the
+# transcript that says "this was a hand-back". What is used instead: the session
+# has nothing pending, and the last thing it SAID is substantial enough to be
+# worth reading. Measured against the real screen -- "No response requested." is
+# 22 characters and is not a hand-back; "Safe to shut down. Everything is
+# committed and recorded in three independent places." is, and so is every other
+# closing summary on that screen. The threshold sits between them with room on
+# both sides.
+$script:HandbackMinChars = 40
+
+function Test-Handback { param($Session)
+    $key = "$($Session.sessionId)".ToLower()
+    $sd  = $script:said[$key]
+    if (-not $sd) { return $false }
+    # A tool still pending is work in flight, whatever the prose above it says.
+    if ("$($sd.Pending)".Trim()) { return $false }
+    return ("$($sd.Said)".Trim().Length -ge $script:HandbackMinChars)
+}
 
 # Minutes matter in an inbox. Get-Age tops out at hours and days because the tree
 # is about which conversations exist, not about what just happened.
@@ -68,7 +102,11 @@ function Get-InboxBand { param($Session)
     $st = "$($cv.State)"
     if ($cv.Stale) { return 'quiet' }
     if ($st -eq 'working' -or $st -eq 'summarising') { return 'working' }
-    if ($st -eq 'idle') { return 'idle' }
+    if ($st -eq 'idle') {
+        # Both of these are 'idle' upstream; only one of them is worth reading.
+        if (Test-Handback $Session) { return 'done' }
+        return 'idle'
+    }
     if ($st -eq 'waiting') { return 'needs' }
     return 'quiet'
 }

@@ -1384,6 +1384,26 @@ function Build-Rows {
             foreach ($it in $grp.Items.ToArray()) { $loose.Add($it) }
         }
 
+        # 🔴 ONE LANE ROW IS THE BUG THIS BLOCK EXISTS TO PREVENT, and counting
+        # LANES was not enough to prevent it. $multiLane asks "does the project
+        # have more than one lane"; what actually reaches the screen is one row
+        # per lane that ALSO holds more than one conversation. A project with two
+        # lanes where only one of them is crowded therefore passed the guard and
+        # emitted exactly one lane header -- a row saying the same thing as the
+        # project row above it, which is precisely what retired the tree.
+        #
+        # Caught 2026-08-28 by the suite's own assertion, on real data: a project
+        # had gained a second worktree holding a single conversation. The
+        # condition is data-shaped, so it was invisible until the data arrived.
+        #
+        # A lone group is dissolved back into the loose list. Nothing is hidden;
+        # those conversations hang under the project keeping their lane as a
+        # label on the row instead of a header above it.
+        if ($groups.Count -eq 1) {
+            foreach ($it in $groups[0].Items.ToArray()) { $loose.Add($it) }
+            $groups.Clear()
+        }
+
         # LOOSE FIRST, and it is not arbitrary. A lane holding one conversation is
         # a single piece of work -- a worktree opened for one task -- and those are
         # the newest thing in the project by a wide margin: AlgoTrader's lone lanes

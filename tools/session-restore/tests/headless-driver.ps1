@@ -55,11 +55,11 @@ $ids = @()
 foreach ($d in $script:dirs) {
     foreach ($s in @($d.sessions)) { if ($s.sessionId) { $ids += "$($s.sessionId)" } }
 }
-if ($ids.Count -lt 6) {
-    Write-Host "  only $($ids.Count) conversations in the registry - need at least 6" -ForegroundColor Yellow
+if ($ids.Count -lt 7) {
+    Write-Host "  only $($ids.Count) conversations in the registry - need at least 7" -ForegroundColor Yellow
     exit 2
 }
-Note "$($ids.Count) conversations in the registry; staging 6 of them"
+Note "$($ids.Count) conversations in the registry; staging 7 of them"
 
 # $ProcId, not $Pid: $Pid is a READ-ONLY automatic variable in PowerShell, and a
 # parameter of that name kills the whole script with "Cannot overwrite variable
@@ -127,6 +127,14 @@ $StagedAgents[$ids[5].ToLower()] = New-Agent -Status 'waiting' -WaitingFor 'inpu
 $StagedConv[$ids[5].ToLower()] = New-Conv -State 'waiting' -Detail 'input needed' -AgeMin 1
 $StagedSaid[$ids[5].ToLower()] = [PSCustomObject]@{ Said = 'Which schema should I use?'; Pending = ''; PendingTool = ''; At = (Get-Date).AddMinutes(-1) }
 
+# 6: FINISHED. Idle, exactly as claude reports session 3 -- because claude has
+# no "finished" status at all, only busy/idle/waiting, verified against 14 live
+# sessions. The ONLY thing separating this from an idle row is that what it last
+# said is worth reading, which is precisely the distinction the band draws.
+$StagedAgents[$ids[6].ToLower()] = New-Agent -Status 'idle' -Name 'STAGE-DONE'
+$StagedConv[$ids[6].ToLower()] = New-Conv -State 'idle' -Detail 'at its prompt, nothing pending' -AgeMin 4
+$StagedSaid[$ids[6].ToLower()] = [PSCustomObject]@{ Said = 'Safe to shut down. Everything is committed and recorded in three independent places.'; Pending = ''; PendingTool = ''; At = (Get-Date).AddMinutes(-4) }
+
 $script:agents = $StagedAgents
 $script:conv   = $StagedConv
 $script:said   = $StagedSaid
@@ -151,8 +159,8 @@ $script:live = @{ $ids[4].ToLower() = $true }
 # A fixture has to own every input its assertion reads.
 $stagedById = @{}
 foreach ($d in $script:dirs) { foreach ($s in @($d.sessions)) { if ($s.sessionId) { $stagedById["$($s.sessionId)".ToLower()] = $s } }}
-$stagedAges = @(40, 30, 3, 20, 5, 1)   # minutes ago, one per staged session
-for ($k = 0; $k -lt 6; $k++) {
+$stagedAges = @(40, 30, 3, 20, 5, 1, 4)   # minutes ago, one per staged session
+for ($k = 0; $k -lt 7; $k++) {
     $stagedById[$ids[$k].ToLower()].lastActive = (Get-Date).AddMinutes(-1 * $stagedAges[$k]).ToString('o')
 }
 
@@ -211,6 +219,35 @@ else { Fail "only $($heads.Count) band heading(s)" }
 foreach ($h in $heads) {
     if ("$($h.Counts)" -match '^\d+$') { } else { Fail "band '$($h.Name)' has a count of '$($h.Counts)'" }
 }
+# --- 3b. FINISHED, versus merely idle ---------------------------------------
+# claude reports busy/idle/waiting and nothing else, so a session that has just
+# written a closing summary and one sitting at an empty prompt are BOTH 'idle'
+# upstream. This band is the only thing that tells them apart, and twelve rows
+# in one IDLE heap - some finished work waiting to be read, some nothing at all
+# - is the pile it exists to break up.
+$doneBand = Get-InboxBand $stagedById[$ids[6].ToLower()]
+if ($doneBand -eq 'done') { Pass "a session that handed work back is in 'done', not lumped into idle" }
+else { Fail "the hand-back session landed in '$doneBand'" }
+
+$doneHead = @($heads | Where-Object { $_.Band -eq 'done' })
+if ($doneHead.Count -eq 1) { Pass "the FINISHED band is on screen, holding $($doneHead[0].Counts)" }
+else { Fail "expected exactly one FINISHED heading, found $($doneHead.Count)" }
+
+# BOTH SIDES OF THE THRESHOLD, on the function itself, because a heuristic that
+# is only ever shown saying yes has not been shown to discriminate. The short
+# string is verbatim from the operator's screen, where it appeared five times in
+# the IDLE band and is exactly what should NOT read as a hand-back.
+$script:said['probe-handback-short'] = [PSCustomObject]@{ Said = 'No response requested.'; Pending = ''; PendingTool = '' }
+$script:said['probe-handback-long']  = [PSCustomObject]@{ Said = 'Pushed and verified. fa232ce15 is on origin/main and the working tree is clean.'; Pending = ''; PendingTool = '' }
+$script:said['probe-handback-busy']  = [PSCustomObject]@{ Said = 'Pushed and verified. fa232ce15 is on origin/main and the working tree is clean.'; Pending = 'Bash(pytest)'; PendingTool = 'Bash' }
+$hbShort = Test-Handback ([PSCustomObject]@{ sessionId = 'PROBE-HANDBACK-SHORT' })
+$hbLong  = Test-Handback ([PSCustomObject]@{ sessionId = 'PROBE-HANDBACK-LONG' })
+$hbBusy  = Test-Handback ([PSCustomObject]@{ sessionId = 'PROBE-HANDBACK-BUSY' })
+if (-not $hbShort) { Pass "'No response requested.' is not a hand-back" } else { Fail "a 22-character line was read as a hand-back" }
+if ($hbLong)  { Pass 'a closing summary is a hand-back' } else { Fail 'a real closing summary was not recognised' }
+if (-not $hbBusy) { Pass 'a pending tool outranks the prose above it - still working, not finished' }
+else { Fail 'a session with a tool in flight was called finished' }
+
 $needsHead = @($heads | Where-Object { $_.Band -eq 'needs' })
 if ($needsHead.Count -eq 1 -and [int]$needsHead[0].Counts -eq 3) { Pass 'NEEDS YOU counts exactly the 3 staged' }
 elseif ($needsHead.Count -eq 1) { Fail "NEEDS YOU says $($needsHead[0].Counts), expected 3" }
@@ -1346,8 +1383,8 @@ if ($stagedStill -ne $StagedAgents.Count) {
     Fail "the staged agents were replaced during the run ($stagedStill of $($StagedAgents.Count) survived) - a background probe fired and every assertion above was measuring the real machine"
 } elseif (-not $script:live[$ids[4].ToLower()]) {
     Fail "the staged inferred-live conversation is gone from `$script:live (now holds: $((@($script:live.Keys) -join ', ')))"
-} elseif ($script:running.Count -ne 4) {
-    Fail "the staged running table changed during the run ($($script:running.Count) entries, expected 4)"
+} elseif ($script:running.Count -ne 5) {
+    Fail "the staged running table changed during the run ($($script:running.Count) entries, expected 5)"
 } elseif ($script:conv.Count -ne $StagedConv.Count) {
     Fail "the staged conversation states changed during the run ($($script:conv.Count) entries, expected $($StagedConv.Count))"
 } else { Pass "the fixture survived the whole run ($($StagedAgents.Count) agents, $($script:running.Count) running, $($script:live.Count) inferred-live, $($script:conv.Count) states)" }
@@ -1377,8 +1414,12 @@ foreach ($pair in @(@{B=$ui.LivePill;T=$ui.LiveSummary}, @{B=$ui.WaitPill;T=$ui.
 # "12 live now" over a list holding 14 live conversations is not a rounding
 # difference, it is two definitions of "live" on one screen -- and it reads as
 # the tool failing to recognise sessions, which is how it was reported.
+# 'done' belongs here: a conversation that handed work back is still HELD BY A
+# PROCESS, and leaving it out of this sum made the pill look wrong the moment
+# the FINISHED band shipped. The live bands are every band except 'quiet', which
+# is the one that means nothing is holding it.
 $bandLive = @($script:inboxRows.ToArray() | Where-Object {
-    $_.Kind -eq 'session' -and $_.Band -in @('needs','working','idle') }).Count
+    $_.Kind -eq 'session' -and $_.Band -in @('needs','working','done','idle') }).Count
 $pillLive = 0
 if ("$($ui.LiveSummary.Text)" -match '^(\d+)') { $pillLive = [int]$Matches[1] }
 if ($pillLive -eq $bandLive) { Pass "the 'live now' pill ($pillLive) matches the live bands ($bandLive)" }
