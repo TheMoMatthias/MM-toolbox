@@ -216,12 +216,122 @@ function Set-Surface { param([string]$Mode)
     if ($Mode -eq 'manage') {
         $ui.WorkSurface.Visibility   = $V_Hide
         $ui.ManageSurface.Visibility = $V_Show
-        Set-Status 'Session manager: what comes back at the next logon. The ticks decide.'
+        Build-Manager
+        Set-Status 'Session manager: what comes back at the next logon. The ticks decide, and nothing here launches anything.'
     } else {
         $ui.ManageSurface.Visibility = $V_Hide
         $ui.WorkSurface.Visibility   = $V_Show
         Set-Status 'Work surface: what each conversation last said, and which of them are waiting on you.'
     }
+}
+
+# ===========================================================================
+# THE SESSION MANAGER
+#
+# One full-width table, and the shape IS the distinction: nothing here shares a
+# silhouette with the work surface, so the two cannot read as the same screen.
+#
+# IT OPENS FOLDED. Ordering by recency alone could not fix the endless list,
+# because the project worked in most recently is also the one holding half the
+# conversations. Folded, the whole thing is 27 rows on one screen, each carrying
+# its count and how many are armed - which is the question it is opened to ask.
+# ===========================================================================
+$script:fold      = @{}
+$script:showOlder = $false
+$script:dirty     = $false
+
+function Build-Manager {
+    $cut = (Get-Date).AddDays(-7)
+    $items = New-Object System.Collections.Generic.List[object]
+    $older = 0
+
+    $byProj = @{}
+    foreach ($r in $script:model) {
+        $k = "$($r.D.path)"
+        if (-not $byProj.ContainsKey($k)) { $byProj[$k] = New-Object System.Collections.Generic.List[object] }
+        $byProj[$k].Add($r)
+    }
+    $order = @($byProj.Keys | Sort-Object {
+        $newest = [datetime]0
+        foreach ($x in $byProj[$_]) { try { $t = [datetime]$x.S.lastActive; if ($t -gt $newest) { $newest = $t } } catch { } }
+        - $newest.Ticks
+    })
+
+    foreach ($k in $order) {
+        $kids = @($byProj[$k] | Sort-Object { try { [datetime]$_.S.lastActive } catch { [datetime]0 } } -Descending)
+        $inWindow = @($kids | Where-Object {
+            if ($script:showOlder) { return $true }
+            try { return ([datetime]$_.S.lastActive -gt $cut) } catch { return $false }
+        })
+        $older += ($kids.Count - $inWindow.Count)
+        if (-not $inWindow.Count) { continue }
+
+        $armed = @($kids | Where-Object { [bool]$_.S.enabled }).Count
+        $shut  = [bool]$script:fold[$k]
+        if (-not $script:fold.ContainsKey($k)) { $shut = $true; $script:fold[$k] = $true }
+
+        $items.Add([PSCustomObject]@{
+            Kind = 'project'; Path = $k; Row = $null
+            ProjVis = $V_Show; ConvVis = $V_Hide
+            Caret = $(if ($shut) { [string][char]0x25B8 } else { [string][char]0x25BE })
+            Label = (Get-ProjectLabel $k)
+            Meta  = ('{0}   |   {1} armed' -f $kids.Count, $armed)
+            Name = ''; Lane = ''; Said = ''; Age = ''; TickBg = $null; NameStyle = 'Normal'
+        })
+        if ($shut) { continue }
+
+        foreach ($r in $inWindow) {
+            $t = Get-Title $r.S $r.D
+            $saidText = ''
+            if ($r.Said -and "$($r.Said.Said)".Trim()) { $saidText = ("$($r.Said.Said)".Trim() -replace '\s+', ' ') }
+            $items.Add([PSCustomObject]@{
+                Kind = 'conv'; Path = $k; Row = $r
+                ProjVis = $V_Hide; ConvVis = $V_Show
+                Caret = ''; Label = ''; Meta = ''
+                Name = $t.Text
+                NameStyle = $(if ($t.Derived) { 'Italic' } else { 'Normal' })
+                Lane = $(if ("$($r.S.lane)" -and "$($r.S.lane)" -ne 'main') { "$($r.S.worktree)" } else { 'main' })
+                Said = $saidText
+                Age  = (Get-Age $r.S.lastActive)
+                # The tick is a FILLED SQUARE or an empty one - a shape, not a
+                # colour, so it survives everything the accents do not.
+                TickBg = $(if ([bool]$r.S.enabled) { $window.FindResource('TextMax') } else { [System.Windows.Media.Brushes]::Transparent })
+            })
+        }
+    }
+
+    # THE AGE WINDOW, SAID OUT LOUD. A list that quietly stops at seven days
+    # reads exactly like a complete one.
+    if ($older -gt 0 -and -not $script:showOlder) {
+        $items.Add([PSCustomObject]@{
+            Kind = 'more'; Path = $null; Row = $null
+            ProjVis = $V_Show; ConvVis = $V_Hide
+            Caret = ''; Label = ('{0} older conversations not shown' -f $older)
+            Meta = 'press O to show them'
+            Name = ''; Lane = ''; Said = ''; Age = ''; TickBg = $null; NameStyle = 'Normal'
+        })
+    }
+
+    $ui.ManageList.ItemsSource = $items
+    $armedAll = @($script:model | Where-Object { [bool]$_.S.enabled }).Count
+    $ui.ManageCount.Text = ('{0} ticked to reopen at the next logon{1}' -f $armedAll, $(if ($script:dirty) { '   |   unsaved' } else { '' }))
+}
+
+function Toggle-Tick {
+    $it = $ui.ManageList.SelectedItem
+    if (-not $it) { return }
+    if ($it.Kind -eq 'project') { $script:fold[$it.Path] = -not [bool]$script:fold[$it.Path]; Build-Manager; return }
+    if ($it.Kind -eq 'more')    { $script:showOlder = $true; Build-Manager; return }
+    if ($it.Kind -ne 'conv')    { return }
+    $s = $it.Row.S
+    $now = -not [bool]$s.enabled
+    if ($s.PSObject.Properties.Name -contains 'enabled') { $s.enabled = $now }
+    else { $s | Add-Member -NotePropertyName enabled -NotePropertyValue $now -Force }
+    # Touching a tick PINS it, or the hourly auto-tick roll takes it away again.
+    if ($s.PSObject.Properties.Name -contains 'pinned') { $s.pinned = $true }
+    else { $s | Add-Member -NotePropertyName pinned -NotePropertyValue $true -Force }
+    $script:dirty = $true
+    Build-Manager
 }
 
 # ===========================================================================
@@ -261,6 +371,35 @@ function Get-Band { param($Row)
         }
     }
     return 'quiet'
+}
+
+# 🔴 THE LEAF NAME IS NOT UNIQUE. Eight projects on this machine are called
+# "repo" - each an R-numbered run directory under Millwright-experiments. A
+# print the leaf show eight identical rows, and the operator cannot tell which
+# repository is which - the exact defect CONTEXT.md records as solved for the old
+# window and which this rebuild reintroduced by taking Split-Path -Leaf.
+#
+# Widen by ONE path segment at a time until every label on screen is unique.
+$script:projLabel = @{}
+function Update-ProjectLabels {
+    $script:projLabel = @{}
+    $paths = @($script:dirs | ForEach-Object { "$($_.path)" } | Where-Object { $_ })
+    foreach ($p in $paths) { $script:projLabel[$p] = (Split-Path -Leaf $p) }
+    for ($depth = 1; $depth -le 4; $depth++) {
+        $dupes = @($script:projLabel.GetEnumerator() | Group-Object Value | Where-Object { $_.Count -gt 1 })
+        if (-not $dupes.Count) { break }
+        foreach ($g in $dupes) {
+            foreach ($e in $g.Group) {
+                $parts = @("$($e.Key)" -split '[\\/]' | Where-Object { $_ })
+                $take = [Math]::Min($depth + 1, $parts.Count)
+                $script:projLabel[$e.Key] = (@($parts[-$take..-1]) -join ' / ')
+            }
+        }
+    }
+}
+function Get-ProjectLabel { param([string]$Path)
+    if ($script:projLabel.ContainsKey($Path)) { return $script:projLabel[$Path] }
+    return (Split-Path -Leaf $Path)
 }
 
 function Get-Title { param($S, $D)
@@ -321,6 +460,7 @@ function Update-Model {
     }
     foreach ($r in $rows) { $r.Band = Get-Band $r }
     $script:model = $rows
+    Update-ProjectLabels
 }
 
 # What the work surface shows: live, or spoke in the last day. It is not a
@@ -351,7 +491,7 @@ function Build-Rail {
         $picked = ($script:railPick -eq $k)
         $items.Add([PSCustomObject]@{
             Path   = $k
-            Label  = (Split-Path -Leaf $k)
+            Label  = (Get-ProjectLabel $k)
             Count  = $byProj[$k].Count
             PickBg = $(if ($picked) { $window.FindResource('SelBg') } else { [System.Windows.Media.Brushes]::Transparent })
             Fg     = $(if ($picked) { $window.FindResource('TextMax') } else { $window.FindResource('TextHigh') })
@@ -414,7 +554,7 @@ function Build-Sessions {
     $ui.SessionList.ItemsSource = $items
     $sessions = @($items | Where-Object { $_.Kind -eq 'session' })
     $ui.ListCount.Text = ('{0}' -f $sessions.Count)
-    $ui.ListCaption.Text = $(if ($script:railPick) { 'SESSIONS  ' + (Split-Path -Leaf $script:railPick).ToUpper() } else { 'SESSIONS' })
+    $ui.ListCaption.Text = $(if ($script:railPick) { 'SESSIONS  ' + (Get-ProjectLabel $script:railPick).ToUpper() } else { 'SESSIONS' })
 
     # 🔴 SELECTION IS PINNED TO THE CONVERSATION ID, never to a row index. A
     # rebuild moves rows between bands - which happens more now that FINISHED
@@ -795,7 +935,7 @@ function Show-Selected {
     $b = @($script:Bands | Where-Object { $_.Key -eq "$($r.Band)" })
     $ui.PaneStateDot.Background = $(if ($b.Count) { $window.FindResource($b[0].Acc) } else { $window.FindResource('AccIdle') })
     $detail = $(if ($r.Conv -and "$($r.Conv.Detail)") { "$($r.Conv.Detail)" } else { 'no process is holding it' })
-    $ui.PaneState.Text = ('{0}   |   {1}   |   {2}' -f $(if ($b.Count) { $b[0].Label } else { '' }), $detail, (Split-Path -Leaf "$($r.D.path)"))
+    $ui.PaneState.Text = ('{0}   |   {1}   |   {2}' -f $(if ($b.Count) { $b[0].Label } else { '' }), $detail, (Get-ProjectLabel "$($r.D.path)"))
     Update-Document
     Update-Ask $r
     Update-SendState
@@ -858,6 +998,22 @@ $script:searchTimer.Interval = [TimeSpan]::FromMilliseconds(180)
 $script:searchTimer.Add_Tick({ $script:searchTimer.Stop(); Build-Sessions })
 $ui.Search.Add_TextChanged({ $script:searchTimer.Stop(); $script:searchTimer.Start() })
 
+$ui.ManageList.Add_MouseDoubleClick({ Toggle-Tick })
+$ui.SaveBtn.Add_Click({
+    try {
+        Save-SRRegistry -Registry $script:reg
+        $script:dirty = $false
+        if ($script:surface -eq 'manage') { Build-Manager }
+        Set-Status 'saved - those ticks decide what comes back at the next logon' 'ok'
+    } catch { Set-Status ("could not save: " + $_.Exception.Message) 'bad' }
+})
+$ui.OpenNotRunning.Add_Click({
+    Set-Status 'the launch buttons are not ported yet - use the old window for those' 'warn'
+})
+$ui.RelaunchSessions.Add_Click({
+    Set-Status 'the launch buttons are not ported yet - use the old window for those' 'warn'
+})
+
 $ui.SendBox.Add_TextChanged({ Update-SendState })
 $ui.SendBtn.Add_Click({ Invoke-Send })
 $ui.SendBox.Add_KeyDown({
@@ -897,6 +1053,17 @@ $window.Add_PreviewKeyDown({
     }
     if ($ui.Search.IsKeyboardFocusWithin -or $ui.SendBox.IsKeyboardFocusWithin) { return }
     if ($e.Key -eq 'Oem2') { $null = $ui.Search.Focus(); $e.Handled = $true; return }
+    if ($script:surface -eq 'manage') {
+        if ($e.Key -eq 'Space') { Toggle-Tick; $e.Handled = $true; return }
+        if ($e.Key -eq 'O') { $script:showOlder = -not $script:showOlder; Build-Manager; $e.Handled = $true; return }
+        if ($e.Key -eq 'Right' -or $e.Key -eq 'Left') {
+            $it = $ui.ManageList.SelectedItem
+            if ($it -and $it.Kind -eq 'project') {
+                $script:fold[$it.Path] = ($e.Key -eq 'Left')
+                Build-Manager; $e.Handled = $true; return
+            }
+        }
+    }
     if ($e.Key -eq 'L') {
         # LOAD EARLIER. The pane starts at a tail budget because a 2.5 MB
         # conversation is a multi-second freeze; this doubles it on demand.

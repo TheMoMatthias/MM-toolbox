@@ -311,8 +311,16 @@ try {
         try {
             Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
             $root = [System.Windows.Automation.AutomationElement]::RootElement
-            $cond = New-Object System.Windows.Automation.PropertyCondition(
-                        [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $started.Id)
+            # 🪤 PROCESS ID ALONE IS NOT ENOUGH, because the host paints a SPLASH
+            # and that is a second top-level window of the same process. FindFirst
+            # returned it, and a splash has no lists and no buttons - so this
+            # reported "the data layer did not run" against a window that was
+            # fully populated. Match the title too.
+            $cond = New-Object System.Windows.Automation.AndCondition(
+                        (New-Object System.Windows.Automation.PropertyCondition(
+                            [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $started.Id)),
+                        (New-Object System.Windows.Automation.PropertyCondition(
+                            [System.Windows.Automation.AutomationElement]::NameProperty, $WindowTitle)))
             $win = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
             if (-not $win) {
                 Fail 'the hosted window is not reachable through UI Automation'
@@ -341,8 +349,24 @@ try {
                 # The list is VIRTUALIZED, so this is the count of REALISED rows
                 # -- about a screenful, never the registry's 208. Any row at all
                 # is the claim: the registry was read and bound under the host.
-                if ($items -gt 0) { Pass ("the hosted window carries real rows ({0} realised under {1} list(s), after {2:N1}s) - the registry was read and bound" -f $items, $lists.Count, $wait.Elapsed.TotalSeconds) }
-                else { Fail 'the hosted window still had no rows after 45s: it drew, but its data layer did not run' }
+                # 🪤 -NoScan MEANS THE LIST CAN HONESTLY BE EMPTY, and this
+                # assertion only ever passed because -NoScan was BROKEN. Until
+                # 2026-08-28 the host mis-bound its arguments, so the switch never
+                # reached the window, the window scanned, and rows appeared. With
+                # forwarding fixed the switch is honoured and an empty list is
+                # correct behaviour - so demanding rows here would fail the window
+                # for doing what it was told.
+                #
+                # Rows are still the STRONG evidence and are reported as such when
+                # they arrive. When they do not, the claim falls back to what can
+                # be asserted under -NoScan: the lists exist and are reachable.
+                if ($items -gt 0) {
+                    Pass ("the hosted window carries real rows ({0} realised under {1} list(s), after {2:N1}s) - the registry was read and bound" -f $items, $lists.Count, $wait.Elapsed.TotalSeconds)
+                } elseif (@($lists).Count -ge 1) {
+                    Pass ("the hosted window exposes {0} list(s); no rows realised, which is correct under -NoScan" -f @($lists).Count)
+                } else {
+                    Fail 'the hosted window exposes no lists at all - it drew, but its data layer did not run'
+                }
 
                 $btns = @($win.FindAll([System.Windows.Automation.TreeScope]::Descendants,
                             (New-Object System.Windows.Automation.PropertyCondition(

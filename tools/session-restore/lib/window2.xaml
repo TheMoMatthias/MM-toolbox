@@ -327,6 +327,62 @@
       </Border>
     </DataTemplate>
 
+
+    <!-- ================== THE MANAGER ROW ==================
+         A FULL WIDTH TABLE, and that is the point: the session manager differs
+         from the work surface by SHAPE, so the two can never be mistaken for one
+         another - in a screenshot, on a monochrome screen, or by a reader who
+         cannot tell the accents apart.
+
+         The LOGON tick is the first column and fenced off by a rule, because it
+         is the one control on this screen that decides tomorrow morning. It is a
+         checkbox and it never launches anything.
+         ===================================================== -->
+    <DataTemplate x:Key="ManageRowTpl">
+      <Grid>
+        <!-- a project header -->
+        <Border Visibility="{Binding ProjVis}" Padding="0,9,18,7" Background="#15161A">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="86"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="{Binding Caret}" FontFamily="Segoe UI" FontSize="11"
+                       Foreground="#6B7178" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            <TextBlock Grid.Column="1" Text="{Binding Label}" FontFamily="Segoe UI" FontSize="12.5"
+                       FontWeight="SemiBold" Foreground="#F2F3F5" TextTrimming="CharacterEllipsis"/>
+            <TextBlock Grid.Column="2" Text="{Binding Meta}" FontFamily="Segoe UI" FontSize="11"
+                       Foreground="#6B7178"/>
+          </Grid>
+        </Border>
+
+        <!-- a conversation -->
+        <Border Visibility="{Binding ConvVis}" Padding="0,5,18,5">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="86"/>
+              <ColumnDefinition Width="260"/>
+              <ColumnDefinition Width="180"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Border Grid.Column="0" Width="15" Height="15" CornerRadius="3" HorizontalAlignment="Center"
+                    BorderBrush="#3A3F47" BorderThickness="1.4" Background="{Binding TickBg}"/>
+            <TextBlock Grid.Column="1" Text="{Binding Name}" FontFamily="Segoe UI" FontSize="12.5"
+                       FontStyle="{Binding NameStyle}" Foreground="#D6D8DC"
+                       TextTrimming="CharacterEllipsis" Margin="14,0,10,0"/>
+            <TextBlock Grid.Column="2" Text="{Binding Lane}" FontFamily="Segoe UI" FontSize="11"
+                       Foreground="#6B7178" TextTrimming="CharacterEllipsis" Margin="0,0,10,0"/>
+            <TextBlock Grid.Column="3" Text="{Binding Said}" FontFamily="Segoe UI" FontSize="11.5"
+                       Foreground="#9AA0A8" TextTrimming="CharacterEllipsis"/>
+            <TextBlock Grid.Column="4" Text="{Binding Age}" FontFamily="Segoe UI" FontSize="10.5"
+                       Foreground="#6B7178" Margin="10,0,0,0"/>
+          </Grid>
+        </Border>
+      </Grid>
+    </DataTemplate>
+
   </Window.Resources>
 
   <!-- =========================================================================
@@ -560,10 +616,11 @@
         <Border Grid.Row="0" Background="{StaticResource PanelHi}"
                 BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="18,9,18,9">
           <TextBlock x:Name="ManageCaption" Style="{StaticResource Caption}"
-                     Text="LOGON      CONVERSATION      PROJECT      WHAT IT LAST SAID"/>
+                     Text="LOGON              CONVERSATION                              LANE                    WHAT IT LAST SAID"/>
         </Border>
         <ListBox x:Name="ManageList" Grid.Row="1" Style="{StaticResource Plain}"
                  ItemContainerStyle="{StaticResource PlainItem}"
+                 ItemTemplate="{StaticResource ManageRowTpl}"
                  AutomationProperties.Name="the ticked set"/>
         <Border Grid.Row="2" Background="{StaticResource Panel}"
                 BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,0" Padding="18,10,18,10">
