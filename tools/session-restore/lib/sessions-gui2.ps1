@@ -217,7 +217,7 @@ function Set-Surface { param([string]$Mode)
         $ui.WorkSurface.Visibility   = $V_Hide
         $ui.ManageSurface.Visibility = $V_Show
         Build-Manager
-        Set-Status 'Session manager: what comes back at the next logon. The ticks decide, and nothing here launches anything.'
+        Set-Status 'Session manager: what comes back at the next logon. The ticks decide - and the two buttons act on exactly that set, now.'
     } else {
         $ui.ManageSurface.Visibility = $V_Hide
         $ui.WorkSurface.Visibility   = $V_Show
@@ -267,8 +267,17 @@ function Build-Manager {
         if (-not $inWindow.Count) { continue }
 
         $armed = @($kids | Where-Object { [bool]$_.S.enabled }).Count
-        $shut  = [bool]$script:fold[$k]
-        if (-not $script:fold.ContainsKey($k)) { $shut = $true; $script:fold[$k] = $true }
+        # A PROJECT THAT HOLDS A TICK OPENS ITSELF. The whole question this
+        # surface answers is "what comes back at my next logon", and folding
+        # every project by default meant the answer was never on screen - you
+        # had to already know where to look to see what you had chosen.
+        # Projects with nothing ticked stay folded: 188 conversations opened at
+        # once is not a list, it is a wall.
+        $shut = [bool]$script:fold[$k]
+        if (-not $script:fold.ContainsKey($k)) {
+            $shut = ($armed -eq 0)
+            $script:fold[$k] = $shut
+        }
 
         $items.Add([PSCustomObject]@{
             Kind = 'project'; Path = $k; Row = $null
@@ -314,7 +323,47 @@ function Build-Manager {
 
     $ui.ManageList.ItemsSource = $items
     $armedAll = @($script:model | Where-Object { [bool]$_.S.enabled }).Count
-    $ui.ManageCount.Text = ('{0} ticked to reopen at the next logon{1}' -f $armedAll, $(if ($script:dirty) { '   |   unsaved' } else { '' }))
+    # SAY HOW TO TICK. The gesture is discoverable from nowhere else on this
+    # surface, and not knowing it reads exactly like a list that cannot be
+    # interacted with at all.
+    $ui.ManageCount.Text = ('{0} ticked to reopen at the next logon   |   click a project to open it, double-click a conversation to tick it{1}' -f `
+        $armedAll, $(if ($script:dirty) { '   |   unsaved' } else { '' }))
+}
+
+# A PROJECT OPENS ON ONE CLICK; A TICK NEEDS TWO.
+#
+# 🔴 THIS IS WHY THE MANAGER LOOKED EMPTY. Every project starts folded, and the
+# only handler was MouseDoubleClick - so a single click on a project did nothing
+# at all, no conversation row was ever reached, and with no conversation rows on
+# screen there were no ticks to see, no lane, no last-said and no age. Four
+# separate "broken" reports, one cause. Measured 2026-08-29 on the operator's
+# own machine.
+#
+# Opening a fold is free and reversible, so it goes on the cheap gesture. A tick
+# decides what reopens at your next logon, so it keeps the deliberate one.
+# THE ONE PLACE A TICK CHANGES. Both the mouse and the keyboard come through
+# here, so they cannot drift apart.
+function Set-TickOn { param($Row)
+    if (-not $Row) { return }
+    $s = $Row.S
+    $now = -not [bool]$s.enabled
+    Set-Field $s 'enabled' $now
+    # Touching a tick PINS it, or the hourly auto-tick roll takes it away again.
+    Set-Field $s 'pinned' $true
+    # 🔴 ARM THE PROJECT TOO, or the tick is a lie. Get-TickedPlan skips a whole
+    # directory that is not enabled, so ticking a conversation inside a disabled
+    # project would show a filled box and then launch nothing at all.
+    if ($now -and $Row.D -and -not $Row.D.missing -and -not [bool]$Row.D.enabled) { $Row.D.enabled = $true }
+    $script:dirty = $true
+
+    # Build-Manager replaces ItemsSource, which drops the selection. Put the
+    # caret back where it was so a run of keyboard ticks does not walk the list.
+    $keep = $ui.ManageList.SelectedIndex
+    Build-Manager
+    if ($keep -ge 0 -and $keep -lt $ui.ManageList.Items.Count) { $ui.ManageList.SelectedIndex = $keep }
+
+    Set-Status ("'{0}' {1} at your next logon - press Save to keep that" -f `
+        (Get-Title $s $Row.D).Text, $(if ($now) { 'WILL reopen' } else { 'will NOT reopen' }))
 }
 
 function Toggle-Tick {
@@ -323,15 +372,7 @@ function Toggle-Tick {
     if ($it.Kind -eq 'project') { $script:fold[$it.Path] = -not [bool]$script:fold[$it.Path]; Build-Manager; return }
     if ($it.Kind -eq 'more')    { $script:showOlder = $true; Build-Manager; return }
     if ($it.Kind -ne 'conv')    { return }
-    $s = $it.Row.S
-    $now = -not [bool]$s.enabled
-    if ($s.PSObject.Properties.Name -contains 'enabled') { $s.enabled = $now }
-    else { $s | Add-Member -NotePropertyName enabled -NotePropertyValue $now -Force }
-    # Touching a tick PINS it, or the hourly auto-tick roll takes it away again.
-    if ($s.PSObject.Properties.Name -contains 'pinned') { $s.pinned = $true }
-    else { $s | Add-Member -NotePropertyName pinned -NotePropertyValue $true -Force }
-    $script:dirty = $true
-    Build-Manager
+    Set-TickOn $it.Row
 }
 
 # ===========================================================================
@@ -998,7 +1039,59 @@ $script:searchTimer.Interval = [TimeSpan]::FromMilliseconds(180)
 $script:searchTimer.Add_Tick({ $script:searchTimer.Stop(); Build-Sessions })
 $ui.Search.Add_TextChanged({ $script:searchTimer.Stop(); $script:searchTimer.Start() })
 
-$ui.ManageList.Add_MouseDoubleClick({ Toggle-Tick })
+# ===========================================================================
+# EVERY MOUSE GESTURE ON THE MANAGER, IN ONE TUNNELLING HANDLER.
+#
+# 🔴 WHY NOT MouseDoubleClick. ListBoxItem marks the left-button-down HANDLED
+# when it selects itself, so ListBox.MouseDoubleClick never fires and the
+# handler that was bound to it could not tick anything - measured 2026-08-29,
+# reported as "I cannot tick or untick any sessions". PreviewMouseLeftButtonDown
+# TUNNELS: it reaches the ListBox on the way DOWN, before any item can swallow
+# it, so it always arrives. There is exactly one mouse path now; binding the
+# bubbling event as well would toggle twice and look like nothing happened.
+#
+# 🪤 RESOLVE THE ROW FROM WHAT WAS CLICKED, never from SelectedItem. A click on
+# the empty space under the last row leaves SelectedItem pointing at whatever
+# was selected before, and would tick a conversation the mouse never touched.
+function Get-ClickedRow { param($Source)
+    $d = $Source
+    while ($d -and -not ($d -is [System.Windows.Controls.ListBoxItem])) {
+        $d = [System.Windows.Media.VisualTreeHelper]::GetParent($d)
+    }
+    if ($d) { return $d.DataContext }
+    return $null
+}
+
+# Was the tick box itself clicked, rather than the row it sits on?
+function Test-ClickedTick { param($Source)
+    $d = $Source
+    while ($d) {
+        if (($d -is [System.Windows.FrameworkElement]) -and $d.Name -eq 'TickBox') { return $true }
+        if ($d -is [System.Windows.Controls.ListBoxItem]) { return $false }
+        $d = [System.Windows.Media.VisualTreeHelper]::GetParent($d)
+    }
+    return $false
+}
+
+$ui.ManageList.Add_PreviewMouseLeftButtonDown({
+    param($sender, $e)
+    $it = Get-ClickedRow $e.OriginalSource
+    if (-not $it) { return }
+    switch ("$($it.Kind)") {
+        'project' { $script:fold[$it.Path] = -not [bool]$script:fold[$it.Path]; Build-Manager; return }
+        'more'    { $script:showOlder = $true; Build-Manager; return }
+        'conv'    {
+            # The box takes ONE click - that is what a checkbox is for, and it is
+            # the only gesture on this surface anyone will guess. Double-clicking
+            # anywhere on the row does the same thing, for the people who try that
+            # instead.
+            if ((Test-ClickedTick $e.OriginalSource) -or $e.ClickCount -eq 2) {
+                Set-TickOn $it.Row
+            }
+            return
+        }
+    }
+})
 $ui.SaveBtn.Add_Click({
     try {
         Save-SRRegistry -Registry $script:reg
@@ -1096,20 +1189,36 @@ function Limit-ToCap { param($Items)
 # progress as it goes.
 $script:launchQueue = New-Object System.Collections.Generic.Queue[object]
 $script:launchDone = 0
+$script:launchFailed = New-Object System.Collections.Generic.List[string]
 $script:justLaunched = @{}
 $script:launchTimer = New-Object System.Windows.Threading.DispatcherTimer
 $script:launchTimer.Interval = [TimeSpan]::FromMilliseconds(500)
 $script:launchTimer.Add_Tick({
     if (-not $script:launchQueue.Count) {
         $script:launchTimer.Stop()
-        Set-Status ('opened {0} conversation(s)' -f $script:launchDone) 'ok'
+        # WHAT DID NOT OPEN IS THE HALF THAT MATTERS. After a relaunch these
+        # conversations have already been closed, so one that failed to reopen
+        # is a conversation currently SHUT - saying only how many succeeded
+        # hides exactly the case you need to act on.
+        if ($script:launchFailed.Count) {
+            Set-Status ('opened {0}, but {1} did NOT open: {2}   -   they are closed; press Open not running to retry' -f `
+                $script:launchDone, $script:launchFailed.Count, (($script:launchFailed | Select-Object -First 6) -join ', ')) 'bad'
+        } else {
+            Set-Status ('opened {0} conversation(s)' -f $script:launchDone) 'ok'
+        }
         Update-Model; Update-Surface
         if ($script:surface -eq 'manage') { Build-Manager }
         return
     }
+    # 🔴 NOTHING IN THIS TICK MAY THROW. An unhandled exception out of a
+    # DispatcherTimer tick takes the window down, and this tick runs immediately
+    # after a relaunch has already CLOSED the conversations it is reopening -
+    # losing the window here would leave the whole set shut with no way to
+    # reopen it from the tool. So the title lookup is inside the try too.
     $r = $script:launchQueue.Dequeue()
-    $t = (Get-Title $r.S $r.D).Text
+    $t = '(unnamed)'
     try {
+        $t = (Get-Title $r.S $r.D).Text
         $cwd = $(if ("$($r.S.cwd)") { "$($r.S.cwd)" } else { "$($r.D.path)" })
         $boot = New-SRBootScript -Dir $cwd -SessionId "$($r.S.sessionId)" -Title $t
         Start-SRSession -Dir $cwd -BootScript $boot -Title $t
@@ -1118,9 +1227,10 @@ $script:launchTimer.Add_Tick({
         $script:launchDone++
     } catch {
         Write-SRLog ('  [FAIL] gui2 launch   {0}  {1}' -f $t, $_.Exception.Message)
-        Set-Status ('{0} would not open: {1}' -f $t, $_.Exception.Message) 'bad'
+        $script:launchFailed.Add($t)
     }
-    Set-Status ('opening... {0} left' -f $script:launchQueue.Count)
+    Set-Status ('opening... {0} left{1}' -f $script:launchQueue.Count,
+        $(if ($script:launchFailed.Count) { ("   |   {0} failed so far" -f $script:launchFailed.Count) } else { '' }))
 })
 
 function Start-LaunchQueue { param($Items)
@@ -1132,6 +1242,7 @@ function Start-LaunchQueue { param($Items)
     }
     $script:launchQueue.Clear()
     $script:launchDone = 0
+    $script:launchFailed.Clear()
     foreach ($r in @($Items)) { $script:launchQueue.Enqueue($r) }
     if (-not $script:launchQueue.Count) { Set-Status 'nothing to open' 'warn'; return }
     $script:launchTimer.Start()

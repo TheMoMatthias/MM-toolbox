@@ -367,8 +367,16 @@
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <Border Grid.Column="0" Width="15" Height="15" CornerRadius="3" HorizontalAlignment="Center"
-                    BorderBrush="#3A3F47" BorderThickness="1.4" Background="{Binding TickBg}"/>
+            <!-- Named so the click handler can tell "clicked the box" from
+                 "clicked the row". A wider transparent hit area than the 15px
+                 mark, because a checkbox you have to aim at is a checkbox that
+                 reads as broken. -->
+            <Border Grid.Column="0" x:Name="TickBox" Background="Transparent" Cursor="Hand"
+                    ToolTip="Click to tick - a ticked conversation reopens at your next logon">
+              <Border Width="15" Height="15" CornerRadius="3" HorizontalAlignment="Center"
+                      VerticalAlignment="Center" BorderBrush="#3A3F47" BorderThickness="1.4"
+                      Background="{Binding TickBg}"/>
+            </Border>
             <TextBlock Grid.Column="1" Text="{Binding Name}" FontFamily="Segoe UI" FontSize="12.5"
                        FontStyle="{Binding NameStyle}" Foreground="#D6D8DC"
                        TextTrimming="CharacterEllipsis" Margin="14,0,10,0"/>
@@ -615,8 +623,24 @@
         </Grid.RowDefinitions>
         <Border Grid.Row="0" Background="{StaticResource PanelHi}"
                 BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="18,9,18,9">
-          <TextBlock x:Name="ManageCaption" Style="{StaticResource Caption}"
-                     Text="LOGON              CONVERSATION                              LANE                    WHAT IT LAST SAID"/>
+          <!-- THE SAME COLUMN WIDTHS AS ManageRowTpl, and for the same reason a
+               table has a header row at all: a caption made of padded spaces
+               lines up with nothing, because the rows below it are a Grid and
+               the caption was not. Change a width here, change it there. -->
+          <Grid x:Name="ManageCaption">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="86"/>
+              <ColumnDefinition Width="260"/>
+              <ColumnDefinition Width="180"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="LOGON" Style="{StaticResource Caption}" HorizontalAlignment="Center"/>
+            <TextBlock Grid.Column="1" Text="CONVERSATION" Style="{StaticResource Caption}" Margin="14,0,10,0"/>
+            <TextBlock Grid.Column="2" Text="LANE" Style="{StaticResource Caption}" Margin="0,0,10,0"/>
+            <TextBlock Grid.Column="3" Text="WHAT IT LAST SAID" Style="{StaticResource Caption}"/>
+            <TextBlock Grid.Column="4" Text="AGE" Style="{StaticResource Caption}" Margin="10,0,0,0"/>
+          </Grid>
         </Border>
         <ListBox x:Name="ManageList" Grid.Row="1" Style="{StaticResource Plain}"
                  ItemContainerStyle="{StaticResource PlainItem}"
