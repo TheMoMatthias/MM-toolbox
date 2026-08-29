@@ -81,6 +81,70 @@ Start-LaunchQueue @()
 if ($script:launchTimer.IsEnabled) { Fail 'an empty launch set started the timer'; $script:launchTimer.Stop() }
 else { Pass 'an empty launch set starts no timer' }
 
+# 🔴 THE REBOOT CASE, WHICH HAD NO TEST AND IS THE TOOL'S WHOLE PURPOSE.
+# On 2026-08-29 the operator restarted the machine; nothing came back, and
+# pressing Relaunch did nothing at all. Two independent causes, both here:
+#
+#   1. Relaunch took ONLY the running set. After a reboot that set is empty, so
+#      the button planned zero work and looked dead. It now takes both, and the
+#      cap is shared between them rather than applied twice.
+#   2. The logon restore skipped 15 conversations as "already live (transcript
+#      written < 3 min ago)" - written seconds before the shutdown, on a restart
+#      that took less than three minutes. See Test-SRTranscriptLive below.
+$capWas = $null
+try { $capWas = $script:cfg.maxSessions } catch { }
+$script:cfg.maxSessions = 4
+$a = Limit-ToCap @(1, 2, 3, 4, 5, 6)
+$b = Limit-ToCap @(7, 8, 9) -Already @($a.Go).Count
+if (@($a.Go).Count -ne 4) { Fail "the cap let $(@($a.Go).Count) through instead of 4" }
+elseif (@($b.Go).Count -ne 0) { Fail "a second call ignored what the first already took: $(@($b.Go).Count) more" }
+elseif ($b.Over -ne 3) { Fail "the second call reported $($b.Over) over the cap, not 3" }
+else { Pass 'two calls in one action share one cap rather than each getting a whole one' }
+$c = Limit-ToCap @(7, 8, 9) -Already 2
+if (@($c.Go).Count -ne 2) { Fail "with 2 already taken the cap left room for $(@($c.Go).Count), not 2" }
+else { Pass 'the shared cap leaves exactly the room that is left' }
+if ($null -ne $capWas) { $script:cfg.maxSessions = $capWas }
+
+# 🪤 A FRESH TRANSCRIPT AFTER A REBOOT IS THE OPPOSITE OF A LIVE SESSION, and
+# a shorter window would not have fixed it - only a faster reboot was needed.
+# The gate is the boot time, so this asserts the exact reported shape: a file
+# written moments ago, but before this machine came up.
+$tmp = Join-Path $SR_StateDir ('livecheck-{0}.jsonl' -f ([guid]::NewGuid().ToString('N')))
+# 🚨 THE BOOT TIME IS FORCED, and it has to be. Written naively - a real
+# file aged to just before the REAL boot - this passed without ever reaching the
+# new guard: this machine booted long ago, so the file was already outside the
+# 3-minute window and the ORIGINAL check rejected it. Green, and blind to the
+# very bug it was written for. The reported shape needs a transcript that is
+# INSIDE the window AND older than the boot, which is only reproducible with a
+# boot time under the test's control.
+$bootWas = $script:SR_BootTime
+try {
+    Set-Content -LiteralPath $tmp -Value '{}' -Encoding UTF8
+
+    # The exact reported case: a fast restart. Boot 30 seconds ago, transcript
+    # written 90 seconds ago - comfortably inside the live window, and written
+    # before the machine came up, so nothing can be holding it.
+    $script:SR_BootTime = (Get-Date).AddSeconds(-30)
+    (Get-Item -LiteralPath $tmp).LastWriteTime = (Get-Date).AddSeconds(-90)
+    if (Test-SRTranscriptLive -JsonlPath $tmp) {
+        Fail 'a transcript written before this boot still counts as live - the reboot skip is back'
+    } else { Pass 'a transcript written before this boot is never mistaken for a live session' }
+
+    # And the inverse, or the assertion above would pass on a function that
+    # simply always said no. Written since boot, with claude.exe on the machine
+    # - which there is, this suite runs inside one.
+    $script:SR_BootTime = (Get-Date).AddHours(-4)
+    (Get-Item -LiteralPath $tmp).LastWriteTime = (Get-Date).AddSeconds(-20)
+    $anyClaude = [bool]@(Get-Process -Name 'claude' -ErrorAction SilentlyContinue).Count
+    if (-not $anyClaude) { Note 'no claude.exe on the machine, so the positive case cannot be posed' }
+    elseif (-not (Test-SRTranscriptLive -JsonlPath $tmp)) {
+        Fail 'a transcript written since boot, with sessions running, is not recognised as live'
+    } else { Pass 'a genuinely live transcript is still recognised' }
+} finally {
+    $script:SR_BootTime = $bootWas
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+}
+
 if (@($blk | Where-Object { -not "$($_.Why)".Trim() }).Count) { Fail 'a blocked conversation carries no reason' }
 else { Pass 'every blocked conversation names why' }
 

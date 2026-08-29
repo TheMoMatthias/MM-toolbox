@@ -1875,12 +1875,20 @@ function Get-TickedPlan { param([switch]$Adopt)
 
 # The maxSessions cap, applied here and SAID OUT LOUD rather than silently - a
 # truncated list reads exactly like a complete one.
-function Limit-ToCap { param($Items)
+# -Already counts what a CALLER has ALREADY committed to launching in the same
+# action, so two calls can share one cap. Relaunch needs it: it restarts the
+# running set and opens the not-running set in one press, and the cap is about
+# how many sessions the machine ends up with - not how many each half started.
+function Limit-ToCap { param($Items, [int]$Already = 0)
     $cap = 0
     try { $cap = [int]$script:cfg.maxSessions } catch { }
     $go = @($Items)
-    if ($cap -gt 0 -and $go.Count -gt $cap) {
-        return [PSCustomObject]@{ Go = @($go | Select-Object -First $cap); Over = ($go.Count - $cap); Cap = $cap }
+    if ($cap -gt 0) {
+        $room = $cap - $Already
+        if ($room -lt 0) { $room = 0 }
+        if ($go.Count -gt $room) {
+            return [PSCustomObject]@{ Go = @($go | Select-Object -First $room); Over = ($go.Count - $room); Cap = $cap }
+        }
     }
     return [PSCustomObject]@{ Go = $go; Over = 0; Cap = $cap }
 }
@@ -1999,12 +2007,26 @@ $ui.OpenNotRunning.Add_Click({
 
 $ui.RelaunchSessions.Add_Click({
     $plan = Get-TickedPlan -Adopt
-    # 🔴 RELAUNCH RESTARTS; IT DOES NOT OPEN. Taking Fresh as well would mean
-    # pressing this to fix the names on 12 running conversations and getting 29
-    # tabs. Opening the rest is what the other button is for.
+    # 🔴 IT RESTARTS WHAT IS RUNNING AND OPENS WHAT IS NOT, and the count of
+    # each is on the confirmation before anything happens.
+    #
+    # This used to take only the running ones, on the reasoning that pressing it
+    # to fix the names on 12 conversations should not hand you 29 tabs. That
+    # reasoning was about SURPRISE, and the confirmation below now removes the
+    # surprise by naming both numbers - while the old rule had a far worse
+    # failure of its own: after a reboot NOTHING is running, so the button that
+    # obviously means "bring my sessions back" planned zero work and appeared
+    # completely dead. Reported on 2026-08-29 after a restart, and it is the
+    # tool's whole purpose.
     $lim = Limit-ToCap $plan.Restart
     $go = @($lim.Go)
-    if (-not $go.Count) { Set-Status 'nothing to relaunch - no ticked conversation is running, or every one that is is mid-turn' 'warn'; return }
+    # The not-running ones come next, and share the same cap: the cap is about
+    # how many sessions the machine ends up with, not how they got there.
+    $freshLim = Limit-ToCap $plan.Fresh -Already $go.Count
+    $open = @($freshLim.Go)
+    if (-not $go.Count -and -not $open.Count) {
+        Set-Status 'nothing to relaunch - nothing is ticked, or every ticked conversation is mid-turn' 'warn'; return
+    }
     # 🔴 NAME WHAT WILL BE CLOSED. This kills live processes, and one of them may
     # be the conversation you are talking to right now. A count cannot be checked
     # against that; a list can.
@@ -2014,17 +2036,29 @@ $ui.RelaunchSessions.Add_Click({
         $bn = (@($plan.Busy) | ForEach-Object { (Get-Title $_.S $_.D).Text } | Select-Object -First 6) -join ', '
         $note += ('{0} are mid-turn and will be LEFT ALONE: {1}. They keep the old login - run this again once they finish.' -f @($plan.Busy).Count, $bn)
     }
-    # NOT a skip, and said as such: these are simply not running, so a relaunch has
-    # nothing to do to them.
-    if (@($plan.Fresh).Count) { $note += ("{0} more are ticked but not running - use 'Open not running' for those." -f @($plan.Fresh).Count) }
-    if ($lim.Over) { $note += ('{0} more are running but over the maxSessions cap of {1}, so they are skipped.' -f $lim.Over, $lim.Cap) }
-    if (-not (Confirm-Action ('Relaunch {0} running conversations' -f $go.Count) `
-        ("Each one is CLOSED and then opened again. Use this after signing in, or after reconnecting Remote Control: a running session reads your login AND its remote name at startup, so neither can be picked up without a restart.`n`nClosing: {0}{1}" -f `
-            $names, $(if ($note.Count) { "`n`n" + ($note -join '  ') } else { '' })) -Verb ('Relaunch {0}' -f $go.Count))) {
+    if ($open.Count) {
+        $on = (@($open | ForEach-Object { (Get-Title $_.S $_.D).Text }) | Sort-Object) -join ', '
+        $note += ('{0} are ticked but NOT running, so they are simply opened rather than closed first: {1}' -f $open.Count, $on)
+    }
+    if ($lim.Over -or $freshLim.Over) {
+        $note += ('{0} more are ticked but over the maxSessions cap of {1}, so they are skipped.' -f ($lim.Over + $freshLim.Over), $lim.Cap)
+    }
+    # The title says both numbers, because they are two different things
+    # happening to two different sets and only one of them destroys anything.
+    $what = @()
+    if ($go.Count)   { $what += ('restart {0}' -f $go.Count) }
+    if ($open.Count) { $what += ('open {0}' -f $open.Count) }
+    $head = $(if ($go.Count) {
+        "The {0} already running are CLOSED and opened again - a running session reads your login AND its remote name at startup, so neither can be picked up without a restart.`n`nClosing: {1}" -f $go.Count, $names
+    } else {
+        'None of the ticked conversations are running, so nothing is closed - they are just opened.'
+    })
+    if (-not (Confirm-Action ('Relaunch: ' + ($what -join ' and ')) `
+        ($head + $(if ($note.Count) { "`n`n" + ($note -join '  ') } else { '' })) -Verb (($what -join ' and ')))) {
         Set-Status 'nothing relaunched'; return
     }
 
-    Set-Status 'closing...'
+    Set-Status $(if ($go.Count) { 'closing...' } else { 'opening...' })
     $killed = 0
     $tabs = New-Object System.Collections.Generic.List[string]
     foreach ($r in $go) {
@@ -2049,7 +2083,9 @@ $ui.RelaunchSessions.Add_Click({
     # between the kill and the relaunch - a title only identifies a dead tab
     # while the session that owned it is dead.
     try { $null = Close-SRTabsByName -Names $tabs } catch { }
-    Start-LaunchQueue $go
+    # One queue for both sets: the ones just killed and the ones that were never
+    # running go through the same half-second-apart launch.
+    Start-LaunchQueue (@($go) + @($open))
 })
 
 # ===========================================================================

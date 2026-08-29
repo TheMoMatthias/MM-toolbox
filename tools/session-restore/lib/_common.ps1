@@ -1182,10 +1182,46 @@ function Wait-SRSessionsUp {
     }
 }
 
+# 🔴 A FRESH TRANSCRIPT IS NOT A LIVE SESSION, AND AFTER A REBOOT IT IS THE
+# OPPOSITE OF ONE. This is a PROXY for "something is running that we failed to
+# attribute to a process" - the real check is Test-SRProcessRunning, which runs
+# first. On 2026-08-29 the operator restarted the machine and 15 conversations
+# were skipped at logon with "already live (transcript written < 3 min ago)":
+# they had been written seconds before the shutdown, the restart took under
+# three minutes, and so at logon every one of them looked alive while nothing at
+# all was running. The tool's entire purpose - bring the session back - failed
+# silently, and the log recorded it as a deliberate skip.
+#
+# 🪤 A SHORTER WINDOW WOULD NOT FIX IT, it would only need a faster reboot. The
+# question is not "how recent" but "could anything have written this SINCE the
+# machine came up" - so the boot time is the gate, and it is exact:
+#   - written before this boot  -> nothing has touched it this session, dead.
+#   - no claude.exe on the box  -> there is no process the attribution could
+#     have missed, which is the only thing this proxy exists to cover.
+$script:SR_BootTime = $null
+function Get-SRBootTime {
+    if ($script:SR_BootTime) { return $script:SR_BootTime }
+    try { $script:SR_BootTime = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime }
+    catch { $script:SR_BootTime = [datetime]::MinValue }
+    return $script:SR_BootTime
+}
+
 function Test-SRTranscriptLive {
     param([Parameter(Mandatory)][string]$JsonlPath)
     if (-not (Test-Path -LiteralPath $JsonlPath)) { return $false }
-    return (((Get-Date) - (Get-Item -LiteralPath $JsonlPath).LastWriteTime).TotalMinutes -lt $SR_LiveWindowMinutes)
+    $wrote = (Get-Item -LiteralPath $JsonlPath).LastWriteTime
+    if (((Get-Date) - $wrote).TotalMinutes -ge $SR_LiveWindowMinutes) { return $false }
+
+    # Written before the machine came up: whatever wrote it is long gone.
+    $boot = Get-SRBootTime
+    if ($boot -gt [datetime]::MinValue -and $wrote -le $boot) { return $false }
+
+    # Nothing is running at all, so there is no misattributed process to cover.
+    $any = $false
+    try { $any = [bool]@(Get-Process -Name 'claude' -ErrorAction SilentlyContinue).Count } catch { }
+    if (-not $any) { return $false }
+
+    return $true
 }
 
 # --- jumping to a session's terminal tab ------------------------------------
