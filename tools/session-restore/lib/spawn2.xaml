@@ -2,124 +2,148 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="New session"
-        Width="520" SizeToContent="Height"
+        Width="540" SizeToContent="Height"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
-        UseLayoutRounding="True" SnapsToDevicePixels="True"
+        UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Ideal"
-        TextOptions.TextRenderingMode="ClearType"
-        Background="#0F1013">
+        TextOptions.TextRenderingMode="Grayscale"
+        Background="{DynamicResource Ink}">
 
-  <!-- Same frame treatment as the main window: no OS caption, but Windows still
-       manages resize and snap. ResizeMode is NoResize because the dialog sizes
-       to its own content - there is nothing to gain by dragging it. -->
+  <!-- ================== THE FRAME ==================
+       🔴 EVERY BRUSH AND STYLE HERE IS A DynamicResource, AND THAT IS THE WHOLE
+       POINT. This dialog used to carry its own hard-coded palette - a second
+       set of colours that had to be kept in step with the main window's by
+       hand, and had already fallen out of step: it was still on the pre-redesign
+       #0F1013/#26282E while the window had moved to the greyscale ladder, and
+       every TextBlock named a Segoe face by hand, so no label in it followed
+       the window onto Manrope. (The CONTROLS were fine - the script reached
+       across and assigned their styles at runtime. It is the surfaces and the
+       text that were stranded, and a second palette that only half the window
+       reads is the more expensive half of the problem.) There is now exactly
+       one palette, defined once in window2.xaml, and the script merges it into
+       this window before it is shown. Static resources could not do that - they
+       resolve while this file is being parsed, which is before the merge
+       exists.
+
+       🪤 CaptionHeight IS 0 AND THE COMMENT HERE USED TO CLAIM WINDOWS STILL
+       MANAGED RESIZE AND SNAP. It does not: with CaptionHeight and
+       ResizeBorderThickness both 0, Windows is told there is no caption and no
+       resize border, so drag, snap, shake, Alt+Space and edge-resize are all
+       gone. That is CORRECT for this dialog - it is modal, sizes itself to its
+       content and has nothing to gain from being snapped to half a screen - and
+       the script wires DragMove on the caption so it can still be moved. The
+       main window is the opposite case and says so there.
+       ============================================== -->
   <shell:WindowChrome.WindowChrome>
     <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="0" CornerRadius="0"
                         GlassFrameThickness="0" UseAeroCaptionButtons="False"/>
   </shell:WindowChrome.WindowChrome>
 
-  <Border BorderBrush="#26282E" BorderThickness="1" Background="#0F1013">
+  <!-- The same inset card as the main window, and by the same trick: no
+       transparency anywhere. The WINDOW paints the ground (Ink), and this
+       border floats on it with a margin, so the rounded corners read against a
+       colour we control rather than against whatever is behind the window. -->
+  <Border Margin="12" CornerRadius="16" Background="{DynamicResource Panel}"
+          BorderBrush="{DynamicResource EdgeLit}" BorderThickness="1"
+          SnapsToDevicePixels="True">
+    <Border.Effect>
+      <DropShadowEffect BlurRadius="40" ShadowDepth="12" Opacity="0.6" Color="#000000"/>
+    </Border.Effect>
     <StackPanel>
 
       <!-- caption: draggable, with one way out -->
-      <Border x:Name="SpTitleBar" Background="#15161A" BorderBrush="#26282E"
-              BorderThickness="0,0,0,1" Padding="20,0,0,0" Height="46">
+      <Border x:Name="SpTitleBar" Background="{DynamicResource Panel}"
+              BorderBrush="{DynamicResource HairSoft}" CornerRadius="15,15,0,0"
+              BorderThickness="0,0,0,1" Padding="22,0,0,0" Height="52">
         <Grid>
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
           <TextBlock Grid.Column="0" Text="New session" VerticalAlignment="Center"
-                     FontFamily="Segoe UI Variable Display, Segoe UI" FontSize="16"
-                     FontWeight="SemiBold" Foreground="#F2F3F5"/>
-          <Button x:Name="SpClose" Grid.Column="1" Width="46" Content="&#xE8BB;"
-                  FontFamily="Segoe MDL2 Assets" FontSize="10" Foreground="#9AA0A8"
-                  Focusable="False" Cursor="Hand"
-                  shell:WindowChrome.IsHitTestVisibleInChrome="True">
-            <Button.Template>
-              <ControlTemplate TargetType="Button">
-                <Border x:Name="b" Background="Transparent">
-                  <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                </Border>
-                <ControlTemplate.Triggers>
-                  <Trigger Property="IsMouseOver" Value="True">
-                    <Setter TargetName="b" Property="Background" Value="#C42B1C"/>
-                    <Setter Property="Foreground" Value="#FFFFFF"/>
-                  </Trigger>
-                </ControlTemplate.Triggers>
-              </ControlTemplate>
-            </Button.Template>
-          </Button>
+                     Style="{DynamicResource Display}"/>
+          <Button x:Name="SpClose" Grid.Column="1" Content="&#xE8BB;"
+                  Style="{DynamicResource CaptionBtnClose}"
+                  shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
         </Grid>
       </Border>
 
-      <StackPanel Margin="20,18,20,18">
+      <StackPanel Margin="22,20,22,20">
 
-        <TextBlock Text="PROJECT" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11"
-                   FontWeight="SemiBold" Foreground="#6B7178" Margin="0,0,0,5"/>
-        <Grid Margin="0,0,0,4">
+        <TextBlock Text="PROJECT" Style="{DynamicResource Caption}" Margin="0,0,0,6"/>
+        <Grid Margin="0,0,0,5">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
-          <ComboBox x:Name="SpDir" Grid.Column="0"/>
-          <Button x:Name="SpBrowse" Grid.Column="1" Content="Browse" Margin="8,0,0,0"/>
+          <ComboBox x:Name="SpDir" Grid.Column="0" Style="{DynamicResource Drop}"
+                    ItemContainerStyle="{DynamicResource DropItem}"/>
+          <Button x:Name="SpBrowse" Grid.Column="1" Content="Browse" Margin="8,0,0,0"
+                  Style="{DynamicResource Btn}"/>
         </Grid>
-        <TextBlock x:Name="SpDirPath" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11.5"
-                   Foreground="#6B7178" TextTrimming="CharacterEllipsis" Margin="0,0,0,14" Text=""/>
+        <TextBlock x:Name="SpDirPath" Style="{DynamicResource Meta}"
+                   TextTrimming="CharacterEllipsis" Margin="0,0,0,16" Text=""/>
 
-        <TextBlock Text="NAME" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11"
-                   FontWeight="SemiBold" Foreground="#6B7178" Margin="0,0,0,5"/>
-        <TextBox x:Name="SpName" Margin="0,0,0,14"/>
+        <TextBlock Text="NAME" Style="{DynamicResource Caption}" Margin="0,0,0,6"/>
+        <TextBox x:Name="SpName" Margin="0,0,0,16" Style="{DynamicResource Search}"/>
 
-        <Grid Margin="0,0,0,14">
+        <Grid Margin="0,0,0,16">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="12"/>
             <ColumnDefinition Width="*"/>
           </Grid.ColumnDefinitions>
           <StackPanel Grid.Column="0">
-            <TextBlock Text="MODEL" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11"
-                       FontWeight="SemiBold" Foreground="#6B7178" Margin="0,0,0,5"/>
-            <ComboBox x:Name="SpModel"/>
+            <TextBlock Text="MODEL" Style="{DynamicResource Caption}" Margin="0,0,0,6"/>
+            <ComboBox x:Name="SpModel" Style="{DynamicResource Drop}"
+                      ItemContainerStyle="{DynamicResource DropItem}"/>
           </StackPanel>
           <StackPanel Grid.Column="2">
-            <TextBlock Text="EFFORT" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11"
-                       FontWeight="SemiBold" Foreground="#6B7178" Margin="0,0,0,5"/>
-            <ComboBox x:Name="SpEffort"/>
+            <TextBlock Text="EFFORT" Style="{DynamicResource Caption}" Margin="0,0,0,6"/>
+            <ComboBox x:Name="SpEffort" Style="{DynamicResource Drop}"
+                      ItemContainerStyle="{DynamicResource DropItem}"/>
           </StackPanel>
         </Grid>
 
-        <TextBlock Text="PERMISSION MODE" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11"
-                   FontWeight="SemiBold" Foreground="#6B7178" Margin="0,0,0,5"/>
-        <ComboBox x:Name="SpPerm" Margin="0,0,0,4"/>
-        <TextBlock x:Name="SpPermNote" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11.5"
-                   Foreground="#6B7178" TextWrapping="Wrap" Margin="0,0,0,14" Text=""/>
+        <TextBlock Text="PERMISSION MODE" Style="{DynamicResource Caption}" Margin="0,0,0,6"/>
+        <ComboBox x:Name="SpPerm" Margin="0,0,0,5" Style="{DynamicResource Drop}"
+                  ItemContainerStyle="{DynamicResource DropItem}"/>
+        <TextBlock x:Name="SpPermNote" Style="{DynamicResource Meta}"
+                   TextWrapping="Wrap" Margin="0,0,0,16" Text=""/>
 
-        <CheckBox x:Name="SpRemote" Margin="0,0,0,9"
+        <CheckBox x:Name="SpRemote" Margin="0,0,0,10" Style="{DynamicResource Check}"
                   Content="Remote Control - drive it from your phone"/>
-        <CheckBox x:Name="SpHidden" Margin="0,0,0,9"
+        <CheckBox x:Name="SpHidden" Margin="0,0,0,10" Style="{DynamicResource Check}"
                   Content="Hidden - no terminal window"/>
-        <CheckBox x:Name="SpWorktree" Margin="0,0,0,4"
+        <CheckBox x:Name="SpWorktree" Margin="0,0,0,4" Style="{DynamicResource Check}"
                   Content="Its own git worktree - isolated from your other lanes"/>
-        <TextBlock x:Name="SpWarn" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="12.5"
-                   Foreground="#D97757" TextWrapping="Wrap" Visibility="Collapsed"
-                   Margin="0,6,0,0" Text=""/>
+        <!-- 🪤 THE WARNING IS WHITE, NOT ORANGE. It was #D97757, the one warm
+             colour left over from the old palette, and in a window with no hue
+             at all a single orange line reads as a rendering fault rather than
+             as emphasis. White IS the loud end of this ladder - it is what
+             NEEDS YOU is drawn in - so the warning uses it. -->
+        <TextBlock x:Name="SpWarn" Style="{DynamicResource Body}"
+                   Foreground="{DynamicResource AccNeeds}" FontWeight="SemiBold"
+                   TextWrapping="Wrap" Visibility="Collapsed"
+                   Margin="0,8,0,0" Text=""/>
       </StackPanel>
 
-      <Border Background="#15161A" BorderBrush="#26282E" BorderThickness="0,1,0,0"
-              Padding="20,12,20,12">
+      <Border Background="{DynamicResource Rail}" BorderBrush="{DynamicResource HairSoft}"
+              BorderThickness="0,1,0,0" CornerRadius="0,0,15,15" Padding="22,14,22,14">
         <Grid>
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
           <TextBlock x:Name="SpHint" Grid.Column="0" VerticalAlignment="Center"
-                     FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11.5"
-                     Foreground="#6B7178" TextTrimming="CharacterEllipsis" Text=""/>
+                     Style="{DynamicResource Meta}"
+                     TextTrimming="CharacterEllipsis" Margin="0,0,12,0" Text=""/>
           <StackPanel Grid.Column="1" Orientation="Horizontal">
-            <Button x:Name="SpCancel" Content="Cancel" Margin="0,0,8,0"/>
-            <Button x:Name="SpStart" Content="Start session"/>
+            <Button x:Name="SpCancel" Content="Cancel" Margin="0,0,8,0"
+                    Style="{DynamicResource Btn}"/>
+            <Button x:Name="SpStart" Content="Start session"
+                    Style="{DynamicResource BtnPrimary}"/>
           </StackPanel>
         </Grid>
       </Border>

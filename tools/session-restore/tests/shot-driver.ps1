@@ -25,11 +25,28 @@ if (-not $out) { $out = Join-Path $SR_StateDir ('shots\{0}.png' -f (Get-Date -Fo
 
 if ($env:SR_SHOT_SURFACE -eq 'manage') { $ui.ModeManage.IsChecked = $true; Set-Surface 'manage' }
 
+# 🪤 THE SHEET CANNOT BE SEEN ANY OTHER WAY. It only ever appears while a caller
+# is parked on a nested dispatcher frame, so there is no moment at which a shot
+# taken normally would catch one - and it is the surface every destructive
+# action in the window is read through. Dressed here directly rather than by
+# calling Show-Sheet, which would block this script forever: PushFrame needs a
+# dispatcher that is running, and a shot never starts one.
+if ($env:SR_SHOT_SHEET) {
+    $ui.SheetTitle.Text = 'Your ticks have not been saved'
+    $ui.SheetBody.Text  = 'They decide which conversations reopen at your next logon. Closing now leaves that list exactly as it was.'
+    $pairs = @(@('SheetB1', 'Keep working'), @('SheetB2', 'Close anyway'), @('SheetB3', 'Save and close'))
+    foreach ($p in $pairs) { $ui[$p[0]].Content = $p[1]; $ui[$p[0]].Visibility = $V_Show }
+    $ui.Scrim.Visibility = $V_Show
+    $ui.Sheet.Visibility = $V_Show
+}
+
 $window.Width = $W; $window.Height = $H
 $root = $window.Content
-if (-not $root.Background -or $root.Background -eq [System.Windows.Media.Brushes]::Transparent) {
-    $root.Background = $window.Background
-}
+# 🔴 DO NOT PAINT THE GROUND ONTO THE CONTENT. The app is an inset card with the
+# window's ground showing around it, and an earlier version of this script set
+# $root.Background = $window.Background - which painted the GROUND COLOUR ONTO
+# THE CARD, so every shot showed a full-bleed rectangle and the inset frame was
+# invisible in review. The ground is composited behind instead, below.
 foreach ($pass in 1, 2) {
     $root.Measure((New-Object System.Windows.Size $W, $H))
     $root.Arrange((New-Object System.Windows.Rect 0, 0, $W, $H))
@@ -40,9 +57,38 @@ foreach ($pass in 1, 2) {
 
 $dir = Split-Path -Parent $out
 if ($dir -and -not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
+
+# 🪤 AN ELEMENT WITH NO PARENT RENDERS AT THE ORIGIN, margin and all. Arrange()
+# sizes the card correctly (1452x952 inside 1480x980 - measured), but the 14px
+# offset is applied by the PARENT during layout, and here the card has no
+# parent: it draws hard against the top-left and the inset frame is invisible in
+# every shot. A RenderTransform does NOT fix it either - RenderTargetBitmap
+# ignores the transform on the visual it is handed. The offset is applied at
+# composite time below, where the geometry is ours.
+$mL = 0.0; $mT = 0.0
+if ($root -is [System.Windows.FrameworkElement]) { $mL = $root.Margin.Left; $mT = $root.Margin.Top }
+$content = New-Object System.Windows.Media.Imaging.RenderTargetBitmap([int]$W, [int]$H, 96, 96,
+        [System.Windows.Media.PixelFormats]::Pbgra32)
+$content.Render($root)
+
+# The window's own ground first, then the content over it - which is exactly the
+# order the compositor uses on screen, so the margin around the card reads as it
+# really does rather than as transparency.
+$dv = New-Object System.Windows.Media.DrawingVisual
+$dc = $dv.RenderOpen()
+try {
+    $ground = $window.Background
+    if (-not $ground) { $ground = [System.Windows.Media.Brushes]::Black }
+    $dc.DrawRectangle($ground, $null, (New-Object System.Windows.Rect 0, 0, $W, $H))
+    # Offset by the card's own margin. The bitmap overhangs by that much on the
+    # right and bottom and is clipped there, which is exactly the ground the card
+    # should be leaving on those edges anyway.
+    $dc.DrawImage($content, (New-Object System.Windows.Rect $mL, $mT, $W, $H))
+} finally { $dc.Close() }
+
 $rtb = New-Object System.Windows.Media.Imaging.RenderTargetBitmap([int]$W, [int]$H, 96, 96,
         [System.Windows.Media.PixelFormats]::Pbgra32)
-$rtb.Render($root)
+$rtb.Render($dv)
 $enc = New-Object System.Windows.Media.Imaging.PngBitmapEncoder
 $enc.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($rtb))
 $fs = [System.IO.File]::Create($out)

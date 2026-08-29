@@ -7,7 +7,7 @@
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Ideal"
         TextOptions.TextRenderingMode="Grayscale"
-        Background="#0F1013">
+        Background="#08080A">
 
   <!-- 🔴 WHY THE TEXT LOOKED "PROGRAMMATIC".
        Three settings, and two of them were fighting the fonts:
@@ -37,6 +37,11 @@
        painted caption and lets Windows keep managing the rest, so dragging to
        an edge still snaps and the borders still resize.
 
+       🔴 CaptionHeight IS THE HEADER PLUS THE INSET (46 + 14 = 60). The app is
+       a card floating 14px inside the window, so the header no longer starts at
+       the window's top edge - and the ground around the card should drag it too,
+       which the same number gives for free.
+
        🔴 CaptionHeight MATCHES THE HEADER, and that is what makes this behave
        like a window. It was 0, which told Windows "there is no caption here" -
        so the only way to move the window was the app calling DragMove itself,
@@ -56,7 +61,7 @@
        UseAeroCaptionButtons="False" stops Windows drawing its own.
        ============================================== -->
   <shell:WindowChrome.WindowChrome>
-    <shell:WindowChrome CaptionHeight="46"
+    <shell:WindowChrome CaptionHeight="60"
                         ResizeBorderThickness="6"
                         CornerRadius="0"
                         GlassFrameThickness="0"
@@ -72,30 +77,60 @@
          a screenshot, on a monochrome display, or to somebody who cannot tell
          these hues apart. Colour is the fast path; it is never the only path.
          ============================================ -->
-    <SolidColorBrush x:Key="Ink"       Color="#0F1013"/>
-    <SolidColorBrush x:Key="Panel"     Color="#15161A"/>
-    <SolidColorBrush x:Key="PanelHi"   Color="#1B1D22"/>
-    <SolidColorBrush x:Key="Rail"      Color="#121317"/>
-    <SolidColorBrush x:Key="Hairline"  Color="#26282E"/>
-    <SolidColorBrush x:Key="HairSoft"  Color="#1E2025"/>
+    <!-- 🔴 THERE IS NO HUE IN THIS WINDOW, AND THAT IS THE WHOLE IDEA.
+         Colour used to mean four things at once - needs you, focus, primary,
+         danger - so it meant none of them. White is now the only emphasis there
+         is, and it is spent in exactly two ways, which do not compete because
+         they are different KINDS of thing:
+           as a STATE   white type and a lit edge, and only a conversation
+                        waiting on you earns it
+           as a SURFACE a filled white control - the one action a panel is for
+         Everything else is a step down the grey ladder. That is why a single lit
+         card reads across the room.
 
-    <SolidColorBrush x:Key="TextMax"   Color="#F2F3F5"/>
-    <SolidColorBrush x:Key="TextHigh"  Color="#D6D8DC"/>
-    <SolidColorBrush x:Key="TextMid"   Color="#9AA0A8"/>
-    <SolidColorBrush x:Key="TextLow"   Color="#6B7178"/>
+         The ladder is the LUMINANCE ladder: on a near-black ground, shadow does
+         nothing and only lightness separates one surface from another. The steps
+         are ~8 points, where the old palette's four surfaces sat within six
+         points of EACH OTHER and read as one flat plane. -->
+    <SolidColorBrush x:Key="Ink"       Color="#08080A"/>   <!-- L0 the ground, around the window -->
+    <SolidColorBrush x:Key="Panel"     Color="#0F0F11"/>   <!-- L1 the window itself -->
+    <SolidColorBrush x:Key="PanelHi"   Color="#16161A"/>   <!-- L2 a raised surface -->
+    <SolidColorBrush x:Key="Rail"      Color="#0D0D0F"/>   <!-- L1- the sunken rail -->
+    <SolidColorBrush x:Key="Sheet"     Color="#1B1B20"/>   <!-- L3 sheets and dialogs -->
+    <SolidColorBrush x:Key="Hairline"  Color="#24242A"/>
+    <SolidColorBrush x:Key="HairSoft"  Color="#191920"/>
 
-    <!-- The band accents. One per band, and nothing else in this file is
-         allowed to use them. Clay is Claude's own, and it marks the only band
-         that is an interruption. -->
-    <SolidColorBrush x:Key="AccNeeds"   Color="#D97757"/>
-    <SolidColorBrush x:Key="AccWorking" Color="#5B8DEF"/>
-    <SolidColorBrush x:Key="AccDone"    Color="#4ADE80"/>
-    <SolidColorBrush x:Key="AccIdle"    Color="#8A9099"/>
-    <SolidColorBrush x:Key="AccQuiet"   Color="#4A5058"/>
-    <SolidColorBrush x:Key="Focus"      Color="#D97757"/>
+    <SolidColorBrush x:Key="TextMax"   Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="TextHigh"  Color="#E4E6EB"/>
+    <SolidColorBrush x:Key="TextMid"   Color="#9A9DA6"/>
+    <SolidColorBrush x:Key="TextLow"   Color="#6C6F78"/>
 
-    <SolidColorBrush x:Key="SelBg"     Color="#22252B"/>
-    <SolidColorBrush x:Key="HoverBg"   Color="#1A1C21"/>
+    <!-- The bands. They are LUMINANCE STEPS, not colours: needs-you is pure
+         white and everything else recedes from it. The band heading, the row's
+         edge bar and the unread dot all take these, so a band still reads
+         without colour vision, in a screenshot, and in greyscale print. -->
+    <SolidColorBrush x:Key="AccNeeds"   Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="AccWorking" Color="#9EA2AC"/>
+    <SolidColorBrush x:Key="AccDone"    Color="#71757E"/>
+    <SolidColorBrush x:Key="AccIdle"    Color="#54575E"/>
+    <SolidColorBrush x:Key="AccQuiet"   Color="#3A3D43"/>
+    <!-- Focus is a neutral ring. It used to be the same clay as needs-you, so
+         the keyboard's position and a demand for your attention were the same
+         signal. -->
+    <SolidColorBrush x:Key="Focus"      Color="#8E939D"/>
+
+    <!-- The bevel: a dark outer stroke with a light inner highlight, so a
+         surface looks lit from above rather than outlined. One pair, used by
+         every raised thing in the window. -->
+    <SolidColorBrush x:Key="BevelDark"  Color="#000000" Opacity="0.45"/>
+    <SolidColorBrush x:Key="BevelLit"   Color="#FFFFFF" Opacity="0.09"/>
+    <SolidColorBrush x:Key="EdgeLit"    Color="#FFFFFF" Opacity="0.14"/>
+    <SolidColorBrush x:Key="GlassLo"    Color="#FFFFFF" Opacity="0.035"/>
+    <SolidColorBrush x:Key="GlassMid"   Color="#FFFFFF" Opacity="0.055"/>
+    <SolidColorBrush x:Key="GlassHi"    Color="#FFFFFF" Opacity="0.075"/>
+
+    <SolidColorBrush x:Key="SelBg"     Color="#232329"/>
+    <SolidColorBrush x:Key="HoverBg"   Color="#17171C"/>
 
     <!-- ================== TYPE ==================
          SEGOE UI VARIABLE, AND WHY IT IS THREE FAMILIES.
@@ -113,6 +148,20 @@
 
          Each falls back to plain Segoe UI, so a machine without the variable
          family degrades to what this file used before rather than to Arial.
+
+         🔴 EVERY REFERENCE TO THESE FOUR KEYS IS A DynamicResource, AND THAT IS
+         NOT A STYLE PREFERENCE. Install-SRTypeface swaps the shipped Manrope in
+         by REPLACING these entries at runtime, after this file has been parsed.
+         A {StaticResource FontText} inside a Setter is resolved while the
+         dictionary is being built, so it captures the FontFamily object that is
+         here NOW and never looks at the key again: the swap then changed the
+         key and not one single Style, and the whole window carried on rendering
+         Segoe. It looked convincing from a screenshot, and the font test passed,
+         because the test asked the KEY what it resolved to rather than asking a
+         Style what it was drawn with - and the transcript, which resolves its
+         face in script after the swap, really was on Manrope. DynamicResource
+         keeps the reference live, so replacing the entry reaches all 15 styles.
+         The gui2 suite now asserts this from a realised TextBlock.
          ========================================== -->
     <FontFamily x:Key="FontSmall">Segoe UI Variable Small, Segoe UI</FontFamily>
     <FontFamily x:Key="FontText">Segoe UI Variable Text, Segoe UI</FontFamily>
@@ -129,19 +178,19 @@
          they fall back to WPF's default, which is 12px Segoe UI - the one thing
          on screen that would still look like a different application. -->
     <Style TargetType="{x:Type Window}">
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="13.5"/>
     </Style>
     <Style TargetType="{x:Type ContextMenu}">
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="13"/>
     </Style>
     <Style TargetType="{x:Type MenuItem}">
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="13"/>
     </Style>
     <Style TargetType="{x:Type ToolTip}">
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="12.5"/>
     </Style>
 
@@ -149,13 +198,13 @@
          fourteen inline FontSize values between 10.5 and 12.5, which is not a
          scale, it is fourteen decisions. -->
     <Style x:Key="Display" TargetType="TextBlock">
-      <Setter Property="FontFamily" Value="{StaticResource FontDisplay}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontDisplay}"/>
       <Setter Property="FontSize" Value="18"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
     </Style>
     <Style x:Key="H1" TargetType="TextBlock">
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="15"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
@@ -163,14 +212,14 @@
     <!-- An overline, not a heading: small, spaced out, quiet. The letter spacing
          is what stops an all-caps run reading as shouting. -->
     <Style x:Key="Caption" TargetType="TextBlock">
-      <Setter Property="FontFamily" Value="{StaticResource FontSmall}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontSmall}"/>
       <Setter Property="FontSize" Value="11"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
       <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
     </Style>
     <Style x:Key="Body" TargetType="TextBlock">
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="13.5"/>
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
     </Style>
@@ -179,7 +228,7 @@
       <Setter Property="FontSize" Value="12.5"/>
     </Style>
     <Style x:Key="Meta" TargetType="TextBlock">
-      <Setter Property="FontFamily" Value="{StaticResource FontSmall}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontSmall}"/>
       <Setter Property="FontSize" Value="12"/>
       <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
     </Style>
@@ -225,7 +274,7 @@
     <Style x:Key="DropItem" TargetType="ComboBoxItem">
       <Setter Property="Padding" Value="10,7,10,7"/>
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="Template">
         <Setter.Value>
@@ -243,7 +292,7 @@
       </Setter>
     </Style>
     <Style x:Key="Drop" TargetType="ComboBox">
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
       <Setter Property="Height" Value="32"/>
@@ -302,7 +351,7 @@
          everywhere in the window. -->
     <Style x:Key="Check" TargetType="CheckBox">
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
@@ -373,7 +422,7 @@
 
     <!-- ================== BUTTONS ================== -->
     <Style x:Key="Btn" TargetType="Button">
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
       <Setter Property="Padding" Value="11,6,11,6"/>
@@ -428,7 +477,7 @@
          two surfaces differ by shape, so the switch has to say plainly which
          shape you are looking at. -->
     <Style x:Key="Seg" TargetType="RadioButton">
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
       <Setter Property="Padding" Value="13,6,13,6"/>
@@ -461,7 +510,7 @@
 
     <!-- ================== SEARCH BOX ================== -->
     <Style x:Key="Search" TargetType="TextBox">
-      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
       <Setter Property="CaretBrush" Value="{StaticResource AccNeeds}"/>
@@ -483,7 +532,7 @@
                      it can never eat a click meant for the field beneath. -->
                 <TextBlock x:Name="ph"
                            Text="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=Tag}"
-                           FontFamily="{StaticResource FontText}" FontSize="13"
+                           FontFamily="{DynamicResource FontText}" FontSize="13"
                            Foreground="{StaticResource TextLow}" IsHitTestVisible="False"
                            VerticalAlignment="Center" Margin="12,0,12,0"
                            Visibility="Collapsed"/>
@@ -685,12 +734,31 @@
   </Window.Resources>
 
   <!-- =========================================================================
-       THE SHELL. Four rows: title bar, surface switch, the body, status.
-       The BODY is where the two surfaces differ, and they differ by SHAPE:
-         work surface    three columns  - rail | sessions | output pane
+       THE SHELL — an INSET CARD, not a maximised rectangle.
+       The window's own background is the ground; the app is a rounded card
+       floating on it with the ground visible around every edge. That gap is the
+       single change that makes this read as a designed object rather than a
+       window that happens to be dark, and it costs 14px per side.
+
+       Four rows inside it: title bar, surface switch, the body, status.
+       The BODY is where the two surfaces differ:
+         work surface    tiles | sessions | output pane
          session manager one full-width table
        Only one of the two is ever visible.
+
+       🪤 THE CARD IS CLIPPED, so its rounded corners actually cut the content.
+       Without the clip the corners are painted but children square them off
+       again, which looks like a rendering bug rather than a radius.
        ========================================================================= -->
+  <Border x:Name="Shell" Margin="14" CornerRadius="18" Background="{StaticResource Panel}"
+          BorderBrush="{StaticResource EdgeLit}" BorderThickness="1"
+          SnapsToDevicePixels="True">
+    <Border.Effect>
+      <DropShadowEffect BlurRadius="46" ShadowDepth="14" Opacity="0.62" Color="#000000"/>
+    </Border.Effect>
+    <Border.Clip>
+      <RectangleGeometry x:Name="ShellClip" RadiusX="17" RadiusY="17" Rect="0,0,1452,952"/>
+    </Border.Clip>
   <Grid>
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
@@ -986,7 +1054,7 @@
                    just makes the session unable to do something, once, in an
                    hour's time. Space-separated, claude's own syntax. -->
               <Expander x:Name="SetToolsFold" Header="Tool limits" Margin="0,4,0,10"
-                        Foreground="{StaticResource TextMid}" FontFamily="{StaticResource FontText}" FontSize="12.5">
+                        Foreground="{StaticResource TextMid}" FontFamily="{DynamicResource FontText}" FontSize="12.5">
                 <StackPanel Margin="0,8,0,0">
                   <TextBlock Text="Allow only these" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
                   <TextBox x:Name="SetAllow" Style="{StaticResource Search}" Margin="0,0,0,9"
@@ -1185,5 +1253,72 @@
         </StackPanel>
       </Grid>
     </Border>
+
+    <!-- ================== 4. THE SHEET ==================
+         Every question the window asks used to be a stock Windows MessageBox:
+         a grey 3D dialog in Segoe UI with a shield icon, thrown up in front of
+         a dark window that shares none of its vocabulary. It was also the only
+         part of the tool that could not be restyled, so the more the window
+         improved the more the dialogs stood out - and they appear at exactly
+         the moments that matter (closing live sessions, discarding ticks).
+
+         🪤 SCRIM AND CARD ARE TWO ELEMENTS ON PURPOSE, NOT ONE PANEL.
+         The scrim has to cover the HEADER too or the dim reads as half-applied,
+         which means spanning rows 0-3 - and rows 0, 1 and 3 are Height="Auto".
+         Anything with a real desired size placed across them inflates them
+         (the same trap already documented on SettingsBox above). A Rectangle
+         with no Width/Height has a desired size of ZERO and cannot inflate
+         anything, while still painting across the whole span. The card, which
+         does have a size, therefore lives alone in row 2 - the star row, where
+         nothing it does can change the layout of anything else.
+         ================================================== -->
+    <Rectangle x:Name="Scrim" Grid.Row="0" Grid.RowSpan="4" Panel.ZIndex="100"
+               Visibility="Collapsed" Fill="#000000" Opacity="0.62"/>
+
+    <Grid x:Name="Sheet" Grid.Row="2" Panel.ZIndex="101" Visibility="Collapsed">
+      <Border MaxWidth="560" MaxHeight="480" VerticalAlignment="Center"
+              HorizontalAlignment="Center" Margin="24"
+              Background="{StaticResource Sheet}" CornerRadius="14"
+              BorderBrush="{StaticResource EdgeLit}" BorderThickness="1"
+              Padding="26,22,26,20" SnapsToDevicePixels="True">
+        <Border.Effect>
+          <DropShadowEffect BlurRadius="52" ShadowDepth="16" Opacity="0.7" Color="#000000"/>
+        </Border.Effect>
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+
+          <!-- Display, not H1. At 15px the question read at exactly the same
+               size as the pane name behind it, which is the wrong weighting for
+               the only thing on screen the operator is being asked to answer. -->
+          <TextBlock x:Name="SheetTitle" Grid.Row="0" Style="{StaticResource Display}"
+                     TextWrapping="Wrap" Margin="0,0,0,14" Text=""/>
+
+          <!-- The bodies name every conversation an action will touch, so this
+               scrolls rather than trimming: a list you cannot read to the end
+               is not a confirmation. -->
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled" Margin="0,0,0,20">
+            <TextBlock x:Name="SheetBody" Style="{StaticResource Body}"
+                       TextWrapping="Wrap" LineHeight="20" Text=""/>
+          </ScrollViewer>
+
+          <!-- Three at most, right-aligned, the primary last: the rightmost
+               button is the one Enter presses and the one the eye lands on. -->
+          <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="SheetB1" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                    Visibility="Collapsed" MinWidth="92"/>
+            <Button x:Name="SheetB2" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                    Visibility="Collapsed" MinWidth="92"/>
+            <Button x:Name="SheetB3" Style="{StaticResource BtnPrimary}"
+                    Visibility="Collapsed" MinWidth="92"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+    </Grid>
   </Grid>
+  </Border>
 </Window>

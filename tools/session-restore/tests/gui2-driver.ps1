@@ -364,12 +364,23 @@ if (-not $chrome) { Fail 'no WindowChrome - the window would lose Aero Snap and 
 # no caption, so drag, snap, aero-shake, Win+arrow and the Alt+Space menu were
 # all gone, and only the app's own maximise and close buttons worked. Reported
 # by the operator. It must also match the header's height, or part of the strip
-# drags and part does not.
+# drags and part does not - measured from the WINDOW's top edge, which is not
+# where the header starts: the app is a card inset inside the window, so the
+# caption has to cover that inset as well or the top band of the header is dead.
 elseif ($chrome.CaptionHeight -le 0) {
     Fail 'CaptionHeight is 0 - Windows will not move this window at all'
-} elseif ([Math]::Abs($chrome.CaptionHeight - $ui.TitleBar.Height) -gt 0.5) {
-    Fail "CaptionHeight is $($chrome.CaptionHeight) but the title bar is $($ui.TitleBar.Height) - part of the strip would not drag"
-} else { Pass "Windows drags the window by its $($chrome.CaptionHeight)px header, and still snaps and resizes it" }
+} else {
+    $inset = 0.0
+    if ($ui.Shell) { $inset = $ui.Shell.Margin.Top }
+    $want = $ui.TitleBar.Height + $inset
+    if ([Math]::Abs($chrome.CaptionHeight - $want) -gt 0.5) {
+        Fail ("CaptionHeight is $($chrome.CaptionHeight) but the header ends at $want " +
+              "($($ui.TitleBar.Height) header + $inset inset) - part of the strip would not drag")
+    } else {
+        Pass ("Windows drags the window by its $($chrome.CaptionHeight)px caption " +
+              "($($ui.TitleBar.Height) header + $inset inset), and still snaps and resizes it")
+    }
+}
 
 # Everything interactive sitting ON that caption must opt out of the chrome, or
 # Windows treats the click as a drag and the control never sees it.
@@ -385,6 +396,244 @@ foreach ($n in @('Search', 'WinMin', 'WinMax', 'WinClose', 'Rescan', 'NewSession
     if (-not $inChrome) { Fail "'$n' sits on the caption but is not hit-test visible in chrome - clicking it would drag the window" }
 }
 Pass 'every control on the caption is clickable rather than draggable'
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the shipped typeface reaches the text, not just the key ---'
+# ===========================================================================
+# 🔴 THIS ASKS A REALISED TextBlock WHAT IT IS DRAWN WITH. The font suite asked
+# FindResource('FontText') what the KEY resolved to, which was Manrope, and the
+# window was still rendering Segoe everywhere: Install-SRTypeface replaces the
+# dictionary entry after this file is parsed, and a {StaticResource FontText}
+# inside a Setter had already captured the OLD FontFamily object and stopped
+# looking at the key. Every style is a DynamicResource now. Asking the key
+# proves nothing - it passed throughout - so this asks the control.
+if ($script:hasManrope) {
+    Lay
+    $off = @()
+    foreach ($n in @('PaneName', 'Status', 'SheetTitle', 'SheetBody', 'ListCaption', 'PaneState')) {
+        $el = $ui.$n
+        if ($el -and "$($el.FontFamily.Source)" -notlike '*Manrope*') { $off += "$n on '$($el.FontFamily.Source)'" }
+    }
+    if ($off.Count) { Fail ('the shipped typeface never reached: ' + ($off -join '; ')) }
+    else { Pass 'the header, the status line, the list and the sheet all draw in the shipped face' }
+
+    # And the styles themselves, which is where the break actually was.
+    $stale = @()
+    foreach ($k in @('Display', 'H1', 'Caption', 'Body', 'Dim', 'Meta')) {
+        $st = $window.FindResource($k)
+        $f = @($st.Setters | Where-Object { $_.Property.Name -eq 'FontFamily' })[0]
+        $v = $(if ($f) { $f.Value } else { $null })
+        # A DynamicResource setter holds the EXTENSION, not the value - which is
+        # the point: it is resolved per-use, so the swap reaches it.
+        if ($v -is [System.Windows.Media.FontFamily] -and "$($v.Source)" -notlike '*Manrope*') { $stale += $k }
+    }
+    if ($stale.Count) { Fail ('these styles captured the old face at parse time: ' + ($stale -join ', ')) }
+    else { Pass 'no text style holds a face captured before the swap' }
+} else {
+    Note 'lib\fonts\Manrope.ttf is absent - the typeface assertions are skipped, as the window is on the system face by design'
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the window asks in its own voice ---'
+# ===========================================================================
+# 🪤 GREP THE CODE, NOT THE COMMENTS. An earlier assertion in this suite matched
+# '--remote-control' inside a COMMENT and would have passed however the code
+# behaved. Every line here is stripped of comments first, and the grep is proved
+# capable of finding something before its silence is trusted.
+$src = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-gui2.ps1') -Encoding UTF8
+$code = @($src | ForEach-Object { ($_ -replace '(?<!`)#.*$', '') } | Where-Object { $_.Trim() })
+$stock = @($code | Where-Object { $_ -match 'MessageBox' })
+$mine  = @($code | Where-Object { $_ -match 'Show-Sheet' })
+if (-not $mine.Count) {
+    Fail 'the comment-stripped grep found no Show-Sheet either - it is not reading the code at all'
+} elseif ($stock.Count) {
+    Fail ("a stock MessageBox survives the migration: $($stock[0].Trim())")
+} else {
+    Pass "no MessageBox remains; $($mine.Count) code lines go through the sheet instead"
+}
+
+foreach ($n in @('Scrim', 'Sheet', 'SheetTitle', 'SheetBody', 'SheetB1', 'SheetB2', 'SheetB3')) {
+    if (-not $ui.$n) { Fail "the sheet has no '$n'" }
+}
+if ($ui.Scrim.Visibility -ne $V_Hide -or $ui.Sheet.Visibility -ne $V_Hide) {
+    Fail 'the sheet is visible at rest - it would cover the window before anything was asked'
+} else { Pass 'the sheet and its scrim start hidden' }
+
+# 🔴 THE SCRIM MUST NOT BE ABLE TO INFLATE A ROW. It spans rows 0-3 and three of
+# those are Height="Auto"; anything with a real desired size placed across them
+# stretches the header, which is the trap already documented on SettingsBox. A
+# Rectangle with no Width/Height desires nothing, and this is what proves it
+# still does not - a Width slipped onto it later would fail here rather than in
+# the operator's window.
+Lay
+if ([System.Windows.Controls.Grid]::GetRowSpan($ui.Scrim) -lt 4) {
+    Fail 'the scrim does not span every row - the header would stay undimmed'
+} elseif ($ui.Scrim.DesiredSize.Width -gt 0 -or $ui.Scrim.DesiredSize.Height -gt 0) {
+    Fail ("the scrim now desires $($ui.Scrim.DesiredSize) - it would stretch the Auto rows it spans")
+} else { Pass 'the scrim covers all four rows and cannot stretch any of them' }
+
+# --- and it actually answers ------------------------------------------------
+# Show-Sheet BLOCKS on a nested dispatcher frame, so it is driven the way the
+# operator drives it: a callback posted onto that same dispatcher presses a
+# button while the call is parked.
+#
+# 🪤 THE BUTTON NAME CANNOT BE CAPTURED IN THE CLOSURE, and the first version of
+# this helper did exactly that. A scriptblock posted from inside a function
+# outlives that function's scope, so by the time the dispatcher ran it the
+# parameter had gone and every sheet fell through to the dismiss path. It still
+# looked green: three of the assertions expected the ESCAPE value, which is what
+# dismissing returns, so they passed without a button ever being pressed. Hence
+# both rules below - the name goes through a script-scoped variable, and NO test
+# here may expect a value the escape could also produce.
+$disp = [System.Windows.Threading.Dispatcher]::CurrentDispatcher
+function Press { param([string]$Which)
+    $script:pressWhich = $Which
+    $script:pressOk = $false
+    $null = $disp.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Background, [action]{
+        # Read from INSIDE the open sheet: the gate every timer checks.
+        $script:seenDepth = ($script:sheetDepth -ge 1)
+        $script:seenB3    = "$($ui.SheetB3.Content)"
+        $script:seenB2vis = $ui.SheetB2.Visibility
+        $script:seenB1vis = $ui.SheetB1.Visibility
+        $b = $(if ($script:pressWhich) { $ui[$script:pressWhich] } else { $null })
+        if ($b) {
+            $script:pressOk = $true
+            $b.RaiseEvent((New-Object System.Windows.RoutedEventArgs(
+                [System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+        } else {
+            # No button: the way out Esc takes, which returns the nominated escape.
+            $script:sheetFrame.Continue = $false
+        }
+    })
+}
+
+Press 'SheetB3'
+$got = Show-Sheet -Title 'Two choices' -Body 'body' -Escape 'no' -Choices @(
+    @{ Key = 'no'; Label = 'Cancel' }, @{ Key = 'yes'; Label = 'Do it' })
+if ($got -ne 'yes') { Fail "pressing the primary returned '$got', not 'yes'" }
+elseif ($script:seenB3 -ne 'Do it') { Fail "the primary button read '$($script:seenB3)', not the last choice" }
+elseif (-not $script:seenDepth) { Fail 'sheetDepth was 0 while a sheet was open - every timer would keep mutating the model underneath it' }
+elseif ($script:seenB1vis -ne $V_Hide) { Fail 'a third button showed for a two-choice sheet' }
+else { Pass "the last choice lands on the primary, presses through, and freezes the model while it is up" }
+
+# The MIDDLE of three, whose key is neither the primary's nor the escape's -
+# the only press that can tell all three buttons apart in one go.
+Press 'SheetB2'
+$got = Show-Sheet -Title 'Three choices' -Body 'body' -Escape 'stay' -Choices @(
+    @{ Key = 'stay'; Label = 'Keep working' },
+    @{ Key = 'discard'; Label = 'Close anyway' },
+    @{ Key = 'save'; Label = 'Save and close' })
+if ($got -ne 'discard') { Fail "the middle of three returned '$got', not 'discard'" }
+elseif ($script:seenB3 -ne 'Save and close') { Fail "three choices put '$($script:seenB3)' on the primary" }
+else { Pass 'three choices fill left to right with the primary last' }
+
+# The leftmost, again against an escape it cannot be confused with.
+Press 'SheetB1'
+$got = Show-Sheet -Title 'Leftmost' -Body 'body' -Escape 'save' -Choices @(
+    @{ Key = 'stay'; Label = 'Keep working' },
+    @{ Key = 'discard'; Label = 'Close anyway' },
+    @{ Key = 'save'; Label = 'Save and close' })
+if ($got -ne 'stay') { Fail "the leftmost of three returned '$got', not 'stay'" }
+else { Pass 'the leftmost button carries the first choice' }
+
+Press $null
+$got = Show-Sheet -Title 'Dismissed' -Body 'body' -Escape 'stay' -Choices @(
+    @{ Key = 'stay'; Label = 'Keep working' }, @{ Key = 'go'; Label = 'Close anyway' })
+if ($got -ne 'stay') { Fail "dismissing returned '$got' - Esc must answer with the safe way out, never the destructive one" }
+else { Pass 'dismissing answers with the nominated escape, not the primary' }
+
+if ($ui.Scrim.Visibility -ne $V_Hide -or $ui.Sheet.Visibility -ne $V_Hide) {
+    Fail 'the sheet stayed up after answering - the window would be left unusable'
+} elseif ($script:sheetDepth -ne 0) {
+    Fail "sheetDepth is $($script:sheetDepth) after the sheets closed - the timers would never restart"
+} else { Pass 'it clears itself and the model starts moving again' }
+
+# The contract repeated at all seven real call sites. Cancel and Esc mean the
+# same thing here by design, so this leans on $pressOk to prove the button was
+# genuinely found and pressed rather than quietly skipped.
+Press 'SheetB3'
+$yes = Confirm-Action 'Relaunch this conversation' 'body' -Verb 'Relaunch'
+$yesPressed = $script:pressOk
+Press 'SheetB1'
+$no  = Confirm-Action 'Relaunch this conversation' 'body' -Verb 'Relaunch'
+if (-not ($yesPressed -and $script:pressOk)) { Fail 'the harness never actually pressed a button - this assertion proves nothing' }
+elseif (-not $yes) { Fail 'Confirm-Action returned false when the action was confirmed - every guarded action would silently do nothing' }
+elseif ($no)   { Fail 'Confirm-Action returned true when it was cancelled - every guarded action would fire anyway' }
+elseif ($script:seenB3 -ne 'Relaunch') { Fail "the confirm button read '$($script:seenB3)' rather than naming the action" }
+else { Pass "Confirm-Action still means yes/no, and its button names the verb" }
+
+# Show-Notice is the one-button shape, and a second button on it would mean the
+# operator could be asked to choose about something they cannot change.
+Press 'SheetB3'
+Show-Notice 'Not saved' 'body'
+if (-not $script:pressOk) { Fail 'the notice was never dismissed' }
+elseif ($script:seenB2vis -ne $V_Hide) { Fail 'a notice offered more than one button' }
+elseif ($script:seenB3 -ne 'Close') { Fail "the notice's only button read '$($script:seenB3)'" }
+else { Pass 'a notice tells you one thing and offers one way out' }
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the new-session dialog reads the same palette ---'
+# ===========================================================================
+# 🔴 A MISSPELLED DynamicResource KEY FAILS SILENTLY. That is the whole risk of
+# moving this dialog onto the window's dictionary: StaticResource would have
+# thrown at parse time, DynamicResource just resolves to nothing and the control
+# renders with its default brush - which on a dark window is stock Aero grey, the
+# exact thing the move was meant to end. Every key it names is checked here.
+$spPath = Join-Path $SR_LibDir 'spawn2.xaml'
+$spRaw  = Get-Content -LiteralPath $spPath -Raw -Encoding UTF8
+$keys = @([regex]::Matches($spRaw, '\{DynamicResource\s+([A-Za-z0-9_]+)\s*\}') |
+          ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+if ($keys.Count -lt 8) { Fail "only $($keys.Count) DynamicResource keys found - the dialog is not on the shared palette" }
+else {
+    $missing = @()
+    foreach ($k in $keys) { try { $null = $window.FindResource($k) } catch { $missing += $k } }
+    if ($missing.Count) { Fail ("the dialog asks for keys the window does not define: " + ($missing -join ', ')) }
+    else { Pass "all $($keys.Count) keys the dialog names resolve against the window's own dictionary" }
+}
+
+# 🪤 AND THE OLD PALETTE MUST BE GONE, not merely unused. A leftover #0F1013 is
+# what "already a whole redesign behind" looked like the first time. Comments are
+# stripped first: the first version of this check matched the three colours named
+# in the comment that EXPLAINS they were removed, and failed on a clean file.
+$spCode = [regex]::Replace($spRaw, '(?s)<!--.*?-->', '')
+$hard = @([regex]::Matches($spCode, '(?<!x:Key=")#[0-9A-Fa-f]{6}') | ForEach-Object { $_.Value } |
+          Where-Object { $_ -ne '#000000' } | Sort-Object -Unique)
+if ($hard.Count) { Fail ("spawn2.xaml still hard-codes " + ($hard -join ', ') + " instead of a token") }
+else { Pass 'the dialog hard-codes no colour of its own beyond the shadow' }
+if ($spCode -match 'FontFamily="Segoe') { Fail 'spawn2.xaml still names a Segoe face by hand - it would not follow the window onto Manrope' }
+else { Pass 'it names no typeface of its own' }
+
+# Built and merged exactly as Show-Spawn does it, then asked what it resolved to.
+$spr = New-Object System.Xml.XmlNodeReader ([xml]$spRaw)
+$spw = [Windows.Markup.XamlReader]::Load($spr)
+$spw.Resources.MergedDictionaries.Add($window.Resources)
+$nm = $spw.FindName('SpName')
+if (-not $nm) { Fail 'the dialog has no SpName after loading' }
+elseif (-not $nm.Style) { Fail 'the name box resolved no style - it would render as stock Aero' }
+elseif (-not [object]::ReferenceEquals($nm.Style, $window.FindResource('Search'))) {
+    Fail 'the name box resolved a DIFFERENT style object than the window uses'
+} else { Pass 'a merged control resolves the very same style object the window holds' }
+# 🪤 ASK A REALISED CONTROL, NOT THE SETTER. Now that the styles are dynamic the
+# setter holds a DynamicResourceExtension rather than a face, so reading
+# .Value.Source off it returns an empty string - which is what the first version
+# of this assertion reported as "not Manrope". The value only exists once the
+# element is measured and the reference is resolved through its parent chain.
+if ($script:hasManrope) {
+    $spRoot = $spw.Content
+    $spRoot.Measure((New-Object System.Windows.Size 540, 900))
+    $spRoot.Arrange((New-Object System.Windows.Rect 0, 0, 540, 900))
+    $spRoot.UpdateLayout()
+    $bad = @()
+    foreach ($n in @('SpWarn', 'SpDirPath', 'SpHint', 'SpPermNote')) {
+        $t = $spw.FindName($n)
+        if ($t -and "$($t.FontFamily.Source)" -notlike '*Manrope*') { $bad += "$n on '$($t.FontFamily.Source)'" }
+    }
+    if ($bad.Count) { Fail ('the dialog text never picked up the shipped face: ' + ($bad -join '; ')) }
+    else { Pass 'the shipped typeface reaches the dialog through the merge' }
+}
 
 Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }

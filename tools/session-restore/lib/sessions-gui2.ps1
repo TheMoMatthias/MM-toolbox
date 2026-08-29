@@ -121,7 +121,7 @@ try {
 # hundreds of lines away, so it fails HERE, naming the element that is wrong.
 $ui = @{}
 foreach ($n in @(
-    'TitleBar','WinMin','WinMax','WinClose',
+    'Shell','TitleBar','WinMin','WinMax','WinClose',
     'LiveCount','Search','Stamp','Rescan','NewSession',
     'ModeWork','ModeManage','Broadcast',
     'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear',
@@ -135,6 +135,7 @@ foreach ($n in @(
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions',
+    'Scrim','Sheet','SheetTitle','SheetBody','SheetB1','SheetB2','SheetB3',
     'Status','SaveBtn'
 )) {
     $el = $window.FindName($n)
@@ -144,6 +145,114 @@ foreach ($n in @(
 
 $V_Show = [System.Windows.Visibility]::Visible
 $V_Hide = [System.Windows.Visibility]::Collapsed
+
+# ---------------------------------------------------------------------------
+# The sheet - the window asking, in its own voice
+#
+# Every question used to be [System.Windows.MessageBox]::Show: a grey system
+# dialog with a shield icon and Segoe UI, in front of a window that shares none
+# of that. It was also the one surface that could not be restyled, so it grew
+# more conspicuous the better the rest of the window got - and it appears at the
+# moments that matter most, because those are the ones worth confirming.
+#
+# 🔴 THIS BLOCKS, AND IT HAS TO. Seven callers are written as `if (Confirm-Action
+# ...) { do it }` - a non-blocking sheet would return before the operator had
+# answered and every one of them would read the answer as "no". Blocking without
+# freezing is what a nested DispatcherFrame is for: the dispatcher keeps pumping
+# (so the sheet paints and its buttons respond) while the CALLER stays parked on
+# its own line. It is exactly the mechanism MessageBox itself used, which is why
+# swapping one for the other needs no change at any call site.
+# ---------------------------------------------------------------------------
+$script:sheetFrame  = $null
+$script:sheetPick   = $null
+$script:sheetEscape = $null
+# 🔴 READ BY EVERY TIMER TICK. A sheet names the exact conversations an action
+# will touch, and the caller is holding the row objects behind those names. The
+# live probe re-adopts the registry and rebinds rows, so letting it run under an
+# open sheet would hand the caller a list of ORPHANS the moment the operator
+# pressed the button - the same defect class as the adoption bug, arriving by a
+# different door. Everything that mutates the model stands still while it is up.
+$script:sheetDepth  = 0
+
+foreach ($bn in @('SheetB1', 'SheetB2', 'SheetB3')) {
+    $ui[$bn].Add_Click({
+        param($s, $e)
+        $script:sheetPick = "$($s.Tag)"
+        if ($script:sheetFrame) { $script:sheetFrame.Continue = $false }
+    })
+}
+
+# Esc answers with whatever the caller nominated as the safe way out; Enter
+# takes the primary. Preview, so the sheet gets the key before the list below
+# it does - the transcript and the session list both bind arrows and Enter.
+$window.Add_PreviewKeyDown({
+    param($s, $e)
+    if (-not $script:sheetFrame) { return }
+    if ($e.Key -eq [System.Windows.Input.Key]::Escape) {
+        $script:sheetPick = $script:sheetEscape
+        $script:sheetFrame.Continue = $false
+        $e.Handled = $true
+    } elseif ($e.Key -eq [System.Windows.Input.Key]::Enter) {
+        $script:sheetPick = "$($ui.SheetB3.Tag)"
+        $script:sheetFrame.Continue = $false
+        $e.Handled = $true
+    }
+})
+
+function Show-Sheet {
+    param(
+        [string]$Title,
+        [string]$Body,
+        # Ordered left to right. The LAST one is the primary - it lands on the
+        # button carrying BtnPrimary, is focused, and is what Enter presses.
+        [object[]]$Choices,
+        # What Esc means. Never the destructive choice.
+        [string]$Escape
+    )
+    $n = @($Choices).Count
+    if ($n -lt 1 -or $n -gt 3) { throw "Show-Sheet takes one to three choices, not $n" }
+
+    $ui.SheetTitle.Text = $Title
+    $ui.SheetBody.Text  = $Body
+
+    # Filled from the right, so the primary always lands on B3 whether there are
+    # one, two or three of them and the row stays right-aligned either way.
+    $slots = @($ui.SheetB3, $ui.SheetB2, $ui.SheetB1)
+    foreach ($b in $slots) { $b.Visibility = $V_Hide; $b.Tag = $null }
+    for ($i = 0; $i -lt $n; $i++) {
+        $c = @($Choices)[$n - 1 - $i]
+        $slots[$i].Content    = "$($c.Label)"
+        $slots[$i].Tag        = "$($c.Key)"
+        $slots[$i].Visibility = $V_Show
+    }
+
+    $prevFrame  = $script:sheetFrame
+    $prevEscape = $script:sheetEscape
+    $script:sheetPick   = $Escape
+    $script:sheetEscape = $Escape
+    $ui.Scrim.Visibility = $V_Show
+    $ui.Sheet.Visibility = $V_Show
+    $script:sheetDepth++
+    $null = $ui.SheetB3.Focus()
+
+    $frame = New-Object System.Windows.Threading.DispatcherFrame
+    $script:sheetFrame = $frame
+    $pick = $Escape
+    try {
+        [System.Windows.Threading.Dispatcher]::PushFrame($frame)
+        $pick = $script:sheetPick
+    } finally {
+        $script:sheetFrame  = $prevFrame
+        $script:sheetEscape = $prevEscape
+        $script:sheetDepth--
+        if ($script:sheetDepth -le 0) {
+            $script:sheetDepth = 0
+            $ui.Scrim.Visibility = $V_Hide
+            $ui.Sheet.Visibility = $V_Hide
+        }
+    }
+    return $pick
+}
 
 # ---------------------------------------------------------------------------
 # State
@@ -738,9 +847,65 @@ $Pal = @{
     TextLow    = $window.FindResource('TextLow')
     TextDim    = $window.FindResource('AccQuiet')
 }
-# The faces the TRANSCRIPT is drawn in - the biggest block of text in the window,
-# and it was still on the retired FontUi alias while everything around it moved
-# to the scale. Prose in Text, tool output and code in the mono face.
+# ===========================================================================
+# THE TYPEFACE, LOADED FROM A FILE BESIDE THIS SCRIPT.
+#
+# Manrope ships with the tool (lib\fonts\, SIL OFL - see the README there).
+# Everything Windows provides is either the system UI face, which reads as "no
+# decision was made", or has a flaw at these sizes: Corbel's old-style numerals
+# drop the 1 and 9 below the cap line, which makes a counter look broken.
+#
+# 🔴 IT IS A VARIABLE FONT AND THAT WAS CHECKED BEFORE SHIPPING IT. WPF cannot
+# interpolate a variable axis - but it does read the font's NAMED INSTANCES, and
+# Manrope carries seven (ExtraLight to ExtraBold). Verified on this machine via
+# GetFontFamilies().GetTypefaces(). Had it exposed only one, every weight would
+# have rendered Regular with a synthesised bold - worse than the system font it
+# replaces, and silent.
+#
+# 🪤 If the file is missing the window keeps the Segoe UI Variable stack the
+# markup declares. A deleted font degrades to the PREVIOUS look, never to Arial,
+# and the log says which one was used.
+function Install-SRTypeface {
+    $dir = Join-Path $here 'fonts'
+    $ttf = Join-Path $dir 'Manrope.ttf'
+    if (-not (Test-Path -LiteralPath $ttf)) {
+        Write-SRLog '  [skip] lib\fonts\Manrope.ttf is not there - keeping the system face'
+        return $false
+    }
+    try {
+        # The trailing separator matters: GetFontFamilies wants the DIRECTORY,
+        # and './#Family' is how WPF names a face inside a loose folder.
+        $base = [Uri]('file:///' + $dir.Replace('\', '/').TrimEnd('/') + '/')
+        $fams = [System.Windows.Media.Fonts]::GetFontFamilies($base)
+        # 🔴 THE CAST IS LOAD-BEARING, not tidiness. Anything that comes out of a
+        # PowerShell pipeline arrives wrapped in a PSObject, and putting that
+        # wrapper straight into a ResourceDictionary stores the WRAPPER. Nothing
+        # noticed while the styles held static references and never read the key
+        # again; the moment they became dynamic and WPF actually resolved it,
+        # layout died with "Unable to cast PSObject to FontFamily" - on the first
+        # Measure, so the window never appeared at all.
+        $fam = [System.Windows.Media.FontFamily](@($fams | Where-Object { "$($_.Source)" -like '*#Manrope*' })[0])
+        if (-not $fam) { Write-SRLog '  [skip] no Manrope family in lib\fonts - keeping the system face'; return $false }
+        $faces = @($fam.GetTypefaces())
+        if ($faces.Count -lt 2) {
+            # One face means no named instances survived, and every weight would
+            # be synthesised. The system font is the better outcome.
+            Write-SRLog ('  [skip] Manrope exposes only {0} face - keeping the system face' -f $faces.Count)
+            return $false
+        }
+        foreach ($k in @('FontText', 'FontDisplay', 'FontSmall')) { $window.Resources[$k] = $fam }
+        Write-SRLog ('  [ok]   typeface Manrope loaded from lib\fonts ({0} faces)' -f $faces.Count)
+        return $true
+    } catch {
+        Write-SRLog ('  [skip] Manrope would not load ({0}) - keeping the system face' -f $_.Exception.Message)
+        return $false
+    }
+}
+$script:hasManrope = Install-SRTypeface
+
+# The faces the TRANSCRIPT is drawn in - the biggest block of text in the window.
+# Resolved AFTER the typeface is installed, or the document would keep the system
+# face while everything around it changed.
 $script:UiFace   = $window.FindResource('FontText')
 $script:MonoFace = $window.FindResource('FontMono')
 $FW_Semi   = [System.Windows.FontWeights]::SemiBold
@@ -1290,6 +1455,8 @@ $script:followStamp = $null
 $script:followTimer = New-Object System.Windows.Threading.DispatcherTimer
 $script:followTimer.Interval = [TimeSpan]::FromSeconds(1)
 $script:followTimer.Add_Tick({
+    # Nothing moves under an open sheet - see the gate on the model timers.
+    if ($script:sheetDepth -gt 0) { return }
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
     $r = $it.Row
@@ -1327,18 +1494,22 @@ $window.Add_SizeChanged({ Set-Breakpoint })
 $window.Add_Closing({
     param($sender, $e)
     if (-not $script:dirty) { return }
-    $r = [System.Windows.MessageBox]::Show(
-        "Your ticks have not been saved. They decide which conversations reopen at your next logon.`n`nSave them before closing?",
-        'Unsaved ticks',
-        [System.Windows.MessageBoxButton]::YesNoCancel,
-        [System.Windows.MessageBoxImage]::Warning)
-    if ($r -eq [System.Windows.MessageBoxResult]::Cancel) { $e.Cancel = $true; return }
-    if ($r -eq [System.Windows.MessageBoxResult]::Yes) {
+    # The only three-way question in the window. Esc keeps the window open,
+    # because the one answer you can never take back is the one that throws the
+    # ticks away, and a key pressed by accident must not be able to reach it.
+    $r = Show-Sheet -Title 'Your ticks have not been saved' -Escape 'stay' -Body `
+        ("They decide which conversations reopen at your next logon. " +
+         "Closing now leaves that list exactly as it was.") -Choices @(
+        @{ Key = 'stay';    Label = 'Keep working' },
+        @{ Key = 'discard'; Label = 'Close anyway' },
+        @{ Key = 'save';    Label = 'Save and close' }
+    )
+    if ($r -eq 'stay') { $e.Cancel = $true; return }
+    if ($r -eq 'save') {
         try { Save-SRRegistry -Registry $script:reg; $script:dirty = $false }
         catch {
-            [void][System.Windows.MessageBox]::Show(
-                ("Could not save: " + $_.Exception.Message), 'Not saved',
-                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+            Show-Notice 'Not saved' ("The ticks could not be written, so the window is staying open " +
+                "rather than losing them.`n`n" + $_.Exception.Message)
             $e.Cancel = $true
         }
     }
@@ -1454,7 +1625,7 @@ function New-ManageMenu {
         if (-not ($r.A -and $r.A.Pid)) { Set-Status 'that conversation is not running - use Open it now' 'warn'; return }
         $t = (Get-Title $r.S $r.D).Text
         if (Confirm-Action 'Relaunch this conversation' `
-            ("'{0}' will be CLOSED and opened again." -f $t)) { Invoke-RelaunchOne $r }
+            ("'{0}' will be CLOSED and opened again." -f $t) -Verb 'Relaunch') { Invoke-RelaunchOne $r }
     }
     $null = & $mk 'Go to its terminal' {
         $r = Get-ManageRow; if (-not $r) { return }
@@ -1678,11 +1849,21 @@ function Start-LaunchQueue { param($Items)
     $script:launchTimer.Start()
 }
 
-function Confirm-Action { param([string]$Title, [string]$Body)
-    $r = [System.Windows.MessageBox]::Show($Body, $Title,
-            [System.Windows.MessageBoxButton]::OKCancel,
-            [System.Windows.MessageBoxImage]::Question)
-    return ($r -eq [System.Windows.MessageBoxResult]::OK)
+# 🪤 THE VERB IS NOT DECORATION. 'OK' beside a list of twelve live conversations
+# does not say what pressing it does, and these confirmations exist precisely
+# because the action is hard to take back. Every caller names it.
+function Confirm-Action { param([string]$Title, [string]$Body, [string]$Verb = 'Continue')
+    return ((Show-Sheet -Title $Title -Body $Body -Escape 'no' -Choices @(
+        @{ Key = 'no';  Label = 'Cancel' },
+        @{ Key = 'yes'; Label = $Verb }
+    )) -eq 'yes')
+}
+
+# One button, nothing to decide: something went wrong and you are being told.
+function Show-Notice { param([string]$Title, [string]$Body)
+    $null = Show-Sheet -Title $Title -Body $Body -Escape 'ok' -Choices @(
+        @{ Key = 'ok'; Label = 'Close' }
+    )
 }
 
 $ui.OpenNotRunning.Add_Click({
@@ -1702,7 +1883,7 @@ $ui.OpenNotRunning.Add_Click({
     if (@($plan.Blocked).Count) { $note += ('{0} are ticked but cannot be launched (first: {1}).' -f @($plan.Blocked).Count, (@($plan.Blocked)[0].Why)) }
     if (-not (Confirm-Action 'Open the ticked conversations that are not running' `
         ("{0} will be opened, each in its own tab, half a second apart:`n`n{1}{2}" -f `
-            $go.Count, $names, $(if ($note.Count) { "`n`n" + ($note -join '  ') } else { '' })))) {
+            $go.Count, $names, $(if ($note.Count) { "`n`n" + ($note -join '  ') } else { '' })) -Verb ('Open {0}' -f $go.Count))) {
         Set-Status 'nothing opened'; return
     }
     Start-LaunchQueue $go
@@ -1731,7 +1912,7 @@ $ui.RelaunchSessions.Add_Click({
     if ($lim.Over) { $note += ('{0} more are running but over the maxSessions cap of {1}, so they are skipped.' -f $lim.Over, $lim.Cap) }
     if (-not (Confirm-Action ('Relaunch {0} running conversations' -f $go.Count) `
         ("Each one is CLOSED and then opened again. Use this after signing in, or after reconnecting Remote Control: a running session reads your login AND its remote name at startup, so neither can be picked up without a restart.`n`nClosing: {0}{1}" -f `
-            $names, $(if ($note.Count) { "`n`n" + ($note -join '  ') } else { '' })))) {
+            $names, $(if ($note.Count) { "`n`n" + ($note -join '  ') } else { '' })) -Verb ('Relaunch {0}' -f $go.Count))) {
         Set-Status 'nothing relaunched'; return
     }
 
@@ -1929,13 +2110,13 @@ $ui.PaneRelaunch.Add_Click({
     if (-not $r) { Set-Status 'select a conversation first' 'warn'; return }
     $t = (Get-Title $r.S $r.D).Text
     if (-not ($r.A -and $r.A.Pid)) {
-        if (Confirm-Action 'Open this conversation' ("'{0}' is not running. Open it now?" -f $t)) {
+        if (Confirm-Action 'Open this conversation' ("'{0}' is not running." -f $t) -Verb 'Open') {
             Start-LaunchQueue @($r)
         }
         return
     }
     if (Confirm-Action 'Relaunch this conversation' `
-        ("'{0}' will be CLOSED and opened again. Anything it has written is on disk; a turn in progress is not." -f $t)) {
+        ("'{0}' will be CLOSED and opened again. Anything it has written is on disk; a turn in progress is not." -f $t) -Verb 'Relaunch') {
         Invoke-RelaunchOne $r
     }
 })
@@ -2101,7 +2282,7 @@ $ui.SetApply.Add_Click({
         return
     }
     if (Confirm-Action 'Relaunch to apply' `
-        ("claude reads these settings once, at startup, so '{0}' has to be closed and reopened for them to take effect.`n`nDo that now?" -f $newName)) {
+        ("claude reads these settings once, at startup, so '{0}' has to be closed and reopened for them to take effect." -f $newName) -Verb 'Relaunch now') {
         Invoke-RelaunchOne $live
     } else {
         Set-Status 'saved - it takes effect the next time this conversation opens' 'ok'
@@ -2163,16 +2344,17 @@ function Show-Spawn {
         $s[$n] = $el
     }
 
-    # 🪤 THE DIALOG HAS NO STYLES OF ITS OWN. Without this every control renders
-    # as stock WPF grey with a 3D bevel next to a dark window. The Style objects
-    # already have their brushes resolved, so handing them across windows is safe.
-    foreach ($c in @('SpDir','SpModel','SpEffort','SpPerm')) { $s[$c].Style = $window.FindResource('Drop') }
-    foreach ($c in @('SpRemote','SpHidden','SpWorktree'))    { $s[$c].Style = $window.FindResource('Check') }
-    $s.SpName.Style   = $window.FindResource('Search')
-    $s.SpName.Tag     = 'What this conversation will be called'
-    $s.SpBrowse.Style = $window.FindResource('Btn')
-    $s.SpCancel.Style = $window.FindResource('Btn')
-    $s.SpStart.Style  = $window.FindResource('BtnPrimary')
+    # 🔴 ONE PALETTE, MERGED - NOT A SECOND ONE COPIED. This used to be nine
+    # lines reaching across to hand individual Style objects to individual
+    # controls, which worked but covered only the controls: every colour and
+    # every font in spawn2.xaml was written out again by hand, and had already
+    # drifted a whole redesign behind the window it opens from. The dialog now
+    # asks for the same keys the window uses and gets the window's own
+    # dictionary, so a token changed in one place changes both surfaces - and
+    # the typeface swap in Install-SRTypeface reaches this window for free,
+    # because it rewrites the very entries being merged here.
+    $sp.Resources.MergedDictionaries.Add($window.Resources)
+    $s.SpName.Tag = 'What this conversation will be called'
 
     $mk = {
         param($pairs)
@@ -2414,7 +2596,7 @@ $ui.CastSend.Add_Click({
     if (-not $go.Count) { Set-Status 'nothing left to send to - they are all mid-turn now' 'warn'; return }
     $names = ((@($go | ForEach-Object { (Get-Title $_.S $_.D).Text }) | Sort-Object) -join ', ')
     if (-not (Confirm-Action ('Type this into {0} conversations' -f $go.Count) `
-        ("Each one receives, as if you had typed it:`n`n    {0}`n`nInto: {1}" -f $msg, $names))) {
+        ("Each one receives, as if you had typed it:`n`n    {0}`n`nInto: {1}" -f $msg, $names) -Verb ('Send to {0}' -f $go.Count))) {
         Set-Status 'nothing sent'; return
     }
     # 🪤 ONE PER TICK, NOT A LOOP. Each send reads the target's console to find
@@ -2518,12 +2700,38 @@ try {
     $script:maxPad = New-Object System.Windows.Thickness $b.Left, $b.Top, $b.Right, $b.Bottom
 } catch { }
 
+# The app is an inset card, so the window's own margin is what creates the ground
+# around it - and the maximised overhang has to be ADDED to that inset rather
+# than replacing it, or maximising squares the card off against the screen edge.
+$script:ShellInset = 14.0
+
 function Update-Frame {
     Update-MaxGlyph
-    $window.Content.Margin = $(if ($window.WindowState -eq [System.Windows.WindowState]::Maximized) {
-        $script:maxPad } else { New-Object System.Windows.Thickness 0 })
+    $m = $script:ShellInset
+    if ($window.WindowState -eq [System.Windows.WindowState]::Maximized) {
+        $ui.Shell.Margin = New-Object System.Windows.Thickness `
+            ($m + $script:maxPad.Left), ($m + $script:maxPad.Top), `
+            ($m + $script:maxPad.Right), ($m + $script:maxPad.Bottom)
+    } else {
+        $ui.Shell.Margin = New-Object System.Windows.Thickness $m
+    }
+}
+
+# 🪤 A Clip DOES NOT FOLLOW ITS ELEMENT. The rounded card is clipped so its
+# corners actually cut the content - without that the radius is painted and the
+# children square it off again, which reads as a rendering bug. But the geometry
+# is a fixed Rect, so it has to be re-cut on every resize or the card clips to
+# its old size and the bottom-right of the window goes blank.
+function Update-ShellClip {
+    $b = $ui.Shell
+    if (-not $b -or $b.ActualWidth -le 0 -or $b.ActualHeight -le 0) { return }
+    $g = $b.Clip
+    if ($g -is [System.Windows.Media.RectangleGeometry]) {
+        $g.Rect = New-Object System.Windows.Rect 0, 0, $b.ActualWidth, $b.ActualHeight
+    }
 }
 $window.Add_StateChanged({ Update-Frame })
+$ui.Shell.Add_SizeChanged({ Update-ShellClip })
 Update-Frame
 
 # / focuses the search from anywhere; ESC clears it, then hands focus back to
@@ -2761,16 +2969,31 @@ function Complete-LiveProbe {
 # this tier exists at all.
 $script:fastTimer = New-Object System.Windows.Threading.DispatcherTimer
 $script:fastTimer.Interval = [TimeSpan]::FromSeconds($script:FastSeconds)
-$script:fastTimer.Add_Tick({ try { Invoke-FastPass } catch { Write-SRLog ('fast pass failed: ' + $_.Exception.Message) } })
+# 🔴 THE $sheetDepth GATE ON ALL THREE IS LOAD-BEARING, not tidiness. A sheet
+# blocks its CALLER on a nested dispatcher frame, but the dispatcher itself
+# keeps pumping - so without this the model would carry on rebuilding underneath
+# an open confirmation. The caller is parked mid-function holding the very rows
+# the sheet is naming, and a rebuild replaces those objects: press the button
+# and the action lands on orphans that are no longer in the model. The window
+# simply stands still while it is asking, and picks up on the next tick.
+$script:fastTimer.Add_Tick({
+    if ($script:sheetDepth -gt 0) { return }
+    try { Invoke-FastPass } catch { Write-SRLog ('fast pass failed: ' + $_.Exception.Message) } })
 
 $script:liveTimer = New-Object System.Windows.Threading.DispatcherTimer
 $script:liveTimer.Interval = [TimeSpan]::FromSeconds($script:LiveSeconds)
-$script:liveTimer.Add_Tick({ try { Start-LiveProbe } catch { Write-SRLog ('live probe failed: ' + $_.Exception.Message) } })
+$script:liveTimer.Add_Tick({
+    if ($script:sheetDepth -gt 0) { return }
+    try { Start-LiveProbe } catch { Write-SRLog ('live probe failed: ' + $_.Exception.Message) } })
 
 # The collector. Cheap enough to run often; it does nothing until the job ends.
+# Gated too: it is the half that actually WRITES the probe's findings into the
+# model, so letting it through would defeat the gate on the starter above.
 $script:pollTimer = New-Object System.Windows.Threading.DispatcherTimer
 $script:pollTimer.Interval = [TimeSpan]::FromMilliseconds(200)
-$script:pollTimer.Add_Tick({ try { Complete-LiveProbe } catch { Write-SRLog ('probe collect failed: ' + $_.Exception.Message) } })
+$script:pollTimer.Add_Tick({
+    if ($script:sheetDepth -gt 0) { return }
+    try { Complete-LiveProbe } catch { Write-SRLog ('probe collect failed: ' + $_.Exception.Message) } })
 
 $window.Add_ContentRendered({
     Set-Breakpoint
