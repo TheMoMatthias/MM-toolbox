@@ -129,6 +129,8 @@ foreach ($n in @(
     'OutputPane','PaneName','PaneState','PaneStateDot','PaneGoTo','PaneRelaunch','PaneSettings',
     'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
+    'SetToolsFold','SetAllow','SetDeny',
+    'CastBox','CastWho','CastList','CastText','CastCancel','CastSend',
     'PaneDoc','PaneEmpty','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
@@ -888,6 +890,7 @@ function Update-Ask { param($R)
 
     $q = $null
     try { $q = Get-SRScreenQuestion -ProcessId ([int]$R.A.Pid) } catch { }
+    $script:lastAsk = $q     # kept so the answer record can say what was on offer
     if (-not $q -or -not @($q.Options).Count) { return }
 
     $ui.AskHeader.Text = $(if ("$($q.Header)") { "$($q.Header)".ToUpper() } else { 'IT IS ASKING' })
@@ -949,14 +952,56 @@ function Update-Ask { param($R)
     $ui.AskBox.Visibility = $V_Show
 }
 
+# 🔴 THE SAFEGUARD THE CONTRACT SIGNED FOR AND NEVER GOT.
+#
+# Answering a menu works by reading the cursor off the screen, counting the
+# distance and sending that many arrows. The multi-select reading is INFERRED
+# from a menu footer rather than measured, and the deal was: wire it, but make
+# every send leave evidence, so one real use converts the guess into a
+# measurement.
+#
+# So each answer records what the screen said BEFORE, which option it believed
+# it was choosing, and what the screen said AFTER. If it ever answers the wrong
+# thing, the file says exactly what it saw and what it did - which is the only
+# way to tell a misread from a mis-send afterwards.
+function Write-SRAnswerRecord {
+    param([string]$SessionId, [int]$Pid_, [int]$Index, $Question, [string]$Before, [string]$After, [string]$Why)
+    try {
+        $dir = Join-Path $SR_StateDir 'answers'
+        if (-not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
+        $rec = [PSCustomObject]@{
+            at        = (Get-Date).ToString('o')
+            sessionId = $SessionId
+            pid       = $Pid_
+            index     = $Index
+            chose     = $(if ($Question -and $Index -lt @($Question.Options).Count) { "$(@($Question.Options)[$Index])" } else { '' })
+            options   = @($Question.Options)
+            multi     = [bool]$Question.Multi
+            cursorAt  = $(if ($Question) { $Question.CursorAt } else { -1 })
+            failed    = "$Why"
+            before    = $Before
+            after     = $After
+        }
+        $f = Join-Path $dir ('answer-{0}-{1}.json' -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'), "$SessionId".Substring(0, 8))
+        [System.IO.File]::WriteAllText($f, ($rec | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+    } catch { }   # evidence is never worth failing the answer over
+}
+
 function Invoke-Answer { param([int]$Index)
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
     $r = $it.Row
     if (-not $r.A -or -not $r.A.Pid) { Set-Status 'that conversation is not running any more' 'warn'; return }
     Set-Status 'answering...'
+    $procId = [int]$r.A.Pid
+    $before = $null
+    try { $before = Get-SRScreenText -ProcessId $procId } catch { }
     $why = $null
     try { $why = Send-SRQuestionAnswer -SessionId $r.Id -Index $Index } catch { $why = $_.Exception.Message }
+    $after = $null
+    try { Start-Sleep -Milliseconds 400; $after = Get-SRScreenText -ProcessId $procId } catch { }
+    Write-SRAnswerRecord -SessionId $r.Id -Pid_ $procId -Index $Index -Question $script:lastAsk `
+                         -Before "$before" -After "$after" -Why "$why"
     if ($why) { Set-Status $why 'bad' } else { Set-Status 'answered' 'ok'; $ui.AskBox.Visibility = $V_Hide }
 }
 
@@ -1191,6 +1236,84 @@ $ui.ManageList.Add_PreviewMouseLeftButtonDown({
         }
     }
 })
+# ===========================================================================
+# ACTING ON ONE ROW IN THE MANAGER
+#
+# The operator asked to "select any session or terminal for relaunch or for
+# launching it" and looked for it HERE - the manager is the surface that lists
+# everything, so it is where a per-conversation action is expected. It existed
+# only on the work surface. Right-click, because the left button already does
+# the two things this surface is for: opening a project and ticking a
+# conversation.
+# ===========================================================================
+function New-ManageMenu {
+    $m = New-Object System.Windows.Controls.ContextMenu
+    $mk = {
+        param([string]$Header, [scriptblock]$Do)
+        $i = New-Object System.Windows.Controls.MenuItem
+        $i.Header = $Header
+        $i.Add_Click($Do)
+        $null = $m.Items.Add($i)
+        return $i
+    }
+    $null = & $mk 'Open it now' {
+        $r = Get-ManageRow; if (-not $r) { return }
+        if ($r.A -and $r.A.Pid) { Set-Status 'that conversation is already running' 'warn'; return }
+        Start-LaunchQueue @($r)
+    }
+    $null = & $mk 'Relaunch it' {
+        $r = Get-ManageRow; if (-not $r) { return }
+        if (-not ($r.A -and $r.A.Pid)) { Set-Status 'that conversation is not running - use Open it now' 'warn'; return }
+        $t = (Get-Title $r.S $r.D).Text
+        if (Confirm-Action 'Relaunch this conversation' `
+            ("'{0}' will be CLOSED and opened again." -f $t)) { Invoke-RelaunchOne $r }
+    }
+    $null = & $mk 'Go to its terminal' {
+        $r = Get-ManageRow; if (-not $r) { return }
+        $why = $null
+        try { $why = Invoke-SRJumpToSession -SessionId $r.Id } catch { $why = $_.Exception.Message }
+        if ($why) { Set-Status $why 'warn' } else { Set-Status 'jumped to its tab' 'ok' }
+    }
+    $null = $m.Items.Add((New-Object System.Windows.Controls.Separator))
+    $null = & $mk 'Settings...' {
+        $r = Get-ManageRow; if (-not $r) { return }
+        # The settings panel lives on the work surface, so go there and select it
+        # first - opening a panel on a surface you cannot see is not an action.
+        $script:selId = $r.Id
+        $ui.ModeWork.IsChecked = $true
+        Set-Surface 'work'
+        Build-Sessions
+        Show-Settings
+    }
+    return $m
+}
+
+# The row the CONTEXT MENU was opened on, not whatever happens to be selected.
+$script:manageMenuRow = $null
+function Get-ManageRow {
+    if ($script:manageMenuRow) { return $script:manageMenuRow }
+    $it = $ui.ManageList.SelectedItem
+    if ($it -and $it.Kind -eq 'conv') { return $it.Row }
+    return $null
+}
+
+$ui.ManageList.ContextMenu = New-ManageMenu
+$ui.ManageList.Add_PreviewMouseRightButtonDown({
+    param($sender, $e)
+    $it = Get-ClickedRow $e.OriginalSource
+    # A project header and the "older conversations" row have no actions, so
+    # they get no menu rather than a menu that does nothing.
+    if (-not $it -or $it.Kind -ne 'conv') {
+        $script:manageMenuRow = $null
+        $ui.ManageList.ContextMenu.IsOpen = $false
+        $e.Handled = $true
+        return
+    }
+    $script:manageMenuRow = $it.Row
+    # Select it too, so the menu and the highlight agree about the target.
+    $ui.ManageList.SelectedItem = $it
+})
+
 $ui.SaveBtn.Add_Click({
     try {
         Save-SRRegistry -Registry $script:reg
@@ -1635,6 +1758,11 @@ function Show-Settings {
     Set-DropValue $ui.SetPerm   "$(Get-SRSessionPref $r.S 'permissionMode')"
     $ui.SetRemote.IsChecked = (Test-SRRemoteWanted $r.S)
     $ui.SetHidden.IsChecked = (Test-SRHiddenWanted $r.S)
+    $ui.SetAllow.Text = ((@(Get-SRSessionPref $r.S 'allowedTools')    | Where-Object { "$_".Trim() }) -join ' ')
+    $ui.SetDeny.Text  = ((@(Get-SRSessionPref $r.S 'disallowedTools') | Where-Object { "$_".Trim() }) -join ' ')
+    # Open the fold only when there is something in it, so the panel stays short
+    # for the common case and cannot hide a limit you forgot you set.
+    $ui.SetToolsFold.IsExpanded = [bool]("$($ui.SetAllow.Text)$($ui.SetDeny.Text)".Trim())
     Update-PermNote
 
     # Say up front whether anything changed here can take effect without a
@@ -1728,6 +1856,12 @@ $ui.SetApply.Add_Click({
     Set-SRSessionPref $r.S 'permissionMode' (Get-DropValue $ui.SetPerm)
     Set-SRSessionPref $r.S 'remoteControl'  ([bool]$ui.SetRemote.IsChecked)
     Set-SRSessionPref $r.S 'hidden'         ([bool]$ui.SetHidden.IsChecked)
+    # 🪤 SPLIT ON WHITESPACE, and drop the empties. A trailing space would
+    # otherwise become an EMPTY RULE on the command line, and claude reads an
+    # empty --allowedTools as "allow nothing" - a session that can do nothing at
+    # all, from a stray keystroke.
+    Set-SRSessionPref $r.S 'allowedTools'    (@("$($ui.SetAllow.Text)" -split '\s+' | Where-Object { "$_".Trim() }))
+    Set-SRSessionPref $r.S 'disallowedTools' (@("$($ui.SetDeny.Text)"  -split '\s+' | Where-Object { "$_".Trim() }))
     $script:dirty = $true
     $now = (Get-SRSessionArgsLabel $r.S) + '|' + $newName
 
@@ -1976,6 +2110,102 @@ function Start-NewSession { param($G)
 }
 
 $ui.NewSession.Add_Click({ Show-Spawn })
+
+# ===========================================================================
+# SEND TO MANY
+#
+# 🔴 THE MOST DANGEROUS BUTTON IN THE WINDOW. It types into live conversations -
+# several at once, unattended - so three rules, and none is optional:
+#   1. only what is RUNNING and can actually be typed into
+#   2. never one that is MID-TURN; a keystroke arriving mid-reply is not
+#      undoable and lands in whatever the session does next
+#   3. it NAMES every conversation it will type into, before it does
+# ===========================================================================
+$script:castPick = @{}
+
+function Build-Cast {
+    $rows = New-Object System.Collections.Generic.List[object]
+    $ready = 0
+    foreach ($r in $script:model) {
+        if (-not ($r.A -and $r.A.Pid)) { continue }
+        $busy = ("$($r.A.Status)" -eq 'busy')
+        $id = $r.Id
+        if ($busy) { $script:castPick.Remove($id) }
+        $rows.Add([PSCustomObject]@{
+            Id = $id; Row = $r
+            Name = (Get-Title $r.S $r.D).Text
+            Why  = $(if ($busy) { 'mid-turn - left alone' } else { '' })
+            Busy = $busy
+            TickBg = $(if (-not $busy -and $script:castPick[$id]) { $window.FindResource('TextMax') }
+                       else { [System.Windows.Media.Brushes]::Transparent })
+        })
+        if (-not $busy) { $ready++ }
+    }
+    $ui.CastList.ItemsSource = @($rows | Sort-Object Busy, Name)
+    $n = @($script:castPick.Keys).Count
+    $ui.CastWho.Text = $(if ($n) {
+        ('{0} of {1} ready conversation(s) ticked: {2}' -f $n, $ready,
+            ((@($rows | Where-Object { $script:castPick[$_.Id] } | ForEach-Object { $_.Name }) | Sort-Object) -join ', '))
+    } else { ("Tick the conversations to type into. {0} are running and ready." -f $ready) })
+    $ui.CastSend.IsEnabled = ($n -gt 0 -and "$($ui.CastText.Text)".Trim().Length -gt 0)
+}
+
+function Show-Cast {
+    $script:castPick = @{}
+    $ui.CastText.Text = ''
+    Build-Cast
+    $ui.CastBox.Visibility = $V_Show
+    $null = $ui.CastText.Focus()
+}
+function Hide-Cast { $ui.CastBox.Visibility = $V_Hide }
+
+$ui.Broadcast.Add_Click({
+    if ($ui.CastBox.Visibility -eq $V_Show) { Hide-Cast; return }
+    if ($script:surface -ne 'work') { $ui.ModeWork.IsChecked = $true; Set-Surface 'work' }
+    Show-Cast
+})
+$ui.CastCancel.Add_Click({ Hide-Cast; Set-Status 'nothing sent' })
+$ui.CastText.Add_TextChanged({ $ui.CastSend.IsEnabled = (@($script:castPick.Keys).Count -gt 0 -and "$($ui.CastText.Text)".Trim().Length -gt 0) })
+$ui.CastList.Add_PreviewMouseLeftButtonDown({
+    param($sender, $e)
+    $it = Get-ClickedRow $e.OriginalSource
+    if (-not $it) { return }
+    if ($it.Busy) { Set-Status ("'{0}' is mid-turn - it cannot be typed into" -f $it.Name) 'warn'; return }
+    if ($script:castPick[$it.Id]) { $script:castPick.Remove($it.Id) } else { $script:castPick[$it.Id] = $true }
+    Build-Cast
+})
+
+$ui.CastSend.Add_Click({
+    $msg = "$($ui.CastText.Text)".Trim()
+    if (-not $msg) { Set-Status 'nothing to send' 'warn'; return }
+    $go = New-Object System.Collections.Generic.List[object]
+    foreach ($r in $script:model) {
+        if (-not $script:castPick[$r.Id]) { continue }
+        if (-not ($r.A -and $r.A.Pid)) { continue }
+        # Re-checked HERE, not just when the list was drawn: a conversation can
+        # start a turn between ticking it and pressing Send.
+        if ("$($r.A.Status)" -eq 'busy') { continue }
+        $go.Add($r)
+    }
+    if (-not $go.Count) { Set-Status 'nothing left to send to - they are all mid-turn now' 'warn'; return }
+    $names = ((@($go | ForEach-Object { (Get-Title $_.S $_.D).Text }) | Sort-Object) -join ', ')
+    if (-not (Confirm-Action ('Type this into {0} conversations' -f $go.Count) `
+        ("Each one receives, as if you had typed it:`n`n    {0}`n`nInto: {1}" -f $msg, $names))) {
+        Set-Status 'nothing sent'; return
+    }
+    $ok = 0; $bad = New-Object System.Collections.Generic.List[string]
+    foreach ($r in $go) {
+        $t = (Get-Title $r.S $r.D).Text
+        $why = $null
+        try { $why = Send-SRSessionInput -SessionId $r.Id -Text $msg } catch { $why = $_.Exception.Message }
+        if ($why) { $bad.Add(('{0} ({1})' -f $t, $why)); Write-SRLog ('  [FAIL] cast to {0}: {1}' -f $t, $why) }
+        else { $ok++; Write-SRLog ('  [ok]   cast to {0}' -f $t) }
+        Start-Sleep -Milliseconds 250
+    }
+    Hide-Cast
+    if ($bad.Count) { Set-Status ('sent to {0}; {1} refused: {2}' -f $ok, $bad.Count, (($bad | Select-Object -First 4) -join '; ')) 'bad' }
+    else { Set-Status ('sent to {0} conversation(s)' -f $ok) 'ok' }
+})
 
 $ui.Rescan.Add_Click({
     Set-Status 'rescanning...'

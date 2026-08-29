@@ -832,6 +832,55 @@
                Apply button offers the relaunch - a dropdown that silently did
                nothing would be worse than no dropdown.
                ====================================================== -->
+          <!-- ================== SEND TO MANY ==================
+               One line into several conversations at once. It is the thing a
+               twenty-session day actually needs, and it is also the most
+               dangerous button in the window - so it names every conversation
+               it will type into, and it will not touch one that is mid-turn.
+               ================================================== -->
+          <Border x:Name="CastBox" Grid.Row="1" Visibility="Collapsed" Panel.ZIndex="20"
+                  VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,10,18,0"
+                  Width="470" Background="{StaticResource PanelHi}" CornerRadius="10"
+                  BorderBrush="{StaticResource Hairline}" BorderThickness="1" Padding="18,16,18,16">
+            <Border.Effect>
+              <DropShadowEffect BlurRadius="26" ShadowDepth="5" Opacity="0.55" Color="#000000"/>
+            </Border.Effect>
+            <StackPanel>
+              <TextBlock Text="SEND TO MANY" Style="{StaticResource Caption}" Margin="0,0,0,4"/>
+              <TextBlock x:Name="CastWho" Style="{StaticResource Meta}" TextWrapping="Wrap"
+                         Margin="0,0,0,10" Text=""/>
+              <ListBox x:Name="CastList" Style="{StaticResource Plain}" MaxHeight="240"
+                       ItemContainerStyle="{StaticResource PlainItem}" Margin="0,0,0,12">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <Border Padding="0,5,0,5" Cursor="Hand">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto"/>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" x:Name="CastTick" Width="15" Height="15" CornerRadius="3"
+                                VerticalAlignment="Center" BorderBrush="#3A3F47" BorderThickness="1.4"
+                                Background="{Binding TickBg}" Margin="0,0,10,0"/>
+                        <TextBlock Grid.Column="1" Text="{Binding Name}" Style="{StaticResource Body}"
+                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="2" Text="{Binding Why}" Style="{StaticResource Meta}"
+                                   VerticalAlignment="Center" Margin="10,0,0,0"/>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+              <TextBox x:Name="CastText" Style="{StaticResource Search}"
+                       Tag="The one line every ticked conversation will receive" Margin="0,0,0,12"/>
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="CastCancel" Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
+                <Button x:Name="CastSend" Content="Send" Style="{StaticResource BtnPrimary}"/>
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
           <!-- 🪤 ROW 1, NOT ROW 0. Row 0 is Height="Auto", so a 470px panel
                placed there would stretch the HEADER to 470px rather than float
                over the transcript. Row 1 is the star row: nothing put in it can
@@ -877,6 +926,24 @@
                         Content="Hidden - run with no terminal window"/>
               <TextBlock Style="{StaticResource Meta}" TextWrapping="Wrap" Margin="22,0,0,12"
                          Text="It keeps running when this tool closes, and you can still read and answer it here."/>
+
+              <!-- TOOL LIMITS. Last of the controls and deliberately plainest:
+                   a deny list that is subtly wrong does not announce itself, it
+                   just makes the session unable to do something, once, in an
+                   hour's time. Space-separated, claude's own syntax. -->
+              <Expander x:Name="SetToolsFold" Header="Tool limits" Margin="0,4,0,10"
+                        Foreground="{StaticResource TextMid}" FontFamily="{StaticResource FontText}" FontSize="12.5">
+                <StackPanel Margin="0,8,0,0">
+                  <TextBlock Text="Allow only these" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
+                  <TextBox x:Name="SetAllow" Style="{StaticResource Search}" Margin="0,0,0,9"
+                           Tag="e.g.  Read Grep Bash(git *)"/>
+                  <TextBlock Text="Never these" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
+                  <TextBox x:Name="SetDeny" Style="{StaticResource Search}" Margin="0,0,0,6"
+                           Tag="e.g.  Bash(rm *) Write"/>
+                  <TextBlock Style="{StaticResource Meta}" TextWrapping="Wrap"
+                             Text="Space separated, exactly as claude takes them. Leave both empty for no limits at all."/>
+                </StackPanel>
+              </Expander>
 
               <TextBlock x:Name="SetPending" Style="{StaticResource Dim}" TextWrapping="Wrap"
                          Foreground="{StaticResource AccNeeds}" Visibility="Collapsed" Margin="0,0,0,10" Text=""/>
