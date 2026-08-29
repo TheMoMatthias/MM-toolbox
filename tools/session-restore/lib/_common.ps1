@@ -3144,6 +3144,105 @@ function Get-SRSessionArgsLabel { param($Session)
     return (($bits | Where-Object { $_ }) -join '  ·  ')
 }
 
+# ===========================================================================
+# THE SKILLS A CONVERSATION CAN SEE.
+#
+# Read off disk rather than asked of the session, because the list is wanted
+# BEFORE you have picked a session and for conversations that are not running.
+# Three sources, in the order claude resolves them - a project skill shadows a
+# user one of the same name, so the first of a name wins here too:
+#
+#   <project>\.claude\skills\<name>\SKILL.md    project
+#   ~\.claude\skills\<name>\SKILL.md            user
+#   ~\.claude\plugins\cache\*\...\SKILL.md      plugin
+#
+# 🪤 CACHED, because this is 55+ file reads and it runs on a keystroke. Keyed by
+# project, with a short life so a skill written five minutes ago still shows up.
+$script:SR_SkillCache = @{}
+$script:SR_SkillCacheAt = @{}
+
+function Get-SRSkillMeta { param([string]$Path, [string]$Source, [string]$Fallback)
+    $name = $Fallback
+    $desc = ''
+    try {
+        # Only the frontmatter: these files run to hundreds of lines and none of
+        # the rest is wanted.
+        $head = @(Get-Content -LiteralPath $Path -TotalCount 40 -ErrorAction Stop)
+        $inFm = $false
+        foreach ($ln in $head) {
+            if ($ln -match '^---\s*$') { if ($inFm) { break } else { $inFm = $true; continue } }
+            if (-not $inFm) { continue }
+            if ($ln -match '^name:\s*(.+)$')        { $name = $Matches[1].Trim().Trim('"').Trim("'") }
+            elseif ($ln -match '^description:\s*(.+)$') { $desc = $Matches[1].Trim().Trim('"').Trim("'") }
+        }
+    } catch { }
+    if (-not $name) { $name = $Fallback }
+    return [PSCustomObject]@{ Name = $name; Description = $desc; Source = $Source; Path = $Path }
+}
+
+function Get-SRSkills {
+    [CmdletBinding()]
+    param([string]$Dir, [int]$MaxAgeSeconds = 120, [switch]$Refresh)
+
+    $key = "$Dir".ToLower()
+    if (-not $Refresh -and $script:SR_SkillCache.ContainsKey($key) -and $script:SR_SkillCacheAt.ContainsKey($key)) {
+        if (((Get-Date) - $script:SR_SkillCacheAt[$key]).TotalSeconds -lt $MaxAgeSeconds) {
+            return $script:SR_SkillCache[$key]
+        }
+    }
+
+    $roots = New-Object System.Collections.Generic.List[object]
+    if ($Dir) { $roots.Add(@{ P = (Join-Path $Dir '.claude\skills'); S = 'project' }) }
+    $roots.Add(@{ P = (Join-Path $env:USERPROFILE '.claude\skills'); S = 'user' })
+
+    $out = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+    foreach ($r in $roots) {
+        if (-not (Test-Path -LiteralPath $r.P -PathType Container)) { continue }
+        foreach ($d in @(Get-ChildItem -LiteralPath $r.P -Directory -ErrorAction SilentlyContinue)) {
+            $sk = Join-Path $d.FullName 'SKILL.md'
+            if (-not (Test-Path -LiteralPath $sk)) { continue }
+            $m = Get-SRSkillMeta -Path $sk -Source $r.S -Fallback $d.Name
+            $k = "$($m.Name)".ToLower()
+            if (-not $k -or $seen.ContainsKey($k)) { continue }
+            $seen[$k] = $true
+            $out.Add($m)
+        }
+    }
+
+    # Plugin skills live two levels down inside each cached plugin, and a plugin
+    # names its skills `plugin:skill` when they collide - which is why the source
+    # is carried through and shown.
+    $pc = Join-Path $env:USERPROFILE '.claude\plugins\cache'
+    if (Test-Path -LiteralPath $pc -PathType Container) {
+        foreach ($sk in @(Get-ChildItem -LiteralPath $pc -Filter 'SKILL.md' -Recurse -Depth 5 -File -ErrorAction SilentlyContinue)) {
+            $m = Get-SRSkillMeta -Path $sk.FullName -Source 'plugin' -Fallback $sk.Directory.Name
+            $k = "$($m.Name)".ToLower()
+            if (-not $k -or $seen.ContainsKey($k)) { continue }
+            $seen[$k] = $true
+            $out.Add($m)
+        }
+    }
+
+    $sorted = @($out | Sort-Object Name)
+    $script:SR_SkillCache[$key] = $sorted
+    $script:SR_SkillCacheAt[$key] = Get-Date
+    return $sorted
+}
+
+# What a person typed after '/', matched against what they can see. Prefix
+# matches first, because that is what someone typing a name expects to find at
+# the top; then anything containing it; then the description.
+function Select-SRSkills { param($Skills, [string]$Query, [int]$Limit = 8)
+    $q = "$Query".Trim().ToLower()
+    $all = @($Skills)
+    if (-not $q) { return @($all | Select-Object -First $Limit) }
+    $pre  = @($all | Where-Object { "$($_.Name)".ToLower().StartsWith($q) })
+    $mid  = @($all | Where-Object { "$($_.Name)".ToLower().Contains($q) -and -not "$($_.Name)".ToLower().StartsWith($q) })
+    $desc = @($all | Where-Object { -not "$($_.Name)".ToLower().Contains($q) -and "$($_.Description)".ToLower().Contains($q) })
+    return @(@($pre) + @($mid) + @($desc) | Select-Object -First $Limit)
+}
+
 function New-SRBootScript {
     param(
         [Parameter(Mandatory)][string]$Dir,

@@ -130,7 +130,7 @@ foreach ($n in @(
     'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
     'PaneDoc','PaneEmpty','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
-    'SendNote','SendBox','SendBtn',
+    'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions',
     'Status','HelpBtn','SaveBtn'
@@ -1417,12 +1417,97 @@ $ui.RelaunchSessions.Add_Click({
     Start-LaunchQueue $go
 })
 
-$ui.SendBox.Add_TextChanged({ Update-SendState })
+# ===========================================================================
+# THE SKILL PICKER
+#
+# '/' at the START of the composer opens it - the same gesture that opens it
+# inside claude itself, so there is nothing new to learn - and it filters as you
+# type. Up/Down move, Enter or Tab completes, Escape closes without touching
+# what you typed.
+#
+# It only ever completes the NAME. What the skill does with its arguments is
+# claude's business; this is a way of not having to remember 55 names.
+# ===========================================================================
+# 🪤 THE OPEN STATE IS OURS, NOT THE POPUP'S. A WPF Popup will not stay open
+# while its placement target has never been rendered, so reading IsOpen back is
+# reading the visual layer's opinion rather than the intent - and the key handler
+# below has to know whether Down/Enter belong to the picker or to the composer.
+# Asking a variable is also the only way this is testable headlessly.
+$script:skillOpen = $false
+
+function Close-SkillPop { $script:skillOpen = $false; $ui.SkillPop.IsOpen = $false }
+function Open-SkillPop  { $script:skillOpen = $true;  $ui.SkillPop.IsOpen = $true }
+
+function Update-SkillPop {
+    $t = "$($ui.SendBox.Text)"
+    # Only a line that BEGINS with '/'. A slash inside a sentence is a slash.
+    if (-not $t.StartsWith('/')) { Close-SkillPop; return }
+    # As soon as there is a space the name is finished and the rest is arguments.
+    if ($t -match '\s') { Close-SkillPop; return }
+
+    $r = Get-SelectedRow
+    $dir = $(if ($r) { $(if ("$($r.S.cwd)") { "$($r.S.cwd)" } else { "$($r.D.path)" }) } else { '' })
+    $skills = @()
+    try { $skills = Get-SRSkills -Dir $dir } catch { }
+    if (-not @($skills).Count) { Close-SkillPop; return }
+
+    $hits = @(Select-SRSkills -Skills $skills -Query $t.Substring(1) -Limit 8)
+    if (-not $hits.Count) {
+        $ui.SkillHint.Text = ("NO SKILL MATCHES '{0}'" -f $t.Substring(1).ToUpper())
+        $ui.SkillList.ItemsSource = $null
+        Open-SkillPop
+        return
+    }
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($s in $hits) {
+        $b = "$($s.Description)"
+        # The first sentence is the useful half; these descriptions run for
+        # paragraphs and a row is one line high.
+        $cut = $b.IndexOf('. ')
+        if ($cut -gt 20) { $b = $b.Substring(0, $cut + 1) }
+        $rows.Add([PSCustomObject]@{
+            Label = ('/' + $s.Name); Blurb = ($b -replace '\s+', ' '); Source = $s.Source; Name = $s.Name
+        })
+    }
+    $ui.SkillHint.Text = ('SKILLS   {0} of {1}' -f $rows.Count, @($skills).Count)
+    $ui.SkillList.ItemsSource = $rows
+    $ui.SkillList.SelectedIndex = 0
+    Open-SkillPop
+}
+
+function Complete-Skill {
+    $it = $ui.SkillList.SelectedItem
+    if (-not $it) { return $false }
+    # A trailing space, because a skill is nearly always followed by something.
+    $ui.SendBox.Text = ('/{0} ' -f $it.Name)
+    $ui.SendBox.CaretIndex = $ui.SendBox.Text.Length
+    Close-SkillPop
+    return $true
+}
+
+$ui.SendBox.Add_TextChanged({ Update-SendState; Update-SkillPop })
 $ui.SendBtn.Add_Click({ Invoke-Send })
-$ui.SendBox.Add_KeyDown({
+$ui.SkillList.Add_MouseLeftButtonUp({ $null = Complete-Skill; $null = $ui.SendBox.Focus() })
+
+# 🪤 PreviewKeyDown, not KeyDown. The arrow keys and Enter have to be taken
+# BEFORE the TextBox sees them, or Enter sends the half-typed '/name' into the
+# session instead of completing it - which would be a keystroke you cannot take
+# back.
+$ui.SendBox.Add_PreviewKeyDown({
     param($sender, $e)
+    if ($script:skillOpen) {
+        switch ("$($e.Key)") {
+            'Down'   { if ($ui.SkillList.Items.Count) { $ui.SkillList.SelectedIndex = [Math]::Min($ui.SkillList.SelectedIndex + 1, $ui.SkillList.Items.Count - 1) }; $e.Handled = $true; return }
+            'Up'     { if ($ui.SkillList.Items.Count) { $ui.SkillList.SelectedIndex = [Math]::Max($ui.SkillList.SelectedIndex - 1, 0) }; $e.Handled = $true; return }
+            'Escape' { Close-SkillPop; $e.Handled = $true; return }
+            'Tab'    { $null = Complete-Skill; $e.Handled = $true; return }
+            'Return' { if (Complete-Skill) { $e.Handled = $true; return } }
+        }
+    }
     if ($e.Key -eq 'Return' -and $ui.SendBtn.IsEnabled) { Invoke-Send; $e.Handled = $true }
 })
+# Losing focus closes it, or it hangs over the window after you click away.
+$ui.SendBox.Add_LostKeyboardFocus({ Close-SkillPop })
 
 $ui.PaneGoTo.Add_Click({
     $it = $ui.SessionList.SelectedItem
