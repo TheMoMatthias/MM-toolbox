@@ -814,6 +814,55 @@ if ($res -notcontains 'FORCE_OK') { Fail '-Force did not override the staleness 
 else { Pass '-Force overrides it, for a caller that has already asked' }
 Remove-Item -LiteralPath $sandRoot -Recurse -Force -ErrorAction SilentlyContinue
 
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the logon restore honours per-session settings ---'
+# ===========================================================================
+# 🔴 THE ONE PATH THAT RUNS WHILE NOBODY IS WATCHING WAS THE ONE IGNORING
+# THEM. Get-SRSelected handed the restore only ids and titles, so every
+# conversation came back at logon with no model, no effort, no permission mode,
+# no tool rules and not hidden - and with Remote Control forced ON, because
+# New-SRBootScript defaults it true. Every setting worked when launched from the
+# window and was dropped on the automatic path, which is the path the tool
+# exists for. Asserted here because a defect on it is invisible until morning.
+$probeSess = [PSCustomObject]@{
+    sessionId = '11111111-2222-3333-4444-555555555555'; title = 'LOGON-PROBE'
+    enabled = $true; lastActive = (Get-Date).ToString('o')
+}
+$probeDir = [PSCustomObject]@{ path = $env:TEMP; enabled = $true; missing = $false; sessions = @($probeSess) }
+$probeReg = [PSCustomObject]@{ version = 2; lastScan = $null; directories = @($probeDir) }
+# 🪤 NO @() AROUND IT. Get-SRSelected returns `,@(...)` to stop a
+# multi-element result unrolling, so wrapping the call in @() nests it and
+# $sel[0] comes back as the inner ARRAY - which reported the Session property
+# as missing when it was there. Every real caller assigns it bare; so does this.
+$sel = Get-SRSelected -Registry $probeReg -Config (Get-SRConfig)
+$sel = @($sel)
+if (-not $sel.Count) { Fail 'the probe conversation was not selected at all' }
+elseif (-not $sel[0].PSObject.Properties['Session']) {
+    Fail 'a selected entry carries no Session - the logon path cannot see any setting'
+} else {
+    Pass 'a selected entry carries the session, so its settings are reachable at logon'
+    $ps = $sel[0].Session
+    Set-SRSessionPref $ps 'model' 'opus'
+    Set-SRSessionPref $ps 'permissionMode' 'plan'
+    Set-SRSessionPref $ps 'remoteControl' $false
+    $bp = New-SRBootScript -Dir $env:TEMP -SessionId $sel[0].SessionId -Title 'LOGON-PROBE' `
+              -ClaudeArgs (@(Get-SRSessionArgs $ps)) -RemoteControl ([bool](Test-SRRemoteWanted $ps))
+    try {
+        $ln = @(Get-Content -LiteralPath $bp | Where-Object { $_ -like '*claude*--resume*' })[0]
+        $miss = @()
+        foreach ($bit in @('--model', 'opus', '--permission-mode', 'plan')) {
+            if ("$ln" -notmatch [regex]::Escape($bit)) { $miss += $bit }
+        }
+        if ($miss.Count) { Fail ('the logon command drops: ' + ($miss -join ', ')) }
+        else { Pass 'model, effort and permission mode reach the logon command line' }
+        # 🪤 AND THE OFF CASE, or this passes on a builder that always adds
+        # everything. Remote Control defaults ON, so OFF is the one worth proving.
+        if ("$ln" -match 'remote-control') { Fail 'Remote Control was turned OFF and the logon command still passes it' }
+        else { Pass 'a conversation with Remote Control off does not get it at logon' }
+    } finally { Remove-Item -LiteralPath $bp -Force -ErrorAction SilentlyContinue }
+}
+
 Write-Host ''
 if ($fails) { Write-Host ("$fails FAILURE(S)") -ForegroundColor Red; exit 1 }
 Write-Host 'all conversation-state tests passed' -ForegroundColor Green

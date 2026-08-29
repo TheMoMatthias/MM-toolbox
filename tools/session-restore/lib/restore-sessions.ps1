@@ -223,8 +223,23 @@ function Invoke-Restore {
         }
 
         try {
-            $boot = New-SRBootScript -Dir $e.path -SessionId $e.sessionId -Title $title
-            Start-SRSession -Dir $e.path -BootScript $boot -Title $title
+            # 🔴 THE CONVERSATION'S OWN SETTINGS, at the only moment claude can
+            # read them. These were absent here: the logon restore built a bare
+            # boot script, so a session configured for opus/high/plan with two
+            # tool rules and Remote Control OFF came back at every logon as
+            # default model, default effort, default permissions, no tool rules
+            # and remote ON. It worked from the window and nowhere else.
+            $sess = $e.Session
+            $args = @(); $remote = $true; $hidden = $false
+            if ($sess) {
+                try { $args   = @(Get-SRSessionArgs $sess) }   catch { }
+                try { $remote = [bool](Test-SRRemoteWanted $sess) } catch { }
+                try { $hidden = [bool](Test-SRHiddenWanted $sess) } catch { }
+            }
+            $boot = New-SRBootScript -Dir $e.path -SessionId $e.sessionId -Title $title `
+                        -ClaudeArgs $args -RemoteControl $remote
+            if ($hidden) { $null = Start-SRHiddenSession -Dir $e.path -BootScript $boot -Title $title }
+            else         { Start-SRSession -Dir $e.path -BootScript $boot -Title $title }
             $launchedIds += $e.sessionId
             Write-SROk "$label -> `"$title`" ($($e.sessionId.Substring(0,8)), $(if($ageDays -ge 1){"${ageDays}d"}else{"${ageHours}h"}))"
             # Your tick wins over the age heuristic -- but staleness is visible,

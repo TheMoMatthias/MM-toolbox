@@ -1126,6 +1126,15 @@ function Get-SRSelected {
                 Lane       = $(if ($s.lane) { $s.lane } else { 'main' })
                 Worktree   = $s.worktree
                 SessionId  = $s.sessionId
+                # 🔴 THE SESSION ITSELF, because the LOGON PATH NEEDS ITS SETTINGS.
+                # Without this the restore had only ids and titles, so every
+                # conversation came back at logon with NO model, NO effort, NO
+                # permission mode, NO tool rules and NOT hidden - and with
+                # Remote Control forced ON, because New-SRBootScript defaults it
+                # true. Every one of those settings worked when launched from
+                # the window and was silently dropped on the one path that runs
+                # by itself, which is the path the whole tool exists for.
+                Session    = $s
                 # THE NAME THIS SESSION WILL REOPEN UNDER, and it must not be the
                 # placeholder. This feeds --title, -n and the remote-control name
                 # prefix, so a session whose title is the "(untitled)" sentinel used
