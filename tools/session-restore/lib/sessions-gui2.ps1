@@ -2455,7 +2455,17 @@ function Start-LaunchQueue { param($Items)
     # just adopted live names. Both belong on disk BEFORE anything is opened.
     if ($script:dirty) {
         try { Save-SRRegistry -Registry $script:reg; $script:dirty = $false }
-        catch { Write-SRLog ('  [FAIL] could not save before launching: {0}' -f $_.Exception.Message) }
+        catch {
+            # 🔴 THE LOG IS NOT SOMEWHERE THE OPERATOR LOOKS. This failure went
+            # only to restore.log and the launch carried on: the sessions open
+            # correctly, because they are launched from memory - but the ticks
+            # and the freshly adopted names never reached disk, so the NEXT
+            # LOGON quietly brings back the old set. The one moment that matters
+            # is hours away, which is precisely why it has to be said now.
+            Write-SRLog ('  [FAIL] could not save before launching: {0}' -f $_.Exception.Message)
+            Set-Status ('opening anyway, but the ticks could NOT be saved - press Save, or the next logon uses the old set: ' +
+                $_.Exception.Message) 'bad'
+        }
     }
     $script:launchQueue.Clear()
     $script:launchDone = 0
@@ -3454,11 +3464,49 @@ $window.Add_PreviewKeyDown({
 
 # ---------------------------------------------------------------------------
 # First paint
+#
+# 🔴 THIS WAS UNGUARDED, AND THIS PROCESS HAS NO CONSOLE. The host is built
+# /target:winexe precisely so no black window flashes up, which means an
+# unhandled exception here goes NOWHERE: the script dies before ShowDialog and
+# the operator double-clicks Sessions.exe and watches nothing happen. Not a slow
+# start, not an error - nothing. Get-SRRegistry throws by design on an
+# unreadable registry ("Delete it to start fresh"), which is a good message that
+# was being delivered to no one.
+#
+# 🪤 IT MUST STILL OPEN. Falling back to an EMPTY registry rather than
+# refusing to start is deliberate: an empty list plus a message you can read is
+# recoverable, and a tool that will not open is not. Nothing is written in this
+# state - $script:dirty stays false, so the empty registry can never be saved
+# over the real one.
 # ---------------------------------------------------------------------------
-Update-Model
-Update-Surface
-Set-Surface 'work'
-Set-Breakpoint
+$script:startupError = $null
+try {
+    Update-Model
+} catch {
+    $script:startupError = "$($_.Exception.Message)"
+    Write-SRLog ('  [FAIL] first paint could not read your sessions: {0}' -f $script:startupError)
+    $script:reg    = [PSCustomObject]@{ version = 2; lastScan = $null; directories = @() }
+    $script:dirs   = @()
+    $script:agents = @{}
+    $script:model  = New-Object System.Collections.Generic.List[object]
+    $script:dirty  = $false
+}
+try {
+    Update-Surface
+    Set-Surface 'work'
+    Set-Breakpoint
+} catch {
+    if (-not $script:startupError) { $script:startupError = "$($_.Exception.Message)" }
+    Write-SRLog ('  [FAIL] first paint could not draw the window: {0}' -f $_.Exception.Message)
+}
+if ($script:startupError) {
+    Set-Status ("could not read your sessions - $script:startupError") 'bad'
+    try {
+        $ui.PaneEmpty.Text = "This window opened, but your session registry could not be read." +
+            [Environment]::NewLine + [Environment]::NewLine + $script:startupError
+        $ui.PaneEmpty.Visibility = $V_Show
+    } catch { }
+}
 
 # ===========================================================================
 # KEEPING THE WINDOW HONEST WHILE IT SITS THERE
