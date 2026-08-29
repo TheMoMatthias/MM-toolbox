@@ -74,7 +74,7 @@ param(
     # `shot` is the odd one out: it draws the real window to PNG and asserts
     # almost nothing. It never runs in a full sweep -- only when asked for by
     # name -- because its output is something to LOOK at, not something to pass.
-    [ValidateSet('keys', 'state', 'inbox', 'jump', 'headless', 'relay', 'shot', 'app')]
+    [ValidateSet('keys', 'state', 'inbox', 'jump', 'gui2', 'headless', 'relay', 'shot', 'app')]
     [string]$Only,
     [switch]$NoGui,
 
@@ -227,6 +227,18 @@ if ((-not $Only -or $Only -eq 'keys') -and -not $NoGui -and -not $NoSteal) {
     # 2 means it could not get keyboard focus, which is a statement about the
     # desktop and not about the GUI. Not a pass, and deliberately not a failure.
     Record 'keys' $LASTEXITCODE @($out)
+}
+
+# --- gui2: THE WINDOW THAT ACTUALLY OPENS -----------------------------------
+# 🔴 THIS IS THE ONE THAT COVERS THE APP. headless, inbox and keys below all
+# drive lib\sessions-gui.ps1, the RETIRED window; their green says nothing about
+# what Sessions.exe launches. Same splice, aimed at the shipped script.
+if (-not $Only -or $Only -eq 'gui2') {
+    Write-Host "`n=== gui2 (the shipped window, built and never shown) ===" -ForegroundColor Cyan
+    $h = New-GuiHarness -Driver 'gui2-driver.ps1' -OutFile 'gui2-test.ps1' -Gui 'sessions-gui2.ps1'
+    $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'gui2' $LASTEXITCODE @($out)
 }
 
 # --- headless: the window is BUILT but never SHOWN --------------------------
