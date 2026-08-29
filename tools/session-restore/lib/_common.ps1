@@ -2744,6 +2744,24 @@ function Get-SRTranscriptBlocks {
 # 2026-08-22 grill: 117 conversations are tracked and re-reading all of them on
 # a timer buys nothing, because a conversation nobody has touched in a week
 # cannot have said anything new.
+# 🔴 A BUSY SESSION IS THE ONE MOST LIKELY TO SAY NOTHING HERE, which is the
+# wrong way round. This reads a fixed tail, and on 2026-08-30 two of eleven live
+# conversations showed a blank 'what it last said' - not because they were
+# quiet, but because their transcripts were 82 MB and 27 MB and the last 256 KB
+# was solid tool traffic. The comment below already anticipated the case; what
+# it did not say is that the sessions it happens to are precisely the ones you
+# most want to read.
+#
+# So a miss now escalates instead of giving up: the window widens and the record
+# limit with it, stopping the moment something is found. The cost is paid ONLY
+# by the conversations that need it - one extra read for two rows out of eleven,
+# on a background thread - and the first budget is unchanged, so the common case
+# is exactly as fast as it was.
+#
+# 🪤 THE PENDING TOOL FOUND ON AN EARLIER, NARROWER PASS IS KEPT. A wider pass
+# reaches further back, so it can find an OLDER tool call and would otherwise
+# overwrite the current one with a stale one - reporting a session as running
+# something it finished minutes ago.
 function Get-SRLastSaid {
     [CmdletBinding()]
     param(
@@ -2751,6 +2769,36 @@ function Get-SRLastSaid {
         [int]$MaxTailBytes = 262144,
         # How many records back to look before giving up. A session that has run
         # a long unbroken chain of tools may genuinely have no prose in the tail.
+        [int]$MaxRecords = 120
+    )
+
+    $first = Get-SRLastSaidPass -JsonlPath $JsonlPath -MaxTailBytes $MaxTailBytes -MaxRecords $MaxRecords
+    if ("$($first.Said)".Trim()) { return $first }
+    $len = 0
+    try { $len = (Get-Item -LiteralPath $JsonlPath -ErrorAction Stop).Length } catch { return $first }
+    # Nothing more to read: the file is already fully covered, so it really did
+    # say nothing.
+    if ($len -le $MaxTailBytes) { return $first }
+    foreach ($mult in @(8, 32)) {
+        $wider = Get-SRLastSaidPass -JsonlPath $JsonlPath -MaxTailBytes ($MaxTailBytes * $mult) -MaxRecords ($MaxRecords * $mult)
+        if ("$($wider.Said)".Trim()) {
+            # Keep the nearer pass's pending tool - see the note above.
+            if ("$($first.Pending)".Trim()) {
+                $wider.Pending = $first.Pending
+                $wider.PendingTool = $first.PendingTool
+            }
+            return $wider
+        }
+        if ($len -le ($MaxTailBytes * $mult)) { break }
+    }
+    return $first
+}
+
+function Get-SRLastSaidPass {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$JsonlPath,
+        [int]$MaxTailBytes = 262144,
         [int]$MaxRecords = 120
     )
 

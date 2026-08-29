@@ -2395,6 +2395,15 @@ $script:justLaunched = @{}
 $script:launchTimer = New-Object System.Windows.Threading.DispatcherTimer
 $script:launchTimer.Interval = [TimeSpan]::FromMilliseconds(500)
 $script:launchTimer.Add_Tick({
+    # 🔴 THE SAME $sheetDepth GATE AS THE MODEL TIMERS, and this one matters
+    # most: when the queue drains it calls Update-Model, which REPLACES every row
+    # object. A sheet blocks its caller on a nested dispatcher frame while the
+    # dispatcher keeps pumping, so without this the confirmation you are looking
+    # at could have its rows swapped out from under it and the action would land
+    # on orphans. It also types into terminals, which is not a thing to do while
+    # the operator is being asked a question. Nothing is lost by waiting - the
+    # queue is still there on the next tick.
+    if ($script:sheetDepth -gt 0) { return }
     if (-not $script:launchQueue.Count) {
         $script:launchTimer.Stop()
         # WHAT DID NOT OPEN IS THE HALF THAT MATTERS. After a relaunch these
@@ -3289,6 +3298,9 @@ $script:castMsg = ''
 $script:castTimer = New-Object System.Windows.Threading.DispatcherTimer
 $script:castTimer.Interval = [TimeSpan]::FromMilliseconds(300)
 $script:castTimer.Add_Tick({
+    # Same gate: this one TYPES INTO LIVE TERMINALS one at a time, and doing
+    # that while a confirmation is open is the last thing anyone wants.
+    if ($script:sheetDepth -gt 0) { return }
     if (-not $script:castQueue.Count) {
         $script:castTimer.Stop()
         if ($script:castBad.Count) {
@@ -3760,10 +3772,21 @@ $window.Add_ContentRendered({
     $script:pollTimer.Start()
 })
 $window.Add_Closed({
-    foreach ($t in @($script:followTimer, $script:fastTimer, $script:liveTimer, $script:pollTimer)) {
+    # 🪤 ALL SEVEN, NOT FOUR. searchTimer, launchTimer and castTimer were
+    # left running: the dispatcher shuts down with ShowDialog so they do not
+    # actually fire, which is exactly why the omission was invisible - and
+    # launchTimer is the one that OPENS SESSIONS, so it is not a timer to leave
+    # armed on the strength of "the dispatcher probably stops first".
+    foreach ($t in @($script:followTimer, $script:fastTimer, $script:liveTimer, $script:pollTimer,
+                     $script:searchTimer, $script:launchTimer, $script:castTimer)) {
         try { $t.Stop() } catch { }
     }
-    # A runspace left open holds a thread after the window is gone.
+    # 🔴 STOP BEFORE DISPOSE. A runspace left open holds a thread after the
+    # window is gone - but Dispose() on a PowerShell instance that is STILL
+    # RUNNING is not a clean shutdown: it can block the close or leave the
+    # thread behind anyway. A probe takes ~1.2 s and now runs every 15 s, so
+    # roughly one close in twelve lands on one in flight.
+    try { if ($script:probePs) { $script:probePs.Stop() } } catch { }
     try { if ($script:probePs) { $script:probePs.Dispose() } } catch { }
     try { if ($script:probeRs) { $script:probeRs.Close(); $script:probeRs.Dispose() } } catch { }
 })
