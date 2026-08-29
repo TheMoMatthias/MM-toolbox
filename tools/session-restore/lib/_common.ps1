@@ -1224,7 +1224,7 @@ function Test-SRTranscriptLive {
     return $true
 }
 
-# 🚨 A WRAPPED ABSOLUTE PATH IS MOST OF WHY THIS READS AS A CONSOLE LOG.
+# 🪤 A WRAPPED ABSOLUTE PATH IS MOST OF WHY THIS READS AS A CONSOLE LOG.
 # One Bash call carries 'cd "C:/Users/mauri/Documents/Trading Bot/Python/
 # AlgoTrader/.claude/worktrees/V-INGEST"' twice, which wraps across three lines
 # of tiny monospace and buries the one part that identifies it - the end. The

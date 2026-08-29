@@ -1264,7 +1264,7 @@
 
           <!-- PINNED, not inline. A question that scrolls away on a long
                conversation is a question you miss. -->
-          <!-- 🚨 A PANEL INSIDE THE CARD, not a slab across it. This had a hard
+          <!-- 🪤 A PANEL INSIDE THE CARD, not a slab across it. This had a hard
                2px white rule spanning the full width and square corners, which
                cut the output card in half - the one element loud enough to
                undo the layering everything else had just gained. The signal is

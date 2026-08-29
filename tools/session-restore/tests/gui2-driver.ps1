@@ -110,7 +110,7 @@ if ($null -ne $capWas) { $script:cfg.maxSessions = $capWas }
 # The gate is the boot time, so this asserts the exact reported shape: a file
 # written moments ago, but before this machine came up.
 $tmp = Join-Path $SR_StateDir ('livecheck-{0}.jsonl' -f ([guid]::NewGuid().ToString('N')))
-# 🚨 THE BOOT TIME IS FORCED, and it has to be. Written naively - a real
+# 🪤 THE BOOT TIME IS FORCED, and it has to be. Written naively - a real
 # file aged to just before the REAL boot - this passed without ever reaching the
 # new guard: this machine booted long ago, so the file was already outside the
 # 3-minute window and the ORIGINAL check rejected it. Green, and blind to the
@@ -510,7 +510,7 @@ else {
         Fail "selecting a waiting conversation moved it to '$($row.Band)' - it vanishes from the band you clicked it in"
     } else { Pass 'selecting a waiting conversation leaves it exactly where it was' }
 
-    # 🚨 AND THE INVERSE, or this would pass on a tick that never moves anything.
+    # 🪤 AND THE INVERSE, or this would pass on a tick that never moves anything.
     # A SECOND, DIFFERENT stamp is real growth and must still move the row.
     $script:followStamp = 'a-stamp-that-is-definitely-stale'
     Invoke-FollowTick
@@ -521,6 +521,39 @@ else {
     $row.Band = $bandWas; $script:followStamp = $stampWas; $script:selId = $selWas
     Build-Sessions
 }
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- a probe that never returns must not stop the window ---'
+# ===========================================================================
+# 🔴 THE "ONE AT A TIME" GUARD WAS THE ONLY THING GATING A NEW PROBE, so a
+# single job that never completed left $script:probePs set for the rest of the
+# session: every later tick returned immediately, no refresh ever ran again, and
+# NOTHING SAID SO. The only visible symptom is the "as of" stamp quietly
+# ceasing to move. It spawns `claude agents --json`, so a wedged child is not
+# hypothetical, and raising the probe to 15 s tripled the chances of meeting one.
+$psWas = $script:probePs; $atWas = $script:probeStartedAt
+try {
+    $script:probePs = $null; $script:probeStartedAt = $null
+    if (Test-ProbeOverdue) { Fail 'no probe is running and it is reported overdue' }
+    else {
+        # In flight, started a moment ago: must NOT be abandoned, or two probes
+        # run at once and the guard was pointless.
+        $script:probePs = 'in-flight'
+        $script:probeStartedAt = (Get-Date)
+        if (Test-ProbeOverdue) { Fail 'a probe that has just started is treated as hung' }
+        else {
+            # In flight, started well past the deadline: must be abandoned.
+            $script:probeStartedAt = (Get-Date).AddSeconds(-($script:ProbeDeadlineSeconds + 30))
+            if (-not (Test-ProbeOverdue)) {
+                Fail "a probe stuck for $($script:ProbeDeadlineSeconds + 30)s is not recognised as hung - the window would never refresh again"
+            } else { Pass "a probe stuck past $($script:ProbeDeadlineSeconds)s is abandoned so refreshing can resume" }
+        }
+    }
+} finally { $script:probePs = $psWas; $script:probeStartedAt = $atWas }
+if ($script:ProbeDeadlineSeconds -lt ($script:LiveSeconds * 3)) {
+    Fail "the probe deadline ($($script:ProbeDeadlineSeconds)s) is less than three intervals - a slow but healthy probe would be killed"
+} else { Pass "the deadline is $($script:ProbeDeadlineSeconds)s against a $($script:LiveSeconds)s interval, so a slow probe is not mistaken for a hung one" }
 
 # ===========================================================================
 Write-Host ''
@@ -542,7 +575,7 @@ else {
     if ($cost -gt 400) { Fail ("the 6-second tier costs {0:N0} ms - that is not a cheap tier" -f $cost) }
     else { Pass ("the 6-second tier costs {0:N0} ms against the probe's ~1200" -f $cost) }
 
-    # 🩤 IT MOVES A ROW OUT OF NEEDS YOU, NEVER INTO IT. File activity proves a
+    # 🪤 IT MOVES A ROW OUT OF NEEDS YOU, NEVER INTO IT. File activity proves a
     # session is doing something; it can never prove one has started waiting.
     $victim = $liveRows[0]
     $bandWas = $victim.Band
@@ -571,7 +604,7 @@ Write-Host '--- what you actually wait on ---'
 # conversation, switching surfaces and the transcript rendering. Those are
 # measured here, at real size, against the operator's own 190 conversations.
 #
-# 🩤 The budgets are DELIBERATELY LOOSE. An earlier perf assertion in this
+# 🪤 The budgets are DELIBERATELY LOOSE. An earlier perf assertion in this
 # suite failed on 7.2 ms vs 34.4 ms of the same code on a busy machine and had
 # to be relaxed to a tenfold rule; a benchmark that cries wolf gets muted, and a
 # muted benchmark catches nothing.
@@ -591,7 +624,7 @@ else {
     $perf['switch back to work']       = Ms { Set-Surface 'work' }
     # The expensive one: selecting a DIFFERENT conversation renders its
     # transcript from disk. -Force is what the window itself calls.
-    # 🚨 A *DIFFERENT* CONVERSATION, WHICH IS THE PATH THAT COSTS. The first
+    # 🪤 A *DIFFERENT* CONVERSATION, WHICH IS THE PATH THAT COSTS. The first
     # version of this profile measured Show-Selected twice on the same row -
     # $same was true, the whole expensive branch was skipped, and it reported
     # 133 ms for a gesture the operator was experiencing as multi-second lag.
@@ -769,7 +802,7 @@ foreach ($case in @(@('ticked', { param($r) [bool]$r.S.enabled }),
     if ($wrong.Count) { Fail "the '$($case[0])' filter let $($wrong.Count) row(s) through that do not match" }
     elseif ($rows.Count -ne $expect) { Fail "the '$($case[0])' filter shows $($rows.Count) rows but $expect match" }
     else { Pass "'$($case[0])' shows exactly the $($rows.Count) that match" }
-    # 🚨 AND IT HAS TO SAY SO. A filter left on silently is a list you read as
+    # 🪤 AND IT HAS TO SAY SO. A filter left on silently is a list you read as
     # complete, on the surface that decides what reopens at logon.
     if (-not "$($ui.MgrFilterNote.Text)".Trim()) { Fail "the '$($case[0])' filter does not say the list is filtered" }
 }
@@ -793,7 +826,7 @@ Write-Host '--- the manager sorts by its column headers ---'
 $ui.ModeManage.IsChecked = $true
 Set-Surface 'manage'
 $sortWas = $script:mgrSort; $descWas = $script:mgrDesc
-# 🩤 UNFOLD FIRST. Earlier assertions in this suite tick, untick and fold, so
+# 🪤 UNFOLD FIRST. Earlier assertions in this suite tick, untick and fold, so
 # by the time sorting is reached one project may be open with a single row in
 # it - and a one-row table sorts identically in both directions, which would
 # have reported a working sort as broken (it did, first run).
@@ -870,7 +903,7 @@ else {
         elseif ($now.Count -ge $allRows) { Fail "filtering showed $($now.Count) of $allRows - it narrowed nothing" }
         else { Pass "filtering to one band shows $($now.Count) of $allRows conversations" }
 
-        # 🚨 EVERY HEADING STAYS. Hiding the others leaves no way back to the
+        # 🪤 EVERY HEADING STAYS. Hiding the others leaves no way back to the
         # full list except a control that is now off screen.
         $stillHeads = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'band' })
         if ($stillHeads.Count -ne $heads.Count) {

@@ -374,7 +374,7 @@ $script:dirty     = $false
 # header that looks like a column header and does nothing is worse than no
 # header at all, because it teaches you the table is dead.
 #
-# 🩤 SORTING HAPPENS WITHIN EACH PROJECT, NOT ACROSS THE WHOLE TABLE. The
+# 🪤 SORTING HAPPENS WITHIN EACH PROJECT, NOT ACROSS THE WHOLE TABLE. The
 # manager is grouped by project and the grouping is what makes it navigable at
 # 29 projects; a global sort by age would shuffle every conversation into one
 # undifferentiated run and lose the thing the surface is organised around.
@@ -646,7 +646,7 @@ function Update-ProjectLabels {
         }
     }
 }
-# 🩤 Split-Path THROWS ON AN EMPTY STRING - it does not return ''. A
+# 🪤 Split-Path THROWS ON AN EMPTY STRING - it does not return ''. A
 # conversation whose directory record has no path is rare but real (a registry
 # entry written before the cwd was known), and both of these helpers walked
 # straight into it: "Cannot bind argument to parameter 'Path' because it is an
@@ -737,7 +737,13 @@ function Update-Model {
         try { $a = Get-SRAgentStatus -Refresh } catch { }
         $script:agents = $a
     }
-    $agents = $script:agents
+    # 🪤 $agentMap, NOT $agents. PowerShell is case-insensitive, so a local
+    # called $agents IS the $Agents parameter above - the same collision that
+    # made 'what it last said' dead for the whole life of the window ($Said vs
+    # $said). It happens to be harmless here only because the parameter is read
+    # before the local overwrites it; move either line and it breaks silently.
+    # Not a bug today, and exactly the shape of one tomorrow.
+    $agentMap = $script:agents
 
     $rows = New-Object System.Collections.Generic.List[object]
     $warmCut = [DateTime]::Now.AddHours(-24).Ticks
@@ -746,7 +752,7 @@ function Update-Model {
         foreach ($s in @($d.sessions)) {
             if ($s.gone) { continue }
             $id = "$($s.sessionId)".ToLower()
-            $a  = $agents[$id]
+            $a  = $agentMap[$id]
             $conv = $null
             try { $conv = Resolve-SRSessionState -Agent $a -Conv $null } catch { }
             $live = [bool]$a
@@ -1368,7 +1374,7 @@ function Build-ReadDocument {
     $doc.Foreground  = $Pal.TextHigh
     $doc.PagePadding = New-Object System.Windows.Thickness 26, 18, 26, 26
     $doc.ColumnWidth = [double]::PositiveInfinity
-    # 🩤 OPTIMAL PARAGRAPH IS WPF'S GOOD LINE BREAKER (Knuth-Plass): it looks
+    # 🪤 OPTIMAL PARAGRAPH IS WPF'S GOOD LINE BREAKER (Knuth-Plass): it looks
     # at the whole paragraph rather than greedily filling each line, which is
     # the difference between even ragged edges and the lumpy ones that read as
     # "not clean". Off by default, and it was left off. Hyphenation stays off -
@@ -1635,7 +1641,7 @@ function Start-AnswerRecord {
 # single most disconcerting thing this window could do, because the whole point
 # of the surface is telling you what still wants you.
 #
-# 🩤 THE OPTIMISTIC MOVE IS NOT A GUESS ABOUT THE FUTURE, it is a statement
+# 🪤 THE OPTIMISTIC MOVE IS NOT A GUESS ABOUT THE FUTURE, it is a statement
 # about the past: keys have just been delivered to that session, so it is no
 # longer waiting on you whatever it does next. The probe is kicked in the same
 # breath and overwrites this with measured truth within a second or two; if it
@@ -1859,7 +1865,7 @@ function Show-Selected { param([switch]$Force)
         # whatever is selected, so this hands the job to it and kicks it now
         # rather than waiting up to 15 seconds for the next tick.
         #
-        # 🩤 The panel is CLEARED first. Leaving the previous conversation's
+        # 🪤 The panel is CLEARED first. Leaving the previous conversation's
         # question up while the probe fetches this one's is how an answer gets
         # filed against the wrong menu - the defect Show-Ask's own comment was
         # written for.
@@ -1975,7 +1981,7 @@ $window.Add_Closing({
 # chrome: they already say the state and the count, and they are already where
 # you are looking when you want to narrow the list.
 #
-# 🩤 PreviewMouseLeftButtonDown, NOT SelectionChanged or a click on the row.
+# 🪤 PreviewMouseLeftButtonDown, NOT SelectionChanged or a click on the row.
 # ListBoxItem marks the button-down HANDLED when it selects, which is the same
 # trap that stopped the session manager ticking anything at all; and selecting a
 # heading is meaningless, so SelectionChanged already steps PAST it - by the
@@ -2546,6 +2552,9 @@ $ui.RelaunchSessions.Add_Click({
     Set-Status $(if ($go.Count) { 'closing...' } else { 'opening...' })
     $killed = 0
     $tabs = New-Object System.Collections.Generic.List[string]
+    # Anything that would not close. It is dropped from the launch set below
+    # rather than reopened on top of itself.
+    $stuck = New-Object System.Collections.Generic.List[object]
     foreach ($r in $go) {
         $procId = [int]$r.A.Pid
         $proc = $null
@@ -2554,7 +2563,18 @@ $ui.RelaunchSessions.Add_Click({
         $tabName = $(if ("$($r.A.Name)") { "$($r.A.Name)" } else { (Get-Title $r.S $r.D).Text })
         $parent = $null
         try { $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.ParentProcessId)" -ErrorAction Stop } catch { }
-        try { Stop-Process -Id $procId -Force -ErrorAction Stop; $killed++ } catch { continue }
+        # 🔴 ONLY WHAT ACTUALLY DIED IS REOPENED. `continue` skipped the rest
+        # of THIS iteration but the row stayed in $go, so the launch queue below
+        # opened it regardless: a process that refused to die left the old
+        # conversation running while a new one started on the same transcript.
+        # Two claude processes on one file is the state this tool exists to
+        # avoid, and it arrived here silently.
+        try { Stop-Process -Id $procId -Force -ErrorAction Stop; $killed++ }
+        catch {
+            Write-SRLog ("  [FAIL] could not close '{0}': {1}" -f $tabName, $_.Exception.Message)
+            $stuck.Add($r)
+            continue
+        }
         if ("$tabName".Trim()) { $tabs.Add("$tabName") }
         if ($parent -and $parent.Name -eq 'powershell.exe' -and "$($parent.CommandLine)" -like '*.state*boot-*') {
             try { Stop-Process -Id ([int]$parent.ProcessId) -Force -ErrorAction Stop }
@@ -2569,8 +2589,14 @@ $ui.RelaunchSessions.Add_Click({
     # while the session that owned it is dead.
     try { $null = Close-SRTabsByName -Names $tabs } catch { }
     # One queue for both sets: the ones just killed and the ones that were never
-    # running go through the same half-second-apart launch.
-    Start-LaunchQueue (@($go) + @($open))
+    # running go through the same half-second-apart launch. Anything that would
+    # not close is in NEITHER - reopening it would duplicate it.
+    $stuckIds = @($stuck | ForEach-Object { "$($_.Id)" })
+    $launch = @(@($go | Where-Object { $stuckIds -notcontains "$($_.Id)" }) + @($open))
+    if ($stuck.Count) {
+        Set-Status ('{0} would not close and were NOT reopened - they are still running' -f $stuck.Count) 'bad'
+    }
+    Start-LaunchQueue $launch
 })
 
 # ===========================================================================
@@ -2722,7 +2748,21 @@ function Invoke-RelaunchOne { param($R)
         if ($proc -and $proc.Name -eq 'claude.exe') {
             $parent = $null
             try { $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.ParentProcessId)" -ErrorAction Stop } catch { }
-            try { Stop-Process -Id $procId -Force -ErrorAction Stop } catch { }
+            # 🔴 A FAILED KILL MUST NOT BECOME A SECOND SESSION. This swallowed
+            # the failure and launched anyway, so a process that refused to die
+            # left the OLD conversation running while a NEW one opened on the
+            # same transcript - two claude processes holding one file, which is
+            # the exact state Show-SRHiddenSession's own comment says must never
+            # happen ("the second would resume a session the first is still
+            # writing"). A relaunch that cannot close is not a relaunch, and
+            # saying so beats silently corrupting a conversation.
+            $dead = $false
+            try { Stop-Process -Id $procId -Force -ErrorAction Stop; $dead = $true }
+            catch { Write-SRLog ("  [FAIL] could not close '{0}': {1}" -f $t, $_.Exception.Message) }
+            if (-not $dead) {
+                Set-Status ("'{0}' would not close, so it has NOT been reopened - it is still running" -f $t) 'bad'
+                return
+            }
             if ($parent -and $parent.Name -eq 'powershell.exe' -and "$($parent.CommandLine)" -like '*.state*boot-*') {
                 try { Stop-Process -Id ([int]$parent.ProcessId) -Force -ErrorAction Stop } catch { }
             }
@@ -3490,7 +3530,7 @@ function Get-ModelFingerprint {
 # the follow-tick's trick generalised from the selected conversation to every
 # live one.
 #
-# 🩤 IT ONLY EVER MOVES A ROW *OUT* OF NEEDS YOU. File activity proves a
+# 🪤 IT ONLY EVER MOVES A ROW *OUT* OF NEEDS YOU. File activity proves a
 # session is doing something; it can never prove one has started waiting, and
 # claiming something wants you is a claim that has to be measured. The probe
 # stays the only thing that can put a row INTO needs.
@@ -3572,8 +3612,47 @@ $script:ProbeJob = {
     $out
 }
 
+# 🔴 A PROBE THAT NEVER COMES BACK USED TO STOP THE WINDOW FOREVER, silently.
+# The "one at a time" guard below is right - a queue of these would pile up - but
+# it was the ONLY thing gating a new probe, so a single job that never completed
+# left $script:probePs set for the rest of the session: every later tick
+# returned immediately, no refresh ever ran again, and nothing said so. The only
+# visible symptom is the "as of" stamp quietly ceasing to move, which is exactly
+# the kind of thing you notice an hour later.
+#
+# It spawns `claude agents --json`, so hanging is not hypothetical - a wedged
+# child process is a normal thing for a machine to produce. Raising the probe
+# from 45 s to 15 s tripled the number of spawns that could hit it.
+#
+# 🪤 THE DEADLINE IS GENEROUS ON PURPOSE. The probe legitimately takes ~1.2 s
+# and a loaded machine can take several times that; abandoning a healthy probe
+# would be worse than the bug, because two of them running at once is what the
+# guard exists to prevent. 90 seconds is six normal intervals - long past the
+# point where anything is coming back.
+$script:probeStartedAt = $null
+$script:ProbeDeadlineSeconds = 90
+# Separated so the suite can ask the question without starting a probe: this is
+# the decision, Start-LiveProbe is the consequence.
+function Test-ProbeOverdue {
+    if (-not $script:probePs) { return $false }
+    if (-not $script:probeStartedAt) { return $false }
+    return (((Get-Date) - $script:probeStartedAt).TotalSeconds -gt $script:ProbeDeadlineSeconds)
+}
+
 function Start-LiveProbe {
-    if ($script:probePs) { return }        # one at a time; a queue would pile up
+    if ($script:probePs) {
+        if (Test-ProbeOverdue) {
+            Write-SRLog ('  [warn] the live probe has not returned in {0}s - abandoning it and starting another' -f `
+                [int]((Get-Date) - $script:probeStartedAt).TotalSeconds)
+            # Stop() rather than just dropping the reference: the runspace holds
+            # a thread, and leaking one per 90 seconds is its own slow failure.
+            try { $script:probePs.Stop() } catch { }
+            try { $script:probePs.Dispose() } catch { }
+            try { $script:probeRs.Close(); $script:probeRs.Dispose() } catch { }
+            $script:probePs = $null; $script:probeHandle = $null; $script:probeRs = $null
+            Set-Status 'the background refresh stopped responding - restarted it' 'warn'
+        } else { return }   # one at a time; a queue would pile up
+    }
     try {
         # What the pane is showing, so the job can read its pending question
         # while it is out there anyway.
@@ -3593,6 +3672,7 @@ function Start-LiveProbe {
         $script:probeRs = $rs
         $script:probePs = $ps
         $script:probeHandle = $ps.BeginInvoke()
+        $script:probeStartedAt = Get-Date
     } catch {
         Write-SRLog ('  [FAIL] the live probe would not start: {0}' -f $_.Exception.Message)
         $script:probePs = $null
@@ -3606,6 +3686,7 @@ function Complete-LiveProbe {
     try { $script:probePs.Dispose() } catch { }
     try { $script:probeRs.Close(); $script:probeRs.Dispose() } catch { }
     $script:probePs = $null; $script:probeHandle = $null; $script:probeRs = $null
+    $script:probeStartedAt = $null
     if (-not $res) { return }
 
     # 🔴 NEVER OVERWRITE UNSAVED TICKS. The probe carries a registry read from
