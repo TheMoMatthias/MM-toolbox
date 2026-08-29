@@ -155,6 +155,12 @@ $script:selId     = $null
 # selection: the list rebuilds on a timer, and a panel that followed the
 # selection could apply your changes to whatever moved under it.
 $script:setFor    = $null
+# The question currently on offer in the pane, so an answer record can say what
+# was actually on screen when it was pressed. Never inferred, never stale.
+$script:lastAsk   = $null
+# How often the foreground path may spend a child process reading a console.
+$script:AskEverySeconds = 5
+$script:lastAskAt = $null
 $script:cfg       = $null
 $script:reg       = $null
 $script:dirs      = @()
@@ -479,13 +485,24 @@ function Get-LaneLabel { param($R, [string]$Title)
     return $wt
 }
 
+# One definition of what an age READS AS, driven by a tick delta so it can be
+# called in a tight loop without touching the clock or parsing a date. Both the
+# painted row and the change-detection fingerprint go through it, so they can
+# never disagree about whether an age moved.
+function Get-AgeLabel { param([long]$Delta)
+    if ($Delta -le 0) { return '' }
+    $s = [long]($Delta / 10000000)
+    if ($s -lt 90)     { return 'now' }
+    if ($s -lt 3600)   { return ([string][int]($s / 60) + 'm') }
+    if ($s -lt 86400)  { return ([string][int]($s / 3600) + 'h') }
+    return ([string][int]($s / 86400) + 'd')
+}
+
 function Get-Age { param($When)
     if (-not $When) { return '' }
-    try { $d = ((Get-Date) - [datetime]$When) } catch { return '' }
-    if ($d.TotalSeconds -lt 90) { return 'now' }
-    if ($d.TotalMinutes -lt 60) { return ('{0}m' -f [int]$d.TotalMinutes) }
-    if ($d.TotalHours   -lt 24) { return ('{0}h' -f [int]$d.TotalHours) }
-    return ('{0}d' -f [int]$d.TotalDays)
+    $t = 0L
+    try { $t = ([datetime]$When).Ticks } catch { return '' }
+    return (Get-AgeLabel ([DateTime]::Now.Ticks - $t))
 }
 
 function Test-Warm { param($S)
@@ -497,16 +514,39 @@ function Test-Warm { param($S)
 # 🪤 THE SAID-LINE IS READ ONLY FOR THE LIVE AND THE RECENT. Get-SRLastSaid opens
 # a file per conversation; doing that for all 215 on every rebuild is seconds,
 # not milliseconds, and the rebuild runs on a timer.
+# 🔴 THE MODEL AND THE REGISTRY ARE ONE THING, AND THEY ARE REPLACED TOGETHER.
+#
+# Every row holds a LIVE REFERENCE to a session object ($r.S) and a directory
+# object ($r.D) inside $script:reg. Ticking mutates $r.S; Save writes
+# $script:reg. Those two only agree while the rows came from THAT registry.
+#
+# The background probe used to swap $script:reg for a fresh read from disk and
+# leave the rows pointing into the OLD graph. After that, every tick and every
+# per-session setting was written to an orphaned object and then not saved -
+# the box stayed filled on screen and the file on disk never heard about it.
+# Silent, and on a 45-second timer.
+#
+# So there is exactly one place a registry is adopted, and it rebuilds the rows
+# in the same breath. -Registry / -Agents / -Said let the probe hand in work it
+# already did on a background thread, so this costs no I/O when it is called
+# from there.
 function Update-Model {
-    $script:cfg  = Get-SRConfig
-    $script:reg  = Get-SRRegistry
+    param($Registry, $Agents, [hashtable]$Said)
+
+    $script:cfg = Get-SRConfig
+    if ($Registry) { $script:reg = $Registry } else { $script:reg = Get-SRRegistry }
     $script:dirs = @($script:reg.directories)
 
-    $agents = @{}
-    try { $agents = Get-SRAgentStatus -Refresh } catch { }
-    $script:agents = $agents
+    if ($null -ne $Agents) { $script:agents = $Agents }
+    else {
+        $a = @{}
+        try { $a = Get-SRAgentStatus -Refresh } catch { }
+        $script:agents = $a
+    }
+    $agents = $script:agents
 
     $rows = New-Object System.Collections.Generic.List[object]
+    $warmCut = [DateTime]::Now.AddHours(-24).Ticks
     foreach ($d in $script:dirs) {
         if ($d.missing) { continue }
         foreach ($s in @($d.sessions)) {
@@ -518,10 +558,19 @@ function Update-Model {
             $live = [bool]$a
             $said = $null
             if ($live -or (Test-Warm $s)) {
-                try { $said = Get-SRLastSaid -JsonlPath $s.jsonl } catch { }
+                # Handed in by the probe when it read them off the background
+                # thread; read here only when nobody did it for us.
+                if ($null -ne $Said) { $said = $Said[$id] }
+                else { try { $said = Get-SRLastSaid -JsonlPath $s.jsonl } catch { } }
             }
+            # lastActive is parsed ONCE, here, and carried as ticks. The 6-second
+            # pass reads it for every conversation; re-parsing a string 184 times
+            # per tick was most of what that pass cost.
+            $at = 0L
+            try { $at = ([datetime]$s.lastActive).Ticks } catch { }
             $rows.Add([PSCustomObject]@{
                 Id = $id; S = $s; D = $d; A = $a; Conv = $conv; Said = $said; Live = $live; Band = 'quiet'
+                At = $at; Warm = ($at -gt $warmCut)
             })
         }
     }
@@ -534,6 +583,20 @@ function Update-Model {
 # browser for all 215 - that is what the session manager is for.
 function Test-OnSurface { param($R)
     if ($R.Live) { return $true }
+    # $R.Warm is the same 24-hour question, decided once when the model was
+    # built. Test-Warm re-parses a date string and is kept only for callers
+    # holding a bare session object.
+    if ($null -ne $R.Warm) {
+        if ($R.Warm) { return $true }
+        return ($script:selId -and $R.Id -eq $script:selId)
+    }
+    # 🔴 WHAT YOU ARE READING STAYS ON SCREEN. A conversation drops off this
+    # surface once it stops being live and its last activity passes 24 hours -
+    # and the refresh runs every six seconds, so it could vanish from under the
+    # pane mid-read and Build-Sessions would silently select a DIFFERENT
+    # conversation in its place. Whatever is selected is pinned until you
+    # select something else.
+    if ($script:selId -and $R.Id -eq $script:selId) { return $true }
     return (Test-Warm $R.S)
 }
 
@@ -675,7 +738,10 @@ $Pal = @{
     TextLow    = $window.FindResource('TextLow')
     TextDim    = $window.FindResource('AccQuiet')
 }
-$script:UiFace   = $window.FindResource('FontUi')
+# The faces the TRANSCRIPT is drawn in - the biggest block of text in the window,
+# and it was still on the retired FontUi alias while everything around it moved
+# to the scale. Prose in Text, tool output and code in the mono face.
+$script:UiFace   = $window.FindResource('FontText')
 $script:MonoFace = $window.FindResource('FontMono')
 $FW_Semi   = [System.Windows.FontWeights]::SemiBold
 $FW_Normal = [System.Windows.FontWeights]::Normal
@@ -883,14 +949,27 @@ function Build-ReadDocument {
 # The options come off the LIVE CONSOLE, not the transcript - a question is only
 # answerable while something is sitting on it.
 # ===========================================================================
+# READING the question and SHOWING it are two jobs, and only one of them is
+# slow. Get-SRScreenQuestion spawns a child process with a 3-second budget and a
+# retry, so the background probe does the reading and hands the result to
+# Show-Ask; Update-Ask is the foreground path, for the moment you select a
+# conversation and want an answer now.
 function Update-Ask { param($R)
-    $ui.AskBox.Visibility = $V_Hide
-    $ui.AskOptions.ItemsSource = $null
-    if (-not $R -or -not $R.A -or -not $R.A.Pid) { return }
-
+    if (-not $R -or -not $R.A -or -not $R.A.Pid) { Show-Ask $null; return }
     $q = $null
     try { $q = Get-SRScreenQuestion -ProcessId ([int]$R.A.Pid) } catch { }
-    $script:lastAsk = $q     # kept so the answer record can say what was on offer
+    Show-Ask $q
+}
+
+function Show-Ask { param($q)
+    $ui.AskBox.Visibility = $V_Hide
+    $ui.AskOptions.ItemsSource = $null
+    # 🔴 CLEARED ON EVERY PATH. It used to be set only after the early return, so
+    # selecting a conversation that was not running left the PREVIOUS one's
+    # question in it - and the answer record then filed another conversation's
+    # options against this answer. That record exists to settle a wrong reading;
+    # one that names the wrong menu is worse than none at all.
+    $script:lastAsk = $q
     if (-not $q -or -not @($q.Options).Count) { return }
 
     $ui.AskHeader.Text = $(if ("$($q.Header)") { "$($q.Header)".ToUpper() } else { 'IT IS ASKING' })
@@ -964,6 +1043,47 @@ function Update-Ask { param($R)
 # it was choosing, and what the screen said AFTER. If it ever answers the wrong
 # thing, the file says exactly what it saw and what it did - which is the only
 # way to tell a misread from a mis-send afterwards.
+# Fire-and-forget: the record is written on its own runspace so the operator
+# never waits for evidence. It is not tracked or collected - there is nothing to
+# come back for, and a failure to record must never surface as a failure to
+# answer.
+function Start-AnswerRecord {
+    param([string]$SessionId, [int]$Pid_, [int]$Index, $Question, [string]$Why)
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'MTA'
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        $rs.SessionStateProxy.SetVariable('SRA', @{
+            SessionId = $SessionId; Pid_ = $Pid_; Index = $Index; Why = $Why
+            Options = @($Question.Options); Multi = [bool]$Question.Multi
+            CursorAt = $(if ($Question) { $Question.CursorAt } else { -1 })
+            Chose = $(if ($Question -and $Index -lt @($Question.Options).Count) { "$(@($Question.Options)[$Index])" } else { '' })
+            Dir = (Join-Path $SR_StateDir 'answers')
+        })
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript({
+            . (Join-Path $SRHere '_common.ps1')
+            Start-Sleep -Milliseconds 500
+            $after = $null
+            try { $after = Get-SRScreenText -ProcessId ([int]$SRA.Pid_) } catch { }
+            try {
+                if (-not (Test-Path -LiteralPath $SRA.Dir)) { $null = New-Item -ItemType Directory -Path $SRA.Dir -Force }
+                $rec = [PSCustomObject]@{
+                    at = (Get-Date).ToString('o'); sessionId = $SRA.SessionId; pid = $SRA.Pid_
+                    index = $SRA.Index; chose = $SRA.Chose; options = $SRA.Options
+                    multi = $SRA.Multi; cursorAt = $SRA.CursorAt; failed = $SRA.Why
+                    after = "$after"
+                }
+                $f = Join-Path $SRA.Dir ('answer-{0}-{1}.json' -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'), "$($SRA.SessionId)".Substring(0, 8))
+                [System.IO.File]::WriteAllText($f, ($rec | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+            } catch { }
+        })
+        $null = $ps.BeginInvoke()
+    } catch { }
+}
+
 function Write-SRAnswerRecord {
     param([string]$SessionId, [int]$Pid_, [int]$Index, $Question, [string]$Before, [string]$After, [string]$Why)
     try {
@@ -994,15 +1114,18 @@ function Invoke-Answer { param([int]$Index)
     if (-not $r.A -or -not $r.A.Pid) { Set-Status 'that conversation is not running any more' 'warn'; return }
     Set-Status 'answering...'
     $procId = [int]$r.A.Pid
-    $before = $null
-    try { $before = Get-SRScreenText -ProcessId $procId } catch { }
+    # 🪤 THE "BEFORE" IS ALREADY IN HAND. Reading the console again here cost a
+    # second before the keystroke even left - Send-SRQuestionAnswer reads the
+    # screen itself to find the cursor, and $script:lastAsk holds what was drawn
+    # when the buttons were built. Answering must feel immediate.
     $why = $null
     try { $why = Send-SRQuestionAnswer -SessionId $r.Id -Index $Index } catch { $why = $_.Exception.Message }
-    $after = $null
-    try { Start-Sleep -Milliseconds 400; $after = Get-SRScreenText -ProcessId $procId } catch { }
-    Write-SRAnswerRecord -SessionId $r.Id -Pid_ $procId -Index $Index -Question $script:lastAsk `
-                         -Before "$before" -After "$after" -Why "$why"
     if ($why) { Set-Status $why 'bad' } else { Set-Status 'answered' 'ok'; $ui.AskBox.Visibility = $V_Hide }
+
+    # The AFTER shot is the evidence, and it is taken on a background thread so
+    # it costs the operator nothing. It is still the same measurement: what the
+    # screen said once the keys had landed.
+    Start-AnswerRecord -SessionId $r.Id -Pid_ $procId -Index $Index -Question $script:lastAsk -Why "$why"
 }
 
 # ===========================================================================
@@ -1062,8 +1185,67 @@ function Update-Document {
     if ($doc -isnot [System.Windows.Documents.FlowDocument]) {
         throw ('Build-ReadDocument returned {0}, not a FlowDocument - something in it emitted to the pipeline' -f $doc.GetType().Name)
     }
+    # 🔴 STICK TO THE BOTTOM, BUT NEVER FIGHT THE READER.
+    #
+    # The newest line is the one you want, so a fresh conversation opens at the
+    # end and a refresh that arrives while you are AT the end keeps you there.
+    # The moment you scroll up you are reading something, and nothing may drag
+    # you back down - a log window that yanks you to the bottom mid-sentence is
+    # the single most irritating thing this pane could do.
+    #
+    # Whether we were at the bottom has to be sampled BEFORE the document is
+    # replaced, because replacing it resets the extent and the answer with it.
+    $stick = Test-AtBottom
     $ui.PaneDoc.Document = $doc
     $ui.PaneEmpty.Visibility = $V_Hide
+    if ($stick) { Move-ToBottom }
+}
+
+# The ScrollViewer inside a FlowDocumentScrollViewer is part of its template, so
+# it does not exist until the control has been through a layout pass and cannot
+# be found by name from outside. Walked once and remembered.
+$script:paneScroller = $null
+function Get-PaneScroller {
+    if ($script:paneScroller) { return $script:paneScroller }
+    $sv = $null
+    $stack = New-Object System.Collections.Generic.Stack[object]
+    $stack.Push($ui.PaneDoc)
+    while ($stack.Count -and -not $sv) {
+        $el = $stack.Pop()
+        if ($el -is [System.Windows.Controls.ScrollViewer]) { $sv = $el; break }
+        $n = 0
+        try { $n = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($el) } catch { }
+        for ($i = 0; $i -lt $n; $i++) { $stack.Push([System.Windows.Media.VisualTreeHelper]::GetChild($el, $i)) }
+    }
+    $script:paneScroller = $sv
+    return $sv
+}
+
+# "At the bottom" with a tolerance, because a partly-visible last line leaves a
+# fractional gap that never reaches exactly zero - and demanding exactness would
+# quietly turn the feature off.
+function Test-AtBottom {
+    $sv = Get-PaneScroller
+    if (-not $sv) { return $true }        # nothing rendered yet: a new pane starts at the end
+    if ($sv.ScrollableHeight -le 0) { return $true }
+    return (($sv.ScrollableHeight - $sv.VerticalOffset) -le 24)
+}
+
+function Move-ToBottom {
+    $sv = Get-PaneScroller
+    if (-not $sv) {
+        # First paint: the template has not been built yet, so there is nothing
+        # to scroll. Ask again once WPF has laid it out.
+        $null = $window.Dispatcher.BeginInvoke(
+            [System.Windows.Threading.DispatcherPriority]::Loaded,
+            [action]{ $s = Get-PaneScroller; if ($s) { $s.ScrollToEnd() } })
+        return
+    }
+    # Also deferred: the new document has been assigned but not measured, so its
+    # extent is still the OLD one and ScrollToEnd would stop short.
+    $null = $window.Dispatcher.BeginInvoke(
+        [System.Windows.Threading.DispatcherPriority]::Loaded,
+        [action]{ $s = Get-PaneScroller; if ($s) { $s.ScrollToEnd() } })
 }
 
 # 🔴 THE EXPENSIVE HALF ONLY RUNS WHEN THE SELECTION ACTUALLY MOVED.
@@ -1099,11 +1281,22 @@ function Show-Selected { param([switch]$Force)
     # Everything below reads files and spawns a process.
     if ($same -and -not $Force) { return }
 
-    $script:tailBytes = $script:TailBase     # a new conversation starts at the budget
+    # 🔴 ONLY A DIFFERENT CONVERSATION STARTS AT THE BUDGET. -Force means "the
+    # content moved", not "this is a new conversation", and resetting here undid
+    # 'load earlier' on every forced refresh - the exact defect the $same guard
+    # above was added to fix, reintroduced one line below it.
+    if (-not $same) { $script:tailBytes = $script:TailBase }
     Update-Document
-    Update-Ask $r
+    # A DIFFERENT conversation always opens at its newest line. Update-Document
+    # only STICKS to the bottom - and "were we at the bottom" was answered about
+    # the conversation you just left, which says nothing about this one.
+    if (-not $same) { Move-ToBottom }
+    if (-not $same) {
+        $script:lastAskAt = Get-Date
+        Update-Ask $r
+    }
     Update-SendState
-    $script:followStamp = $null
+    if (-not $same) { $script:followStamp = $null }
 }
 
 # FOLLOW ONLY THE SELECTED SESSION. One file, checked once a second, rather than
@@ -1124,7 +1317,19 @@ $script:followTimer.Add_Tick({
     try { $fi = Get-Item -LiteralPath $j; $now = ('{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks) } catch { return }
     if ($now -eq $script:followStamp) { return }
     $script:followStamp = $now
-    try { Update-Document; Update-Ask $r; Update-SendState } catch { }
+    try { Update-Document; Update-SendState } catch { }
+
+    # 🔴 THE CONSOLE READ IS NOT FREE AND THIS TICK IS EVERY SECOND.
+    # Update-Ask spawns a child process with a 3-second budget and a retry. A
+    # session that is working writes its transcript constantly, so this fired on
+    # almost every tick and blocked the dispatcher for over a second each time -
+    # the window would stutter for exactly as long as you watched something work.
+    # Two gates: a conversation that is MID-TURN has no menu up to read, and no
+    # more often than the interval below however busy it is.
+    if ("$($r.A.Status)" -eq 'busy') { return }
+    if ($script:lastAskAt -and ((Get-Date) - $script:lastAskAt).TotalSeconds -lt $script:AskEverySeconds) { return }
+    $script:lastAskAt = Get-Date
+    try { Update-Ask $r } catch { }
 })
 
 # ---------------------------------------------------------------------------
@@ -1289,9 +1494,18 @@ function New-ManageMenu {
 }
 
 # The row the CONTEXT MENU was opened on, not whatever happens to be selected.
+#
+# 🪤 TAKEN ONCE AND CLEARED. Leaving it set meant the NEXT invocation - a
+# keyboard one, or a menu opened over a project header - could act on a
+# conversation the mouse had pointed at minutes earlier. An action that targets
+# something you cannot see is the worst kind on this surface.
 $script:manageMenuRow = $null
 function Get-ManageRow {
-    if ($script:manageMenuRow) { return $script:manageMenuRow }
+    if ($script:manageMenuRow) {
+        $r = $script:manageMenuRow
+        $script:manageMenuRow = $null
+        return $r
+    }
     $it = $ui.ManageList.SelectedItem
     if ($it -and $it.Kind -eq 'conv') { return $it.Row }
     return $null
@@ -1359,7 +1573,11 @@ function Get-LaunchBlock { param($R)
     return $null
 }
 
-function Get-TickedPlan {
+# -Adopt is what makes this WRITE. Without it the plan is a pure read, which is
+# what a name beginning with Get- has to mean: it is called to paint a
+# confirmation and by the tests, and neither should be able to dirty the
+# registry. Only the two buttons that are about to launch pass -Adopt.
+function Get-TickedPlan { param([switch]$Adopt)
     $fresh = @(); $restart = @(); $busy = @(); $blocked = @()
     foreach ($r in $script:model) {
         if ($r.D.missing -or -not [bool]$r.D.enabled) { continue }
@@ -1371,7 +1589,7 @@ function Get-TickedPlan {
             # read. Relaunching from the registry would pass the stale title to -n
             # and rename it BACK - silently, inside an action pressed to FIX names.
             $ln = "$($r.A.Name)".Trim()
-            if ($ln -and $ln -ne '(untitled)' -and $ln -ne "$($r.S.title)") {
+            if ($Adopt -and $ln -and $ln -ne '(untitled)' -and $ln -ne "$($r.S.title)") {
                 Write-SRLog ("  [ok]   adopting the live name '{0}' over the recorded '{1}'" -f $ln, $r.S.title)
                 Set-Field $r.S 'title' $ln
                 $script:dirty = $true
@@ -1485,7 +1703,7 @@ function Confirm-Action { param([string]$Title, [string]$Body)
 }
 
 $ui.OpenNotRunning.Add_Click({
-    $plan = Get-TickedPlan
+    $plan = Get-TickedPlan -Adopt
     $lim = Limit-ToCap $plan.Fresh
     $go = @($lim.Go)
     if (-not $go.Count) {
@@ -1508,7 +1726,7 @@ $ui.OpenNotRunning.Add_Click({
 })
 
 $ui.RelaunchSessions.Add_Click({
-    $plan = Get-TickedPlan
+    $plan = Get-TickedPlan -Adopt
     # 🔴 RELAUNCH RESTARTS; IT DOES NOT OPEN. Taking Fresh as well would mean
     # pressing this to fix the names on 12 running conversations and getting 29
     # tabs. Opening the rest is what the other button is for.
@@ -1652,7 +1870,23 @@ $ui.SendBox.Add_PreviewKeyDown({
     if ($e.Key -eq 'Return' -and $ui.SendBtn.IsEnabled) { Invoke-Send; $e.Handled = $true }
 })
 # Losing focus closes it, or it hangs over the window after you click away.
-$ui.SendBox.Add_LostKeyboardFocus({ Close-SkillPop })
+#
+# 🔴 UNLESS FOCUS WENT INTO THE PICKER ITSELF. Clicking a skill moves focus to
+# that ListBoxItem, which raised this event, which closed the popup - tearing
+# down the very item mid-click, so the mouse never completed and only the
+# keyboard could pick a skill. The new focus target decides.
+$ui.SendBox.Add_LostKeyboardFocus({
+    param($sender, $e)
+    $to = $e.NewFocus
+    while ($to) {
+        if ([object]::ReferenceEquals($to, $ui.SkillList) -or [object]::ReferenceEquals($to, $ui.SkillPop)) { return }
+        $p = $null
+        try { if ($to -is [System.Windows.DependencyObject]) { $p = [System.Windows.Media.VisualTreeHelper]::GetParent($to) } } catch { }
+        if (-not $p -and ($to -is [System.Windows.FrameworkElement])) { $p = $to.Parent }
+        $to = $p
+    }
+    Close-SkillPop
+})
 
 $ui.PaneGoTo.Add_Click({
     $it = $ui.SessionList.SelectedItem
@@ -1739,7 +1973,6 @@ $ui.PaneRelaunch.Add_Click({
 $script:PermNotes = @{
     ''                  = 'Whatever this machine already defaults to.'
     'manual'            = 'Asks before every tool call. Slowest, and nothing happens without you.'
-    'default'           = 'Asks before anything it has not been allowed.'
     'acceptEdits'       = 'Edits files without asking; still asks before running commands.'
     'auto'              = 'Decides for itself which calls need you. The usual choice for a session you leave running.'
     'dontAsk'           = 'Never stops to ask. It will not wait for you - and it will not warn you either.'
@@ -2094,7 +2327,15 @@ function Start-NewSession { param($G)
     if ($G.Model)  { $flags.Add('--model');           $flags.Add($G.Model) }
     if ($G.Effort) { $flags.Add('--effort');          $flags.Add($G.Effort) }
     if ($G.Perm)   { $flags.Add('--permission-mode'); $flags.Add($G.Perm) }
-    if ($G.Worktree) { $flags.Add('--worktree'); $flags.Add($G.Name) }
+    # A worktree name becomes a DIRECTORY NAME on disk, so it cannot carry what a
+    # conversation name happily can. Spaces and punctuation are folded to dashes
+    # rather than refused: the session keeps the name you typed, its worktree
+    # gets a workable version of it.
+    if ($G.Worktree) {
+        $wt = (("$($G.Name)" -replace '[^A-Za-z0-9._-]', '-') -replace '-{2,}', '-').Trim('-')
+        if (-not $wt) { $wt = 'session' }
+        $flags.Add('--worktree'); $flags.Add($wt)
+    }
     try {
         $boot = New-SRBootScript -Dir $G.Dir -Title $G.Name `
                     -ClaudeArgs $flags.ToArray() -RemoteControl $G.Remote
@@ -2193,18 +2434,52 @@ $ui.CastSend.Add_Click({
         ("Each one receives, as if you had typed it:`n`n    {0}`n`nInto: {1}" -f $msg, $names))) {
         Set-Status 'nothing sent'; return
     }
-    $ok = 0; $bad = New-Object System.Collections.Generic.List[string]
-    foreach ($r in $go) {
-        $t = (Get-Title $r.S $r.D).Text
-        $why = $null
-        try { $why = Send-SRSessionInput -SessionId $r.Id -Text $msg } catch { $why = $_.Exception.Message }
-        if ($why) { $bad.Add(('{0} ({1})' -f $t, $why)); Write-SRLog ('  [FAIL] cast to {0}: {1}' -f $t, $why) }
-        else { $ok++; Write-SRLog ('  [ok]   cast to {0}' -f $t) }
-        Start-Sleep -Milliseconds 250
-    }
+    # 🪤 ONE PER TICK, NOT A LOOP. Each send reads the target's console to find
+    # the cursor and then writes keys; a loop over ten of them with a settle
+    # pause between froze the window for several seconds with no sign of
+    # progress. The queue keeps the dispatcher free and reports as it goes.
     Hide-Cast
-    if ($bad.Count) { Set-Status ('sent to {0}; {1} refused: {2}' -f $ok, $bad.Count, (($bad | Select-Object -First 4) -join '; ')) 'bad' }
-    else { Set-Status ('sent to {0} conversation(s)' -f $ok) 'ok' }
+    $script:castQueue.Clear()
+    $script:castOk = 0
+    $script:castBad.Clear()
+    $script:castMsg = $msg
+    foreach ($r in $go) { $script:castQueue.Enqueue($r) }
+    Set-Status ('sending to {0}...' -f $script:castQueue.Count)
+    $script:castTimer.Start()
+})
+
+$script:castQueue = New-Object System.Collections.Generic.Queue[object]
+$script:castBad = New-Object System.Collections.Generic.List[string]
+$script:castOk = 0
+$script:castMsg = ''
+$script:castTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:castTimer.Interval = [TimeSpan]::FromMilliseconds(300)
+$script:castTimer.Add_Tick({
+    if (-not $script:castQueue.Count) {
+        $script:castTimer.Stop()
+        if ($script:castBad.Count) {
+            Set-Status ('sent to {0}; {1} refused: {2}' -f $script:castOk, $script:castBad.Count,
+                (($script:castBad | Select-Object -First 4) -join '; ')) 'bad'
+        } else { Set-Status ('sent to {0} conversation(s)' -f $script:castOk) 'ok' }
+        return
+    }
+    $r = $script:castQueue.Dequeue()
+    $t = '(unnamed)'
+    try {
+        $t = (Get-Title $r.S $r.D).Text
+        # Re-checked per send: a conversation can start a turn while the queue
+        # is draining, and a keystroke arriving mid-reply is not undoable.
+        if ("$($r.A.Status)" -eq 'busy') {
+            $script:castBad.Add(('{0} (started a turn)' -f $t))
+        } else {
+            $why = Send-SRSessionInput -SessionId $r.Id -Text $script:castMsg
+            if ($why) { $script:castBad.Add(('{0} ({1})' -f $t, $why)); Write-SRLog ('  [FAIL] cast to {0}: {1}' -f $t, $why) }
+            else { $script:castOk++; Write-SRLog ('  [ok]   cast to {0}' -f $t) }
+        }
+    } catch {
+        $script:castBad.Add(('{0} ({1})' -f $t, $_.Exception.Message))
+    }
+    Set-Status ('sending... {0} left' -f $script:castQueue.Count)
 })
 
 $ui.Rescan.Add_Click({
@@ -2232,21 +2507,11 @@ function Update-MaxGlyph {
     }
 }
 
-$ui.TitleBar.Add_MouseLeftButtonDown({
-    param($sender, $e)
-    # Double-click the caption to maximise, exactly as the OS one did.
-    if ($e.ClickCount -eq 2) {
-        $window.WindowState = $(if ($window.WindowState -eq [System.Windows.WindowState]::Maximized) {
-            [System.Windows.WindowState]::Normal } else { [System.Windows.WindowState]::Maximized })
-        Update-MaxGlyph
-        return
-    }
-    # 🪤 DragMove THROWS if the button is no longer down by the time it runs -
-    # a fast click can get here after the release. An unhandled throw from an
-    # input handler takes the window down, and this handler fires on every
-    # single click on the header.
-    try { $window.DragMove() } catch { }
-})
+# WINDOWS DRAGS THIS, NOT US. WindowChrome's CaptionHeight now covers the header,
+# so the OS moves, snaps, shakes and double-click-maximises it exactly as it does
+# any other window - and the system menu is back on Alt+Space and right-click.
+# There is deliberately no DragMove handler: it only ever reimplemented a
+# fraction of that, and badly.
 
 $ui.WinMin.Add_Click({ $window.WindowState = [System.Windows.WindowState]::Minimized })
 $ui.WinMax.Add_Click({
@@ -2362,13 +2627,28 @@ $script:probeHandle = $null
 # nothing still yanks the list back to the top under your hand. Every six
 # seconds. The fingerprint is computed from the MODEL, which costs string
 # formatting and no I/O, and the rebuild only happens when it moved.
+# 🪤 THIS RUNS EVERY SIX SECONDS OVER EVERY CONVERSATION, so it is written for
+# that and not for elegance. The first version cost 294 ms because it called
+# Get-Date and re-parsed $s.lastActive from a string once PER ROW - 184 DateTime
+# parses and 184 clock reads to decide whether anything had moved. The clock is
+# read once, the timestamp is parsed once when the model is built ($r.At), and
+# the age is derived by integer arithmetic on ticks.
 function Get-ModelFingerprint {
     $sb = New-Object System.Text.StringBuilder
+    $nowTicks = [DateTime]::Now.Ticks
     foreach ($r in $script:model) {
-        if (-not (Test-OnSurface $r)) { continue }
+        if (-not $r.Live -and -not $r.Warm -and $r.Id -ne $script:selId) { continue }
         $said = ''
-        if ($r.Said -and "$($r.Said.Said)") { $said = "$($r.Said.Said)".Substring(0, [Math]::Min(40, "$($r.Said.Said)".Length)) }
-        $null = $sb.Append("$($r.Id)|$($r.Band)|$(Get-Age $r.S.lastActive)|$said`n")
+        if ($r.Said) {
+            $s = "$($r.Said.Said)"
+            if ($s.Length -gt 40) { $said = $s.Substring(0, 40) } else { $said = $s }
+        }
+        # 🔑 THE LABEL, NOT THE ELAPSED TIME. Fingerprinting raw minutes would
+        # differ every single minute for a row that displays "3d" and has not
+        # changed in any visible way - a guaranteed repaint per minute, which is
+        # the scroll-stealing this whole comparison exists to prevent.
+        $null = $sb.Append($r.Id).Append('|').Append($r.Band).Append('|').
+                    Append((Get-AgeLabel ($nowTicks - $r.At))).Append('|').Append($said).Append("`n")
     }
     return $sb.ToString()
 }
@@ -2385,24 +2665,62 @@ function Invoke-FastPass {
 }
 $script:lastFp = $null
 
-# The slow half, off the UI thread. It returns the registry and the agent map;
-# nothing is drawn from in here.
+# The slow half, off the UI thread. EVERYTHING that touches a file or spawns a
+# process happens in here - the registry, the agent list, the last-said lines,
+# and the pending question for the one conversation on screen. The UI side then
+# only walks object graphs.
+#
+# 🪤 THE LAST-SAID READS BELONG HERE TOO. Leaving them on the UI side cost ~580 ms
+# of frozen window per probe; the pending-question read cost up to another 6 s,
+# because Get-SRScreenQuestion has a 3-second budget AND a retry. Both used to
+# run on the dispatcher every 45 seconds.
 $script:ProbeJob = {
     . (Join-Path $SRHere '_common.ps1')
-    $out = @{}
-    try { $out.Reg = Get-SRRegistry } catch { $out.Reg = $null }
-    try { $out.Agents = Get-SRAgentStatus -Refresh } catch { $out.Agents = @{} }
+    $out = @{ Reg = $null; Agents = @{}; Said = @{}; Ask = $null; AskFor = '' }
+    try { $out.Reg = Get-SRRegistry } catch { }
+    try { $out.Agents = Get-SRAgentStatus -Refresh } catch { }
+
+    # Only the live and the recent, exactly as the foreground pass decides it:
+    # opening a file per conversation for all 218 is seconds, not milliseconds.
+    if ($out.Reg) {
+        $cut = (Get-Date).AddHours(-24)
+        foreach ($d in $out.Reg.directories) {
+            if ($d.missing) { continue }
+            foreach ($s in @($d.sessions)) {
+                if ($s.gone) { continue }
+                $id = "$($s.sessionId)".ToLower()
+                $warm = $false
+                try { $warm = ([datetime]$s.lastActive -gt $cut) } catch { }
+                if (-not ($out.Agents[$id] -or $warm)) { continue }
+                try { $out.Said[$id] = Get-SRLastSaid -JsonlPath $s.jsonl } catch { }
+            }
+        }
+    }
+
+    # The pending question for whatever the pane is showing. SRSelPid is 0 when
+    # nothing is selected or it is not running.
+    if ($SRData.SelPid -gt 0) {
+        try { $out.Ask = Get-SRScreenQuestion -ProcessId ([int]$SRData.SelPid) } catch { }
+        $out.AskFor = "$($SRData.SelId)"
+    }
     $out
 }
 
 function Start-LiveProbe {
     if ($script:probePs) { return }        # one at a time; a queue would pile up
     try {
+        # What the pane is showing, so the job can read its pending question
+        # while it is out there anyway.
+        $selPid = 0; $selId = ''
+        $selRow = Get-SelectedRow
+        if ($selRow -and $selRow.A -and $selRow.A.Pid) { $selPid = [int]$selRow.A.Pid; $selId = "$($selRow.Id)" }
+
         $rs = [runspacefactory]::CreateRunspace()
         $rs.ApartmentState = 'MTA'
         $rs.ThreadOptions  = 'ReuseThread'
         $rs.Open()
         $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        $rs.SessionStateProxy.SetVariable('SRData', @{ SelPid = $selPid; SelId = $selId })
         $ps = [powershell]::Create()
         $ps.Runspace = $rs
         $null = $ps.AddScript($script:ProbeJob)
@@ -2425,33 +2743,39 @@ function Complete-LiveProbe {
     if (-not $res) { return }
 
     # 🔴 NEVER OVERWRITE UNSAVED TICKS. The probe carries a registry read from
-    # disk; adopting it while there are unsaved changes would silently discard
-    # what you just ticked. The agent map is safe either way.
-    if (-not $script:dirty -and $res.Reg) { $script:reg = $res.Reg; $script:dirs = @($res.Reg.directories) }
-    if ($res.Agents) { $script:agents = $res.Agents }
-    Rebuild-FromProbe
+    # disk; adopting it while there are unsaved changes would discard what you
+    # just ticked. With unsaved work in hand, only the agent map is taken - and
+    # then the ROWS ARE NOT REBOUND EITHER, because the rows must always point
+    # into whichever registry $script:reg is.
+    if (-not $script:dirty -and $res.Reg) {
+        Update-Model -Registry $res.Reg -Agents $res.Agents -Said $res.Said
+    } elseif ($res.Agents) {
+        $script:agents = $res.Agents
+        foreach ($r in $script:model) {
+            $a = $script:agents["$($r.Id)"]
+            $r.A = $a
+            $r.Live = [bool]$a
+            try { $r.Conv = Resolve-SRSessionState -Agent $a -Conv $null } catch { }
+            if ($res.Said -and $res.Said.ContainsKey("$($r.Id)")) { $r.Said = $res.Said["$($r.Id)"] }
+            $r.Band = Get-Band $r
+        }
+    }
+
+    if ($script:surface -eq 'work') { Build-Sessions } else { Build-Manager }
+    $ui.LiveCount.Text = ('{0} live of {1} conversations across {2} projects' -f `
+        @($script:model | Where-Object { $_.Live }).Count, $script:model.Count, @($script:dirs).Count)
+
+    # The pending question the job read for us, applied only if the pane is
+    # still showing the same conversation - the selection can move while a probe
+    # is in flight, and showing one session's menu under another's name would be
+    # the worst possible bug in this window.
+    if ("$($res.AskFor)" -and "$($res.AskFor)" -eq "$($script:selId)") { Show-Ask $res.Ask }
     $script:probeAt = Get-Date
 }
 
 # Re-derive the bands from the fresh agent map, WITHOUT re-reading transcripts:
 # that is what makes a conversation move into NEEDS YOU, and it is the reason
 # this tier exists at all.
-function Rebuild-FromProbe {
-    foreach ($r in $script:model) {
-        $a = $script:agents["$($r.Id)"]
-        $r.A = $a
-        $r.Live = [bool]$a
-        try { $r.Conv = Resolve-SRSessionState -Agent $a -Conv $null } catch { }
-        $r.Band = Get-Band $r
-    }
-    if ($script:surface -eq 'work') { Build-Sessions } else { Build-Manager }
-    $ui.LiveCount.Text = ('{0} live of {1} conversations across {2} projects' -f `
-        @($script:model | Where-Object { $_.Live }).Count, $script:model.Count, @($script:dirs).Count)
-    # The pane is showing ONE conversation and its state may have moved too -
-    # the pending question especially, which is the thing you are waiting for.
-    Show-Selected -Force
-}
-
 $script:fastTimer = New-Object System.Windows.Threading.DispatcherTimer
 $script:fastTimer.Interval = [TimeSpan]::FromSeconds($script:FastSeconds)
 $script:fastTimer.Add_Tick({ try { Invoke-FastPass } catch { Write-SRLog ('fast pass failed: ' + $_.Exception.Message) } })

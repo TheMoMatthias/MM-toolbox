@@ -1464,17 +1464,41 @@ function Invoke-SRNativeText {
     $psi.Arguments = (@($Arguments) | ForEach-Object {
         if ($_ -match '[\s"]') { '"' + ($_ -replace '(\\*)"', '$1$1\"') + '"' } else { $_ }
     }) -join ' '
+    # 🔴 BOTH PIPES ARE DRAINED AT ONCE, AND THE TIMEOUT ONLY WORKS BECAUSE OF IT.
+    #
+    # Reading them one after the other is the classic deadlock and it is worse
+    # than it looks: while ReadToEnd() blocks on stdout, a child that fills the
+    # stderr buffer stops writing, so stdout never closes, so ReadToEnd never
+    # returns - and WaitForExit($TimeoutMs) is NEVER REACHED. The timeout below
+    # protects nothing at all on that path; the window simply hangs, forever,
+    # with no way out. One stderr-chatty `claude agents --json` would do it.
+    #
+    # Begin*ReadLine hands each stream to the threadpool, so neither can block
+    # the other, and the wait is a real wait.
     $p = New-Object System.Diagnostics.Process
     $p.StartInfo = $psi
     try {
         $null = $p.Start()
-        $so = $p.StandardOutput.ReadToEnd()
-        $se = $p.StandardError.ReadToEnd()
+        # ReadToEndAsync starts BOTH drains on the threadpool before anything
+        # blocks, so neither stream can wedge the other and the wait below is a
+        # real wait. Deliberately NOT Register-ObjectEvent: those actions only
+        # run when the runspace pumps its event queue, and this call is made
+        # from a background runspace that is sitting inside WaitForExit.
+        $tOut = $p.StandardOutput.ReadToEndAsync()
+        $tErr = $p.StandardError.ReadToEndAsync()
         if (-not $p.WaitForExit($TimeoutMs)) {
             try { $p.Kill() } catch { }
-            return [PSCustomObject]@{ Out = $so; Err = $se; ExitCode = -1; TimedOut = $true }
+            # Killing closes the handles, so the readers finish; bounded anyway,
+            # because a hang here is the thing this function exists to prevent.
+            $o = ''; $e = ''
+            try { if ($tOut.Wait(2000)) { $o = $tOut.Result } } catch { }
+            try { if ($tErr.Wait(2000)) { $e = $tErr.Result } } catch { }
+            return [PSCustomObject]@{ Out = $o; Err = $e; ExitCode = -1; TimedOut = $true }
         }
-        return [PSCustomObject]@{ Out = $so; Err = $se; ExitCode = $p.ExitCode; TimedOut = $false }
+        $o = ''; $e = ''
+        try { if ($tOut.Wait(5000)) { $o = $tOut.Result } } catch { }
+        try { if ($tErr.Wait(5000)) { $e = $tErr.Result } } catch { }
+        return [PSCustomObject]@{ Out = $o; Err = $e; ExitCode = $p.ExitCode; TimedOut = $false }
     } finally { try { $p.Dispose() } catch { } }
 }
 
@@ -2123,6 +2147,63 @@ function Invoke-SRAnswerMultiOnScreen {
 # The text comes back through a FILE, not stdout: a child that has just freed its
 # console is not something to trust a redirected stream to. The file lives beside
 # the tool's own state and is deleted in a finally, never in the OS temp directory.
+# The ONE type the screen-reading child needs, as source it can compile for
+# itself. It is the read-only half of SRCon and nothing else - no key sending, no
+# UI Automation, no registry, no discovery. Kept beside SRCon deliberately: if
+# the P/Invoke signatures there ever change, they change here in the same edit.
+$script:SR_ScreenTypeSrc = @'
+if (-not ('SRConLite' -as [type])) {
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class SRConLite {
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint pid);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole();
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr GetConsoleWindow();
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disp, uint flags, IntPtr tmpl);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool CloseHandle(IntPtr h);
+    [StructLayout(LayoutKind.Sequential)] public struct COORD { public short X, Y; }
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public short L, T, R, B; }
+    [StructLayout(LayoutKind.Sequential)] public struct CSBI {
+        public COORD Size; public COORD Cursor; public ushort Attr; public RECT Window; public COORD Max;
+    }
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetConsoleScreenBufferInfo(IntPtr h, out CSBI info);
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern bool ReadConsoleOutputCharacterW(IntPtr h, [Out] char[] buf, uint len, uint coord, out uint got);
+
+    public static string Screen(uint pid) {
+        FreeConsole();
+        if (!AttachConsole(pid)) { return "!attach " + Marshal.GetLastWin32Error(); }
+        try {
+            IntPtr h = CreateFileW("CONOUT$", 0x80000000u | 0x40000000u, 1u | 2u, IntPtr.Zero, 3u, 0u, IntPtr.Zero);
+            if (h == new IntPtr(-1)) return "!conout " + Marshal.GetLastWin32Error();
+            try {
+                CSBI info;
+                if (!GetConsoleScreenBufferInfo(h, out info)) return "!csbi " + Marshal.GetLastWin32Error();
+                int w = info.Size.X, rows = info.Size.Y;
+                if (w <= 0 || rows <= 0) return "!empty";
+                int top = info.Window.T < 0 ? 0 : info.Window.T;
+                int bot = info.Window.B >= rows ? rows - 1 : info.Window.B;
+                if (bot < top) { top = 0; bot = rows - 1; }
+                System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                char[] line = new char[w];
+                for (int y = top; y <= bot; y++) {
+                    uint got;
+                    uint at = ((uint)y << 16);
+                    if (!ReadConsoleOutputCharacterW(h, line, (uint)w, at, out got)) continue;
+                    sb.Append(new string(line, 0, (int)got).TrimEnd());
+                    sb.Append((char)10);
+                }
+                return sb.ToString();
+            } finally { CloseHandle(h); }
+        } finally { FreeConsole(); }
+    }
+}
+"@
+}
+'@
+
 function Get-SRScreenText {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
@@ -2133,18 +2214,31 @@ function Get-SRScreenText {
     $scr = Join-Path $SR_StateDir ('screen-' + $tag + '.ps1')
     try {
         $Q = [string][char]39
-        $common = (Join-Path $SR_LibDir '_common.ps1').Replace($Q, $Q + $Q)
         $outEsc = $out.Replace($Q, $Q + $Q)
+        # 🔴 THE CHILD LOADS ONE TYPE, NOT THE WHOLE LIBRARY.
+        #
+        # It used to dot-source _common.ps1 to reach [SRCon] - and measured
+        # 2.2-2.5 SECONDS to do it, because that file compiles two C# types and
+        # loads UI Automation on the way past. Against the three-second budget
+        # below, the child was spending its entire allowance getting ready and
+        # had a few hundred milliseconds left to actually read a screen. Any load
+        # at all pushed it over, the read returned nothing, and the caller
+        # reported "cannot see a question on that session's screen" about a menu
+        # that was plainly there.
+        #
+        # All it has ever needed is SRCon::Screen. Emitting just that type is a
+        # cold start of ~0.3 s and leaves the budget for the work.
         $body = @(
-            ('. ' + $Q + $common + $Q),
-            ('$t = [SRCon]::Screen([uint32]' + $ProcessId + ')'),
+            ($script:SR_ScreenTypeSrc),
+            ('$t = [SRConLite]::Screen([uint32]' + $ProcessId + ')'),
             ('[System.IO.File]::WriteAllText(' + $Q + $outEsc + $Q + ', $t, (New-Object System.Text.UTF8Encoding($false)))')
         ) -join [Environment]::NewLine
         [System.IO.File]::WriteAllText($scr, $body, (New-Object System.Text.UTF8Encoding($false)))
         $p = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scr)
-        # A read that has not finished in three seconds is not going to be useful:
-        # whatever menu it was looking at will have moved on.
-        if (-not $p.WaitForExit(3000)) { try { $p.Kill() } catch { }; return $null }
+        # Six seconds, not three. The old budget was set when the child was
+        # cheap; it now has room for a cold Add-Type on a loaded machine and
+        # still gives up long before a stale menu could matter.
+        if (-not $p.WaitForExit(6000)) { try { $p.Kill() } catch { }; return $null }
         if (-not (Test-Path -LiteralPath $out)) { return $null }
         $txt = [System.IO.File]::ReadAllText($out)
         if (-not $txt -or $txt.StartsWith('!')) { return $null }

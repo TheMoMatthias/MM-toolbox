@@ -359,8 +359,32 @@ foreach ($n in @('WinMin','WinMax','WinClose','TitleBar')) {
 Pass 'the custom title bar carries drag, minimise, maximise and close'
 $chrome = [System.Windows.Shell.WindowChrome]::GetWindowChrome($window)
 if (-not $chrome) { Fail 'no WindowChrome - the window would lose Aero Snap and edge resize' }
-elseif ($chrome.CaptionHeight -ne 0) { Fail "CaptionHeight is $($chrome.CaptionHeight); anything but 0 lets Windows swallow clicks on the title bar" }
-else { Pass 'WindowChrome keeps snap and resize while the app paints the caption' }
+# 🔴 CaptionHeight MUST BE NON-ZERO, and this assertion used to demand the
+# opposite. At 0 the window could not be MOVED at all: Windows was told there is
+# no caption, so drag, snap, aero-shake, Win+arrow and the Alt+Space menu were
+# all gone, and only the app's own maximise and close buttons worked. Reported
+# by the operator. It must also match the header's height, or part of the strip
+# drags and part does not.
+elseif ($chrome.CaptionHeight -le 0) {
+    Fail 'CaptionHeight is 0 - Windows will not move this window at all'
+} elseif ([Math]::Abs($chrome.CaptionHeight - $ui.TitleBar.Height) -gt 0.5) {
+    Fail "CaptionHeight is $($chrome.CaptionHeight) but the title bar is $($ui.TitleBar.Height) - part of the strip would not drag"
+} else { Pass "Windows drags the window by its $($chrome.CaptionHeight)px header, and still snaps and resizes it" }
+
+# Everything interactive sitting ON that caption must opt out of the chrome, or
+# Windows treats the click as a drag and the control never sees it.
+foreach ($n in @('Search', 'WinMin', 'WinMax', 'WinClose', 'Rescan', 'NewSession')) {
+    $el = $ui.$n
+    $inChrome = $false
+    $walk = $el
+    while ($walk -and -not $inChrome) {
+        try { $inChrome = [System.Windows.Shell.WindowChrome]::GetIsHitTestVisibleInChrome($walk) } catch { }
+        if ($inChrome) { break }
+        $walk = $(if ($walk -is [System.Windows.FrameworkElement]) { $walk.Parent } else { $null })
+    }
+    if (-not $inChrome) { Fail "'$n' sits on the caption but is not hit-test visible in chrome - clicking it would drag the window" }
+}
+Pass 'every control on the caption is clickable rather than draggable'
 
 Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }

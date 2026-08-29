@@ -89,8 +89,8 @@ param(
     # else -- `headless` covers most of what `inbox` asserts, without appearing.
     [switch]$NoSteal,
 
-    # Render the headless window to this PNG. Off-screen, via
-    # RenderTargetBitmap -- no window appears in order to produce it.
+    # Render the window to this PNG, off-screen. Implies -Only shot; the suite
+    # that used to honour it was retired with the window it drove.
     [string]$Shot
 )
 
@@ -243,8 +243,9 @@ if ((-not $Only -or $Only -eq 'relay') -and -not $NoSteal) {
 # BY NAME ONLY. It is not part of `all suites passed`: it renders the operator's
 # own 204 conversations so a layout change can be looked at at real density,
 # which is where every clipped pill and mojibaked caption has actually hidden.
-if ($Only -eq 'shot') {
+if ($Only -eq 'shot' -or $Shot) {
     Write-Host "`n=== shot (the real window, drawn to PNG) ===" -ForegroundColor Cyan
+    if ($Shot) { $env:SR_SHOT_OUT = $Shot }
     $h = New-GuiHarness -Driver 'shot-driver.ps1' -OutFile 'shot-test.ps1'
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
     $out | ForEach-Object { Write-Host $_ }

@@ -4,10 +4,29 @@
         Title="Claude sessions"
         Width="1480" Height="980" MinWidth="620" MinHeight="420"
         WindowStartupLocation="CenterScreen"
-        UseLayoutRounding="True" SnapsToDevicePixels="True"
+        UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Ideal"
-        TextOptions.TextRenderingMode="ClearType"
+        TextOptions.TextRenderingMode="Grayscale"
         Background="#0F1013">
+
+  <!-- 🔴 WHY THE TEXT LOOKED "PROGRAMMATIC".
+       Three settings, and two of them were fighting the fonts:
+
+         TextRenderingMode was ClearType. ClearType is SUBPIXEL antialiasing -
+         it tints the edge of every stem red or blue to buy horizontal
+         resolution. On white it disappears; on a #0F1013 ground it is visible
+         colour fringing on every glyph, and that fringe is what reads as a
+         utility program rather than a designed surface. Grayscale antialiasing
+         is what modern dark UI uses, and what a phone renders.
+
+         SnapsToDevicePixels forced glyph edges onto whole pixels, which is
+         right for a 1px border and wrong for letterforms: it is what makes type
+         look hand-drawn on a grid. UseLayoutRounding stays, so the hairlines
+         are still crisp; the text is no longer nailed to the grid.
+
+         TextFormattingMode stays Ideal - Display mode snaps advance widths and
+         throws away the optical spacing Segoe UI Variable exists to provide.
+       ================================================== -->
 
   <!-- ================== THE FRAME ==================
        NO OS TITLE BAR, but still a real window.
@@ -18,17 +37,26 @@
        painted caption and lets Windows keep managing the rest, so dragging to
        an edge still snaps and the borders still resize.
 
-       CaptionHeight="0" because the app paints its OWN caption: with a non-zero
-       value Windows would treat the top strip as a caption and swallow clicks on
-       the buttons and the search box sitting there. The header opts back IN to
-       dragging by calling DragMove, and each control opts out of the chrome with
-       WindowChrome.IsHitTestVisibleInChrome.
+       🔴 CaptionHeight MATCHES THE HEADER, and that is what makes this behave
+       like a window. It was 0, which told Windows "there is no caption here" -
+       so the only way to move the window was the app calling DragMove itself,
+       and with it you lose everything Windows does with a caption: drag, snap to
+       an edge, aero-shake, Win+arrow, double-click to maximise, and the system
+       menu on right-click or Alt+Space. The window could be maximised and closed
+       (those are our own buttons) but NOT MOVED, which is exactly what was
+       reported.
+
+       Every interactive control sitting in that strip opts back OUT with
+       WindowChrome.IsHitTestVisibleInChrome="True" - without it Windows treats
+       the click as a caption drag and the control never sees it. Anything on the
+       strip WITHOUT that attribute is draggable surface, which is why the title
+       text is not marked.
 
        GlassFrameThickness="0" keeps the DWM glass out of a dark window;
        UseAeroCaptionButtons="False" stops Windows drawing its own.
        ============================================== -->
   <shell:WindowChrome.WindowChrome>
-    <shell:WindowChrome CaptionHeight="0"
+    <shell:WindowChrome CaptionHeight="46"
                         ResizeBorderThickness="6"
                         CornerRadius="0"
                         GlassFrameThickness="0"
@@ -90,8 +118,32 @@
     <FontFamily x:Key="FontText">Segoe UI Variable Text, Segoe UI</FontFamily>
     <FontFamily x:Key="FontDisplay">Segoe UI Variable Display, Segoe UI</FontFamily>
     <FontFamily x:Key="FontMono">Cascadia Mono, Consolas, Courier New</FontFamily>
-    <!-- Kept so nothing that still names it breaks; new work uses the three above. -->
-    <FontFamily x:Key="FontUi">Segoe UI Variable Text, Segoe UI</FontFamily>
+    <!-- There is no FontUi alias any more. It existed as a bridge during the
+         rebuild and became the way two styles quietly stayed off the scale -
+         the buttons and the surface switch were still at 12px while everything
+         else moved to 13.5. Three families, one scale, no aliases. -->
+
+    <!-- 🔴 THE WINDOW'S OWN DEFAULT, so anything built in CODE inherits it too.
+         The option buttons under a question, the cast rows and the manager menu
+         are all created in PowerShell with no style of their own; without this
+         they fall back to WPF's default, which is 12px Segoe UI - the one thing
+         on screen that would still look like a different application. -->
+    <Style TargetType="{x:Type Window}">
+      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontSize" Value="13.5"/>
+    </Style>
+    <Style TargetType="{x:Type ContextMenu}">
+      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontSize" Value="13"/>
+    </Style>
+    <Style TargetType="{x:Type MenuItem}">
+      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontSize" Value="13"/>
+    </Style>
+    <Style TargetType="{x:Type ToolTip}">
+      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontSize" Value="12.5"/>
+    </Style>
 
     <!-- ONE SCALE, and every size in the window comes from it. The old file had
          fourteen inline FontSize values between 10.5 and 12.5, which is not a
@@ -306,7 +358,7 @@
         <Setter.Value>
           <ControlTemplate TargetType="Button">
             <Border x:Name="b" Background="Transparent">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
@@ -321,8 +373,8 @@
 
     <!-- ================== BUTTONS ================== -->
     <Style x:Key="Btn" TargetType="Button">
-      <Setter Property="FontFamily" Value="{StaticResource FontUi}"/>
-      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontSize" Value="13"/>
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
       <Setter Property="Padding" Value="11,6,11,6"/>
       <Setter Property="Cursor" Value="Hand"/>
@@ -332,7 +384,7 @@
             <Border x:Name="b" CornerRadius="6" Background="{StaticResource PanelHi}"
                     BorderBrush="{StaticResource Hairline}" BorderThickness="1"
                     Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
@@ -357,7 +409,7 @@
           <ControlTemplate TargetType="Button">
             <Border x:Name="b" CornerRadius="6" Background="{StaticResource AccNeeds}"
                     Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
@@ -376,8 +428,8 @@
          two surfaces differ by shape, so the switch has to say plainly which
          shape you are looking at. -->
     <Style x:Key="Seg" TargetType="RadioButton">
-      <Setter Property="FontFamily" Value="{StaticResource FontUi}"/>
-      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontSize" Value="13"/>
       <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
       <Setter Property="Padding" Value="13,6,13,6"/>
       <Setter Property="Cursor" Value="Hand"/>
