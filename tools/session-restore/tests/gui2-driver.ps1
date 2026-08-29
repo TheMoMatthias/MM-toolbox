@@ -479,6 +479,62 @@ Hide-Cast
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- what you actually wait on ---'
+# ===========================================================================
+# 🔴 THE PER-CONVERSATION NUMBER WAS NEVER THE THING YOU FEEL. It measures the
+# fast pass, which is already 3-5 ms; what the operator waits on is selecting a
+# conversation, switching surfaces and the transcript rendering. Those are
+# measured here, at real size, against the operator's own 190 conversations.
+#
+# 🩤 The budgets are DELIBERATELY LOOSE. An earlier perf assertion in this
+# suite failed on 7.2 ms vs 34.4 ms of the same code on a busy machine and had
+# to be relaxed to a tenfold rule; a benchmark that cries wolf gets muted, and a
+# muted benchmark catches nothing.
+$ui.ModeWork.IsChecked = $true
+Set-Surface 'work'
+$script:bandPick = $null
+Build-Sessions
+Lay
+$sessions = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })
+if ($sessions.Count -lt 2) { Note 'not enough conversations on screen to profile selection' }
+else {
+    $perf = [ordered]@{}
+    $perf['build the sessions column'] = Ms { Build-Sessions }
+    $perf['build the project rail']    = Ms { Build-Rail }
+    $perf['build the manager']         = Ms { Build-Manager }
+    $perf['switch to the manager']     = Ms { Set-Surface 'manage' }
+    $perf['switch back to work']       = Ms { Set-Surface 'work' }
+    # The expensive one: selecting a DIFFERENT conversation renders its
+    # transcript from disk. -Force is what the window itself calls.
+    $ui.SessionList.SelectedItem = $sessions[0]
+    $null = Ms { Show-Selected -Force }
+    $ui.SessionList.SelectedItem = $sessions[1]
+    $perf['select another conversation'] = Ms { Show-Selected -Force }
+    $perf['re-render the same one']      = Ms { Update-Document }
+    # 🔴 WHERE DOES THE ~400 ms GO? Two candidates, both measurable rather
+    # than arguable: the size of the transcript tail being rendered, and WPF's
+    # optimal-paragraph line breaker. Measured here so the fix is aimed.
+    $tailWas = $script:tailBytes
+    $optWas = $true
+    $script:tailBytes = 98304
+    $perf['  ...at a 96 KB tail']  = Ms { Update-Document }
+    $script:tailBytes = 262144
+    $perf['  ...at a 256 KB tail'] = Ms { Update-Document }
+    $script:tailBytes = $tailWas
+    foreach ($k in $perf.Keys) { Note ("  {0,-30} {1,7:N1} ms" -f $k, $perf[$k]) }
+
+    # One budget, on the thing that would actually be felt: selecting a
+    # conversation is the gesture repeated all day.
+    if ($perf['select another conversation'] -gt 1200) {
+        Fail ("selecting a conversation costs {0:N0} ms - that is a visible stall" -f $perf['select another conversation'])
+    } else { Pass ("selecting a conversation costs {0:N0} ms" -f $perf['select another conversation']) }
+    if ($perf['switch to the manager'] -gt 900) {
+        Fail ("switching surfaces costs {0:N0} ms" -f $perf['switch to the manager'])
+    } else { Pass ("switching surfaces costs {0:N0} ms" -f $perf['switch to the manager']) }
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the design, end to end ---'
 # ===========================================================================
 # 🔴 ANY CONTROL WITHOUT A STYLE IS A WINDOWS CONTROL. WPF's defaults are a
@@ -579,6 +635,46 @@ $known = @($script:Bands | ForEach-Object { $_.Key })
 $strays = @($rows | Where-Object { $known -notcontains "$($_.Band)" })
 if ($strays.Count) { Fail "$($strays.Count) row(s) carry a band the list cannot draw: $((@($strays | ForEach-Object { $_.Band }) | Sort-Object -Unique) -join ', ')" }
 else { Pass "every conversation carries one of the $($known.Count) known bands" }
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the manager filter strip ---'
+# ===========================================================================
+# 🔴 THE MANAGER HAD SORTING AND NOTHING ELSE. This surface decides what comes
+# back at the next logon, and there was no way to ask "just the ticked ones" -
+# the question it exists to answer.
+$ui.ModeManage.IsChecked = $true
+Set-Surface 'manage'
+$fWas = $script:mgrFilter
+$fFoldWas = @{}; foreach ($fk in @($script:fold.Keys)) { $fFoldWas[$fk] = $script:fold[$fk] }
+$fOlderWas = $script:showOlder
+$script:showOlder = $true
+$script:mgrFilter = 'all'; Build-Manager
+foreach ($fk in @($script:fold.Keys)) { $script:fold[$fk] = $false }
+Build-Manager
+$allRows = @($ui.ManageList.Items | Where-Object { $_.Kind -eq 'conv' })
+foreach ($case in @(@('ticked', { param($r) [bool]$r.S.enabled }),
+                    @('running', { param($r) $r.Live }),
+                    @('needs',   { param($r) "$($r.Band)" -eq 'needs' }))) {
+    $script:mgrFilter = $case[0]
+    Build-Manager
+    $rows = @($ui.ManageList.Items | Where-Object { $_.Kind -eq 'conv' })
+    $wrong = @($rows | Where-Object { -not (& $case[1] $_.Row) })
+    $expect = @($allRows | Where-Object { & $case[1] $_.Row }).Count
+    if ($wrong.Count) { Fail "the '$($case[0])' filter let $($wrong.Count) row(s) through that do not match" }
+    elseif ($rows.Count -ne $expect) { Fail "the '$($case[0])' filter shows $($rows.Count) rows but $expect match" }
+    else { Pass "'$($case[0])' shows exactly the $($rows.Count) that match" }
+    # 🚨 AND IT HAS TO SAY SO. A filter left on silently is a list you read as
+    # complete, on the surface that decides what reopens at logon.
+    if (-not "$($ui.MgrFilterNote.Text)".Trim()) { Fail "the '$($case[0])' filter does not say the list is filtered" }
+}
+Pass 'a filtered list says out loud that it is filtered'
+$script:mgrFilter = 'all'; Build-Manager
+if ("$($ui.MgrFilterNote.Text)".Trim()) { Fail 'the note stays up when nothing is filtered' }
+else { Pass 'and says nothing when everything is shown' }
+$script:mgrFilter = $fWas; $script:showOlder = $fOlderWas
+foreach ($fk in @($fFoldWas.Keys)) { $script:fold[$fk] = $fFoldWas[$fk] }
+Build-Manager
 
 # ===========================================================================
 Write-Host ''

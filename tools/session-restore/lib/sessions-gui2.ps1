@@ -136,6 +136,7 @@ foreach ($n in @(
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions',
     'HdrLogon','HdrName','HdrLane','HdrSaid','HdrAge',
+    'MgrAll','MgrTicked','MgrRunning','MgrNeeds','MgrFilterNote',
     'Scrim','Sheet','SheetTitle','SheetBody','SheetB1','SheetB2','SheetB3',
     'Status','SaveBtn'
 )) {
@@ -387,6 +388,27 @@ $script:MgrKeys = @{
     'age'   = { param($r) try { ([datetime]$r.S.lastActive).Ticks } catch { 0L } }
 }
 
+# 🔴 THE FILTER IS APPLIED BEFORE THE PROJECT COUNTS ARE TAKEN, so a project
+# with nothing matching disappears entirely rather than sitting there as an
+# empty heading you can open to find nothing. It reads as a shorter list, which
+# is what a filter is for.
+$script:mgrFilter = 'all'
+function Select-ManagerRows { param($Rows)
+    # 🪤 .ToArray() FIRST, NEVER @($Rows). The caller hands in a
+    # List[object], and @() over one throws "Argument types do not match" in
+    # PowerShell 5.1 - which PowerShell then reports against whatever OUTER
+    # property assignment set the whole chain going, in this case
+    # "Exception setting IsChecked". The error names a control that has nothing
+    # to do with it, which is most of why this trap costs an hour every time.
+    $arr = $(if ($Rows -is [System.Collections.Generic.List[object]]) { $Rows.ToArray() } else { @($Rows) })
+    switch ($script:mgrFilter) {
+        'ticked'  { return @($arr | Where-Object { [bool]$_.S.enabled }) }
+        'running' { return @($arr | Where-Object { $_.Live }) }
+        'needs'   { return @($arr | Where-Object { "$($_.Band)" -eq 'needs' }) }
+        default   { return $arr }
+    }
+}
+
 function Sort-ManagerRows { param($Rows)
     $key = $script:MgrKeys[$script:mgrSort]
     if (-not $key) { $key = $script:MgrKeys['age'] }
@@ -419,7 +441,7 @@ function Build-Manager {
     })
 
     foreach ($k in $order) {
-        $kids = @(Sort-ManagerRows $byProj[$k])
+        $kids = @(Sort-ManagerRows (Select-ManagerRows $byProj[$k]))
         $inWindow = @($kids | Where-Object {
             if ($script:showOlder) { return $true }
             try { return ([datetime]$_.S.lastActive -gt $cut) } catch { return $false }
@@ -495,6 +517,14 @@ function Build-Manager {
     # interacted with at all.
     $ui.ManageCount.Text = ('{0} ticked to reopen at the next logon   |   click a project to open it, click a box to tick it{1}' -f `
         $armedAll, $(if ($script:dirty) { '   |   UNSAVED' } else { '' }))
+
+    # 🔴 A FILTERED LIST MUST SAY IT IS FILTERED. This surface decides what comes
+    # back at the next logon, and a filter left on silently is a list you will
+    # read as complete - the exact way to tick the wrong set with confidence.
+    $shown = @($items | Where-Object { $_.Kind -eq 'conv' }).Count
+    $total = @($script:model | Where-Object { -not $_.S.gone }).Count
+    if ($script:mgrFilter -eq 'all') { $ui.MgrFilterNote.Text = '' }
+    else { $ui.MgrFilterNote.Text = ('showing {0} of {1} - the rest are hidden by this filter' -f $shown, $total) }
 }
 
 # A PROJECT OPENS ON ONE CLICK; A TICK NEEDS TWO.
@@ -1169,7 +1199,15 @@ $FW_Normal = [System.Windows.FontWeights]::Normal
 # conversation is a multi-second freeze on every selection. Start at the same
 # 256 KB Get-SRLastSaid uses; "load earlier" doubles it, and the pane says out
 # loud when it is showing only part.
-$script:TailBase = 262144
+# 🔴 96 KB, NOT 256. Measured on the operator's own transcripts: rendering
+# scales linearly with this number - 96 KB costs 120 ms, 256 KB costs 256 ms -
+# and it is the single biggest component of the ~390 ms stall when selecting a
+# conversation, which is the gesture repeated all day. The tail is a READING
+# window, not the conversation: 96 KB is still well over a screenful, the pane
+# says out loud when it is showing only part, and 'load earlier' doubles it on
+# demand for the rare time you want more. Paying 130 ms on every selection so
+# that the rare case needs no click is the wrong way round.
+$script:TailBase = 98304
 $script:tailBytes = $script:TailBase
 
 
@@ -1266,11 +1304,23 @@ function Build-ReadDocument {
     param($Blocks, [bool]$Truncated = $false)
     $doc = New-Object System.Windows.Documents.FlowDocument
     $doc.FontFamily  = $script:UiFace
-    $doc.Background  = $Pal.Ink
+    # 🔴 TRANSPARENT, NOT Ink. The document was painting the GROUND colour -
+    # the near-black the window shows *around* its cards - inside an output pane
+    # that is painted Panel and has a 12px corner radius. The result was a
+    # darker square slab filling the rounded card, with the radius visible only
+    # at the very corners: the operator's "it doesn't look rounded off". Letting
+    # the card show through is the fix, and it costs nothing.
+    $doc.Background  = [System.Windows.Media.Brushes]::Transparent
     $doc.Foreground  = $Pal.TextHigh
     $doc.PagePadding = New-Object System.Windows.Thickness 26, 18, 26, 26
     $doc.ColumnWidth = [double]::PositiveInfinity
-    $doc.IsOptimalParagraphEnabled = $false
+    # 🩤 OPTIMAL PARAGRAPH IS WPF'S GOOD LINE BREAKER (Knuth-Plass): it looks
+    # at the whole paragraph rather than greedily filling each line, which is
+    # the difference between even ragged edges and the lumpy ones that read as
+    # "not clean". Off by default, and it was left off. Hyphenation stays off -
+    # hyphenated prose in a terminal-adjacent surface reads worse, not better.
+    $doc.IsOptimalParagraphEnabled = $true
+    $doc.IsHyphenationEnabled = $false
 
     if (-not @($Blocks).Count) {
         $p = New-Object System.Windows.Documents.Paragraph
@@ -2059,6 +2109,19 @@ foreach ($hn in @('HdrLogon', 'HdrName', 'HdrLane', 'HdrSaid', 'HdrAge')) {
     })
 }
 Update-ManagerHeaders
+
+# The filter chips. Add_Checked rather than Add_Click: a RadioButton in a group
+# is also unchecked programmatically, and the handler has to fire for whichever
+# one ends up ON rather than for whichever one was pressed.
+foreach ($pair in @(@('MgrAll', 'all'), @('MgrTicked', 'ticked'),
+                    @('MgrRunning', 'running'), @('MgrNeeds', 'needs'))) {
+    $ui[$pair[0]].Tag = $pair[1]
+    $ui[$pair[0]].Add_Checked({
+        param($s, $e)
+        $script:mgrFilter = "$($s.Tag)"
+        Build-Manager
+    })
+}
 
 function Update-ListSortLabel {
     $cur = @($script:ListSorts | Where-Object { $_.Key -eq $script:listSort })

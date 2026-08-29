@@ -1358,6 +1358,7 @@
         <Grid>
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
           <RowDefinition Height="*"/>
           <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -1391,11 +1392,35 @@
                        Style="{StaticResource Caption}" Margin="10,0,0,0" Cursor="Hand"/>
           </Grid>
         </Border>
-        <ListBox x:Name="ManageList" Grid.Row="1" Style="{StaticResource Plain}"
+        <!-- 🔴 THE FILTER STRIP. The manager had sorting and nothing else - no
+             way to ask "just the ticked ones" or "just what is running", which
+             is the question this surface exists to answer before a logon. The
+             chips are exclusive: a filter that can be half-on in four
+             directions at once is a state nobody can read off the screen. -->
+        <Border Grid.Row="1" Background="{StaticResource Rail}"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1"
+                Padding="18,8,18,8">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="SHOW" Style="{StaticResource Caption}" VerticalAlignment="Center"
+                       Margin="0,0,12,0"/>
+            <RadioButton x:Name="MgrAll" Content="Everything" Style="{StaticResource Seg}"
+                         GroupName="mgrfilter" IsChecked="True"/>
+            <RadioButton x:Name="MgrTicked" Content="Ticked" Style="{StaticResource Seg}"
+                         GroupName="mgrfilter"/>
+            <RadioButton x:Name="MgrRunning" Content="Running" Style="{StaticResource Seg}"
+                         GroupName="mgrfilter"/>
+            <RadioButton x:Name="MgrNeeds" Content="Needs you" Style="{StaticResource Seg}"
+                         GroupName="mgrfilter"/>
+            <TextBlock x:Name="MgrFilterNote" Style="{StaticResource Meta}" VerticalAlignment="Center"
+                       Margin="14,0,0,0" Text=""/>
+          </StackPanel>
+        </Border>
+
+        <ListBox x:Name="ManageList" Grid.Row="2" Style="{StaticResource Plain}"
                  ItemContainerStyle="{StaticResource PlainItem}"
                  ItemTemplate="{StaticResource ManageRowTpl}"
                  AutomationProperties.Name="the ticked set"/>
-        <Border Grid.Row="2" Background="{StaticResource Rail}" CornerRadius="0,0,11,11"
+        <Border Grid.Row="3" Background="{StaticResource Rail}" CornerRadius="0,0,11,11"
                 BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,0" Padding="18,12,18,12">
           <StackPanel Orientation="Horizontal">
             <TextBlock Text="THE TICKED SET" Style="{StaticResource Caption}"
