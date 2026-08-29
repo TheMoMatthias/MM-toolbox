@@ -1031,7 +1031,14 @@
             </Grid.RowDefinitions>
             <Border Grid.Row="0" Padding="16,12,12,8">
               <Grid>
-                <TextBlock x:Name="ListCaption" Text="SESSIONS" Style="{StaticResource Caption}" VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                  <TextBlock x:Name="ListCaption" Text="SESSIONS" Style="{StaticResource Caption}" VerticalAlignment="Center"/>
+                  <!-- The order inside each band. A label rather than a dropdown:
+                       there are three of them and cycling is one click. -->
+                  <TextBlock x:Name="ListSort" Style="{StaticResource Meta}" Cursor="Hand"
+                             VerticalAlignment="Center" Margin="12,0,0,0"
+                             ToolTip="Change the order inside each band"/>
+                </StackPanel>
                 <TextBlock x:Name="ListCount" Style="{StaticResource Dim}"
                            HorizontalAlignment="Right" VerticalAlignment="Center"/>
               </Grid>
@@ -1368,11 +1375,20 @@
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0" Text="LOGON" Style="{StaticResource Caption}" HorizontalAlignment="Center"/>
-            <TextBlock Grid.Column="1" Text="CONVERSATION" Style="{StaticResource Caption}" Margin="14,0,10,0"/>
-            <TextBlock Grid.Column="2" Text="LANE" Style="{StaticResource Caption}" Margin="0,0,10,0"/>
-            <TextBlock Grid.Column="3" Text="WHAT IT LAST SAID" Style="{StaticResource Caption}"/>
-            <TextBlock Grid.Column="4" Text="AGE" Style="{StaticResource Caption}" Margin="10,0,0,0"/>
+            <!-- 🔴 EACH ONE SORTS. They were inert TextBlocks that looked exactly
+                 like the sortable headers of every other table on the machine,
+                 which is why the operator clicked one and reported the filter
+                 broken. Tag carries the sort key; the arrow says which way. -->
+            <TextBlock x:Name="HdrLogon" Grid.Column="0" Tag="logon" Text="LOGON"
+                       Style="{StaticResource Caption}" HorizontalAlignment="Center" Cursor="Hand"/>
+            <TextBlock x:Name="HdrName" Grid.Column="1" Tag="name" Text="CONVERSATION"
+                       Style="{StaticResource Caption}" Margin="14,0,10,0" Cursor="Hand"/>
+            <TextBlock x:Name="HdrLane" Grid.Column="2" Tag="lane" Text="LANE"
+                       Style="{StaticResource Caption}" Margin="0,0,10,0" Cursor="Hand"/>
+            <TextBlock x:Name="HdrSaid" Grid.Column="3" Tag="said" Text="WHAT IT LAST SAID"
+                       Style="{StaticResource Caption}" Cursor="Hand"/>
+            <TextBlock x:Name="HdrAge" Grid.Column="4" Tag="age" Text="AGE"
+                       Style="{StaticResource Caption}" Margin="10,0,0,0" Cursor="Hand"/>
           </Grid>
         </Border>
         <ListBox x:Name="ManageList" Grid.Row="1" Style="{StaticResource Plain}"

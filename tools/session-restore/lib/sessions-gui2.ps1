@@ -125,7 +125,7 @@ foreach ($n in @(
     'LiveCount','Search','Stamp','Rescan','NewSession',
     'ModeWork','ModeManage','Broadcast',
     'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear',
-    'ListPane','ListSplit','ListCaption','ListCount','SessionList',
+    'ListPane','ListSplit','ListCaption','ListSort','ListCount','SessionList',
     'OutputPane','PaneName','PaneState','PaneStateDot','PaneGoTo','PaneRelaunch','PaneSettings',
     'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
@@ -135,6 +135,7 @@ foreach ($n in @(
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions',
+    'HdrLogon','HdrName','HdrLane','HdrSaid','HdrAge',
     'Scrim','Sheet','SheetTitle','SheetBody','SheetB1','SheetB2','SheetB3',
     'Status','SaveBtn'
 )) {
@@ -366,6 +367,40 @@ $script:fold      = @{}
 $script:showOlder = $false
 $script:dirty     = $false
 
+# 🔴 THE COLUMN HEADERS DO SOMETHING NOW. The operator clicked LOGON
+# expecting the table to react and nothing happened - they were plain TextBlocks,
+# and the band filter I had built lived on the OTHER surface entirely. A column
+# header that looks like a column header and does nothing is worse than no
+# header at all, because it teaches you the table is dead.
+#
+# 🩤 SORTING HAPPENS WITHIN EACH PROJECT, NOT ACROSS THE WHOLE TABLE. The
+# manager is grouped by project and the grouping is what makes it navigable at
+# 29 projects; a global sort by age would shuffle every conversation into one
+# undifferentiated run and lose the thing the surface is organised around.
+$script:mgrSort = 'age'
+$script:mgrDesc = $true
+$script:MgrKeys = @{
+    'logon' = { param($r) $(if ([bool]$r.S.enabled) { 1 } else { 0 }) }
+    'name'  = { param($r) (Get-Title $r.S $r.D).Text.ToLower() }
+    'lane'  = { param($r) (Get-LaneLabel $r (Get-Title $r.S $r.D).Text).ToLower() }
+    'said'  = { param($r) "$($r.Said.Said)".Trim().ToLower() }
+    'age'   = { param($r) try { ([datetime]$r.S.lastActive).Ticks } catch { 0L } }
+}
+
+function Sort-ManagerRows { param($Rows)
+    $key = $script:MgrKeys[$script:mgrSort]
+    if (-not $key) { $key = $script:MgrKeys['age'] }
+    $sorted = @($Rows | Sort-Object { & $key $_ })
+    if ($script:mgrDesc) { [array]::Reverse($sorted) }
+    # 🔴 NO LEADING COMMA. `return ,$a` on an EMPTY array returns a
+    # one-element array holding the empty one, so a band or project with nothing
+    # in it renders a phantom row - which is exactly what happened: "1
+    # conversation from other bands survived the filter", against a row that was
+    # not a conversation at all. Both callers wrap this in @(), which re-collects
+    # an unrolled array correctly, so the comma buys nothing and costs that.
+    return $sorted
+}
+
 function Build-Manager {
     $cut = (Get-Date).AddDays(-7)
     $items = New-Object System.Collections.Generic.List[object]
@@ -384,7 +419,7 @@ function Build-Manager {
     })
 
     foreach ($k in $order) {
-        $kids = @($byProj[$k] | Sort-Object { try { [datetime]$_.S.lastActive } catch { [datetime]0 } } -Descending)
+        $kids = @(Sort-ManagerRows $byProj[$k])
         $inWindow = @($kids | Where-Object {
             if ($script:showOlder) { return $true }
             try { return ([datetime]$_.S.lastActive -gt $cut) } catch { return $false }
@@ -581,7 +616,15 @@ function Update-ProjectLabels {
         }
     }
 }
+# 🩤 Split-Path THROWS ON AN EMPTY STRING - it does not return ''. A
+# conversation whose directory record has no path is rare but real (a registry
+# entry written before the cwd was known), and both of these helpers walked
+# straight into it: "Cannot bind argument to parameter 'Path' because it is an
+# empty string", thrown out of a list rebuild, which takes the whole surface
+# down rather than one row. Latent for as long as nothing asked; guarded here
+# rather than at each of the dozen call sites.
 function Get-ProjectLabel { param([string]$Path)
+    if (-not "$Path") { return '' }
     if ($script:projLabel.ContainsKey($Path)) { return $script:projLabel[$Path] }
     return (Split-Path -Leaf $Path)
 }
@@ -591,7 +634,8 @@ function Get-Title { param($S, $D)
     if ($t -and $t -ne '(untitled)') { return @{ Text = $t; Derived = $false } }
     $a = "$($S.autoTitle)".Trim()
     if ($a) { return @{ Text = $a; Derived = $true } }
-    $leaf = Split-Path -Leaf "$($D.path)"
+    $dp = "$($D.path)"
+    $leaf = $(if ($dp) { Split-Path -Leaf $dp } else { '' })
     if ($leaf) { return @{ Text = $leaf; Derived = $true } }
     return @{ Text = '(untitled)'; Derived = $true }
 }
@@ -841,9 +885,25 @@ function Convert-HslToColor { param([double]$H, [double]$S, [double]$L)
 }
 
 function Build-Rail {
+    # 🔴 THE RAIL OBEYS THE SEARCH BOX. It did not, so typing a project name
+    # narrowed the sessions column while the rail went on listing all 29 - the
+    # half of "in the projects and sessions I would like to be able to search"
+    # that was missing. A project whose every conversation has been filtered out
+    # is not a project you can pick, so it goes.
+    $q = "$($ui.Search.Text)".Trim().ToLower()
     $byProj = @{}
     foreach ($r in $script:model) {
         if (-not (Test-OnSurface $r)) { continue }
+        if ($q) {
+            $t = (Get-Title $r.S $r.D).Text
+            # 🩤 NOT EVERY ROW HAS A PATH. Get-ProjectLabel splits one and throws
+            # on an empty string, and the rail had never called it per-row before
+            # - only per project key, which is non-empty by construction.
+            $pl = ''
+            if ("$($r.D.path)") { $pl = Get-ProjectLabel "$($r.D.path)" }
+            $hay = ('{0} {1} {2}' -f $t, $pl, $r.D.path).ToLower()
+            if ($hay -notlike "*$q*") { continue }
+        }
         $k = "$($r.D.path)"
         if (-not $byProj.ContainsKey($k)) { $byProj[$k] = New-Object System.Collections.Generic.List[object] }
         $byProj[$k].Add($r)
@@ -907,6 +967,28 @@ function Build-Rail {
 # ===========================================================================
 # THE SESSIONS COLUMN - grouped by BAND, two lines per row
 # ===========================================================================
+# 🔴 SORTED WITHIN THE BAND, never across it. The band IS the ordering that
+# matters - what wants you, then what is working - and a sort that ignored it
+# would bury a waiting conversation among forty idle ones. So this decides the
+# order inside each band only, exactly as the manager sorts inside a project.
+$script:listSort = 'recent'
+$script:ListSorts = @(
+    @{ Key = 'recent';  Label = 'newest first' },
+    @{ Key = 'name';    Label = 'by name' },
+    @{ Key = 'project'; Label = 'by project' }
+)
+# No leading comma on any of these - see Sort-ManagerRows.
+function Sort-SessionRows { param($Rows)
+    switch ($script:listSort) {
+        'name'    { return @($Rows | Sort-Object { (Get-Title $_.S $_.D).Text.ToLower() }) }
+        'project' { return @($Rows | Sort-Object {
+                                    $pp = "$($_.D.path)"
+                                    $(if ($pp) { (Get-ProjectLabel $pp).ToLower() } else { '' })
+                                 }, { (Get-Title $_.S $_.D).Text.ToLower() }) }
+        default   { return @($Rows | Sort-Object { try { [datetime]$_.S.lastActive } catch { [datetime]0 } } -Descending) }
+    }
+}
+
 function Build-Sessions {
     $q = "$($ui.Search.Text)".Trim().ToLower()
 
@@ -924,8 +1006,7 @@ function Build-Sessions {
 
     $items = New-Object System.Collections.Generic.List[object]
     foreach ($b in $script:Bands) {
-        $inBand = @($keep | Where-Object { $_.Band -eq $b.Key } |
-                    Sort-Object { try { [datetime]$_.S.lastActive } catch { [datetime]0 } } -Descending)
+        $inBand = @(Sort-SessionRows @($keep | Where-Object { $_.Band -eq $b.Key }))
         if (-not $inBand.Count) { continue }
         $acc = $window.FindResource($b.Acc)
         $picked = ($script:bandPick -eq $b.Key)
@@ -1935,6 +2016,64 @@ function Get-ManageRow {
     if ($it -and $it.Kind -eq 'conv') { return $it.Row }
     return $null
 }
+
+# The header labels carry their own base text, so the arrow can be appended and
+# stripped without a second copy of the wording drifting away from the markup.
+$script:mgrHdrText = @{}
+foreach ($hn in @('HdrLogon', 'HdrName', 'HdrLane', 'HdrSaid', 'HdrAge')) {
+    $script:mgrHdrText[$hn] = "$($ui[$hn].Text)"
+}
+
+function Update-ManagerHeaders {
+    foreach ($hn in @('HdrLogon', 'HdrName', 'HdrLane', 'HdrSaid', 'HdrAge')) {
+        $el = $ui[$hn]
+        $base = $script:mgrHdrText[$hn]
+        if ("$($el.Tag)" -eq $script:mgrSort) {
+            # ▾ down / ▴ up - the direction the VALUES run, which is what a
+            # sort arrow means everywhere else.
+            $el.Text = $base + '  ' + [string][char]$(if ($script:mgrDesc) { 0x25BE } else { 0x25B4 })
+            $el.Foreground = $window.FindResource('TextMax')
+        } else {
+            $el.Text = $base
+            $el.Foreground = $window.FindResource('TextLow')
+        }
+    }
+}
+
+foreach ($hn in @('HdrLogon', 'HdrName', 'HdrLane', 'HdrSaid', 'HdrAge')) {
+    $ui[$hn].Add_MouseLeftButtonDown({
+        param($s, $e)
+        $key = "$($s.Tag)"
+        if (-not $key) { return }
+        # Clicking the column you are already sorted by reverses it; clicking a
+        # different one starts that column at its most useful end - newest first
+        # for age, A-Z for the text columns, ticked first for the logon boxes.
+        if ($script:mgrSort -eq $key) { $script:mgrDesc = -not $script:mgrDesc }
+        else {
+            $script:mgrSort = $key
+            $script:mgrDesc = ($key -eq 'age' -or $key -eq 'logon')
+        }
+        Update-ManagerHeaders
+        Build-Manager
+        $e.Handled = $true
+    })
+}
+Update-ManagerHeaders
+
+function Update-ListSortLabel {
+    $cur = @($script:ListSorts | Where-Object { $_.Key -eq $script:listSort })
+    $ui.ListSort.Text = $(if ($cur.Count) { "$($cur[0].Label)" } else { 'newest first' })
+}
+$ui.ListSort.Add_MouseLeftButtonDown({
+    param($s, $e)
+    $keys = @($script:ListSorts | ForEach-Object { $_.Key })
+    $at = [array]::IndexOf($keys, $script:listSort)
+    $script:listSort = $keys[($at + 1) % $keys.Count]
+    Update-ListSortLabel
+    Build-Sessions
+    $e.Handled = $true
+})
+Update-ListSortLabel
 
 $ui.ManageList.ContextMenu = New-ManageMenu
 $ui.ManageList.Add_PreviewMouseRightButtonDown({

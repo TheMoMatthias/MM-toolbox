@@ -479,6 +479,171 @@ Hide-Cast
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the design, end to end ---'
+# ===========================================================================
+# 🔴 ANY CONTROL WITHOUT A STYLE IS A WINDOWS CONTROL. WPF's defaults are a
+# light-grey 3D theme, so a single unstyled Button or ComboBox in a black window
+# is instantly the loudest thing on screen - and it is invisible in review until
+# the exact state that shows it. The operator asked to "verify the design is now
+# adopted end to end across every single aspect"; this is that verification, as
+# a standing check rather than a look.
+$xamlText = Get-Content -LiteralPath (Join-Path $SR_LibDir 'window2.xaml') -Raw -Encoding UTF8
+$spawnText = Get-Content -LiteralPath (Join-Path $SR_LibDir 'spawn2.xaml') -Raw -Encoding UTF8
+# Comments first, or the examples inside them are audited as if they were markup.
+$strip = { param($t) [regex]::Replace($t, '(?s)<!--.*?-->', '') }
+# Types WPF gives a visible default chrome to. ScrollViewer and Grid have none,
+# so they are deliberately absent.
+$needStyle = @('Button', 'TextBox', 'ComboBox', 'CheckBox', 'RadioButton', 'ListBox', 'Slider', 'TabControl')
+foreach ($pair in @(@('window2.xaml', (& $strip $xamlText)), @('spawn2.xaml', (& $strip $spawnText)))) {
+    $file = $pair[0]; $body = $pair[1]
+    $bare = New-Object System.Collections.Generic.List[string]
+    $seen = 0
+    foreach ($t in $needStyle) {
+        # 🪤 The word boundary is a character class rather than \b on purpose: a
+        # literal BACKSPACE byte got into this pattern on the first run, the
+        # regex then matched NOTHING, and the audit pronounced every file clean
+        # while inspecting zero controls. That is why $seen exists below.
+        foreach ($m in [regex]::Matches($body, ('<' + $t + '[\s>/][^>]*>'))) {
+            $seen++
+            $tag = $m.Value
+            # A control inside a ControlTemplate is being styled BY that template.
+            if ($tag -match 'Style=') { continue }
+            if ($tag -match 'x:Key=') { continue }
+            $bare.Add(($t + ($(if ($tag -match 'x:Name="([^"]+)"') { " '" + $Matches[1] + "'" } else { '' }))))
+        }
+    }
+    # 🔴 THE COUNT IS REPORTED, NOT JUST THE VERDICT. "0 unstyled" out of 0
+    # inspected is not evidence of anything - and that is precisely what this
+    # assertion reported on its first run, with a broken pattern underneath it.
+    if ($seen -lt 5) { Fail "$file : only $seen styleable control(s) found - the audit is not reading the markup" }
+    elseif ($bare.Count) { Fail ("$file has $($bare.Count) control(s) with no style, which render as Windows chrome: " + (($bare | Select-Object -First 6) -join ', ')) }
+    else { Pass "$file styles all $seen controls that have a Windows default" }
+}
+
+# The two surfaces that are NOT markup, and were the last to be drawn by Windows.
+foreach ($k in @([System.Windows.Controls.ContextMenu], [System.Windows.Controls.MenuItem],
+                 [System.Windows.Controls.ToolTip], [System.Windows.Controls.Separator])) {
+    $st = $null
+    try { $st = $window.FindResource($k) } catch { }
+    if (-not $st) { Fail "$($k.Name) has no implicit style - it would keep the OS chrome" }
+    elseif (-not @($st.Setters | Where-Object { $_.Property.Name -eq 'Template' }).Count) {
+        Fail "$($k.Name) is styled but not TEMPLATED, so the OS chrome survives under it"
+    }
+}
+Pass 'the right-click menu, its items, separators and tooltips are all templated here'
+
+# And nothing may reach for a MessageBox again - that was the whole point of
+# the sheet, and it is the easiest thing to reintroduce by habit.
+$guiCode = @(Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-gui2.ps1') -Encoding UTF8 |
+             ForEach-Object { ($_ -replace '(?<!`)#.*$', '') } | Where-Object { $_.Trim() })
+$boxes = @($guiCode | Where-Object { $_ -match 'MessageBox' })
+if ($boxes.Count) { Fail "a stock MessageBox is back: $($boxes[0].Trim())" }
+else { Pass 'no stock dialog anywhere in the window' }
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- is a session in the right band? ---'
+# ===========================================================================
+# The operator asked whether the categorisation and the "has pending work"
+# reading are actually right. These are the invariants that make each band
+# mean what its heading says; a row in the wrong one is worse than no bands.
+$ui.ModeWork.IsChecked = $true
+Set-Surface 'work'
+$script:bandPick = $null
+Build-Sessions
+$rows = @($script:model.ToArray() | Where-Object { Test-OnSurface $_ })
+$byBand = @{}
+foreach ($r in $rows) { $k = "$($r.Band)"; if (-not $byBand.ContainsKey($k)) { $byBand[$k] = 0 }; $byBand[$k]++ }
+Note ('bands: ' + ((@($byBand.Keys | Sort-Object | ForEach-Object { "$_=$($byBand[$_])" })) -join '  '))
+
+# NEEDS YOU is a claim that something is blocked on the operator. A conversation
+# that is not running cannot be waiting on anyone.
+$ghosts = @($rows | Where-Object { "$($_.Band)" -eq 'needs' -and -not $_.Live })
+if ($ghosts.Count) { Fail "$($ghosts.Count) conversation(s) claim to need you but are not running: $((@($ghosts | ForEach-Object { (Get-Title $_.S $_.D).Text }) | Select-Object -First 3) -join ', ')" }
+else { Pass "nothing claims to need you unless it is actually running ($($byBand['needs']) in NEEDS YOU)" }
+
+# WORKING likewise: it is a statement about a live process.
+$idleWorkers = @($rows | Where-Object { "$($_.Band)" -eq 'working' -and -not $_.Live })
+if ($idleWorkers.Count) { Fail "$($idleWorkers.Count) conversation(s) are shown as WORKING with no process" }
+else { Pass 'everything shown as working has a live process' }
+
+# And the reverse - a live, mid-turn conversation must never be filed as
+# finished or not-running, which would hide it exactly when it matters.
+$misfiled = @($rows | Where-Object { $_.Live -and "$($_.A.Status)" -eq 'busy' -and @('done','quiet','idle') -contains "$($_.Band)" })
+if ($misfiled.Count) { Fail "$($misfiled.Count) mid-turn conversation(s) are filed as finished or idle" }
+else { Pass 'a mid-turn conversation is never filed as finished or idle' }
+
+# Every row lands in exactly one band, and every band the list draws is one the
+# model actually produced.
+$known = @($script:Bands | ForEach-Object { $_.Key })
+$strays = @($rows | Where-Object { $known -notcontains "$($_.Band)" })
+if ($strays.Count) { Fail "$($strays.Count) row(s) carry a band the list cannot draw: $((@($strays | ForEach-Object { $_.Band }) | Sort-Object -Unique) -join ', ')" }
+else { Pass "every conversation carries one of the $($known.Count) known bands" }
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the manager sorts by its column headers ---'
+# ===========================================================================
+# 🔴 THE HEADERS WERE INERT AND LOOKED SORTABLE. The operator clicked LOGON,
+# nothing happened, and reported the filter broken - a header that looks like
+# every other sortable header on the machine and does nothing teaches you the
+# table is dead. Each one is asserted to actually REORDER the rows, because a
+# handler that fires and sorts by a key that does not vary would look identical.
+$ui.ModeManage.IsChecked = $true
+Set-Surface 'manage'
+$sortWas = $script:mgrSort; $descWas = $script:mgrDesc
+# 🩤 UNFOLD FIRST. Earlier assertions in this suite tick, untick and fold, so
+# by the time sorting is reached one project may be open with a single row in
+# it - and a one-row table sorts identically in both directions, which would
+# have reported a working sort as broken (it did, first run).
+$foldWas = @{}; foreach ($fk in @($script:fold.Keys)) { $foldWas[$fk] = $script:fold[$fk] }
+$olderWas = $script:showOlder
+$script:showOlder = $true
+Build-Manager
+foreach ($fk in @($script:fold.Keys)) { $script:fold[$fk] = $false }
+function Get-MgrNames {
+    return @($ui.ManageList.Items | Where-Object { $_.Kind -eq 'conv' } | ForEach-Object { "$($_.Name)" })
+}
+foreach ($hn in @('HdrLogon', 'HdrName', 'HdrLane', 'HdrSaid', 'HdrAge')) {
+    if (-not $ui.$hn) { Fail "the manager has no header '$hn'" }
+    elseif (-not "$($ui.$hn.Tag)") { Fail "'$hn' carries no sort key, so a click could not act on it" }
+}
+$script:mgrSort = 'name'; $script:mgrDesc = $false; Build-Manager
+$asc = Get-MgrNames
+$script:mgrDesc = $true; Build-Manager
+$desc = Get-MgrNames
+if ($asc.Count -lt 2) { Fail "only $($asc.Count) conversation(s) visible - sorting cannot be posed" }
+elseif (($asc -join '|') -eq ($desc -join '|')) {
+    Fail 'reversing the sort direction changed nothing - the arrow would lie'
+} else { Pass "sorting by name reorders $($asc.Count) rows, and reverses" }
+
+# Sorting is WITHIN a project, so the grouping the surface is built on survives.
+$script:mgrSort = 'age'; $script:mgrDesc = $true; Build-Manager
+$seq = @($ui.ManageList.Items | Where-Object { $_.Kind -eq 'conv' -or $_.Kind -eq 'project' })
+$projSeen = New-Object System.Collections.Generic.List[string]
+$broken = $false
+foreach ($x in $seq) {
+    if ($x.Kind -eq 'project') {
+        if ($projSeen.Contains("$($x.Path)")) { $broken = $true; break }
+        $projSeen.Add("$($x.Path)")
+    }
+}
+if ($broken) { Fail 'sorting split a project into more than one run - the grouping is gone' }
+else { Pass "the project grouping survives the sort ($($projSeen.Count) projects, each in one run)" }
+
+# Every key has to be usable, not just the two that are easy.
+foreach ($k in @('logon', 'name', 'lane', 'said', 'age')) {
+    $script:mgrSort = $k
+    try { Build-Manager } catch { Fail "sorting by '$k' threw: $($_.Exception.Message)" }
+}
+Pass 'every column key sorts without throwing'
+$script:mgrSort = $sortWas; $script:mgrDesc = $descWas
+$script:showOlder = $olderWas
+foreach ($fk in @($foldWas.Keys)) { $script:fold[$fk] = $foldWas[$fk] }
+Build-Manager
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the state filter, on the band headings ---'
 # ===========================================================================
 # 🔴 THE RETIRED WINDOW HAD THIS AND THE REWRITE DROPPED IT. Three clickable
