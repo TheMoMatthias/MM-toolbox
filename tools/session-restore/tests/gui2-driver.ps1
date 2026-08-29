@@ -399,6 +399,88 @@ Hide-Cast
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the project tiles ---'
+# ===========================================================================
+$ui.ModeWork.IsChecked = $true
+Set-Surface 'work'
+Build-Rail
+Lay
+$tiles = @($ui.RailList.ItemsSource)
+if ($tiles.Count -lt 2) { Fail "the rail built $($tiles.Count) tile(s)" }
+else {
+    Pass "$($tiles.Count) project tiles"
+
+    # A TILE HAS TO SAY WHAT IS HAPPENING IN THERE. It replaced a name and a
+    # count, and a count is the same number whether every conversation is asleep
+    # or one is waiting on you - which is the only thing the rail is for.
+    $mute = @($tiles | Where-Object { -not "$($_.State)".Trim() })
+    if ($mute.Count) { Fail "$($mute.Count) tile(s) say nothing about their state" }
+    else { Pass 'every tile says what is happening inside it' }
+
+    # 🔴 IDENTITY IS STABLE AND DISTINCT, or it is not identity. Derived from the
+    # path, so it must survive a restart without being stored - and two projects
+    # must not collide, which a naive character sum does for names as close as
+    # AlgoTrader / AlgoTrader-tp / AlgoTrader-tps (all three are in this rail).
+    $noAcc = @($tiles | Where-Object { -not $_.Accent })
+    if ($noAcc.Count) { Fail "$($noAcc.Count) tile(s) have no identity colour at all" }
+    else {
+        $cols = @($tiles | ForEach-Object { "$($_.Accent.Color)" })
+        $uniq = @($cols | Sort-Object -Unique)
+        if ($uniq.Count -lt [math]::Min(6, $tiles.Count)) {
+            Fail "only $($uniq.Count) distinct colours across $($tiles.Count) projects - identity collides"
+        } else { Pass "$($uniq.Count) distinct identity colours across $($tiles.Count) projects" }
+    }
+    # 🔴 AND IT MUST ACTUALLY BE ON SCREEN. The colours were right, distinct
+    # and at full opacity while the bar was drawing at ZERO WIDTH - which no
+    # amount of looking at a downscaled screenshot could settle. This walks the
+    # realised container and measures the mark.
+    $ui.RailList.UpdateLayout()
+    $c0 = $ui.RailList.ItemContainerGenerator.ContainerFromIndex(0)
+    if (-not $c0) { Fail 'the first tile has no realised container' }
+    else {
+        function Find-Mark { param($El)
+            if ($El -is [System.Windows.Controls.Border]) {
+                $bg = $El.Background
+                if ($bg -is [System.Windows.Media.SolidColorBrush]) {
+                    $col = $bg.Color
+                    if ($col.A -gt 0 -and -not ($col.R -eq $col.G -and $col.G -eq $col.B)) { return $El }
+                }
+            }
+            $n = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($El)
+            for ($i = 0; $i -lt $n; $i++) {
+                $hit = Find-Mark ([System.Windows.Media.VisualTreeHelper]::GetChild($El, $i))
+                if ($hit) { return $hit }
+            }
+            return $null
+        }
+        $mark = Find-Mark $c0
+        if (-not $mark) { Fail 'no coloured mark anywhere in the realised tile' }
+        elseif ($mark.ActualWidth -le 0 -or $mark.ActualHeight -le 0) {
+            Fail ("the identity mark lays out at $($mark.ActualWidth) x $($mark.ActualHeight) - it is invisible")
+        } elseif ($mark.Opacity -le 0.05) {
+            Fail "the identity mark is drawn at opacity $($mark.Opacity)"
+        } else {
+            Pass ("the mark is on screen: {0:N0} x {1:N0} px of {2}" -f $mark.ActualWidth, $mark.ActualHeight, $mark.Background.Color)
+        }
+    }
+    $again = @($tiles | ForEach-Object { "$((Get-ProjectAccent $_.Path).Color)" })
+    if (($again -join ',') -ne (@($tiles | ForEach-Object { "$($_.Accent.Color)" }) -join ',')) {
+        Fail 'the same path produced a different colour on a second call - it would change every restart'
+    } else { Pass 'the same project is the same colour every time it is asked' }
+
+    # 🪤 AND IT MUST STAY A MARK, NOT A SURFACE. The operator asked for greyscale
+    # and then for project identity; the two only coexist while hue is confined
+    # to something small. If an accent ever becomes a tile background, the white
+    # that means NEEDS YOU has to compete with it.
+    $loud = @($tiles | Where-Object {
+        $_.PickBg -and $_.PickBg.Color -and
+        ($_.PickBg.Color.R -ne $_.PickBg.Color.G -or $_.PickBg.Color.G -ne $_.PickBg.Color.B) })
+    if ($loud.Count) { Fail 'a tile background carries hue - state and identity are competing' }
+    else { Pass 'tile surfaces stay grey; only the mark carries hue' }
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the prose under the answers ---'
 # ===========================================================================
 # 🔴 THE FIRST THING THE OPERATOR REPORTED, AND NOTHING TESTED IT. "I do not see

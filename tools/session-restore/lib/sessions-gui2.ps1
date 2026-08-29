@@ -724,6 +724,66 @@ function Test-OnSurface { param($R)
 # ===========================================================================
 # THE RAIL - a filter, never the grouping
 # ===========================================================================
+# ===========================================================================
+# PROJECT IDENTITY - the only hue in the window, and it is deliberately tiny
+#
+# 🔴 THE GREYSCALE RULE STILL HOLDS: grey carries STATE, hue carries IDENTITY,
+# and they never trade places. The ladder from white (needs you) down to
+# #3A3D43 (quiet) is how the window says what is happening, and a coloured
+# surface would compete with it - so this colour is spent on a 3px bar and
+# nothing else. It says WHICH project at a glance across 29 of them; it never
+# says how a project is doing.
+#
+# The hue is derived from the path, so it is stable across restarts, needs no
+# storage, and never has to be assigned by hand. Saturation and lightness are
+# fixed and low: at S=0.42 these read as tinted graphite next to the greys,
+# not as a highlight competing with the white of NEEDS YOU.
+$script:accentCache = @{}
+function Get-ProjectAccent { param([string]$Path)
+    $k = "$Path".ToLower()
+    if ($script:accentCache.ContainsKey($k)) { return $script:accentCache[$k] }
+    # FNV-1a over the path. Any stable hash does; this one needs no library and
+    # spreads adjacent names (AlgoTrader / AlgoTrader-tps) to different hues,
+    # which a simple character sum does not.
+    # 🪤 Int64 AND AN 'L'-SUFFIXED MASK, not [uint32]. PowerShell parses the
+    # literal 0xFFFFFFFF as an Int32, which is -1: the mask was a no-op, the
+    # product ran past 32 bits unchecked, and the cast then threw "value was
+    # either too large or too small for a UInt32". Keeping the whole thing in
+    # Int64 and masking with 0xFFFFFFFFL is the arithmetic that was intended.
+    $h = 2166136261L
+    foreach ($c in $k.ToCharArray()) {
+        $h = ((($h -bxor [int]$c) * 16777619L) -band 0xFFFFFFFFL)
+    }
+    # 🪤 SKIP THE MUDDY BAND. Hues around 55-85 (olive/khaki) go grey-brown at
+    # this saturation and stop reading as identity at all, so the wheel is
+    # sampled around them rather than uniformly.
+    $hue = [double]($h % 300)
+    if ($hue -ge 55) { $hue += 30 }
+    $brush = New-Object System.Windows.Media.SolidColorBrush (Convert-HslToColor $hue 0.46 0.66)
+    $brush.Freeze()
+    $script:accentCache[$k] = $brush
+    return $brush
+}
+
+function Convert-HslToColor { param([double]$H, [double]$S, [double]$L)
+    $c = (1 - [math]::Abs(2 * $L - 1)) * $S
+    $x = $c * (1 - [math]::Abs((($H / 60) % 2) - 1))
+    $m = $L - $c / 2
+    $r = 0.0; $g = 0.0; $b = 0.0
+    switch ([int][math]::Floor($H / 60)) {
+        0 { $r = $c; $g = $x }
+        1 { $r = $x; $g = $c }
+        2 { $g = $c; $b = $x }
+        3 { $g = $x; $b = $c }
+        4 { $r = $x; $b = $c }
+        default { $r = $c; $b = $x }
+    }
+    return [System.Windows.Media.Color]::FromRgb(
+        [byte][math]::Round(($r + $m) * 255),
+        [byte][math]::Round(($g + $m) * 255),
+        [byte][math]::Round(($b + $m) * 255))
+}
+
 function Build-Rail {
     $byProj = @{}
     foreach ($r in $script:model) {
@@ -740,12 +800,48 @@ function Build-Rail {
     $items = New-Object System.Collections.Generic.List[object]
     foreach ($k in $order) {
         $picked = ($script:railPick -eq $k)
+        $kids = $byProj[$k]
+        # WHAT IS HAPPENING IN THERE, not just how many are in there. A count of
+        # 13 is the same number whether every one of them is asleep or one is
+        # waiting on you, and the whole point of the rail is choosing where to
+        # look next. The tile says the two things that decide that.
+        $needs = 0; $working = 0
+        foreach ($r in $kids) {
+            if ("$($r.Band)" -eq 'needs') { $needs++ }
+            elseif ($r.Live) { $working++ }
+        }
+        $bits = New-Object System.Collections.Generic.List[string]
+        if ($needs)   { $bits.Add("$needs waiting") }
+        if ($working) { $bits.Add("$working working") }
+        if (-not $bits.Count) { $bits.Add("$($kids.Count) idle") }
+        # 🪤 [char], NOT A LITERAL '·'. The test harness writes a combined script
+        # and runs it, and a non-ASCII byte in a STRING LITERAL does not survive
+        # that round trip - it arrived as 'Ã‚Â·' and took the whole file's parse
+        # down with it. The same character in a COMMENT is harmless, which is why
+        # the emoji markers throughout this file are fine and this was not. The
+        # rest of the window already follows this convention (see Caret above).
+        $dot = ' ' + [string][char]0x00B7 + ' '
         $items.Add([PSCustomObject]@{
             Path   = $k
             Label  = (Get-ProjectLabel $k)
-            Count  = $byProj[$k].Count
-            PickBg = $(if ($picked) { $window.FindResource('SelBg') } else { [System.Windows.Media.Brushes]::Transparent })
-            Fg     = $(if ($picked) { $window.FindResource('TextMax') } else { $window.FindResource('TextHigh') })
+            Count  = $kids.Count
+            State  = ($bits -join $dot)
+            # 🔴 THE CAST, AGAIN. A brush handed back from a PowerShell
+            # function arrives PSObject-WRAPPED, and WPF cannot convert that to a
+            # Brush: the binding fails SILENTLY, Background stays null, and the
+            # mark draws as nothing. Identical to the PSObject-wrapped FontFamily
+            # that killed the typeface - and just as invisible, because a missing
+            # brush looks exactly like a design choice. The suite now measures
+            # the mark on screen rather than trusting the colour behind it.
+            Accent = [System.Windows.Media.Brush](Get-ProjectAccent $k)
+            # The accent bar is always drawn; it just goes nearly transparent
+            # when the project has nothing live, so a busy project's identity is
+            # what catches the eye rather than every project shouting at once.
+            AccentOpacity = $(if ($needs) { 1.0 } elseif ($working) { 0.85 } else { 0.35 })
+            NeedsVis = $(if ($needs) { $V_Show } else { $V_Hide })
+            PickBg = [System.Windows.Media.Brush]$(if ($picked) { $window.FindResource('SelBg') } else { [System.Windows.Media.Brushes]::Transparent })
+            PickEdge = [System.Windows.Media.Brush]$(if ($picked) { $window.FindResource('EdgeLit') } else { [System.Windows.Media.Brushes]::Transparent })
+            Fg     = [System.Windows.Media.Brush]$(if ($picked) { $window.FindResource('TextMax') } else { $window.FindResource('TextHigh') })
         })
     }
     $ui.RailList.ItemsSource = $items

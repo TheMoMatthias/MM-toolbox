@@ -651,17 +651,52 @@
 
     <!-- The rail row: a project, its conversation count, and whether it is the
          one currently filtering. It FILTERS - it is never the grouping. -->
+    <!-- ================== A PROJECT TILE ==================
+         This was a one-line text row - a name and a number - and at 29
+         projects it read as a directory listing rather than as the place you
+         choose where to look next. A tile has room for the thing that actually
+         decides that: what is happening INSIDE the project. "13" is the same
+         number whether all 13 are asleep or one is waiting on you.
+
+         🔴 THE ONLY HUE IN THE WINDOW IS THE 3px BAR, and that is the whole
+         concession. Grey carries STATE, hue carries IDENTITY, and they never
+         swap jobs: the bar says WHICH project, the greys say how it is doing.
+         A tinted surface would put the accent in competition with the white
+         that means NEEDS YOU, which is the one thing in this window that must
+         never have to compete for attention.
+         ================================================== -->
     <DataTemplate x:Key="RailRowTpl">
-      <Border Padding="18,9,14,9" Background="{Binding PickBg}">
+      <Border Margin="8,3,8,3" CornerRadius="8" Background="{Binding PickBg}"
+              BorderBrush="{Binding PickEdge}" BorderThickness="1"
+              Padding="0,8,11,9" SnapsToDevicePixels="True">
         <Grid>
           <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
-          <TextBlock Grid.Column="0" Text="{Binding Label}" Style="{StaticResource Dim}"
-                     Foreground="{Binding Fg}" TextTrimming="CharacterEllipsis"/>
-          <TextBlock Grid.Column="1" Text="{Binding Count}" Style="{StaticResource Meta}"
-                     Margin="9,0,0,0" VerticalAlignment="Center"/>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+
+          <!-- the identity mark -->
+          <Border Grid.Column="0" Grid.RowSpan="2" Width="4" CornerRadius="2"
+                  Margin="10,2,12,2" Background="{Binding Accent}"
+                  Opacity="{Binding AccentOpacity}"/>
+
+          <TextBlock Grid.Column="1" Grid.Row="0" Text="{Binding Label}"
+                     Style="{StaticResource Body}" Foreground="{Binding Fg}"
+                     FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+          <!-- The dot repeats what the word says, for the one state worth
+               finding without reading: a project with something waiting. -->
+          <Border Grid.Column="2" Grid.Row="0" Width="6" Height="6" CornerRadius="3"
+                  VerticalAlignment="Center" Margin="8,0,0,0"
+                  Visibility="{Binding NeedsVis}"
+                  Background="{StaticResource AccNeeds}"/>
+          <TextBlock Grid.Column="1" Grid.ColumnSpan="2" Grid.Row="1"
+                     Text="{Binding State}" Style="{StaticResource Meta}"
+                     Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
         </Grid>
       </Border>
     </DataTemplate>
