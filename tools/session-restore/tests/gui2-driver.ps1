@@ -165,6 +165,29 @@ $echo = @($ui.ManageList.Items | Where-Object { $_.Kind -eq 'conv' -and "$($_.La
 if ($echo.Count) { Fail "$($echo.Count) row(s) print the conversation's own name in the LANE column" }
 else { Pass 'the lane column never just repeats the conversation name' }
 
+# 🔴 'WHAT IT LAST SAID' WAS ONE OF THE FOUR COLUMNS REPORTED BLANK, and unlike
+# the other three it is the only one whose emptiness is INDISTINGUISHABLE from a
+# quiet machine: with nothing running, every cell is legitimately empty and the
+# column looks exactly as broken as it did when it was. So this asserts against
+# the live set specifically - if a conversation is running, its last line is
+# readable, and a blank cell for it is the defect.
+$liveRows = @($ui.ManageList.Items | Where-Object { $_.Kind -eq 'conv' -and $_.Row -and $_.Row.Live })
+if (-not $liveRows.Count) {
+    Note 'nothing is running, so the last-said column has nothing it could show - not asserted'
+} else {
+    $blank = @($liveRows | Where-Object { -not "$($_.Said)".Trim() })
+    if ($blank.Count) {
+        $b = $blank[0]
+        $raw = $null
+        try { $raw = Get-SRLastSaid -JsonlPath $b.Row.S.jsonl } catch { }
+        if ($raw -and "$($raw.Said)".Trim()) {
+            Note 'the transcript HAS a last line - it is being lost between the read and the row'
+        }
+        Fail ("$($blank.Count) of $($liveRows.Count) RUNNING conversation(s) show nothing in 'what it last said', " +
+              "first '$($b.Name)'")
+    } else { Pass "every one of the $($liveRows.Count) running conversations shows what it last said" }
+}
+
 if (-not $ui.ManageList.ContextMenu) { Fail 'the manager has no per-row menu' }
 else {
     $have = @($ui.ManageList.ContextMenu.Items |

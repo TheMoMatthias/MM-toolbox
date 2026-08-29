@@ -665,12 +665,24 @@ function Update-Model {
             $conv = $null
             try { $conv = Resolve-SRSessionState -Agent $a -Conv $null } catch { }
             $live = [bool]$a
-            $said = $null
+            # 🔴 $line, NOT $said. The parameter above is [hashtable]$Said, and
+            # PowerShell IS CASE-INSENSITIVE: a local called $said was the SAME
+            # VARIABLE as the parameter, and this feature never worked once
+            # because of it. `$said = $null` wiped the caller's hashtable, so the
+            # probe's handed-in work was discarded on the spot; then assigning
+            # the record from Get-SRLastSaid to a variable still constrained to
+            # [hashtable] threw a cast error, which the catch below swallowed.
+            # Both paths dead, silently, and the column sat empty - reported by
+            # the operator, and a blank 'what it last said' is indistinguishable
+            # from a machine with nothing running, which is why it survived a
+            # fix and a green suite. The suite now asserts it against the LIVE
+            # set, where a blank cell can only mean this.
+            $line = $null
             if ($live -or (Test-Warm $s)) {
                 # Handed in by the probe when it read them off the background
                 # thread; read here only when nobody did it for us.
-                if ($null -ne $Said) { $said = $Said[$id] }
-                else { try { $said = Get-SRLastSaid -JsonlPath $s.jsonl } catch { } }
+                if ($null -ne $Said) { $line = $Said[$id] }
+                else { try { $line = Get-SRLastSaid -JsonlPath $s.jsonl } catch { } }
             }
             # lastActive is parsed ONCE, here, and carried as ticks. The 6-second
             # pass reads it for every conversation; re-parsing a string 184 times
@@ -678,7 +690,7 @@ function Update-Model {
             $at = 0L
             try { $at = ([datetime]$s.lastActive).Ticks } catch { }
             $rows.Add([PSCustomObject]@{
-                Id = $id; S = $s; D = $d; A = $a; Conv = $conv; Said = $said; Live = $live; Band = 'quiet'
+                Id = $id; S = $s; D = $d; A = $a; Conv = $conv; Said = $line; Live = $live; Band = 'quiet'
                 At = $at; Warm = ($at -gt $warmCut)
             })
         }
