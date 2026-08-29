@@ -2179,6 +2179,22 @@ function Get-SRScreenQuestion {
     return (Invoke-SRParseScreenQuestion -Text $txt)
 }
 
+# Where the QUESTION stops and claude's own furniture begins. The input box is
+# drawn in box-drawing characters, and the status line under it carries the model
+# and the context meter - none of that is part of what was asked, and letting any
+# of it into the footer would put "Model: Opus 5 | [████...]" under the options.
+function Test-SRQuestionChrome { param([string]$Line)
+    $t = "$Line".Trim()
+    if (-not $t) { return $false }
+    # A run of box-drawing or dashes is the input box's border.
+    if ($t -match ('^[' + [regex]::Escape('-=_' + [string][char]0x2500 + [string][char]0x2502 + [string][char]0x256D + [string][char]0x256E + [string][char]0x2570 + [string][char]0x256F) + ']{6,}')) { return $true }
+    if ($t.StartsWith([string][char]0x276F)) { return $true }        # the prompt caret
+    if ($t -match '^Model:\s') { return $true }
+    if ($t -match '\bshift\+tab to cycle\b') { return $true }
+    if ($t -match '^\?\s+for shortcuts') { return $true }
+    return $false
+}
+
 function Invoke-SRParseScreenQuestion {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
@@ -2188,6 +2204,9 @@ function Invoke-SRParseScreenQuestion {
     $cursor = [char]0x276F
     $lines = @($txt -split "`n")
     $opts = New-Object System.Collections.Generic.List[object]
+    # Which screen line each option was found on, so the text belonging to it can
+    # be picked up afterwards.
+    $optLine = New-Object System.Collections.Generic.List[int]
     $at = -1
     $firstIdx = -1
     # Multi-select state, filled in as the options are read.
@@ -2228,10 +2247,59 @@ function Invoke-SRParseScreenQuestion {
             if ("$($bm.Groups[1].Value)".Trim()) { $null = $ticked.Add($opts.Count) }
             $label = $bm.Groups[2].Value.Trim()
         }
+        $null = $optLine.Add($i)
         $null = $opts.Add($label)
     }
     # One option is a list of one, which every numbered paragraph also looks like.
     if ($opts.Count -lt 2) { return $null }
+
+    # ===================================================================
+    # THE TEXT UNDER THE ANSWERS, which this parser used to throw away.
+    #
+    # It only ever walked UPWARDS from option 1 to find the question, so
+    # everything BELOW the options was discarded before it could reach the
+    # window - and that is where the reasoning lives. Choosing between
+    # "Recommended" and the rest without it is choosing on the label alone.
+    #
+    # Two different things live down there and both are wanted:
+    #   DETAIL  the indented lines under each option - what that option means
+    #   FOOTER  whatever follows the LAST option, before the input box
+    #
+    # A line belongs to an option while it is indented further than the option
+    # number and is not itself an option. The scan for the footer stops at the
+    # prompt box, which claude draws in box-drawing characters, and at the status
+    # line under it - neither is part of the question.
+    # ===================================================================
+    $details = New-Object System.Collections.Generic.List[string]
+    for ($k = 0; $k -lt $opts.Count; $k++) {
+        $from = $optLine[$k] + 1
+        $to   = $(if ($k + 1 -lt $opts.Count) { $optLine[$k + 1] - 1 } else { $lines.Count - 1 })
+        $buf  = New-Object System.Collections.Generic.List[string]
+        for ($i = $from; $i -le $to -and $i -lt $lines.Count; $i++) {
+            $raw = "$($lines[$i])"
+            if (Test-SRQuestionChrome $raw) { break }
+            $t = $raw.Trim()
+            if (-not $t) { if ($buf.Count) { break } else { continue } }
+            # Indented past the option number, or it is not this option's text.
+            if (($raw.Length - $raw.TrimStart().Length) -lt 3) { break }
+            $null = $buf.Add($t)
+        }
+        $null = $details.Add(($buf -join ' '))
+    }
+
+    $footer = New-Object System.Collections.Generic.List[string]
+    $fFrom = $optLine[$optLine.Count - 1] + 1
+    $seenGap = $false
+    for ($i = $fFrom; $i -lt $lines.Count; $i++) {
+        $raw = "$($lines[$i])"
+        if (Test-SRQuestionChrome $raw) { break }
+        $t = $raw.Trim()
+        if (-not $t) { $seenGap = $true; continue }
+        # The last option's own detail is NOT footer - it is already in $details.
+        # The footer starts after the blank line that ends it.
+        if (-not $seenGap -and ($raw.Length - $raw.TrimStart().Length) -ge 3) { continue }
+        $null = $footer.Add($t)
+    }
 
     # THE SUBMIT ROW. Unnumbered, indented, sitting under the last option -- and
     # navigable, so it is a cursor STOP like any option. Its index matters: the
@@ -2269,6 +2337,12 @@ function Invoke-SRParseScreenQuestion {
     return [PSCustomObject]@{
         Question = $q
         Options  = $opts.ToArray()
+        # Parallel to Options: what each one means, off the screen, verbatim.
+        # Empty string where an option carried no description.
+        Details  = $details.ToArray()
+        # Whatever claude wrote after the last option - the note that qualifies
+        # the whole question rather than any one answer.
+        Footer   = ($footer -join ' ')
         # 0-based, or -1 when no cursor could be seen. A caller that cannot see the
         # cursor must not send arrows on a guess.
         CursorAt = $at

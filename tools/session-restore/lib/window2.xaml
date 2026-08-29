@@ -1,5 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="Claude sessions"
         Width="1480" Height="980" MinWidth="620" MinHeight="420"
         WindowStartupLocation="CenterScreen"
@@ -7,6 +8,32 @@
         TextOptions.TextFormattingMode="Ideal"
         TextOptions.TextRenderingMode="ClearType"
         Background="#0F1013">
+
+  <!-- ================== THE FRAME ==================
+       NO OS TITLE BAR, but still a real window.
+
+       🔴 WindowChrome, NOT WindowStyle=None. WindowStyle="None" alone throws
+       away the frame AND everything the frame did: Aero Snap, edge resize,
+       maximise-to-work-area, and the drop shadow. WindowChrome removes only the
+       painted caption and lets Windows keep managing the rest, so dragging to
+       an edge still snaps and the borders still resize.
+
+       CaptionHeight="0" because the app paints its OWN caption: with a non-zero
+       value Windows would treat the top strip as a caption and swallow clicks on
+       the buttons and the search box sitting there. The header opts back IN to
+       dragging by calling DragMove, and each control opts out of the chrome with
+       WindowChrome.IsHitTestVisibleInChrome.
+
+       GlassFrameThickness="0" keeps the DWM glass out of a dark window;
+       UseAeroCaptionButtons="False" stops Windows drawing its own.
+       ============================================== -->
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="0"
+                        ResizeBorderThickness="6"
+                        CornerRadius="0"
+                        GlassFrameThickness="0"
+                        UseAeroCaptionButtons="False"/>
+  </shell:WindowChrome.WindowChrome>
 
   <Window.Resources>
 
@@ -42,30 +69,67 @@
     <SolidColorBrush x:Key="SelBg"     Color="#22252B"/>
     <SolidColorBrush x:Key="HoverBg"   Color="#1A1C21"/>
 
-    <FontFamily x:Key="FontUi">Segoe UI</FontFamily>
-    <FontFamily x:Key="FontMono">Cascadia Mono, Consolas, Courier New</FontFamily>
+    <!-- ================== TYPE ==================
+         SEGOE UI VARIABLE, AND WHY IT IS THREE FAMILIES.
+         It is Windows 11's own optically-sized family and the direct counterpart
+         to SF Pro and Roboto - which is what "make it look like Apple or Google"
+         actually means on this platform. Optical sizing means the letterforms
+         are DRAWN differently per size rather than scaled: Small has open
+         spacing and sturdy strokes so 11px captions stay legible, Display is
+         tightly spaced so headings do not look gappy. Using one face at every
+         size is precisely what made this window read as utilitarian.
 
-    <!-- ================== TYPE ================== -->
+           Small    <= 12px   captions, overlines, meta
+           Text     13-17px   everything you read
+           Display  >= 18px   the window title and headings
+
+         Each falls back to plain Segoe UI, so a machine without the variable
+         family degrades to what this file used before rather than to Arial.
+         ========================================== -->
+    <FontFamily x:Key="FontSmall">Segoe UI Variable Small, Segoe UI</FontFamily>
+    <FontFamily x:Key="FontText">Segoe UI Variable Text, Segoe UI</FontFamily>
+    <FontFamily x:Key="FontDisplay">Segoe UI Variable Display, Segoe UI</FontFamily>
+    <FontFamily x:Key="FontMono">Cascadia Mono, Consolas, Courier New</FontFamily>
+    <!-- Kept so nothing that still names it breaks; new work uses the three above. -->
+    <FontFamily x:Key="FontUi">Segoe UI Variable Text, Segoe UI</FontFamily>
+
+    <!-- ONE SCALE, and every size in the window comes from it. The old file had
+         fourteen inline FontSize values between 10.5 and 12.5, which is not a
+         scale, it is fourteen decisions. -->
+    <Style x:Key="Display" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{StaticResource FontDisplay}"/>
+      <Setter Property="FontSize" Value="18"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
+    </Style>
     <Style x:Key="H1" TargetType="TextBlock">
-      <Setter Property="FontFamily" Value="{StaticResource FontUi}"/>
+      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
       <Setter Property="FontSize" Value="15"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
     </Style>
+    <!-- An overline, not a heading: small, spaced out, quiet. The letter spacing
+         is what stops an all-caps run reading as shouting. -->
     <Style x:Key="Caption" TargetType="TextBlock">
-      <Setter Property="FontFamily" Value="{StaticResource FontUi}"/>
-      <Setter Property="FontSize" Value="10.5"/>
+      <Setter Property="FontFamily" Value="{StaticResource FontSmall}"/>
+      <Setter Property="FontSize" Value="11"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
+      <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
     </Style>
     <Style x:Key="Body" TargetType="TextBlock">
-      <Setter Property="FontFamily" Value="{StaticResource FontUi}"/>
-      <Setter Property="FontSize" Value="12.5"/>
+      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontSize" Value="13.5"/>
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
     </Style>
     <Style x:Key="Dim" TargetType="TextBlock" BasedOn="{StaticResource Body}">
       <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
-      <Setter Property="FontSize" Value="11.5"/>
+      <Setter Property="FontSize" Value="12.5"/>
+    </Style>
+    <Style x:Key="Meta" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{StaticResource FontSmall}"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
     </Style>
 
     <!-- ================== SCROLLBAR ==================
@@ -96,6 +160,51 @@
                 </Track.DecreaseRepeatButton>
               </Track>
             </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ================== CAPTION BUTTONS ==================
+         46x46 hit targets, flush to the top-right corner with no margin, so the
+         maximised window keeps the Fitts's-law corner the OS gave up. Segoe MDL2
+         Assets is the shell's own icon font and is present on every Windows 10
+         and 11 machine. -->
+    <Style x:Key="CaptionBtn" TargetType="Button">
+      <Setter Property="Width" Value="46"/>
+      <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+      <Setter Property="FontSize" Value="10"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="#23262C"/>
+                <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="CaptionBtnClose" TargetType="Button" BasedOn="{StaticResource CaptionBtn}">
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="#C42B1C"/>
+                <Setter Property="Foreground" Value="#FFFFFF"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
@@ -191,20 +300,40 @@
 
     <!-- ================== SEARCH BOX ================== -->
     <Style x:Key="Search" TargetType="TextBox">
-      <Setter Property="FontFamily" Value="{StaticResource FontUi}"/>
-      <Setter Property="FontSize" Value="12.5"/>
+      <Setter Property="FontFamily" Value="{StaticResource FontText}"/>
+      <Setter Property="FontSize" Value="13"/>
       <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
       <Setter Property="CaretBrush" Value="{StaticResource AccNeeds}"/>
-      <Setter Property="Padding" Value="10,7,10,7"/>
+      <Setter Property="Padding" Value="12,0,12,0"/>
+      <Setter Property="Height" Value="30"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="TextBox">
-            <Border x:Name="b" CornerRadius="7" Background="{StaticResource Panel}"
+            <Border x:Name="b" CornerRadius="8" Background="{StaticResource Ink}"
                     BorderBrush="{StaticResource Hairline}" BorderThickness="1">
-              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
-                            VerticalAlignment="Center"/>
+              <Grid>
+                <!-- THE PLACEHOLDER. An empty rounded rectangle says nothing
+                     about what it is for; the search box read as decoration.
+                     🔴 THE TEXT COMES FROM THE BOX'S OWN Tag, never from this
+                     style: the composer uses this same style, and a hard-coded
+                     string put "Search conversations..." inside the box you type
+                     replies into. Shown only while empty, and not hit-testable so
+                     it can never eat a click meant for the field beneath. -->
+                <TextBlock x:Name="ph"
+                           Text="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=Tag}"
+                           FontFamily="{StaticResource FontText}" FontSize="13"
+                           Foreground="{StaticResource TextLow}" IsHitTestVisible="False"
+                           VerticalAlignment="Center" Margin="12,0,12,0"
+                           Visibility="Collapsed"/>
+                <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                              VerticalAlignment="Center"/>
+              </Grid>
             </Border>
             <ControlTemplate.Triggers>
+              <Trigger Property="Text" Value="">
+                <Setter TargetName="ph" Property="Visibility" Value="Visible"/>
+              </Trigger>
               <Trigger Property="IsKeyboardFocusWithin" Value="True">
                 <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Focus}"/>
               </Trigger>
@@ -268,26 +397,26 @@
     <DataTemplate x:Key="SessionRowTpl">
       <Grid>
         <!-- the band heading -->
-        <Border Visibility="{Binding BandVis}" Padding="16,14,12,6">
+        <Border Visibility="{Binding BandVis}" Padding="18,20,14,8">
           <StackPanel Orientation="Horizontal">
-            <Border Width="3" Height="11" CornerRadius="2" Background="{Binding Accent}"
-                    VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <TextBlock Text="{Binding BandLabel}" FontFamily="Segoe UI" FontSize="10.5"
-                       FontWeight="SemiBold" Foreground="{Binding Accent}" VerticalAlignment="Center"/>
-            <TextBlock Text="{Binding BandCount}" FontFamily="Segoe UI" FontSize="10.5"
-                       Foreground="#6B7178" Margin="8,0,0,0" VerticalAlignment="Center"/>
+            <Border Width="3" Height="12" CornerRadius="2" Background="{Binding Accent}"
+                    VerticalAlignment="Center" Margin="0,0,9,0"/>
+            <TextBlock Text="{Binding BandLabel}" Style="{StaticResource Caption}"
+                       Foreground="{Binding Accent}" VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding BandCount}" Style="{StaticResource Caption}"
+                       FontWeight="Normal" Margin="9,0,0,0" VerticalAlignment="Center"/>
           </StackPanel>
         </Border>
 
         <!-- a conversation -->
-        <Border Visibility="{Binding RowVis}" Padding="0,7,12,7">
+        <Border Visibility="{Binding RowVis}" Padding="0,10,14,10">
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="3"/>
               <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
             <Border Grid.Column="0" Background="{Binding Accent}" Opacity="{Binding BarOpacity}"/>
-            <StackPanel Grid.Column="1" Margin="13,0,0,0">
+            <StackPanel Grid.Column="1" Margin="15,0,0,0">
               <Grid>
                 <Grid.ColumnDefinitions>
                   <ColumnDefinition Width="Auto"/>
@@ -295,15 +424,15 @@
                   <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <Ellipse Grid.Column="0" Width="6" Height="6" Fill="{Binding Accent}"
-                         Visibility="{Binding DotVis}" VerticalAlignment="Center" Margin="0,0,7,0"/>
-                <TextBlock Grid.Column="1" Text="{Binding Name}" FontFamily="Segoe UI" FontSize="12.5"
+                         Visibility="{Binding DotVis}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock Grid.Column="1" Text="{Binding Name}" Style="{StaticResource Body}"
                            FontWeight="{Binding NameWeight}" FontStyle="{Binding NameStyle}"
-                           Foreground="#F2F3F5" TextTrimming="CharacterEllipsis"/>
-                <TextBlock Grid.Column="2" Text="{Binding Age}" FontFamily="Segoe UI" FontSize="10.5"
-                           Foreground="#6B7178" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                           Foreground="{StaticResource TextMax}" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Grid.Column="2" Text="{Binding Age}" Style="{StaticResource Meta}"
+                           Margin="9,0,0,0" VerticalAlignment="Center"/>
               </Grid>
-              <TextBlock Text="{Binding Said}" FontFamily="Segoe UI" FontSize="11.5"
-                         Foreground="#9AA0A8" TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+              <TextBlock Text="{Binding Said}" Style="{StaticResource Dim}"
+                         TextTrimming="CharacterEllipsis" Margin="0,3,0,0"/>
             </StackPanel>
           </Grid>
         </Border>
@@ -313,16 +442,16 @@
     <!-- The rail row: a project, its conversation count, and whether it is the
          one currently filtering. It FILTERS - it is never the grouping. -->
     <DataTemplate x:Key="RailRowTpl">
-      <Border Padding="16,6,12,6" Background="{Binding PickBg}">
+      <Border Padding="18,9,14,9" Background="{Binding PickBg}">
         <Grid>
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
-          <TextBlock Grid.Column="0" Text="{Binding Label}" FontFamily="Segoe UI" FontSize="12"
+          <TextBlock Grid.Column="0" Text="{Binding Label}" Style="{StaticResource Dim}"
                      Foreground="{Binding Fg}" TextTrimming="CharacterEllipsis"/>
-          <TextBlock Grid.Column="1" Text="{Binding Count}" FontFamily="Segoe UI" FontSize="10.5"
-                     Foreground="#6B7178" Margin="8,0,0,0" VerticalAlignment="Center"/>
+          <TextBlock Grid.Column="1" Text="{Binding Count}" Style="{StaticResource Meta}"
+                     Margin="9,0,0,0" VerticalAlignment="Center"/>
         </Grid>
       </Border>
     </DataTemplate>
@@ -341,24 +470,25 @@
     <DataTemplate x:Key="ManageRowTpl">
       <Grid>
         <!-- a project header -->
-        <Border Visibility="{Binding ProjVis}" Padding="0,9,18,7" Background="#15161A">
+        <Border Visibility="{Binding ProjVis}" Padding="0,12,20,10" Background="{StaticResource Panel}"
+                Cursor="Hand">
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="86"/>
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0" Text="{Binding Caret}" FontFamily="Segoe UI" FontSize="11"
-                       Foreground="#6B7178" HorizontalAlignment="Right" Margin="0,0,10,0"/>
-            <TextBlock Grid.Column="1" Text="{Binding Label}" FontFamily="Segoe UI" FontSize="12.5"
-                       FontWeight="SemiBold" Foreground="#F2F3F5" TextTrimming="CharacterEllipsis"/>
-            <TextBlock Grid.Column="2" Text="{Binding Meta}" FontFamily="Segoe UI" FontSize="11"
-                       Foreground="#6B7178"/>
+            <TextBlock Grid.Column="0" Text="{Binding Caret}" Style="{StaticResource Meta}"
+                       HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            <TextBlock Grid.Column="1" Text="{Binding Label}" Style="{StaticResource Body}"
+                       FontWeight="SemiBold" Foreground="{StaticResource TextMax}"
+                       TextTrimming="CharacterEllipsis"/>
+            <TextBlock Grid.Column="2" Text="{Binding Meta}" Style="{StaticResource Meta}"/>
           </Grid>
         </Border>
 
         <!-- a conversation -->
-        <Border Visibility="{Binding ConvVis}" Padding="0,5,18,5">
+        <Border Visibility="{Binding ConvVis}" Padding="0,8,20,8">
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="86"/>
@@ -377,15 +507,15 @@
                       VerticalAlignment="Center" BorderBrush="#3A3F47" BorderThickness="1.4"
                       Background="{Binding TickBg}"/>
             </Border>
-            <TextBlock Grid.Column="1" Text="{Binding Name}" FontFamily="Segoe UI" FontSize="12.5"
-                       FontStyle="{Binding NameStyle}" Foreground="#D6D8DC"
+            <TextBlock Grid.Column="1" Text="{Binding Name}" Style="{StaticResource Body}"
+                       FontStyle="{Binding NameStyle}" VerticalAlignment="Center"
                        TextTrimming="CharacterEllipsis" Margin="14,0,10,0"/>
-            <TextBlock Grid.Column="2" Text="{Binding Lane}" FontFamily="Segoe UI" FontSize="11"
-                       Foreground="#6B7178" TextTrimming="CharacterEllipsis" Margin="0,0,10,0"/>
-            <TextBlock Grid.Column="3" Text="{Binding Said}" FontFamily="Segoe UI" FontSize="11.5"
-                       Foreground="#9AA0A8" TextTrimming="CharacterEllipsis"/>
-            <TextBlock Grid.Column="4" Text="{Binding Age}" FontFamily="Segoe UI" FontSize="10.5"
-                       Foreground="#6B7178" Margin="10,0,0,0"/>
+            <TextBlock Grid.Column="2" Text="{Binding Lane}" Style="{StaticResource Meta}"
+                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0"/>
+            <TextBlock Grid.Column="3" Text="{Binding Said}" Style="{StaticResource Dim}"
+                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+            <TextBlock Grid.Column="4" Text="{Binding Age}" Style="{StaticResource Meta}"
+                       VerticalAlignment="Center" Margin="10,0,0,0"/>
           </Grid>
         </Border>
       </Grid>
@@ -408,26 +538,49 @@
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
 
-    <!-- ========== 0. title ========== -->
-    <Border Grid.Row="0" Background="{StaticResource Panel}"
-            BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="18,12,18,12">
+    <!-- ========== 0. title - the app's OWN caption ==========
+         This strip IS the title bar. Dragging it moves the window (DragMove,
+         wired in the script); double-clicking it maximises. Everything
+         interactive on it carries IsHitTestVisibleInChrome so the chrome does
+         not eat the click first. -->
+    <Border x:Name="TitleBar" Grid.Row="0" Background="{StaticResource Panel}"
+            BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="20,0,0,0"
+            Height="46">
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto"/>
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-          <TextBlock Text="Claude sessions" Style="{StaticResource H1}" VerticalAlignment="Center"/>
-          <TextBlock x:Name="LiveCount" Style="{StaticResource Dim}" Margin="14,0,0,0"
+          <TextBlock Text="Claude sessions" Style="{StaticResource Display}" VerticalAlignment="Center"/>
+          <TextBlock x:Name="LiveCount" Style="{StaticResource Dim}" Margin="16,1,0,0"
                      VerticalAlignment="Center" Text=""/>
         </StackPanel>
         <TextBox x:Name="Search" Grid.Column="1" Style="{StaticResource Search}"
+                 Tag="Search conversations, projects, worktrees"
                  MaxWidth="560" MinWidth="380" HorizontalAlignment="Center"
+                 shell:WindowChrome.IsHitTestVisibleInChrome="True"
                  ToolTip="Find by title, id, worktree or project. Press / from anywhere."/>
-        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-          <TextBlock x:Name="Stamp" Style="{StaticResource Dim}" Margin="0,0,12,0" VerticalAlignment="Center"/>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"
+                    shell:WindowChrome.IsHitTestVisibleInChrome="True" Margin="0,0,10,0">
+          <TextBlock x:Name="Stamp" Style="{StaticResource Meta}" Margin="0,0,14,0" VerticalAlignment="Center"/>
           <Button x:Name="Rescan" Content="Rescan" Style="{StaticResource Btn}"/>
+        </StackPanel>
+
+        <!-- The window buttons. Close goes red on hover the way every Windows
+             app does; the other two lighten. Symbols are Segoe MDL2 glyphs, the
+             same ones the OS caption uses, so they read as window controls
+             rather than as letters. -->
+        <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Stretch"
+                    shell:WindowChrome.IsHitTestVisibleInChrome="True">
+          <Button x:Name="WinMin" Style="{StaticResource CaptionBtn}" Content="&#xE921;"
+                  ToolTip="Minimise" AutomationProperties.Name="Minimise"/>
+          <Button x:Name="WinMax" Style="{StaticResource CaptionBtn}" Content="&#xE922;"
+                  ToolTip="Maximise" AutomationProperties.Name="Maximise"/>
+          <Button x:Name="WinClose" Style="{StaticResource CaptionBtnClose}" Content="&#xE8BB;"
+                  ToolTip="Close" AutomationProperties.Name="Close"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -580,13 +733,24 @@
                   Background="{StaticResource PanelHi}"
                   BorderBrush="{StaticResource AccNeeds}" BorderThickness="0,2,0,0"
                   Padding="18,12,18,12">
-            <StackPanel>
-              <TextBlock x:Name="AskHeader" Style="{StaticResource Caption}" Text="" Margin="0,0,0,4"/>
-              <TextBlock x:Name="AskText" Style="{StaticResource Body}" Text="" TextWrapping="Wrap"/>
-              <ItemsControl x:Name="AskOptions" Margin="0,9,0,0"/>
-              <TextBlock x:Name="AskNote" Style="{StaticResource Dim}" Text="" TextWrapping="Wrap"
-                         Margin="0,8,0,0" Visibility="Collapsed"/>
-            </StackPanel>
+            <!-- A long question with a description under every option can run
+                 past the bottom of the pane, and an option you cannot reach is
+                 an option you cannot pick. Capped and scrollable; the cap is
+                 generous enough that the common three-option question never
+                 scrolls at all. -->
+            <ScrollViewer MaxHeight="380" VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock x:Name="AskHeader" Style="{StaticResource Caption}" Text="" Margin="0,0,0,5"/>
+                <TextBlock x:Name="AskText" Style="{StaticResource Body}" Text="" TextWrapping="Wrap"/>
+                <ItemsControl x:Name="AskOptions" Margin="0,11,0,0"/>
+                <!-- The note that qualifies the WHOLE question. Below the
+                     buttons, because that is where it was written. -->
+                <TextBlock x:Name="AskFooter" Style="{StaticResource Dim}" Text="" TextWrapping="Wrap"
+                           Margin="0,4,0,0" Visibility="Collapsed"/>
+                <TextBlock x:Name="AskNote" Style="{StaticResource Meta}" Text="" TextWrapping="Wrap"
+                           Margin="0,9,0,0" Visibility="Collapsed"/>
+              </StackPanel>
+            </ScrollViewer>
           </Border>
 
           <Border Grid.Row="3" Background="{StaticResource Panel}"
@@ -603,6 +767,7 @@
               <TextBlock x:Name="SendNote" Grid.Row="0" Grid.ColumnSpan="2" Style="{StaticResource Dim}"
                          Text="" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="Collapsed"/>
               <TextBox x:Name="SendBox" Grid.Row="1" Grid.Column="0" Style="{StaticResource Search}"
+                       Tag="Type here to send it into this session's terminal"
                        AcceptsReturn="False" Margin="0,0,8,0"
                        AutomationProperties.Name="type into this session"/>
               <Button x:Name="SendBtn" Grid.Row="1" Grid.Column="1" Content="Send"
@@ -670,8 +835,9 @@
         <TextBlock x:Name="Status" Grid.Column="0" Style="{StaticResource Dim}" Text=""
                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
         <StackPanel Grid.Column="1" Orientation="Horizontal">
+          <!-- No Close here any more: the title bar has one, and two buttons
+               that do the same thing in one window is one too many. -->
           <Button x:Name="HelpBtn" Content="?" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
-          <Button x:Name="CloseBtn" Content="Close" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
           <Button x:Name="SaveBtn" Content="Save" Style="{StaticResource BtnPrimary}"/>
         </StackPanel>
       </Grid>

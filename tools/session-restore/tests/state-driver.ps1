@@ -510,6 +510,69 @@ else {
     else { Pass 'the cursor position is read from the screen rather than assumed' }
     if ("$($parsed.Question)" -notlike '*four migrations*') { Fail "the question read as '$($parsed.Question)'" }
     else { Pass 'the question text is recovered without its box-drawing' }
+
+    # --- THE TEXT UNDER THE ANSWERS ----------------------------------------
+    # The parser used to walk UPWARDS only, so everything below option 1 was
+    # discarded before it could reach the window - and that is where the
+    # reasoning lives. Choosing between "Recommended" and the rest on the label
+    # alone is choosing on a quarter of what was written.
+    if (@($parsed.Details).Count -ne @($parsed.Options).Count) {
+        Fail "$(@($parsed.Details).Count) detail(s) for $(@($parsed.Options).Count) option(s) - they must stay parallel or a detail lands under the wrong answer"
+    } else { Pass 'every option has a detail slot, in step with the options' }
+
+    if ("$($parsed.Details[0])" -notlike '*Amend R-136*') {
+        Fail "option 1's detail read as '$($parsed.Details[0])'"
+    } else { Pass "option 1 carries its own explanation: 'Amend R-136 with a correction section...'" }
+
+    if ("$($parsed.Details[1])" -notlike '*bitemporal re-key*') {
+        Fail "option 2's detail read as '$($parsed.Details[1])'"
+    } else { Pass 'option 2 carries its own explanation, not option 1s' }
+
+    # An option with nothing under it must come back EMPTY rather than borrowing
+    # the next option's text - that would attach reasoning to the wrong answer,
+    # which is worse than showing none.
+    if ("$($parsed.Details[3])".Trim()) {
+        Fail "option 4 ('Type something') invented a detail: '$($parsed.Details[3])'"
+    } else { Pass 'an option with no explanation gets an empty one, not its neighbour s' }
+
+    # None of claude's own furniture may leak in.
+    $leak = @(@($parsed.Details) + @($parsed.Footer) | Where-Object { "$_" -match 'Model:|shift\+tab' })
+    if ($leak.Count) { Fail "claude's status line leaked into the question: '$($leak[0])'" }
+    else { Pass 'the input box and status line are not mistaken for question text' }
+}
+
+# --- AND THE FOOTER, WHICH IS A DIFFERENT THING ----------------------------
+# A note after the LAST option qualifies the whole question rather than any one
+# answer, so it cannot be stored against an option.
+Write-Host ''
+Write-Host '--- the note under the whole question ---'
+$withFooter = @(
+    ''
+    "$BAR Which lane should take the repair?"
+    ''
+    "$CUR 1. F2-SPINE"
+    '     It already owns the spine.'
+    ''
+    '  2. KERNEL-4'
+    '     Idle since this morning.'
+    ''
+    'Either way the gate re-runs before anything lands.'
+    ''
+    '  ' + ([string][char]0x2500) * 40
+    "$([string][char]0x276F) "
+    '  Model: Opus 5 | shift+tab to cycle'
+) -join "`n"
+$pf = Invoke-SRParseScreenQuestion -Text $withFooter
+if (-not $pf) { Fail 'the menu with a trailing note was not recognised at all' }
+else {
+    if (@($pf.Options).Count -ne 2) { Fail "read $(@($pf.Options).Count) option(s), expected 2" }
+    else { Pass 'the trailing note did not get counted as an option' }
+    if ("$($pf.Footer)" -notlike '*gate re-runs*') { Fail "the footer read as '$($pf.Footer)'" }
+    else { Pass "the note under the whole question is kept: 'Either way the gate re-runs...'" }
+    if ("$($pf.Footer)" -match 'Model:|2500|shift\+tab') { Fail "the footer swallowed claude's chrome: '$($pf.Footer)'" }
+    else { Pass 'the footer stops at the input box' }
+    if ("$($pf.Details[1])" -like '*gate re-runs*') { Fail 'the whole-question note was filed under option 2' }
+    else { Pass 'a whole-question note is not attached to the last option' }
 }
 
 # --- A REAL MULTI-SELECT MENU, CAPTURED ------------------------------------

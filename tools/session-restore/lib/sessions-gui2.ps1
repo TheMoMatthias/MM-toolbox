@@ -118,16 +118,17 @@ try {
 # hundreds of lines away, so it fails HERE, naming the element that is wrong.
 $ui = @{}
 foreach ($n in @(
+    'TitleBar','WinMin','WinMax','WinClose',
     'LiveCount','Search','Stamp','Rescan',
     'ModeWork','ModeManage','BandChips','Broadcast',
     'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear',
     'ListPane','ListSplit','ListCaption','ListCount','SessionList',
     'OutputPane','PaneName','PaneState','PaneStateDot','PaneGoTo','PaneRelaunch',
-    'PaneDoc','PaneEmpty','AskBox','AskHeader','AskText','AskOptions','AskNote',
+    'PaneDoc','PaneEmpty','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'SendNote','SendBox','SendBtn',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions',
-    'Status','HelpBtn','CloseBtn','SaveBtn'
+    'Status','HelpBtn','SaveBtn'
 )) {
     $el = $window.FindName($n)
     if (-not $el) { throw "window2.xaml has no element named '$n' - the script and the markup disagree." }
@@ -143,7 +144,6 @@ $V_Hide = [System.Windows.Visibility]::Collapsed
 $script:surface   = 'work'
 $script:railPick  = $null
 $script:selId     = $null
-$script:exitMode  = 'closed'
 $script:cfg       = $null
 $script:reg       = $null
 $script:dirs      = @()
@@ -299,7 +299,13 @@ function Build-Manager {
                 Caret = ''; Label = ''; Meta = ''
                 Name = $t.Text
                 NameStyle = $(if ($t.Derived) { 'Italic' } else { 'Normal' })
-                Lane = $(if ("$($r.S.lane)" -and "$($r.S.lane)" -ne 'main') { "$($r.S.worktree)" } else { 'main' })
+                # A COLUMN THAT REPEATS THE COLUMN BESIDE IT IS AN EMPTY COLUMN.
+                # Worktrees are usually named after the conversation in them, so
+                # this printed "GOV-1  GOV-1" down the whole screen. It now says
+                # the worktree only when that is news; when the names match it
+                # still reports that the conversation is isolated, without
+                # spending a column saying the same word twice.
+                Lane = (Get-LaneLabel $r $t.Text)
                 Said = $saidText
                 Age  = (Get-Age $r.S.lastActive)
                 # The tick is a FILLED SQUARE or an empty one - a shape, not a
@@ -326,8 +332,8 @@ function Build-Manager {
     # SAY HOW TO TICK. The gesture is discoverable from nowhere else on this
     # surface, and not knowing it reads exactly like a list that cannot be
     # interacted with at all.
-    $ui.ManageCount.Text = ('{0} ticked to reopen at the next logon   |   click a project to open it, double-click a conversation to tick it{1}' -f `
-        $armedAll, $(if ($script:dirty) { '   |   unsaved' } else { '' }))
+    $ui.ManageCount.Text = ('{0} ticked to reopen at the next logon   |   click a project to open it, click a box to tick it{1}' -f `
+        $armedAll, $(if ($script:dirty) { '   |   UNSAVED' } else { '' }))
 }
 
 # A PROJECT OPENS ON ONE CLICK; A TICK NEEDS TWO.
@@ -451,6 +457,15 @@ function Get-Title { param($S, $D)
     $leaf = Split-Path -Leaf "$($D.path)"
     if ($leaf) { return @{ Text = $leaf; Derived = $true } }
     return @{ Text = '(untitled)'; Derived = $true }
+}
+
+function Get-LaneLabel { param($R, [string]$Title)
+    $lane = "$($R.S.lane)"
+    if (-not $lane -or $lane -eq 'main') { return 'main' }
+    $wt = "$($R.S.worktree)".Trim()
+    if (-not $wt) { return 'worktree' }
+    if ($wt -eq "$Title".Trim()) { return 'worktree' }
+    return $wt
 }
 
 function Get-Age { param($When)
@@ -869,13 +884,35 @@ function Update-Ask { param($R)
     $ui.AskHeader.Text = $(if ("$($q.Header)") { "$($q.Header)".ToUpper() } else { 'IT IS ASKING' })
     $ui.AskText.Text   = "$($q.Question)"
 
+    # AN OPTION IS A LABEL AND ITS REASONING, and the reasoning is why you would
+    # pick it. Each button carries both: the label on top, what claude wrote
+    # underneath it below, in the same order it was drawn on screen.
+    $details = @($q.Details)
     $btns = New-Object System.Collections.Generic.List[object]
     $n = 0
     foreach ($o in @($q.Options)) {
+        $stack = New-Object System.Windows.Controls.StackPanel
+        $lab = New-Object System.Windows.Controls.TextBlock
+        $lab.Text = ('{0}.  {1}' -f ($n + 1), $o)
+        $lab.TextWrapping = 'Wrap'
+        $lab.FontWeight = 'SemiBold'
+        $null = $stack.Children.Add($lab)
+
+        $d = $(if ($n -lt $details.Count) { "$($details[$n])".Trim() } else { '' })
+        if ($d) {
+            $sub = New-Object System.Windows.Controls.TextBlock
+            $sub.Text = $d
+            $sub.TextWrapping = 'Wrap'
+            $sub.Margin = New-Object System.Windows.Thickness 0, 3, 0, 0
+            $sub.Foreground = $window.FindResource('TextMid')
+            $sub.FontSize = 12
+            $null = $stack.Children.Add($sub)
+        }
+
         $b = New-Object System.Windows.Controls.Button
-        $b.Content = ('{0}.  {1}' -f ($n + 1), $o)
+        $b.Content = $stack
         $b.Style = $window.FindResource('Btn')
-        $b.Margin = New-Object System.Windows.Thickness 0, 0, 0, 5
+        $b.Margin = New-Object System.Windows.Thickness 0, 0, 0, 6
         $b.HorizontalContentAlignment = 'Left'
         $b.Tag = $n
         $b.Add_Click({ param($s, $e) Invoke-Answer ([int]$s.Tag) })
@@ -883,6 +920,16 @@ function Update-Ask { param($R)
         $n++
     }
     $ui.AskOptions.ItemsSource = $btns
+
+    # The note that qualifies the WHOLE question rather than any one answer. It
+    # sits under the buttons because that is where claude put it.
+    $foot = "$($q.Footer)".Trim()
+    if ($foot) {
+        $ui.AskFooter.Text = $foot
+        $ui.AskFooter.Visibility = $V_Show
+    } else {
+        $ui.AskFooter.Visibility = $V_Hide
+    }
 
     if ($q.Multi) {
         $ui.AskNote.Text = 'Several answers. Ticking is wired on an INFERRED reading of the menu footer, and every send is recorded to .state so a wrong reading leaves evidence.'
@@ -1010,7 +1057,28 @@ $script:followTimer.Add_Tick({
 $ui.ModeWork.Add_Checked({   Set-Surface 'work' })
 $ui.ModeManage.Add_Checked({ Set-Surface 'manage' })
 $window.Add_SizeChanged({ Set-Breakpoint })
-$ui.CloseBtn.Add_Click({ $script:exitMode = 'closed'; $window.Close() })
+# 🔴 UNSAVED TICKS ARE LOST SILENTLY OTHERWISE. The ticks decide what comes back
+# at your next logon, and closing the window threw them away without a word -
+# which matters far more now that ticking is reachable at all.
+$window.Add_Closing({
+    param($sender, $e)
+    if (-not $script:dirty) { return }
+    $r = [System.Windows.MessageBox]::Show(
+        "Your ticks have not been saved. They decide which conversations reopen at your next logon.`n`nSave them before closing?",
+        'Unsaved ticks',
+        [System.Windows.MessageBoxButton]::YesNoCancel,
+        [System.Windows.MessageBoxImage]::Warning)
+    if ($r -eq [System.Windows.MessageBoxResult]::Cancel) { $e.Cancel = $true; return }
+    if ($r -eq [System.Windows.MessageBoxResult]::Yes) {
+        try { Save-SRRegistry -Registry $script:reg; $script:dirty = $false }
+        catch {
+            [void][System.Windows.MessageBox]::Show(
+                ("Could not save: " + $_.Exception.Message), 'Not saved',
+                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+            $e.Cancel = $true
+        }
+    }
+})
 
 $ui.SessionList.Add_SelectionChanged({
     $it = $ui.SessionList.SelectedItem
@@ -1361,6 +1429,70 @@ $ui.Rescan.Add_Click({
     Update-Model; Update-Surface
     Set-Status 'rescanned' 'ok'
 })
+
+# ===========================================================================
+# THE CAPTION. There is no OS title bar any more, so the window's own header
+# has to do everything the frame used to.
+# ===========================================================================
+
+# The maximise glyph is not one glyph: Segoe MDL2 has a separate "restore" mark,
+# and leaving the square showing while maximised is how an app tells you it does
+# not know its own state.
+function Update-MaxGlyph {
+    if ($window.WindowState -eq [System.Windows.WindowState]::Maximized) {
+        $ui.WinMax.Content = [string][char]0xE923   # restore
+        $ui.WinMax.ToolTip = 'Restore down'
+    } else {
+        $ui.WinMax.Content = [string][char]0xE922   # maximise
+        $ui.WinMax.ToolTip = 'Maximise'
+    }
+}
+
+$ui.TitleBar.Add_MouseLeftButtonDown({
+    param($sender, $e)
+    # Double-click the caption to maximise, exactly as the OS one did.
+    if ($e.ClickCount -eq 2) {
+        $window.WindowState = $(if ($window.WindowState -eq [System.Windows.WindowState]::Maximized) {
+            [System.Windows.WindowState]::Normal } else { [System.Windows.WindowState]::Maximized })
+        Update-MaxGlyph
+        return
+    }
+    # 🪤 DragMove THROWS if the button is no longer down by the time it runs -
+    # a fast click can get here after the release. An unhandled throw from an
+    # input handler takes the window down, and this handler fires on every
+    # single click on the header.
+    try { $window.DragMove() } catch { }
+})
+
+$ui.WinMin.Add_Click({ $window.WindowState = [System.Windows.WindowState]::Minimized })
+$ui.WinMax.Add_Click({
+    $window.WindowState = $(if ($window.WindowState -eq [System.Windows.WindowState]::Maximized) {
+        [System.Windows.WindowState]::Normal } else { [System.Windows.WindowState]::Maximized })
+    Update-MaxGlyph
+})
+$ui.WinClose.Add_Click({ $window.Close() })
+
+# 🔴 A MAXIMISED WindowChrome WINDOW OVERHANGS THE SCREEN by the resize border on
+# every edge - Windows really does size it that way - which hides the top row of
+# pixels and pushes the caption buttons partly off screen. The fix is to put the
+# border back as padding while maximised, and to take the number from the SYSTEM
+# rather than guess it: it changes with DPI and with the user's border setting.
+# The RESIZE BORDER only. WindowNonClientFrameThickness would look like the
+# right number and is not: its Top includes the caption height, which would pad
+# ~30px of dead space above a header that IS the caption.
+$script:maxPad = New-Object System.Windows.Thickness 7
+try {
+    $b = [System.Windows.SystemParameters]::WindowResizeBorderThickness
+    $script:maxPad = New-Object System.Windows.Thickness $b.Left, $b.Top, $b.Right, $b.Bottom
+} catch { }
+
+function Update-Frame {
+    Update-MaxGlyph
+    $window.Content.Margin = $(if ($window.WindowState -eq [System.Windows.WindowState]::Maximized) {
+        $script:maxPad } else { New-Object System.Windows.Thickness 0 })
+}
+$window.Add_StateChanged({ Update-Frame })
+Update-Frame
 
 # / focuses the search from anywhere; ESC clears it, then hands focus back to
 # the list. The three panes are Tab stops in reading order.
