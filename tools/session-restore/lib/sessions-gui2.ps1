@@ -1058,6 +1058,11 @@ function Start-AnswerRecord {
             SessionId = $SessionId; Pid_ = $Pid_; Index = $Index; Why = $Why
             Options = @($Question.Options); Multi = [bool]$Question.Multi
             CursorAt = $(if ($Question) { $Question.CursorAt } else { -1 })
+            # The screen as it was when these options were put on screen. The
+            # contract asked for BEFORE and after, and a version of this shipped
+            # with only the after - which is the half that cannot tell a misread
+            # from a mis-send. It rides along on the question at no cost.
+            Before = "$($Question.Screen)"
             Chose = $(if ($Question -and $Index -lt @($Question.Options).Count) { "$(@($Question.Options)[$Index])" } else { '' })
             Dir = (Join-Path $SR_StateDir 'answers')
         })
@@ -1074,6 +1079,7 @@ function Start-AnswerRecord {
                     at = (Get-Date).ToString('o'); sessionId = $SRA.SessionId; pid = $SRA.Pid_
                     index = $SRA.Index; chose = $SRA.Chose; options = $SRA.Options
                     multi = $SRA.Multi; cursorAt = $SRA.CursorAt; failed = $SRA.Why
+                    before = $SRA.Before
                     after = "$after"
                 }
                 $f = Join-Path $SRA.Dir ('answer-{0}-{1}.json' -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'), "$($SRA.SessionId)".Substring(0, 8))
@@ -1082,29 +1088,6 @@ function Start-AnswerRecord {
         })
         $null = $ps.BeginInvoke()
     } catch { }
-}
-
-function Write-SRAnswerRecord {
-    param([string]$SessionId, [int]$Pid_, [int]$Index, $Question, [string]$Before, [string]$After, [string]$Why)
-    try {
-        $dir = Join-Path $SR_StateDir 'answers'
-        if (-not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
-        $rec = [PSCustomObject]@{
-            at        = (Get-Date).ToString('o')
-            sessionId = $SessionId
-            pid       = $Pid_
-            index     = $Index
-            chose     = $(if ($Question -and $Index -lt @($Question.Options).Count) { "$(@($Question.Options)[$Index])" } else { '' })
-            options   = @($Question.Options)
-            multi     = [bool]$Question.Multi
-            cursorAt  = $(if ($Question) { $Question.CursorAt } else { -1 })
-            failed    = "$Why"
-            before    = $Before
-            after     = $After
-        }
-        $f = Join-Path $dir ('answer-{0}-{1}.json' -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'), "$SessionId".Substring(0, 8))
-        [System.IO.File]::WriteAllText($f, ($rec | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
-    } catch { }   # evidence is never worth failing the answer over
 }
 
 function Invoke-Answer { param([int]$Index)

@@ -2270,7 +2270,14 @@ function Get-SRScreenQuestion {
         $txt = Get-SRScreenText -ProcessId $ProcessId
     }
     if (-not $txt) { return $null }
-    return (Invoke-SRParseScreenQuestion -Text $txt)
+    $q = Invoke-SRParseScreenQuestion -Text $txt
+    # 🔑 THE RAW SCREEN TRAVELS WITH THE PARSE, and costs nothing: it was read a
+    # line ago. When an answer turns out wrong, the question is always "did it
+    # MISREAD the screen or MIS-SEND the keys" - and the parse cannot answer that
+    # about itself. This is the only copy of what was actually on screen at the
+    # moment the options were put in front of you.
+    if ($q) { $q | Add-Member -NotePropertyName Screen -NotePropertyValue $txt -Force }
+    return $q
 }
 
 # Where the QUESTION stops and claude's own furniture begins. The input box is
