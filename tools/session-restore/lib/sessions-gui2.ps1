@@ -78,7 +78,10 @@ if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
 
 . (Join-Path $here '_common.ps1')
 
-Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+# System.Windows.Forms is here for ONE thing: FolderBrowserDialog, which WPF has
+# no equivalent of. Loading it lazily inside the handler would put an Add-Type on
+# the click path, and a failure there would look like a dead Browse button.
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 
 # ---------------------------------------------------------------------------
 # DPI, before the first top-level window exists: awareness is fixed when the
@@ -119,7 +122,7 @@ try {
 $ui = @{}
 foreach ($n in @(
     'TitleBar','WinMin','WinMax','WinClose',
-    'LiveCount','Search','Stamp','Rescan',
+    'LiveCount','Search','Stamp','Rescan','NewSession',
     'ModeWork','ModeManage','BandChips','Broadcast',
     'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear',
     'ListPane','ListSplit','ListCaption','ListCount','SessionList',
@@ -1648,6 +1651,225 @@ $ui.SetApply.Add_Click({
     }
 })
 
+# ===========================================================================
+# SPAWNING A NEW CONVERSATION
+#
+# A small window rather than another overlay, because it is a decision you make
+# once and then leave: it can be moved, and it holds still while you look at
+# something behind it.
+#
+# 🔑 IT REMEMBERS. The fields come back as you last left them, and the project
+# defaults to wherever you were working most recently - which is almost always
+# the answer, so the common case is press-Enter.
+# ===========================================================================
+$script:spawnLast = $null
+
+function Get-SpawnDefaults {
+    if ($script:spawnLast) { return $script:spawnLast }
+    # First time: read whatever the last session was configured with, so a new
+    # conversation inherits the shape of the work already in flight.
+    $newest = $null
+    foreach ($r in $script:model) {
+        if (-not $newest) { $newest = $r; continue }
+        try { if ([datetime]$r.S.lastActive -gt [datetime]$newest.S.lastActive) { $newest = $r } } catch { }
+    }
+    $d = [PSCustomObject]@{
+        Dir = ''; Model = ''; Effort = ''; Perm = ''
+        Remote = $true; Hidden = $false; Worktree = $false
+    }
+    if ($newest) {
+        $d.Dir    = "$($newest.D.path)"
+        $d.Model  = "$(Get-SRSessionPref $newest.S 'model')"
+        $d.Effort = "$(Get-SRSessionPref $newest.S 'effort')"
+        $d.Perm   = "$(Get-SRSessionPref $newest.S 'permissionMode')"
+        $d.Remote = (Test-SRRemoteWanted $newest.S)
+    }
+    return $d
+}
+
+function Show-Spawn {
+    $xp = Join-Path $here 'spawn2.xaml'
+    if (-not (Test-Path -LiteralPath $xp)) { Set-Status 'spawn2.xaml is missing from lib' 'bad'; return }
+    $sp = $null
+    try {
+        $sr = New-Object System.Xml.XmlNodeReader ([xml](Get-Content -LiteralPath $xp -Raw))
+        $sp = [Windows.Markup.XamlReader]::Load($sr)
+    } catch { Set-Status ('the new-session window would not load: ' + $_.Exception.Message) 'bad'; return }
+    $sp.Owner = $window
+
+    $s = @{}
+    foreach ($n in @('SpTitleBar','SpClose','SpDir','SpBrowse','SpDirPath','SpName','SpModel','SpEffort',
+                     'SpPerm','SpPermNote','SpRemote','SpHidden','SpWorktree','SpWarn','SpHint',
+                     'SpCancel','SpStart')) {
+        $el = $sp.FindName($n)
+        if (-not $el) { Set-Status "spawn2.xaml has no element named '$n'" 'bad'; return }
+        $s[$n] = $el
+    }
+
+    # 🪤 THE DIALOG HAS NO STYLES OF ITS OWN. Without this every control renders
+    # as stock WPF grey with a 3D bevel next to a dark window. The Style objects
+    # already have their brushes resolved, so handing them across windows is safe.
+    foreach ($c in @('SpDir','SpModel','SpEffort','SpPerm')) { $s[$c].Style = $window.FindResource('Drop') }
+    foreach ($c in @('SpRemote','SpHidden','SpWorktree'))    { $s[$c].Style = $window.FindResource('Check') }
+    $s.SpName.Style   = $window.FindResource('Search')
+    $s.SpName.Tag     = 'What this conversation will be called'
+    $s.SpBrowse.Style = $window.FindResource('Btn')
+    $s.SpCancel.Style = $window.FindResource('Btn')
+    $s.SpStart.Style  = $window.FindResource('BtnPrimary')
+
+    $mk = {
+        param($pairs)
+        $l = New-Object System.Collections.Generic.List[object]
+        foreach ($p in $pairs) {
+            $i = New-Object System.Windows.Controls.ComboBoxItem
+            $i.Content = $p[1]; $i.Tag = $p[0]
+            $l.Add($i)
+        }
+        return ,$l.ToArray()
+    }
+    $s.SpModel.ItemsSource = (& $mk @(
+        @('','Default for this machine'), @('opus','Opus - the hard ones'),
+        @('sonnet','Sonnet - fast and capable'), @('haiku','Haiku - cheap watchers')))
+    $s.SpEffort.ItemsSource = (& $mk @(
+        @('','Default'), @('low','Low'), @('medium','Medium'),
+        @('high','High'), @('xhigh','Extra high'), @('max','Max')))
+    $s.SpPerm.ItemsSource = (& $mk @(
+        @('','Default for this machine'), @('manual','Manual - ask every time'),
+        @('acceptEdits','Accept edits'), @('auto','Auto'),
+        @('plan','Plan only - change nothing'), @('dontAsk','Never ask'),
+        @('bypassPermissions','Bypass all checks')))
+
+    # The projects you already work in, newest first - the answer is nearly
+    # always one of them, and Browse is there for when it is not.
+    $seen = @{}
+    $dirs = New-Object System.Collections.Generic.List[object]
+    foreach ($d in $script:dirs) {
+        if ($d.missing) { continue }
+        $p = "$($d.path)"
+        if (-not $p -or $seen.ContainsKey($p)) { continue }
+        $seen[$p] = $true
+        $i = New-Object System.Windows.Controls.ComboBoxItem
+        $i.Content = (Get-ProjectLabel $p); $i.Tag = $p
+        $dirs.Add($i)
+    }
+    $s.SpDir.ItemsSource = $dirs.ToArray()
+
+    $def = Get-SpawnDefaults
+    Set-DropValue $s.SpDir    $def.Dir
+    Set-DropValue $s.SpModel  $def.Model
+    Set-DropValue $s.SpEffort $def.Effort
+    Set-DropValue $s.SpPerm   $def.Perm
+    $s.SpRemote.IsChecked   = [bool]$def.Remote
+    $s.SpHidden.IsChecked   = [bool]$def.Hidden
+    $s.SpWorktree.IsChecked = [bool]$def.Worktree
+    $s.SpName.Text = ''
+
+    $refresh = {
+        $dir = Get-DropValue $s.SpDir
+        $s.SpDirPath.Text = $dir
+        $v = Get-DropValue $s.SpPerm
+        $s.SpPermNote.Text = $(if ($script:PermNotes.ContainsKey($v)) { $script:PermNotes[$v] } else { '' })
+        $s.SpPermNote.Foreground = $(if ($v -eq 'bypassPermissions' -or $v -eq 'dontAsk') {
+            $window.FindResource('AccNeeds') } else { $window.FindResource('TextLow') })
+        # A worktree needs a git repository, and saying so here beats a launch
+        # that fails in a terminal you then have to go and read.
+        $warn = ''
+        if ($s.SpWorktree.IsChecked -and $dir) {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir '.git'))) {
+                $warn = 'That folder is not a git repository, so a worktree cannot be made there.'
+            }
+        }
+        if ($warn) { $s.SpWarn.Text = $warn; $s.SpWarn.Visibility = $V_Show }
+        else { $s.SpWarn.Visibility = $V_Hide }
+        $s.SpHint.Text = $(if ($s.SpHidden.IsChecked) { 'It will run with no window. You can still read and answer it here.' } else { 'It opens in its own terminal tab.' })
+    }
+    & $refresh
+    $s.SpDir.Add_SelectionChanged($refresh)
+    $s.SpPerm.Add_SelectionChanged($refresh)
+    $s.SpWorktree.Add_Click($refresh)
+    $s.SpHidden.Add_Click($refresh)
+
+    $s.SpTitleBar.Add_MouseLeftButtonDown({ try { $sp.DragMove() } catch { } })
+    $s.SpClose.Add_Click({ $sp.DialogResult = $false })
+    $s.SpCancel.Add_Click({ $sp.DialogResult = $false })
+    $sp.Add_KeyDown({ param($a, $e) if ($e.Key -eq 'Escape') { $sp.DialogResult = $false } })
+
+    $s.SpBrowse.Add_Click({
+        $fb = New-Object System.Windows.Forms.FolderBrowserDialog
+        $fb.Description = 'Where should this conversation run?'
+        $cur = Get-DropValue $s.SpDir
+        if ($cur -and (Test-Path -LiteralPath $cur)) { $fb.SelectedPath = $cur }
+        if ($fb.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $p = $fb.SelectedPath
+            $i = New-Object System.Windows.Controls.ComboBoxItem
+            $i.Content = (Split-Path -Leaf $p); $i.Tag = $p
+            $items = @(@($s.SpDir.ItemsSource) + @($i))
+            $s.SpDir.ItemsSource = $items
+            $s.SpDir.SelectedItem = $i
+            & $refresh
+        }
+    })
+
+    $script:spawnGo = $null
+    $s.SpStart.Add_Click({
+        $dir = Get-DropValue $s.SpDir
+        if (-not $dir) { $s.SpWarn.Text = 'Choose a project first.'; $s.SpWarn.Visibility = $V_Show; return }
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+            $s.SpWarn.Text = "That folder does not exist: $dir"; $s.SpWarn.Visibility = $V_Show; return
+        }
+        $nm = "$($s.SpName.Text)".Trim()
+        if (-not $nm) { $s.SpWarn.Text = 'Give it a name - it is how you will find it again.'; $s.SpWarn.Visibility = $V_Show; return }
+        $script:spawnGo = [PSCustomObject]@{
+            Dir = $dir; Name = $nm
+            Model = (Get-DropValue $s.SpModel); Effort = (Get-DropValue $s.SpEffort)
+            Perm  = (Get-DropValue $s.SpPerm)
+            Remote = [bool]$s.SpRemote.IsChecked
+            Hidden = [bool]$s.SpHidden.IsChecked
+            Worktree = [bool]$s.SpWorktree.IsChecked
+        }
+        $sp.DialogResult = $true
+    })
+
+    $null = $s.SpName.Focus()
+    $ok = $sp.ShowDialog()
+    if (-not $ok -or -not $script:spawnGo) { Set-Status 'no new session started'; return }
+    $g = $script:spawnGo
+
+    # Remember it for next time, including the project.
+    $script:spawnLast = [PSCustomObject]@{
+        Dir = $g.Dir; Model = $g.Model; Effort = $g.Effort; Perm = $g.Perm
+        Remote = $g.Remote; Hidden = $g.Hidden; Worktree = $g.Worktree
+    }
+
+    Start-NewSession $g
+}
+
+# A BRAND NEW CONVERSATION HAS NO SESSION ID, and that is the whole difference:
+# there is nothing to --resume, so claude makes one, and the registry learns
+# about it on the next scan rather than from here. Anything written against a
+# guessed id would be written against nothing.
+function Start-NewSession { param($G)
+    $flags = New-Object System.Collections.Generic.List[string]
+    if ($G.Model)  { $flags.Add('--model');           $flags.Add($G.Model) }
+    if ($G.Effort) { $flags.Add('--effort');          $flags.Add($G.Effort) }
+    if ($G.Perm)   { $flags.Add('--permission-mode'); $flags.Add($G.Perm) }
+    if ($G.Worktree) { $flags.Add('--worktree'); $flags.Add($G.Name) }
+    try {
+        $boot = New-SRBootScript -Dir $G.Dir -Title $G.Name `
+                    -ClaudeArgs $flags.ToArray() -RemoteControl $G.Remote
+        if ($G.Hidden) { $null = Start-SRHiddenSession -Dir $G.Dir -BootScript $boot -Title $G.Name }
+        else { Start-SRSession -Dir $G.Dir -BootScript $boot -Title $G.Name }
+        Write-SRLog ('  [ok]   gui2 new session  {0}  {1}  {2}' -f $G.Name, $G.Dir, ($flags -join ' '))
+        Set-Status ("started '{0}'{1} - it appears here once it has written its first line" -f `
+            $G.Name, $(if ($G.Hidden) { ' (hidden)' } else { '' })) 'ok'
+    } catch {
+        Write-SRLog ('  [FAIL] gui2 new session  {0}  {1}' -f $G.Name, $_.Exception.Message)
+        Set-Status ("could not start '{0}': {1}" -f $G.Name, $_.Exception.Message) 'bad'
+    }
+}
+
+$ui.NewSession.Add_Click({ Show-Spawn })
+
 $ui.Rescan.Add_Click({
     Set-Status 'rescanning...'
     try { $null = Update-SRRegistry -Config $script:cfg -Quiet } catch { }
@@ -1726,6 +1948,12 @@ $window.Add_PreviewKeyDown({
     if ($e.Key -eq 'Escape') {
         if ($ui.Search.IsKeyboardFocusWithin -and $ui.Search.Text) { $ui.Search.Text = ''; $e.Handled = $true; return }
         $null = $ui.SessionList.Focus(); $e.Handled = $true; return
+    }
+    # Ctrl+N is checked BEFORE the typing guard: a new session is worth starting
+    # even when the cursor happens to be in the search box, and no text field
+    # wants Ctrl+N for itself.
+    if ($e.Key -eq 'N' -and ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control)) {
+        Show-Spawn; $e.Handled = $true; return
     }
     if ($ui.Search.IsKeyboardFocusWithin -or $ui.SendBox.IsKeyboardFocusWithin) { return }
     if ($e.Key -eq 'Oem2') { $null = $ui.Search.Focus(); $e.Handled = $true; return }

@@ -675,6 +675,8 @@
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"
                     shell:WindowChrome.IsHitTestVisibleInChrome="True" Margin="0,0,10,0">
           <TextBlock x:Name="Stamp" Style="{StaticResource Meta}" Margin="0,0,14,0" VerticalAlignment="Center"/>
+          <Button x:Name="NewSession" Content="New session" Style="{StaticResource BtnPrimary}" Margin="0,0,8,0"
+                  ToolTip="Start a fresh conversation (Ctrl+N)"/>
           <Button x:Name="Rescan" Content="Rescan" Style="{StaticResource Btn}"/>
         </StackPanel>
 

@@ -1,0 +1,129 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="New session"
+        Width="520" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        UseLayoutRounding="True" SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Ideal"
+        TextOptions.TextRenderingMode="ClearType"
+        Background="#0F1013">
+
+  <!-- Same frame treatment as the main window: no OS caption, but Windows still
+       manages resize and snap. ResizeMode is NoResize because the dialog sizes
+       to its own content - there is nothing to gain by dragging it. -->
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="0" CornerRadius="0"
+                        GlassFrameThickness="0" UseAeroCaptionButtons="False"/>
+  </shell:WindowChrome.WindowChrome>
+
+  <Border BorderBrush="#26282E" BorderThickness="1" Background="#0F1013">
+    <StackPanel>
+
+      <!-- caption: draggable, with one way out -->
+      <Border x:Name="SpTitleBar" Background="#15161A" BorderBrush="#26282E"
+              BorderThickness="0,0,0,1" Padding="20,0,0,0" Height="46">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <TextBlock Grid.Column="0" Text="New session" VerticalAlignment="Center"
+                     FontFamily="Segoe UI Variable Display, Segoe UI" FontSize="16"
+                     FontWeight="SemiBold" Foreground="#F2F3F5"/>
+          <Button x:Name="SpClose" Grid.Column="1" Width="46" Content="&#xE8BB;"
+                  FontFamily="Segoe MDL2 Assets" FontSize="10" Foreground="#9AA0A8"
+                  Focusable="False" Cursor="Hand"
+                  shell:WindowChrome.IsHitTestVisibleInChrome="True">
+            <Button.Template>
+              <ControlTemplate TargetType="Button">
+                <Border x:Name="b" Background="Transparent">
+                  <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <ControlTemplate.Triggers>
+                  <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="b" Property="Background" Value="#C42B1C"/>
+                    <Setter Property="Foreground" Value="#FFFFFF"/>
+                  </Trigger>
+                </ControlTemplate.Triggers>
+              </ControlTemplate>
+            </Button.Template>
+          </Button>
+        </Grid>
+      </Border>
+
+      <StackPanel Margin="20,18,20,18">
+
+        <TextBlock Text="PROJECT" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11"
+                   FontWeight="SemiBold" Foreground="#6B7178" Margin="0,0,0,5"/>
+        <Grid Margin="0,0,0,4">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <ComboBox x:Name="SpDir" Grid.Column="0"/>
+          <Button x:Name="SpBrowse" Grid.Column="1" Content="Browse" Margin="8,0,0,0"/>
+        </Grid>
+        <TextBlock x:Name="SpDirPath" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11.5"
+                   Foreground="#6B7178" TextTrimming="CharacterEllipsis" Margin="0,0,0,14" Text=""/>
+
+        <TextBlock Text="NAME" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11"
+                   FontWeight="SemiBold" Foreground="#6B7178" Margin="0,0,0,5"/>
+        <TextBox x:Name="SpName" Margin="0,0,0,14"/>
+
+        <Grid Margin="0,0,0,14">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="12"/>
+            <ColumnDefinition Width="*"/>
+          </Grid.ColumnDefinitions>
+          <StackPanel Grid.Column="0">
+            <TextBlock Text="MODEL" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11"
+                       FontWeight="SemiBold" Foreground="#6B7178" Margin="0,0,0,5"/>
+            <ComboBox x:Name="SpModel"/>
+          </StackPanel>
+          <StackPanel Grid.Column="2">
+            <TextBlock Text="EFFORT" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11"
+                       FontWeight="SemiBold" Foreground="#6B7178" Margin="0,0,0,5"/>
+            <ComboBox x:Name="SpEffort"/>
+          </StackPanel>
+        </Grid>
+
+        <TextBlock Text="PERMISSION MODE" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11"
+                   FontWeight="SemiBold" Foreground="#6B7178" Margin="0,0,0,5"/>
+        <ComboBox x:Name="SpPerm" Margin="0,0,0,4"/>
+        <TextBlock x:Name="SpPermNote" FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11.5"
+                   Foreground="#6B7178" TextWrapping="Wrap" Margin="0,0,0,14" Text=""/>
+
+        <CheckBox x:Name="SpRemote" Margin="0,0,0,9"
+                  Content="Remote Control - drive it from your phone"/>
+        <CheckBox x:Name="SpHidden" Margin="0,0,0,9"
+                  Content="Hidden - no terminal window"/>
+        <CheckBox x:Name="SpWorktree" Margin="0,0,0,4"
+                  Content="Its own git worktree - isolated from your other lanes"/>
+        <TextBlock x:Name="SpWarn" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="12.5"
+                   Foreground="#D97757" TextWrapping="Wrap" Visibility="Collapsed"
+                   Margin="0,6,0,0" Text=""/>
+      </StackPanel>
+
+      <Border Background="#15161A" BorderBrush="#26282E" BorderThickness="0,1,0,0"
+              Padding="20,12,20,12">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <TextBlock x:Name="SpHint" Grid.Column="0" VerticalAlignment="Center"
+                     FontFamily="Segoe UI Variable Small, Segoe UI" FontSize="11.5"
+                     Foreground="#6B7178" TextTrimming="CharacterEllipsis" Text=""/>
+          <StackPanel Grid.Column="1" Orientation="Horizontal">
+            <Button x:Name="SpCancel" Content="Cancel" Margin="0,0,8,0"/>
+            <Button x:Name="SpStart" Content="Start session"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+    </StackPanel>
+  </Border>
+</Window>
