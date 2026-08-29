@@ -757,7 +757,11 @@ Write-Host '--- two windows must not discard each other''s ticks ---'
 # 🪤 The stamp is per-session-state, so this also cannot be posed by reading
 # twice in ONE process - the second read overwrites the first's stamp and the
 # save is correctly allowed. Two windows are two PROCESSES.
-$sandRoot = Join-Path $tmp ('twowin-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+# 🪤 NOT UNDER $tmp. That directory is removed early, at the end of the very
+# first fixture section, so creating a sandbox inside it here RE-CREATES it and
+# nothing ever removes it again - a directory left behind on every single run.
+# Its own root, and its own cleanup at the end of this block.
+$sandRoot = Join-Path $SR_StateDir ('twowin-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 $null = New-Item -ItemType Directory -Path $sandRoot -Force
 $null = New-Item -ItemType Directory -Path (Join-Path $sandRoot '.state') -Force
 Copy-Item -LiteralPath (Join-Path $SR_LibDir '_common.ps1') -Destination (Join-Path $sandRoot '_common.ps1')
@@ -808,6 +812,7 @@ if ($res -notcontains 'NORMAL_OK') { Fail 'a normal save after re-reading was re
 else { Pass 'a normal save, after re-reading, still goes through' }
 if ($res -notcontains 'FORCE_OK') { Fail '-Force did not override the staleness check' }
 else { Pass '-Force overrides it, for a caller that has already asked' }
+Remove-Item -LiteralPath $sandRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
 if ($fails) { Write-Host ("$fails FAILURE(S)") -ForegroundColor Red; exit 1 }
