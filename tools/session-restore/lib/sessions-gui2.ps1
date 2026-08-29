@@ -1939,7 +1939,12 @@ function Invoke-FollowTick {
     $script:lastAskAt = Get-Date
     try { Update-Ask $r } catch { }
 }
-$script:followTimer.Add_Tick({ Invoke-FollowTick })
+# 🔴 EVERY TICK IS WRAPPED. An unhandled exception out of a DispatcherTimer
+# tick takes the WHOLE WINDOW down - the launch tick's own comment says so and
+# then four of the seven ticks were left unguarded anyway, including this one,
+# which runs every second against a file another process is writing.
+$script:followTimer.Add_Tick({
+    try { Invoke-FollowTick } catch { Write-SRLog ('follow tick failed: ' + $_.Exception.Message) } })
 
 # ---------------------------------------------------------------------------
 # Wiring
@@ -2026,7 +2031,14 @@ $script:searchTimer.Interval = [TimeSpan]::FromMilliseconds(180)
 # 🔴 BOTH PANES. The header box narrows the rail as well as the list now, and
 # the rail has a box of its own - so a rebuild of only the sessions column would
 # leave the projects showing a set that no longer matches what you typed.
-$script:searchTimer.Add_Tick({ $script:searchTimer.Stop(); Build-Rail; Build-Sessions })
+$script:searchTimer.Add_Tick({
+    $script:searchTimer.Stop()
+    # A KEYSTROKE MUST NOT BE ABLE TO KILL THE WINDOW. This ran Build-Rail and
+    # Build-Sessions bare, and both walk every conversation calling helpers that
+    # have thrown before now (Get-ProjectLabel on an empty path did exactly
+    # that) - so one malformed registry entry plus one character typed into the
+    # search box was a closed window.
+    try { Build-Rail; Build-Sessions } catch { Write-SRLog ('search rebuild failed: ' + $_.Exception.Message) } })
 $ui.Search.Add_TextChanged({ $script:searchTimer.Stop(); $script:searchTimer.Start() })
 
 # ===========================================================================
@@ -2416,8 +2428,19 @@ $script:launchTimer.Add_Tick({
         } else {
             Set-Status ('opened {0} conversation(s)' -f $script:launchDone) 'ok'
         }
-        Update-Model; Update-Surface
-        if ($script:surface -eq 'manage') { Build-Manager }
+        # 🪤 THIS BRANCH WAS OUTSIDE EVERY try. Update-Model re-reads the
+        # registry and throws on an unreadable one, and this runs in the moments
+        # AFTER a relaunch has already closed the conversations it reopened -
+        # losing the window here leaves the whole set shut with no way to reopen
+        # it from the tool, which is the exact disaster the comment further down
+        # was written to prevent.
+        try {
+            Update-Model; Update-Surface
+            if ($script:surface -eq 'manage') { Build-Manager }
+        } catch {
+            Write-SRLog ('launch drain failed: ' + $_.Exception.Message)
+            Set-Status ('opened them, but the list could not be refreshed: ' + $_.Exception.Message) 'bad'
+        }
         return
     }
     # 🔴 NOTHING IN THIS TICK MAY THROW. An unhandled exception out of a

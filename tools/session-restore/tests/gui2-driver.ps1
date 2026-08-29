@@ -524,6 +524,42 @@ else {
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- no timer tick may take the window down ---'
+# ===========================================================================
+# 🔴 AN UNHANDLED EXCEPTION OUT OF A DispatcherTimer TICK CLOSES THE WINDOW.
+# The launch tick's own comment says exactly that, and then three of the seven
+# ticks were left unguarded anyway - including the search rebuild, so one
+# malformed registry entry plus one character typed into the search box was a
+# closed window, and the launch DRAIN branch, which runs in the moments after a
+# relaunch has already closed the conversations it is reopening.
+#
+# 🪤 This reads the SOURCE rather than firing the ticks, because a tick that
+# throws in a test would take the test host down with it - which is the whole
+# point being asserted.
+$guiSrc = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-gui2.ps1') -Raw -Encoding UTF8
+$bareTicks = @()
+$tickNames = @('followTimer', 'searchTimer', 'launchTimer', 'castTimer', 'fastTimer', 'liveTimer', 'pollTimer')
+$checked = 0
+foreach ($tn in $tickNames) {
+    $at = $guiSrc.IndexOf('$script:' + $tn + '.Add_Tick(')
+    if ($at -lt 0) { Fail "no tick found for $tn - the audit is not reading the source"; continue }
+    $checked++
+    # The tick runs to the next top-level $script: declaration, or to the end of
+    # the file for the last one. A fixed-size window was tried first and was
+    # wrong twice: too small missed a try sitting behind a long comment, too
+    # large bled into the NEXT tick and passed on its guard.
+    $end = $guiSrc.IndexOf("`n`$script:", $at + 10)
+    if ($end -lt 0) { $end = $guiSrc.Length }
+    if ($guiSrc.Substring($at, $end - $at) -notmatch '(?s)try\s*\{') { $bareTicks += $tn }
+}
+if ($checked -ne $tickNames.Count) {
+    Fail "only $checked of $($tickNames.Count) timer ticks were inspected"
+} elseif ($bareTicks.Count) {
+    Fail ('these timer ticks can throw straight out and close the window: ' + ($bareTicks -join ', '))
+} else { Pass "all $checked timer ticks contain a try - none can close the window by throwing" }
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- a probe that never returns must not stop the window ---'
 # ===========================================================================
 # 🔴 THE "ONE AT A TIME" GUARD WAS THE ONLY THING GATING A NEW PROBE, so a
