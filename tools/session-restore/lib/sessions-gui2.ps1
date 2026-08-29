@@ -1065,8 +1065,14 @@ function Build-Sessions {
     foreach ($r in $script:model) {
         if (-not (Test-OnSurface $r)) { continue }
         if ($script:railPick -and "$($r.D.path)" -ne $script:railPick) { continue }
+        # 🔴 ONCE PER ROW, NOT THREE TIMES. Get-Title was called for the global
+        # search, again for this pane's search, and a third time when the item
+        # was built - up to 573 calls over 191 conversations on a pass that runs
+        # every six seconds. It depends only on S and D, neither of which
+        # changes inside this loop.
+        $t = $null
+        if ($q -or $ql) { $t = (Get-Title $r.S $r.D).Text }
         if ($q) {
-            $t = (Get-Title $r.S $r.D).Text
             $hay = ('{0} {1} {2} {3}' -f $t, $r.S.autoTitle, $r.D.path, $r.Id).ToLower()
             if ($hay -notlike "*$q*") { continue }
         }
@@ -1075,8 +1081,7 @@ function Build-Sessions {
             # narrowing projects is the other pane's job, and matching both here
             # would make typing a project name in the sessions box silently do
             # what the rail box does.
-            $t2 = (Get-Title $r.S $r.D).Text
-            if (('{0} {1}' -f $t2, $r.S.autoTitle).ToLower() -notlike "*$ql*") { continue }
+            if (('{0} {1}' -f $t, $r.S.autoTitle).ToLower() -notlike "*$ql*") { continue }
         }
         $keep.Add($r)
     }
@@ -1843,8 +1848,26 @@ function Show-Selected { param([switch]$Force)
     # the conversation you just left, which says nothing about this one.
     if (-not $same) { Move-ToBottom }
     if (-not $same) {
+        # 🔴 THE CONSOLE READ IS NOT DONE HERE ANY MORE. Update-Ask calls
+        # Get-SRScreenQuestion, which spawns a child process with a 3-SECOND
+        # BUDGET AND A RETRY - synchronously, on the UI thread, on every single
+        # click in the session list. That is the lag: selecting a conversation
+        # could block the window for six seconds while it read another process's
+        # console. The background probe already reads the pending question for
+        # whatever is selected, so this hands the job to it and kicks it now
+        # rather than waiting up to 15 seconds for the next tick.
+        #
+        # 🩤 The panel is CLEARED first. Leaving the previous conversation's
+        # question up while the probe fetches this one's is how an answer gets
+        # filed against the wrong menu - the defect Show-Ask's own comment was
+        # written for.
         $script:lastAskAt = Get-Date
-        Update-Ask $r
+        Show-Ask $null
+        try {
+            $script:liveTimer.Stop()
+            Start-LiveProbe
+            $script:liveTimer.Start()
+        } catch { }
     }
     Update-SendState
     if (-not $same) { $script:followStamp = $null }
@@ -1857,7 +1880,11 @@ function Show-Selected { param([switch]$Force)
 $script:followStamp = $null
 $script:followTimer = New-Object System.Windows.Threading.DispatcherTimer
 $script:followTimer.Interval = [TimeSpan]::FromSeconds(1)
-$script:followTimer.Add_Tick({
+
+# A named function rather than an anonymous handler, so the suite can drive one
+# tick directly. The band-jump defect this tick caused was invisible to any test
+# that could not call it.
+function Invoke-FollowTick {
     # Nothing moves under an open sheet - see the gate on the model timers.
     if ($script:sheetDepth -gt 0) { return }
     $it = $ui.SessionList.SelectedItem
@@ -1869,8 +1896,17 @@ $script:followTimer.Add_Tick({
     $now = $null
     try { $fi = Get-Item -LiteralPath $j; $now = ('{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks) } catch { return }
     if ($now -eq $script:followStamp) { return }
+    # 🔴 A FIRST OBSERVATION IS NOT A CHANGE. followStamp is reset to $null when
+    # you select a different conversation, so the very next tick saw "the stamp
+    # differs from nothing", called that growth, and moved the row straight out
+    # of NEEDS YOU - which is why clicking a waiting conversation made it vanish
+    # from the band you clicked it in. Selecting something is not evidence about
+    # it. The first tick after a selection RECORDS the stamp and does nothing
+    # else; only a second, different stamp is growth.
+    $firstLook = ($null -eq $script:followStamp)
     $script:followStamp = $now
     try { Update-Document; Update-SendState } catch { }
+    if ($firstLook) { return }
 
     # 🔴 A TRANSCRIPT THAT IS GROWING IS A SESSION THAT IS WORKING, and this
     # tick already knows it grew - it just compared the bytes. Bands used to wait
@@ -1894,7 +1930,8 @@ $script:followTimer.Add_Tick({
     if ($script:lastAskAt -and ((Get-Date) - $script:lastAskAt).TotalSeconds -lt $script:AskEverySeconds) { return }
     $script:lastAskAt = Get-Date
     try { Update-Ask $r } catch { }
-})
+}
+$script:followTimer.Add_Tick({ Invoke-FollowTick })
 
 # ---------------------------------------------------------------------------
 # Wiring

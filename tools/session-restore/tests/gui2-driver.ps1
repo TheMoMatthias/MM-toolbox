@@ -479,6 +479,51 @@ Hide-Cast
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- selecting a conversation is not evidence about it ---'
+# ===========================================================================
+# 🔴 CLICKING A WAITING CONVERSATION MADE IT VANISH FROM THE BAND YOU CLICKED
+# IT IN. followStamp is reset to $null on a new selection, so the very next
+# 1-second tick compared the stamp against nothing, called that growth, and
+# moved the row out of NEEDS YOU. Selecting something is not evidence about it -
+# a first observation is not a change - and the operator could not simply look
+# at a waiting conversation without reclassifying it.
+$ui.ModeWork.IsChecked = $true
+Set-Surface 'work'
+$script:bandPick = $null; $script:railPick = $null
+$ui.Search.Text = ''; $ui.RailSearch.Text = ''; $ui.ListSearch.Text = ''
+Build-Sessions
+$liveItem = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and $_.Row.Live })[0]
+if (-not $liveItem) { Note 'nothing is running, so the selection case cannot be posed' }
+else {
+    $row = $liveItem.Row
+    $bandWas = $row.Band
+    $stampWas = $script:followStamp
+    $selWas = $script:selId
+
+    # Exactly what happens on a click: the row is put into NEEDS YOU, selected,
+    # and then the follow timer fires once.
+    $row.Band = 'needs'
+    $ui.SessionList.SelectedItem = $liveItem
+    $script:followStamp = $null
+    Invoke-FollowTick
+    if ("$($row.Band)" -ne 'needs') {
+        Fail "selecting a waiting conversation moved it to '$($row.Band)' - it vanishes from the band you clicked it in"
+    } else { Pass 'selecting a waiting conversation leaves it exactly where it was' }
+
+    # 🚨 AND THE INVERSE, or this would pass on a tick that never moves anything.
+    # A SECOND, DIFFERENT stamp is real growth and must still move the row.
+    $script:followStamp = 'a-stamp-that-is-definitely-stale'
+    Invoke-FollowTick
+    if ("$($row.Band)" -eq 'needs') {
+        Fail 'a transcript that genuinely grew did not move the row - the reactivity is gone'
+    } else { Pass 'but a transcript that actually grows still moves it' }
+
+    $row.Band = $bandWas; $script:followStamp = $stampWas; $script:selId = $selWas
+    Build-Sessions
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- how often a status can actually change ---'
 # ===========================================================================
 # 🔴 THE 6-SECOND PASS USED TO BE A REPAINT WEARING A REFRESH'S CLOTHES. It
@@ -546,11 +591,30 @@ else {
     $perf['switch back to work']       = Ms { Set-Surface 'work' }
     # The expensive one: selecting a DIFFERENT conversation renders its
     # transcript from disk. -Force is what the window itself calls.
+    # 🚨 A *DIFFERENT* CONVERSATION, WHICH IS THE PATH THAT COSTS. The first
+    # version of this profile measured Show-Selected twice on the same row -
+    # $same was true, the whole expensive branch was skipped, and it reported
+    # 133 ms for a gesture the operator was experiencing as multi-second lag.
+    # $script:selId is what makes it "the same one", so it is cleared here.
+    $script:selId = $null
     $ui.SessionList.SelectedItem = $sessions[0]
-    $null = Ms { Show-Selected -Force }
+    $perf['select a conversation (cold)'] = Ms { Show-Selected }
+    $script:selId = $null
     $ui.SessionList.SelectedItem = $sessions[1]
-    $perf['select another conversation'] = Ms { Show-Selected -Force }
-    $perf['re-render the same one']      = Ms { Update-Document }
+    $perf['select another (cold)']        = Ms { Show-Selected }
+    $perf['re-select the same one']       = Ms { Show-Selected }
+    $perf['re-render the transcript']     = Ms { Update-Document }
+    # The sub-steps of a cold selection, so the next stall is aimed at rather
+    # than guessed. Show-Selected is: Update-Document, Move-ToBottom,
+    # Show-Ask, a probe kick and Update-SendState.
+    $perf['  Move-ToBottom']              = Ms { Move-ToBottom }
+    $perf['  Update-SendState']           = Ms { Update-SendState }
+    $perf['  Show-Ask $null']             = Ms { Show-Ask $null }
+    # Update-Document is parse-then-build; which half costs is the question.
+    $jp = "$(@($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })[0].Row.S.jsonl)"
+    $blk = $null
+    $perf['  parse the transcript']       = Ms { $script:__blk = Get-SRTranscriptBlocks -JsonlPath $jp -MaxRecords 220 -MaxTailBytes $script:tailBytes }
+    $perf['  build the FlowDocument']     = Ms { $null = Build-ReadDocument -Blocks $script:__blk -Truncated $false }
     # 🔴 WHERE DOES THE ~400 ms GO? Two candidates, both measurable rather
     # than arguable: the size of the transcript tail being rendered, and WPF's
     # optimal-paragraph line breaker. Measured here so the fix is aimed.
@@ -565,9 +629,10 @@ else {
 
     # One budget, on the thing that would actually be felt: selecting a
     # conversation is the gesture repeated all day.
-    if ($perf['select another conversation'] -gt 1200) {
-        Fail ("selecting a conversation costs {0:N0} ms - that is a visible stall" -f $perf['select another conversation'])
-    } else { Pass ("selecting a conversation costs {0:N0} ms" -f $perf['select another conversation']) }
+    # The budget is on the COLD path, because that is the click.
+    if ($perf['select another (cold)'] -gt 900) {
+        Fail ("selecting a conversation costs {0:N0} ms - that is a visible stall" -f $perf['select another (cold)'])
+    } else { Pass ("selecting a conversation costs {0:N0} ms" -f $perf['select another (cold)']) }
     if ($perf['switch to the manager'] -gt 900) {
         Fail ("switching surfaces costs {0:N0} ms" -f $perf['switch to the manager'])
     } else { Pass ("switching surfaces costs {0:N0} ms" -f $perf['switch to the manager']) }
