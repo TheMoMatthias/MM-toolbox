@@ -554,8 +554,19 @@ function Get-Band { param($Row)
 #
 # Widen by ONE path segment at a time until every label on screen is unique.
 $script:projLabel = @{}
+# The sorted project set the identity colours are dealt against. Rebuilt with
+# the labels because it answers the same question - which projects exist - and
+# the accent cache is dropped with it, or a project would keep a colour dealt
+# against a set it is no longer a member of.
+$script:accentOrder = @()
 function Update-ProjectLabels {
     $script:projLabel = @{}
+    $order = @(@($script:dirs | ForEach-Object { "$($_.path)".ToLower() } |
+                Where-Object { $_ } | Sort-Object -Unique))
+    if (($order -join '|') -ne ($script:accentOrder -join '|')) {
+        $script:accentOrder = $order
+        $script:accentCache = @{}
+    }
     $paths = @($script:dirs | ForEach-Object { "$($_.path)" } | Where-Object { $_ })
     foreach ($p in $paths) { $script:projLabel[$p] = (Split-Path -Leaf $p) }
     for ($depth = 1; $depth -le 4; $depth++) {
@@ -754,12 +765,57 @@ function Get-ProjectAccent { param([string]$Path)
     foreach ($c in $k.ToCharArray()) {
         $h = ((($h -bxor [int]$c) * 16777619L) -band 0xFFFFFFFFL)
     }
-    # 🪤 SKIP THE MUDDY BAND. Hues around 55-85 (olive/khaki) go grey-brown at
-    # this saturation and stop reading as identity at all, so the wheel is
-    # sampled around them rather than uniformly.
-    $hue = [double]($h % 300)
-    if ($hue -ge 55) { $hue += 30 }
-    $brush = New-Object System.Windows.Media.SolidColorBrush (Convert-HslToColor $hue 0.46 0.66)
+    # 🔴 A RANDOM HUE PER PROJECT IS NOT A DISTRIBUTED ONE. This used to be
+    # `$h % 300` with a skip band, which gives every project an INDEPENDENT
+    # uniform draw - and independent draws cluster. With eight projects the
+    # operator got mostly greens and blues, reported as "the coloring could be
+    # more versatile, as I only see green and blue mostly", which is exactly the
+    # birthday problem showing up as a design defect.
+    #
+    # The fix is to stop drawing and start CHOOSING: a fixed wheel of hues that
+    # are already far apart, indexed by the hash. Collisions become possible in
+    # principle - two projects can land on one slot - but the SPREAD is
+    # guaranteed, which the eye notices and a collision it does not. Saturation
+    # and lightness alternate slightly too, so even a collision is rarely exact.
+    #
+    # \U0001fa64 The muddy band around 55-85 (olive/khaki) is simply not on the wheel,
+    # rather than skipped arithmetically: at this saturation those hues go
+    # grey-brown and stop reading as identity at all.
+    $wheel = @(
+        @(206, 0.52, 0.64),   # azure
+        @(  8, 0.55, 0.66),   # coral
+        @(150, 0.44, 0.62),   # jade
+        @(276, 0.44, 0.70),   # violet
+        @( 34, 0.58, 0.62),   # amber
+        @(188, 0.46, 0.60),   # teal
+        @(330, 0.46, 0.70),   # rose
+        @(102, 0.40, 0.62),   # moss
+        @(248, 0.46, 0.72),   # indigo
+        @( 18, 0.48, 0.60),   # rust
+        @(168, 0.42, 0.66),   # spring
+        @(300, 0.38, 0.68)    # magenta
+    )
+    # 🪤 AND HASH-MOD-WHEEL WAS STILL NOT ENOUGH: FNV's low bits are weak, and
+    # `% 12` off them gave FOUR distinct colours across SEVEN projects - worse
+    # than the clustering it was meant to fix. Distinctness cannot be left to
+    # chance at this size, so the slot is CHOSEN, not drawn: projects are sorted
+    # and dealt consecutive slots off the wheel, which makes the spread exact
+    # rather than probable. The hash is not consulted for the slot at all - an
+    # offset derived per project is just the random draw again, wearing an
+    # index's clothes. It stays only as the stable cache key above.
+    #
+    # The cost is that adding a project can re-deal the others. That is the
+    # right trade at 29 projects: the set changes rarely, and a colour you have
+    # to hunt for is worth less than a set you can tell apart at a glance.
+    $idx = 0
+    $all = @($script:accentOrder)
+    if ($all.Count) {
+        $at = [array]::IndexOf($all, $k)
+        if ($at -ge 0) { $idx = $at }
+    }
+    $slot = $wheel[$idx % $wheel.Count]
+    $brush = New-Object System.Windows.Media.SolidColorBrush (
+        Convert-HslToColor ([double]$slot[0]) ([double]$slot[1]) ([double]$slot[2]))
     $brush.Freeze()
     $script:accentCache[$k] = $brush
     return $brush
@@ -1035,6 +1091,7 @@ $FW_Normal = [System.Windows.FontWeights]::Normal
 $script:TailBase = 262144
 $script:tailBytes = $script:TailBase
 
+
 function New-ReadRun {
     param([string]$Text, $Brush, [double]$Size = 13, [string]$Weight = 'Normal', [switch]$Mono, [switch]$Italic)
     $r = New-Object System.Windows.Documents.Run ([string]$Text)
@@ -1066,16 +1123,16 @@ function Add-ReadProse {
             $p.Background = $Pal.Raised
             $p.BorderBrush = $Pal.HairlineHi
             $p.BorderThickness = New-Object System.Windows.Thickness 2, 0, 0, 0
-            $p.Inlines.Add((New-ReadRun -Text ($code -join "`n") -Brush $Pal.TextHigh -Size 12 -Mono))
+            $p.Inlines.Add((New-ReadRun -Text ($code -join "`n") -Brush $Pal.TextHigh -Size 13 -Mono))
             $Doc.Blocks.Add($p)
             continue
         }
         $p = New-Object System.Windows.Documents.Paragraph
         $p.Margin = New-Object System.Windows.Thickness 0, 3, 0, 3
-        $p.LineHeight = 21
+        $p.LineHeight = 23
         $p.LineStackingStrategy = 'BlockLineHeight'
-        $body = $ln; $size = 14.5; $weight = 'Normal'; $indent = 0
-        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = 16 }
+        $body = $ln; $size = 15; $weight = 'Normal'; $indent = 0
+        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = 17 }
         elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [char]0x2022 + '  ' + $Matches[1]; $indent = 14 }
         elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.  ' + $Matches[2]; $indent = 14 }
         if ($indent) { $p.Margin = New-Object System.Windows.Thickness $indent, 2, 0, 2 }
@@ -1186,33 +1243,47 @@ function Build-ReadDocument {
                 if ($head.Length -gt 170) { $head = $head.Substring(0, 167) + '...' }
                 $p = New-Object System.Windows.Documents.Paragraph
                 $p.Margin = New-Object System.Windows.Thickness 18, 3, 0, 6
-                $p.Inlines.Add((New-ReadRun -Text 'thinking   ' -Brush $Pal.TextDim -Size 10.5 -Weight 'SemiBold'))
-                $p.Inlines.Add((New-ReadRun -Text $head -Brush $Pal.TextDim -Size 12 -Italic))
+                $p.Inlines.Add((New-ReadRun -Text 'thinking   ' -Brush $Pal.TextDim -Size 11.5 -Weight 'SemiBold'))
+                $p.Inlines.Add((New-ReadRun -Text $head -Brush $Pal.TextDim -Size 13 -Italic))
                 $doc.Blocks.Add($p)
             }
             'tool' {
+                # 🔴 CONTAINED, AND AT A READABLE SIZE. This was a raw inline run
+                # at 11.5px with no ground under it, and when the rest of the
+                # window's scale went up it did not - so the transcript kept the
+                # cramped monospace density that reads as a console log rather
+                # than as a document with code in it. Same treatment as a fenced
+                # code block, because that is what it is.
                 $p = New-Object System.Windows.Documents.Paragraph
-                $p.Margin = New-Object System.Windows.Thickness 4, 1, 0, 1
-                $p.Inlines.Add((New-ReadRun -Text ([char]0x203A + '  ') -Brush $Pal.TextLow -Size 12 -Mono))
-                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '  ') -Brush $Pal.TextMid -Size 11.5 -Weight 'SemiBold' -Mono))
-                $p.Inlines.Add((New-ReadRun -Text $b.Body -Brush $Pal.TextLow -Size 11.5 -Mono))
+                $p.Margin = New-Object System.Windows.Thickness 0, 3, 0, 3
+                $p.Padding = New-Object System.Windows.Thickness 12, 7, 12, 7
+                $p.Background = $Pal.Raised
+                $p.BorderBrush = $Pal.HairlineHi
+                $p.BorderThickness = New-Object System.Windows.Thickness 2, 0, 0, 0
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextMid -Size 12.5 -Weight 'SemiBold' -Mono))
+                $p.Inlines.Add((New-ReadRun -Text (Compress-SRPath $b.Body) -Brush $Pal.TextHigh -Size 12.5 -Mono))
                 $doc.Blocks.Add($p)
             }
             'tools' {
+                # The summary of a RUN of calls. Quieter than a single call on
+                # purpose - it is a count, not content.
                 $p = New-Object System.Windows.Documents.Paragraph
-                $p.Margin = New-Object System.Windows.Thickness 4, 3, 0, 3
-                $p.Inlines.Add((New-ReadRun -Text ([char]0x203A + '  ') -Brush $Pal.TextLow -Size 12 -Mono))
-                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextDim -Size 11 -Weight 'SemiBold' -Mono))
-                $p.Inlines.Add((New-ReadRun -Text $b.Body -Brush $Pal.TextDim -Size 11 -Mono))
+                $p.Margin = New-Object System.Windows.Thickness 0, 4, 0, 4
+                $p.Padding = New-Object System.Windows.Thickness 12, 6, 12, 6
+                $p.Background = $Pal.Raised
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextMid -Size 12 -Weight 'SemiBold'))
+                $p.Inlines.Add((New-ReadRun -Text (Compress-SRPath $b.Body) -Brush $Pal.TextDim -Size 12 -Mono))
                 $doc.Blocks.Add($p)
             }
             'result' {
                 $first = "$(@($b.Body -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1))"
-                if ($first.Length -gt 120) { $first = $first.Substring(0, 117) + '...' }
+                if ($first.Length -gt 150) { $first = $first.Substring(0, 147) + [string][char]0x2026 }
+                # It belongs to the call above it, so it is indented under that
+                # block rather than given a ground of its own.
                 $p = New-Object System.Windows.Documents.Paragraph
-                $p.Margin = New-Object System.Windows.Thickness 22, 0, 0, 4
-                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextDim -Size 10.5 -Mono))
-                $p.Inlines.Add((New-ReadRun -Text $first -Brush $Pal.TextDim -Size 11 -Mono))
+                $p.Margin = New-Object System.Windows.Thickness 14, 1, 0, 6
+                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextDim -Size 12 -Weight 'SemiBold' -Mono))
+                $p.Inlines.Add((New-ReadRun -Text (Compress-SRPath $first) -Brush $Pal.TextDim -Size 12 -Mono))
                 $doc.Blocks.Add($p)
             }
         }
@@ -1371,6 +1442,33 @@ function Start-AnswerRecord {
     } catch { }
 }
 
+# 🔴 THE BAND LAGGED THE ACTION BY UP TO 45 SECONDS. The band is derived from
+# the agent map, and the agent map is only refreshed by the live probe - so a
+# conversation you had just answered sat in NEEDS YOU, unchanged, for most of a
+# minute. The operator's words: "the sessions are not updating from needs you,
+# which is not desirable". Answering something and watching it not move is the
+# single most disconcerting thing this window could do, because the whole point
+# of the surface is telling you what still wants you.
+#
+# 🩤 THE OPTIMISTIC MOVE IS NOT A GUESS ABOUT THE FUTURE, it is a statement
+# about the past: keys have just been delivered to that session, so it is no
+# longer waiting on you whatever it does next. The probe is kicked in the same
+# breath and overwrites this with measured truth within a second or two; if it
+# comes back still waiting - because it asked something new - the real state
+# wins. Nothing here fakes a state that is not about to be confirmed.
+function Move-RowToWorking { param($Row)
+    if (-not $Row) { return }
+    $Row.Band = 'working'
+    try { Build-Sessions } catch { }
+    # Restart rather than merely start, so the next scheduled probe is a full
+    # interval after THIS one instead of arriving on top of it.
+    try {
+        $script:liveTimer.Stop()
+        Start-LiveProbe
+        $script:liveTimer.Start()
+    } catch { }
+}
+
 function Invoke-Answer { param([int]$Index)
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
@@ -1384,7 +1482,12 @@ function Invoke-Answer { param([int]$Index)
     # when the buttons were built. Answering must feel immediate.
     $why = $null
     try { $why = Send-SRQuestionAnswer -SessionId $r.Id -Index $Index } catch { $why = $_.Exception.Message }
-    if ($why) { Set-Status $why 'bad' } else { Set-Status 'answered' 'ok'; $ui.AskBox.Visibility = $V_Hide }
+    if ($why) { Set-Status $why 'bad' } else {
+        Set-Status 'answered' 'ok'
+        $ui.AskBox.Visibility = $V_Hide
+        $script:lastAsk = $null
+        Move-RowToWorking $r
+    }
 
     # The AFTER shot is the evidence, and it is taken on a background thread so
     # it costs the operator nothing. It is still the same measurement: what the
@@ -1424,7 +1527,13 @@ function Invoke-Send {
     Set-Status 'typing it in...'
     $why = $null
     try { $why = Send-SRSessionInput -SessionId $r.Id -Text $msg } catch { $why = $_.Exception.Message }
-    if ($why) { Set-Status $why 'bad' } else { $ui.SendBox.Text = ''; Set-Status 'sent' 'ok' }
+    if ($why) { Set-Status $why 'bad' } else {
+        $ui.SendBox.Text = ''
+        Set-Status 'sent' 'ok'
+        # Typed into, so it is not waiting on you any more - same reasoning as
+        # answering a question. See Move-RowToWorking.
+        Move-RowToWorking $r
+    }
 }
 
 # ===========================================================================
@@ -1584,6 +1693,17 @@ $script:followTimer.Add_Tick({
     if ($now -eq $script:followStamp) { return }
     $script:followStamp = $now
     try { Update-Document; Update-SendState } catch { }
+
+    # 🔴 A TRANSCRIPT THAT IS GROWING IS A SESSION THAT IS WORKING, and this
+    # tick already knows it grew - it just compared the bytes. Bands used to wait
+    # for the 45-second probe to say so, which is why a conversation could sit in
+    # NEEDS YOU while visibly writing on screen. Only ever moves a row OUT of
+    # needing you, never into it: claiming something wants you is a claim that
+    # has to be measured, and the probe is the thing that measures it.
+    if ("$($r.Band)" -eq 'needs') {
+        $r.Band = 'working'
+        try { Build-Sessions } catch { }
+    }
 
     # 🔴 THE CONSOLE READ IS NOT FREE AND THIS TICK IS EVERY SECOND.
     # Update-Ask spawns a child process with a 3-second budget and a retry. A

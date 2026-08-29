@@ -1224,6 +1224,35 @@ function Test-SRTranscriptLive {
     return $true
 }
 
+# 🚨 A WRAPPED ABSOLUTE PATH IS MOST OF WHY THIS READS AS A CONSOLE LOG.
+# One Bash call carries 'cd "C:/Users/mauri/Documents/Trading Bot/Python/
+# AlgoTrader/.claude/worktrees/V-INGEST"' twice, which wraps across three lines
+# of tiny monospace and buries the one part that identifies it - the end. The
+# head is what repeats and the tail is what differs, so the middle goes.
+function Compress-SRPath { param([string]$Text)
+    if (-not $Text) { return $Text }
+    # 🪤 THE QUOTED FORM HAS TO BE MATCHED FIRST AND SEPARATELY. Every path in
+    # this operator's transcripts runs through "Trading Bot" - a directory with
+    # a SPACE in it - so an unquoted pattern stops dead at the space and shortens
+    # the wrong half, leaving the tail that identifies the worktree untouched and
+    # trimming the part that was already common to every line.
+    $shorten = {
+        param([string]$path)
+        $sep = $(if ($path -match '/') { '/' } else { '\' })
+        $parts = @($path -split '[\\/]' | Where-Object { $_ })
+        if ($parts.Count -le 4) { return $path }
+        return $parts[0] + $sep + [string][char]0x2026 + $sep + (($parts | Select-Object -Last 3) -join $sep)
+    }
+    $ev1 = [System.Text.RegularExpressions.MatchEvaluator] {
+        param($m) '"' + (& $shorten $m.Groups[1].Value) + '"'
+    }
+    $out = [regex]::Replace($Text, '"([A-Za-z]:[\\/][^"]{24,})"', $ev1)
+    $ev2 = [System.Text.RegularExpressions.MatchEvaluator] {
+        param($m) (& $shorten $m.Groups[1].Value)
+    }
+    return [regex]::Replace($out, '(?<![\w"])([A-Za-z]:[\\/][^\s"'']{24,})', $ev2)
+}
+
 # --- jumping to a session's terminal tab ------------------------------------
 # Every session this tool launches is a TAB, because Start-SRSession uses
 # "-w 0 new-tab". Measured 2026-08-22: 13 live claude.exe, every one of them a
@@ -2668,7 +2697,14 @@ function Get-SRTranscriptBlocks {
                         }
                     }
                     $arg = ($arg -replace '\s+', ' ').Trim()
-                    if ($arg.Length -gt 150) { $arg = $arg.Substring(0, 147) + '...' }
+                    # 🔴 COMPRESS BEFORE TRUNCATING, or the 150-char budget is
+                    # spent on the part of the path that is identical on every
+                    # line and the end - the part that says WHICH worktree - is
+                    # what gets cut. Truncation also destroys the closing quote,
+                    # so a path shortened afterwards can no longer be recognised
+                    # as quoted at all: the order here is the whole point.
+                    $arg = Compress-SRPath $arg
+                    if ($arg.Length -gt 150) { $arg = $arg.Substring(0, 147) + [string][char]0x2026 }
                     $out.Add((New-Block 'tool' $name $arg ''))
                 }
                 'tool_result' {
