@@ -179,19 +179,96 @@
          on screen that would still look like a different application. -->
     <Style TargetType="{x:Type Window}">
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="13.5"/>
+      <Setter Property="FontSize" Value="15"/>
     </Style>
+    <!-- ================== RIGHT-CLICK, AND HINTS ==================
+         🔴 SETTING THE FONT ON THESE WAS NEVER ENOUGH. A ContextMenu with no
+         TEMPLATE keeps the operating system's own chrome: a white slab with a
+         blue highlight and a 3D border, thrown up in the middle of a black
+         window the moment you right-click a session. Same for ToolTip - a pale
+         yellow-white box with a hairline. They are the last two surfaces in the
+         tool still drawn by Windows rather than by this file, and they are
+         reached constantly. Templated here, on the same tokens as everything
+         else, so the design holds all the way through.
+         ============================================================ -->
     <Style TargetType="{x:Type ContextMenu}">
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+      <Setter Property="Padding" Value="0,6,0,6"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="{x:Type ContextMenu}">
+            <Border x:Name="shell" Background="{StaticResource Sheet}" CornerRadius="10"
+                    BorderBrush="{StaticResource EdgeLit}" BorderThickness="1"
+                    Padding="{TemplateBinding Padding}" MinWidth="210"
+                    SnapsToDevicePixels="True">
+              <Border.Effect>
+                <DropShadowEffect BlurRadius="28" ShadowDepth="6" Opacity="0.62" Color="#000000"/>
+              </Border.Effect>
+              <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
+
     <Style TargetType="{x:Type MenuItem}">
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="{x:Type MenuItem}">
+            <Border x:Name="b" Background="Transparent" CornerRadius="7"
+                    Margin="6,1,6,1" Padding="12,8,12,8" SnapsToDevicePixels="True">
+              <ContentPresenter ContentSource="Header" RecognizesAccessKey="True"
+                                VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsHighlighted" Value="True">
+                <Setter TargetName="b" Property="Background" Value="{StaticResource SelBg}"/>
+                <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
+              </Trigger>
+              <!-- A separator is written as a header-less item in the script; it
+                   must not look like something you can press. -->
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
+
+    <Style TargetType="{x:Type Separator}">
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="{x:Type Separator}">
+            <Border Height="1" Margin="12,5,12,5" Background="{StaticResource Hairline}"/>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <Style TargetType="{x:Type ToolTip}">
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="12.5"/>
+      <Setter Property="FontSize" Value="13.5"/>
+      <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="{x:Type ToolTip}">
+            <Border Background="{StaticResource Sheet}" CornerRadius="8"
+                    BorderBrush="{StaticResource EdgeLit}" BorderThickness="1"
+                    Padding="11,7,11,8" MaxWidth="380" SnapsToDevicePixels="True">
+              <Border.Effect>
+                <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.5" Color="#000000"/>
+              </Border.Effect>
+              <ContentPresenter/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
 
     <!-- ONE SCALE, and every size in the window comes from it. The old file had
@@ -199,13 +276,13 @@
          scale, it is fourteen decisions. -->
     <Style x:Key="Display" TargetType="TextBlock">
       <Setter Property="FontFamily" Value="{DynamicResource FontDisplay}"/>
-      <Setter Property="FontSize" Value="18"/>
+      <Setter Property="FontSize" Value="20"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
     </Style>
     <Style x:Key="H1" TargetType="TextBlock">
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="15"/>
+      <Setter Property="FontSize" Value="17"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
     </Style>
@@ -213,23 +290,23 @@
          is what stops an all-caps run reading as shouting. -->
     <Style x:Key="Caption" TargetType="TextBlock">
       <Setter Property="FontFamily" Value="{DynamicResource FontSmall}"/>
-      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="FontSize" Value="12"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
       <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
     </Style>
     <Style x:Key="Body" TargetType="TextBlock">
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="13.5"/>
+      <Setter Property="FontSize" Value="15"/>
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
     </Style>
     <Style x:Key="Dim" TargetType="TextBlock" BasedOn="{StaticResource Body}">
       <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
-      <Setter Property="FontSize" Value="12.5"/>
+      <Setter Property="FontSize" Value="13.5"/>
     </Style>
     <Style x:Key="Meta" TargetType="TextBlock">
       <Setter Property="FontFamily" Value="{DynamicResource FontSmall}"/>
-      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="FontSize" Value="13"/>
       <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
     </Style>
 
@@ -275,7 +352,7 @@
       <Setter Property="Padding" Value="10,7,10,7"/>
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontSize" Value="14"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ComboBoxItem">
@@ -293,7 +370,7 @@
     </Style>
     <Style x:Key="Drop" TargetType="ComboBox">
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontSize" Value="14"/>
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
       <Setter Property="Height" Value="32"/>
       <Setter Property="Cursor" Value="Hand"/>
@@ -315,7 +392,7 @@
                         </Grid.ColumnDefinitions>
                         <ContentPresenter Grid.Column="0" Margin="11,0,0,0" VerticalAlignment="Center"/>
                         <TextBlock Grid.Column="1" Text="&#xE70D;" FontFamily="Segoe MDL2 Assets"
-                                   FontSize="9" Foreground="{StaticResource TextLow}"
+                                   FontSize="10" Foreground="{StaticResource TextLow}"
                                    VerticalAlignment="Center" Margin="8,0,11,0"/>
                       </Grid>
                     </Border>
@@ -352,7 +429,7 @@
     <Style x:Key="Check" TargetType="CheckBox">
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontSize" Value="14"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
@@ -383,7 +460,7 @@
     <Style x:Key="CaptionBtn" TargetType="Button">
       <Setter Property="Width" Value="46"/>
       <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
-      <Setter Property="FontSize" Value="10"/>
+      <Setter Property="FontSize" Value="11"/>
       <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
       <Setter Property="Focusable" Value="False"/>
       <Setter Property="Template">
@@ -423,7 +500,7 @@
     <!-- ================== BUTTONS ================== -->
     <Style x:Key="Btn" TargetType="Button">
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontSize" Value="14"/>
       <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
       <Setter Property="Padding" Value="11,6,11,6"/>
       <Setter Property="Cursor" Value="Hand"/>
@@ -478,7 +555,7 @@
          shape you are looking at. -->
     <Style x:Key="Seg" TargetType="RadioButton">
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontSize" Value="14"/>
       <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
       <Setter Property="Padding" Value="13,6,13,6"/>
       <Setter Property="Cursor" Value="Hand"/>
@@ -511,7 +588,7 @@
     <!-- ================== SEARCH BOX ================== -->
     <Style x:Key="Search" TargetType="TextBox">
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontSize" Value="15"/>
       <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
       <Setter Property="CaretBrush" Value="{StaticResource AccNeeds}"/>
       <Setter Property="Padding" Value="12,0,12,0"/>
@@ -532,7 +609,7 @@
                      it can never eat a click meant for the field beneath. -->
                 <TextBlock x:Name="ph"
                            Text="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=Tag}"
-                           FontFamily="{DynamicResource FontText}" FontSize="13"
+                           FontFamily="{DynamicResource FontText}" FontSize="14"
                            Foreground="{StaticResource TextLow}" IsHitTestVisible="False"
                            VerticalAlignment="Center" Margin="12,0,12,0"
                            Visibility="Collapsed"/>
@@ -607,14 +684,18 @@
     <DataTemplate x:Key="SessionRowTpl">
       <Grid>
         <!-- the band heading -->
-        <Border Visibility="{Binding BandVis}" Padding="18,20,14,8">
+        <Border Visibility="{Binding BandVis}" Padding="12,10,12,8" Margin="6,8,6,0"
+                CornerRadius="8" Background="{Binding BandBg}" Cursor="Hand"
+                ToolTip="Show only these - click again for all of them">
           <StackPanel Orientation="Horizontal">
-            <Border Width="3" Height="12" CornerRadius="2" Background="{Binding Accent}"
+            <Border Width="3" Height="13" CornerRadius="2" Background="{Binding Accent}"
                     VerticalAlignment="Center" Margin="0,0,9,0"/>
             <TextBlock Text="{Binding BandLabel}" Style="{StaticResource Caption}"
                        Foreground="{Binding Accent}" VerticalAlignment="Center"/>
             <TextBlock Text="{Binding BandCount}" Style="{StaticResource Caption}"
                        FontWeight="Normal" Margin="9,0,0,0" VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding BandHint}" Style="{StaticResource Meta}"
+                       Margin="10,0,0,0" VerticalAlignment="Center"/>
           </StackPanel>
         </Border>
 
@@ -888,18 +969,30 @@
            the script. Three columns is not a luxury that vanishes when the
            window is small, it is a layout with a defined behaviour at every
            width. -->
-      <Grid x:Name="WorkSurface">
+      <!-- 🔴 THE PANES ARE CARDS ON A GROUND, not regions divided by hairlines.
+           They were flat rectangles separated by 1px rules, which is what the
+           operator meant by "the rounded edges and backgrounds are all gone" -
+           only the OUTER shell had ever been given the treatment the canvas
+           showed. Each pane now has its own radius, its own edge and its own
+           shadow, and the gutters between them are the ground showing through.
+           That is the whole difference between a window that reads as layered
+           and one that reads as partitioned. -->
+      <Grid x:Name="WorkSurface" Background="{StaticResource Ink}">
         <Grid.ColumnDefinitions>
-          <ColumnDefinition x:Name="RailCol" Width="208" MinWidth="0"/>
+          <ColumnDefinition x:Name="RailCol" Width="248" MinWidth="0"/>
           <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition x:Name="ListCol" Width="336" MinWidth="0"/>
+          <ColumnDefinition x:Name="ListCol" Width="372" MinWidth="0"/>
           <ColumnDefinition Width="Auto"/>
           <ColumnDefinition Width="*" MinWidth="280"/>
         </Grid.ColumnDefinitions>
 
         <!-- the projects rail: a FILTER, never the grouping -->
-        <Border x:Name="RailPane" Grid.Column="0" Background="{StaticResource Rail}"
-                BorderBrush="{StaticResource HairSoft}" BorderThickness="0,0,1,0">
+        <Border x:Name="RailPane" Grid.Column="0" Background="{StaticResource Panel}"
+                CornerRadius="12" Margin="10,4,3,10" SnapsToDevicePixels="True"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+          <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.42" Color="#000000"/>
+          </Border.Effect>
           <Grid>
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
@@ -925,8 +1018,12 @@
                       Background="Transparent" ResizeBehavior="PreviousAndNext"/>
 
         <!-- the sessions column: grouped by BAND, two lines per row -->
-        <Border x:Name="ListPane" Grid.Column="2" Background="{StaticResource Ink}"
-                BorderBrush="{StaticResource HairSoft}" BorderThickness="0,0,1,0">
+        <Border x:Name="ListPane" Grid.Column="2" Background="{StaticResource Panel}"
+                CornerRadius="12" Margin="3,4,3,10" SnapsToDevicePixels="True"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+          <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.42" Color="#000000"/>
+          </Border.Effect>
           <Grid>
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
@@ -950,7 +1047,13 @@
                       Background="Transparent" ResizeBehavior="PreviousAndNext"/>
 
         <!-- the output pane: header, transcript, pinned question, composer -->
-        <Grid x:Name="OutputPane" Grid.Column="4" Background="{StaticResource Ink}">
+        <Border x:Name="OutputPane" Grid.Column="4" Background="{StaticResource Panel}"
+                CornerRadius="12" Margin="3,4,10,10" SnapsToDevicePixels="True"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+          <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.42" Color="#000000"/>
+          </Border.Effect>
+        <Grid>
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -1089,7 +1192,7 @@
                    just makes the session unable to do something, once, in an
                    hour's time. Space-separated, claude's own syntax. -->
               <Expander x:Name="SetToolsFold" Header="Tool limits" Margin="0,4,0,10"
-                        Foreground="{StaticResource TextMid}" FontFamily="{DynamicResource FontText}" FontSize="12.5">
+                        Foreground="{StaticResource TextMid}" FontFamily="{DynamicResource FontText}" FontSize="13.5">
                 <StackPanel Margin="0,8,0,0">
                   <TextBlock Text="Allow only these" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
                   <TextBox x:Name="SetAllow" Style="{StaticResource Search}" Margin="0,0,0,9"
@@ -1129,10 +1232,18 @@
 
           <!-- PINNED, not inline. A question that scrolls away on a long
                conversation is a question you miss. -->
+          <!-- 🚨 A PANEL INSIDE THE CARD, not a slab across it. This had a hard
+               2px white rule spanning the full width and square corners, which
+               cut the output card in half - the one element loud enough to
+               undo the layering everything else had just gained. The signal is
+               kept, because a question you miss is the failure this panel
+               exists to prevent: it moves to a left accent bar, the same idiom
+               the band markers and the project tiles already use. -->
           <Border x:Name="AskBox" Grid.Row="2" Visibility="Collapsed"
-                  Background="{StaticResource PanelHi}"
-                  BorderBrush="{StaticResource AccNeeds}" BorderThickness="0,2,0,0"
-                  Padding="18,12,18,12">
+                  Background="{StaticResource PanelHi}" CornerRadius="10"
+                  Margin="12,0,12,12" SnapsToDevicePixels="True"
+                  BorderBrush="{StaticResource AccNeeds}" BorderThickness="3,0,0,0"
+                  Padding="18,14,18,14">
             <!-- A long question with a description under every option can run
                  past the bottom of the pane, and an option you cannot reach is
                  an option you cannot pick. Capped and scrollable; the cap is
@@ -1219,19 +1330,32 @@
             </Grid>
           </Border>
         </Grid>
+        </Border>
       </Grid>
 
       <!-- ===== SESSION MANAGER: one full-width table =====
            Deliberately a different SHAPE, not a different colour. Ported in
            phase 4; the frame exists here so the switch is real from phase 1. -->
+      <!-- 🔴 ONE CARD, ON THE SAME GROUND AS THE WORK SURFACE. The manager was
+           a flat full-bleed table while the work surface had become three
+           floating cards, so switching surfaces switched design languages
+           halfway through the window. It is deliberately a different SHAPE - one
+           wide table rather than three columns - but it is the same material. -->
       <Grid x:Name="ManageSurface" Visibility="Collapsed" Background="{StaticResource Ink}">
+        <Border Background="{StaticResource Panel}" CornerRadius="12" Margin="10,4,10,10"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                SnapsToDevicePixels="True">
+          <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.42" Color="#000000"/>
+          </Border.Effect>
+        <Grid>
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="*"/>
           <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        <Border Grid.Row="0" Background="{StaticResource PanelHi}"
-                BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="18,9,18,9">
+        <Border Grid.Row="0" Background="{StaticResource PanelHi}" CornerRadius="11,11,0,0"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="18,11,18,11">
           <!-- THE SAME COLUMN WIDTHS AS ManageRowTpl, and for the same reason a
                table has a header row at all: a caption made of padded spaces
                lines up with nothing, because the rows below it are a Grid and
@@ -1255,15 +1379,17 @@
                  ItemContainerStyle="{StaticResource PlainItem}"
                  ItemTemplate="{StaticResource ManageRowTpl}"
                  AutomationProperties.Name="the ticked set"/>
-        <Border Grid.Row="2" Background="{StaticResource Panel}"
-                BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,0" Padding="18,10,18,10">
+        <Border Grid.Row="2" Background="{StaticResource Rail}" CornerRadius="0,0,11,11"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,0" Padding="18,12,18,12">
           <StackPanel Orientation="Horizontal">
             <TextBlock Text="THE TICKED SET" Style="{StaticResource Caption}"
-                       VerticalAlignment="Center" Margin="0,0,12,0"/>
+                       VerticalAlignment="Center" Margin="0,0,14,0"/>
             <Button x:Name="OpenNotRunning" Content="Open not running" Style="{StaticResource BtnPrimary}" Margin="0,0,8,0"/>
             <Button x:Name="RelaunchSessions" Content="Relaunch sessions" Style="{StaticResource Btn}"/>
             <TextBlock x:Name="ManageCount" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="14,0,0,0"/>
           </StackPanel>
+        </Border>
+        </Grid>
         </Border>
       </Grid>
     </Grid>

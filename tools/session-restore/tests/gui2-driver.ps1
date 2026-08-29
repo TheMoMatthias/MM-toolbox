@@ -252,6 +252,22 @@ if (-not $liveRows.Count) {
     } else { Pass "every one of the $($liveRows.Count) running conversations shows what it last said" }
 }
 
+# 🔴 THE RIGHT-CLICK MENU MUST BE OURS, NOT WINDOWS'. A ContextMenu lives in
+# its own popup outside the window's visual tree, so an implicit style in
+# Window.Resources is not something to rely on reaching it - and without the
+# template it keeps the OS chrome: a white slab with a blue highlight in the
+# middle of a black window, on the gesture this surface is built around.
+$cm = $ui.ManageList.ContextMenu
+if (-not $cm) { Fail 'the manager has no per-row menu' }
+elseif (-not $cm.Style) { Fail 'the right-click menu carries no style - it would render as a white Windows slab' }
+elseif (-not @($cm.Style.Setters | Where-Object { $_.Property.Name -eq 'Template' }).Count) {
+    Fail 'the menu style sets no Template, so the OS chrome survives underneath it'
+} else {
+    $items = @($cm.Items | Where-Object { $_ -is [System.Windows.Controls.MenuItem] })
+    $bare = @($items | Where-Object { -not $_.Style })
+    if ($bare.Count) { Fail "$($bare.Count) menu item(s) carry no style - they would highlight in Windows blue" }
+    else { Pass "the right-click menu and all $($items.Count) of its items are drawn by this window, not by Windows" }
+}
 if (-not $ui.ManageList.ContextMenu) { Fail 'the manager has no per-row menu' }
 else {
     $have = @($ui.ManageList.ContextMenu.Items |
@@ -460,6 +476,54 @@ Build-Cast
 if ($ui.CastSend.IsEnabled) { Fail 'Send is armed with nothing ticked and no message' }
 else { Pass 'Send arms only with both a target and a message' }
 Hide-Cast
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the state filter, on the band headings ---'
+# ===========================================================================
+# 🔴 THE RETIRED WINDOW HAD THIS AND THE REWRITE DROPPED IT. Three clickable
+# count pills became nothing at all, and there was no way to narrow the list to
+# "what is waiting on me" - reported as "the filter option and logic is gone".
+$ui.ModeWork.IsChecked = $true
+Set-Surface 'work'
+$script:bandPick = $null
+Build-Sessions
+$allRows = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' }).Count
+$heads = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'band' })
+if ($heads.Count -lt 2) { Note "only $($heads.Count) band(s) on screen - the filter cannot be posed" }
+else {
+    $key = "$($heads[0].BandKey)"
+    if (-not $key) { Fail 'a band heading carries no key, so a click could not tell which band it is' }
+    else {
+        $script:bandPick = $key
+        Build-Sessions
+        $now  = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })
+        $offBand = @($now | Where-Object { "$($_.Row.Band)" -ne $key })
+        if (-not $now.Count) { Fail "filtering to '$key' left no conversations at all" }
+        elseif ($offBand.Count) { Fail "$($offBand.Count) conversation(s) from other bands survived the filter" }
+        elseif ($now.Count -ge $allRows) { Fail "filtering showed $($now.Count) of $allRows - it narrowed nothing" }
+        else { Pass "filtering to one band shows $($now.Count) of $allRows conversations" }
+
+        # 🚨 EVERY HEADING STAYS. Hiding the others leaves no way back to the
+        # full list except a control that is now off screen.
+        $stillHeads = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'band' })
+        if ($stillHeads.Count -ne $heads.Count) {
+            Fail "filtering hid $($heads.Count - $stillHeads.Count) heading(s) - there would be no way back"
+        } else { Pass 'every band heading stays on screen, so you can switch or clear it' }
+        $lit = @($stillHeads | Where-Object { "$($_.BandHint)".Trim() })
+        if ($lit.Count -ne 1) { Fail "$($lit.Count) headings claim to be the active filter, not 1" }
+        else { Pass 'the active band says so on the heading itself' }
+
+        # And it must come back off.
+        $script:bandPick = $null
+        Build-Sessions
+        $back = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' }).Count
+        if ($back -ne $allRows) { Fail "clearing the filter left $back conversations, not the original $allRows" }
+        else { Pass 'clearing it restores every conversation' }
+    }
+}
+$script:bandPick = $null
+Build-Sessions
 
 # ===========================================================================
 Write-Host ''

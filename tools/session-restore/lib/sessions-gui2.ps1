@@ -872,12 +872,20 @@ function Build-Sessions {
                     Sort-Object { try { [datetime]$_.S.lastActive } catch { [datetime]0 } } -Descending)
         if (-not $inBand.Count) { continue }
         $acc = $window.FindResource($b.Acc)
+        $picked = ($script:bandPick -eq $b.Key)
         $items.Add([PSCustomObject]@{
-            Kind = 'band'; Id = $null; Row = $null
+            Kind = 'band'; Id = $null; Row = $null; BandKey = $b.Key
             BandVis = $V_Show; RowVis = $V_Hide; DotVis = $V_Hide
             BandLabel = $b.Label; BandCount = $inBand.Count; Accent = $acc
+            # A heading you can press has to look pressable, and look pressed.
+            BandBg = [System.Windows.Media.Brush]$(if ($picked) { $window.FindResource('SelBg') } else { [System.Windows.Media.Brushes]::Transparent })
+            BandHint = $(if ($picked) { 'only this' } else { '' })
             Name = ''; Age = ''; Said = ''; NameWeight = 'Normal'; NameStyle = 'Normal'; BarOpacity = 0.0
         })
+        # 🔴 THE HEADINGS ALL STAY WHEN ONE IS PICKED. Hiding the others
+        # would leave no way back except a control that is now off screen, and
+        # the counts beside them are the reason to switch in the first place.
+        if ($script:bandPick -and $script:bandPick -ne $b.Key) { continue }
         foreach ($r in $inBand) {
             $t = Get-Title $r.S $r.D
             $saidText = ''
@@ -1623,6 +1631,31 @@ $window.Add_Closing({
     }
 })
 
+# 🔴 THE STATE FILTER, BACK. The retired window had three clickable count
+# pills; the rewrite dropped them and nothing replaced them, so there was no way
+# to say "show me only what is waiting on me" - reported as "the filter option
+# and logic is gone as well". It returns on the band headings rather than as new
+# chrome: they already say the state and the count, and they are already where
+# you are looking when you want to narrow the list.
+#
+# 🩤 PreviewMouseLeftButtonDown, NOT SelectionChanged or a click on the row.
+# ListBoxItem marks the button-down HANDLED when it selects, which is the same
+# trap that stopped the session manager ticking anything at all; and selecting a
+# heading is meaningless, so SelectionChanged already steps PAST it - by the
+# time that runs, the heading is no longer what is selected.
+$script:bandPick = $null
+$ui.SessionList.Add_PreviewMouseLeftButtonDown({
+    param($s, $e)
+    $it = Get-ClickedRow $e.OriginalSource
+    if (-not $it -or $it.Kind -ne 'band') { return }
+    $script:bandPick = $(if ($script:bandPick -eq $it.BandKey) { $null } else { "$($it.BandKey)" })
+    Build-Sessions
+    Set-Status $(if ($script:bandPick) {
+        "showing only $($it.BandLabel.ToLower()) - click the heading again for all of them"
+    } else { 'showing every conversation again' })
+    $e.Handled = $true
+})
+
 $ui.SessionList.Add_SelectionChanged({
     $it = $ui.SessionList.SelectedItem
     if ($it -and $it.Kind -eq 'band') {
@@ -1714,11 +1747,21 @@ $ui.ManageList.Add_PreviewMouseLeftButtonDown({
 # conversation.
 # ===========================================================================
 function New-ManageMenu {
+    # 🔴 THE STYLE IS ASSIGNED, NOT INHERITED. A ContextMenu is not in the
+    # window's visual tree - it lives in its own popup with its own presentation
+    # source - so an implicit style sitting in Window.Resources is not something
+    # to rely on reaching it. Without the template it keeps the OPERATING
+    # SYSTEM's chrome: a white slab with a blue highlight, in the middle of a
+    # black window, on the gesture the operator uses most on this surface.
+    # Assigned explicitly here, and asserted in the suite.
     $m = New-Object System.Windows.Controls.ContextMenu
+    $m.Style = [System.Windows.Style]$window.FindResource([System.Windows.Controls.ContextMenu])
+    $itemStyle = [System.Windows.Style]$window.FindResource([System.Windows.Controls.MenuItem])
     $mk = {
         param([string]$Header, [scriptblock]$Do)
         $i = New-Object System.Windows.Controls.MenuItem
         $i.Header = $Header
+        $i.Style = $itemStyle
         $i.Add_Click($Do)
         $null = $m.Items.Add($i)
         return $i
