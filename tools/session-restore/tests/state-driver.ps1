@@ -462,6 +462,65 @@ try {
 } finally {
     Remove-Item -LiteralPath $bootPath -Force -ErrorAction SilentlyContinue
 }
+
+# --- PER-SESSION SETTINGS BECOME LAUNCH FLAGS ------------------------------
+# 🔴 THE DEFAULT IS THE DANGEROUS CASE. --remote-control used to be hard-coded on
+# every launch; it is now conditional so a conversation can turn it off. If the
+# default ever flips, Remote Control silently switches off for all twenty-odd
+# sessions on this machine and nothing announces it.
+Write-Host ''
+Write-Host '--- a conversation carries its own launch flags ---'
+$plain = [PSCustomObject]@{ sessionId = '11111111-2222-3333-4444-555555555555'; title = 'plain' }
+if (-not (Test-SRRemoteWanted $plain)) {
+    Fail 'a conversation with no settings does NOT want Remote Control - every existing session would lose it'
+} else { Pass 'Remote Control is on unless a conversation says otherwise' }
+if (@(Get-SRSessionArgs $plain).Count -ne 0) {
+    Fail "a conversation with no settings produced flags: $((Get-SRSessionArgs $plain) -join ' ')"
+} else { Pass 'a conversation with no settings adds no flags at all' }
+
+Set-SRSessionPref $plain 'model' 'opus'
+Set-SRSessionPref $plain 'effort' 'high'
+Set-SRSessionPref $plain 'permissionMode' 'plan'
+$fl = @(Get-SRSessionArgs $plain)
+foreach ($pair in @(@('--model','opus'), @('--effort','high'), @('--permission-mode','plan'))) {
+    $i = [array]::IndexOf($fl, $pair[0])
+    if ($i -lt 0) { Fail "$($pair[0]) is not passed" }
+    elseif ($fl[$i + 1] -ne $pair[1]) { Fail "$($pair[0]) got '$($fl[$i + 1])', expected '$($pair[1])'" }
+    else { Pass "$($pair[0]) $($pair[1]) reaches the command line" }
+}
+
+# A value claude would reject must never reach the command line: it does not fail
+# politely, it fails the LAUNCH, and the conversation simply never opens.
+Set-SRSessionPref $plain 'permissionMode' 'nonsense'
+Set-SRSessionPref $plain 'effort' 'ludicrous'
+$fl2 = @(Get-SRSessionArgs $plain)
+if ($fl2 -contains 'nonsense' -or $fl2 -contains 'ludicrous') {
+    Fail "a value claude cannot accept reached the command line: $($fl2 -join ' ')"
+} else { Pass 'a permission mode or effort claude would reject is dropped, not passed on' }
+
+# And Remote Control off means the flag is ABSENT, not present-and-empty.
+Set-SRSessionPref $plain 'remoteControl' $false
+if (Test-SRRemoteWanted $plain) { Fail 'turning Remote Control off did not take' }
+else { Pass 'Remote Control can be turned off for one conversation' }
+$bp2 = New-SRBootScript -Dir $here -SessionId $plain.sessionId -Title 'no-remote' -RemoteControl $false
+try {
+    # 🪤 MATCH THE COMMAND LINE, NOT THE FILE. The boot script explains
+    # --remote-control in a comment, so a plain -match on the whole file is
+    # satisfied by the prose and would pass however the code behaved. Only the
+    # '& claude ...' line decides anything.
+    $b2 = @(Get-Content -LiteralPath $bp2) | Where-Object { $_ -match '^&\s*claude\b' }
+    if (-not $b2) { Fail 'the boot script has no claude command line at all' }
+    elseif ($b2 -match '--remote-control') { Fail "the flag is still on the command line with Remote Control off: $b2" }
+    else { Pass 'with Remote Control off the flag is absent from the command, not empty' }
+} finally { Remove-Item -LiteralPath $bp2 -Force -ErrorAction SilentlyContinue }
+
+# And the inverse, so the check above is known to be capable of failing.
+$bp3 = New-SRBootScript -Dir $here -SessionId $plain.sessionId -Title 'yes-remote' -RemoteControl $true
+try {
+    $b3 = @(Get-Content -LiteralPath $bp3) | Where-Object { $_ -match '^&\s*claude\b' }
+    if ($b3 -notmatch '--remote-control') { Fail 'Remote Control ON did not put the flag on the command line' }
+    else { Pass 'and with it on the flag IS there - the check above can go red' }
+} finally { Remove-Item -LiteralPath $bp3 -Force -ErrorAction SilentlyContinue }
 # --- THE SCREEN IS THE ONLY PLACE A PENDING QUESTION EXISTS -----------------
 # claude writes the AskUserQuestion tool_use block when the tool RETURNS, not when
 # it is asked. Measured against a live session with a menu visibly on screen: zero

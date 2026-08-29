@@ -123,7 +123,9 @@ foreach ($n in @(
     'ModeWork','ModeManage','BandChips','Broadcast',
     'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear',
     'ListPane','ListSplit','ListCaption','ListCount','SessionList',
-    'OutputPane','PaneName','PaneState','PaneStateDot','PaneGoTo','PaneRelaunch',
+    'OutputPane','PaneName','PaneState','PaneStateDot','PaneGoTo','PaneRelaunch','PaneSettings',
+    'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
+    'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
     'PaneDoc','PaneEmpty','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'SendNote','SendBox','SendBtn',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
@@ -144,6 +146,10 @@ $V_Hide = [System.Windows.Visibility]::Collapsed
 $script:surface   = 'work'
 $script:railPick  = $null
 $script:selId     = $null
+# Which conversation the settings panel is editing. Pinned to an id, never to the
+# selection: the list rebuilds on a timer, and a panel that followed the
+# selection could apply your changes to whatever moved under it.
+$script:setFor    = $null
 $script:cfg       = $null
 $script:reg       = $null
 $script:dirs      = @()
@@ -1288,9 +1294,16 @@ $script:launchTimer.Add_Tick({
     try {
         $t = (Get-Title $r.S $r.D).Text
         $cwd = $(if ("$($r.S.cwd)") { "$($r.S.cwd)" } else { "$($r.D.path)" })
-        $boot = New-SRBootScript -Dir $cwd -SessionId "$($r.S.sessionId)" -Title $t
-        Start-SRSession -Dir $cwd -BootScript $boot -Title $t
-        Write-SRLog ('  [ok]   gui2 launch   {0}  {1}' -f $t, $r.Id)
+        # The conversation's own settings, applied at the only moment claude can
+        # read them. This is what makes a settings change real.
+        $boot = New-SRBootScript -Dir $cwd -SessionId "$($r.S.sessionId)" -Title $t `
+                    -ClaudeArgs (Get-SRSessionArgs $r.S) -RemoteControl (Test-SRRemoteWanted $r.S)
+        if (Test-SRHiddenWanted $r.S) {
+            $null = Start-SRHiddenSession -Dir $cwd -BootScript $boot -Title $t
+        } else {
+            Start-SRSession -Dir $cwd -BootScript $boot -Title $t
+        }
+        Write-SRLog ('  [ok]   gui2 launch   {0}  {1}  {2}' -f $t, $r.Id, (Get-SRSessionArgsLabel $r.S))
         $script:justLaunched[$r.Id] = Get-Date
         $script:launchDone++
     } catch {
@@ -1419,8 +1432,220 @@ $ui.PaneGoTo.Add_Click({
     if ($why) { Set-Status $why 'warn' } else { Set-Status ('went to {0}' -f $ui.PaneName.Text) 'ok' }
 })
 
+# The row the output pane is currently showing.
+function Get-SelectedRow {
+    $it = $ui.SessionList.SelectedItem
+    if ($it -and $it.Kind -eq 'session') { return $it.Row }
+    if ($script:selId) {
+        foreach ($x in $script:model) { if ($x.Id -eq $script:selId) { return $x } }
+    }
+    return $null
+}
+
+# ONE conversation, closed and opened again. The same three steps the bulk
+# Relaunch takes - kill claude, kill its boot shell, close the dead tab - and
+# then the queue, so a single relaunch and a bulk one cannot drift apart.
+function Invoke-RelaunchOne { param($R)
+    if (-not $R) { return }
+    $t = (Get-Title $R.S $R.D).Text
+    if ($R.A -and $R.A.Pid) {
+        if ("$($R.A.Status)" -eq 'busy') {
+            Set-Status ("'{0}' is mid-turn - closing it now would lose the reply it is writing" -f $t) 'warn'
+            return
+        }
+        Set-Status ("closing '{0}'..." -f $t)
+        $procId = [int]$R.A.Pid
+        $proc = $null
+        try { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction Stop } catch { }
+        # A pid is reusable: confirm THIS one is still the claude that owns the
+        # conversation before killing anything.
+        if ($proc -and $proc.Name -eq 'claude.exe') {
+            $parent = $null
+            try { $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.ParentProcessId)" -ErrorAction Stop } catch { }
+            try { Stop-Process -Id $procId -Force -ErrorAction Stop } catch { }
+            if ($parent -and $parent.Name -eq 'powershell.exe' -and "$($parent.CommandLine)" -like '*.state*boot-*') {
+                try { Stop-Process -Id ([int]$parent.ProcessId) -Force -ErrorAction Stop } catch { }
+            }
+            Start-Sleep -Milliseconds 700
+            $tab = $(if ("$($R.A.Name)") { "$($R.A.Name)" } else { $t })
+            try { $null = Close-SRTabsByName -Names @($tab) } catch { }
+        }
+    }
+    Start-LaunchQueue @($R)
+}
+
 $ui.PaneRelaunch.Add_Click({
-    Set-Status 'relaunching one conversation is phase 4 work - use the session manager for now' 'warn'
+    $r = Get-SelectedRow
+    if (-not $r) { Set-Status 'select a conversation first' 'warn'; return }
+    $t = (Get-Title $r.S $r.D).Text
+    if (-not ($r.A -and $r.A.Pid)) {
+        if (Confirm-Action 'Open this conversation' ("'{0}' is not running. Open it now?" -f $t)) {
+            Start-LaunchQueue @($r)
+        }
+        return
+    }
+    if (Confirm-Action 'Relaunch this conversation' `
+        ("'{0}' will be CLOSED and opened again. Anything it has written is on disk; a turn in progress is not." -f $t)) {
+        Invoke-RelaunchOne $r
+    }
+})
+
+# ===========================================================================
+# THE CONTROL PLANE
+#
+# 🔴 EVERY SETTING HERE IS A LAUNCH FLAG. claude reads --model, --effort,
+# --permission-mode and --remote-control ONCE, at startup; there is no way to
+# change them on a running process. So Apply writes them down and then offers
+# the relaunch that makes them real. A dropdown that silently did nothing would
+# be worse than no dropdown at all.
+# ===========================================================================
+
+# What each mode actually does, in the words that matter when you are choosing
+# one at speed. An operator picking 'bypassPermissions' should not have to
+# remember what it costs.
+$script:PermNotes = @{
+    ''                  = 'Whatever this machine already defaults to.'
+    'manual'            = 'Asks before every tool call. Slowest, and nothing happens without you.'
+    'default'           = 'Asks before anything it has not been allowed.'
+    'acceptEdits'       = 'Edits files without asking; still asks before running commands.'
+    'auto'              = 'Decides for itself which calls need you. The usual choice for a session you leave running.'
+    'dontAsk'           = 'Never stops to ask. It will not wait for you - and it will not warn you either.'
+    'plan'              = 'Reads and plans, changes nothing. Safe for a session you want to think, not act.'
+    'bypassPermissions' = 'NO permission checks at all. Every command runs. Only for a sandbox you can afford to lose.'
+}
+
+function Show-Settings {
+    $r = Get-SelectedRow
+    if (-not $r) { Set-Status 'select a conversation first' 'warn'; return }
+    $script:setFor = $r.Id
+
+    $ui.SetName.Text = (Get-Title $r.S $r.D).Text
+    Set-DropValue $ui.SetModel  "$(Get-SRSessionPref $r.S 'model')"
+    Set-DropValue $ui.SetEffort "$(Get-SRSessionPref $r.S 'effort')"
+    Set-DropValue $ui.SetPerm   "$(Get-SRSessionPref $r.S 'permissionMode')"
+    $ui.SetRemote.IsChecked = (Test-SRRemoteWanted $r.S)
+    $ui.SetHidden.IsChecked = (Test-SRHiddenWanted $r.S)
+    Update-PermNote
+
+    # Say up front whether anything changed here can take effect without a
+    # relaunch. For a conversation that is not running, the answer is "it just
+    # will", and that is worth knowing too.
+    if ($r.A -and $r.A.Pid) {
+        $ui.SetPending.Text = 'This conversation is running. claude reads these once, at startup, so Apply will offer to close and reopen it.'
+        $ui.SetPending.Visibility = $V_Show
+    } else {
+        $ui.SetPending.Visibility = $V_Hide
+    }
+    $ui.SettingsBox.Visibility = $V_Show
+    $null = $ui.SetName.Focus()
+}
+
+function Hide-Settings { $ui.SettingsBox.Visibility = $V_Hide; $script:setFor = $null }
+
+function Set-DropValue { param($Combo, [string]$Value)
+    foreach ($it in @($Combo.Items)) {
+        if ("$($it.Tag)" -eq "$Value") { $Combo.SelectedItem = $it; return }
+    }
+    if ($Combo.Items.Count) { $Combo.SelectedIndex = 0 }
+}
+function Get-DropValue { param($Combo)
+    $it = $Combo.SelectedItem
+    if (-not $it) { return '' }
+    return "$($it.Tag)"
+}
+
+function Update-PermNote {
+    $v = Get-DropValue $ui.SetPerm
+    $ui.SetPermNote.Text = $(if ($script:PermNotes.ContainsKey($v)) { $script:PermNotes[$v] } else { '' })
+    # The one mode that can cost you the machine gets said in the accent colour
+    # that means "this needs you".
+    $ui.SetPermNote.Foreground = $(if ($v -eq 'bypassPermissions' -or $v -eq 'dontAsk') {
+        $window.FindResource('AccNeeds') } else { $window.FindResource('TextLow') })
+}
+
+# The dropdown contents. Tag carries the value claude wants; Content carries what
+# a person reads.
+function Build-SettingDrops {
+    $mk = {
+        param($pairs)
+        $l = New-Object System.Collections.Generic.List[object]
+        foreach ($p in $pairs) {
+            $i = New-Object System.Windows.Controls.ComboBoxItem
+            $i.Content = $p[1]; $i.Tag = $p[0]
+            $l.Add($i)
+        }
+        return ,$l.ToArray()
+    }
+    $ui.SetModel.ItemsSource = (& $mk @(
+        @('',              'Default for this machine'),
+        @('opus',          'Opus - the hard ones'),
+        @('sonnet',        'Sonnet - fast and capable'),
+        @('haiku',         'Haiku - cheap watchers')))
+    $ui.SetEffort.ItemsSource = (& $mk @(
+        @('',       'Default'),
+        @('low',    'Low'),
+        @('medium', 'Medium'),
+        @('high',   'High'),
+        @('xhigh',  'Extra high'),
+        @('max',    'Max')))
+    $ui.SetPerm.ItemsSource = (& $mk @(
+        @('',                  'Default for this machine'),
+        @('manual',            'Manual - ask every time'),
+        @('acceptEdits',       'Accept edits'),
+        @('auto',              'Auto'),
+        @('plan',              'Plan only - change nothing'),
+        @('dontAsk',           'Never ask'),
+        @('bypassPermissions', 'Bypass all checks')))
+}
+Build-SettingDrops
+
+$ui.SetPerm.Add_SelectionChanged({ Update-PermNote })
+$ui.PaneSettings.Add_Click({ if ($ui.SettingsBox.Visibility -eq $V_Show) { Hide-Settings } else { Show-Settings } })
+$ui.SetCancel.Add_Click({ Hide-Settings; Set-Status 'nothing changed' })
+
+$ui.SetApply.Add_Click({
+    $r = $null
+    foreach ($x in $script:model) { if ($x.Id -eq $script:setFor) { $r = $x; break } }
+    if (-not $r) { Hide-Settings; Set-Status 'that conversation is gone' 'warn'; return }
+
+    $newName = "$($ui.SetName.Text)".Trim()
+    if (-not $newName) { Set-Status 'a conversation needs a name' 'warn'; return }
+
+    $was = (Get-SRSessionArgsLabel $r.S) + '|' + (Get-Title $r.S $r.D).Text
+    Set-Field $r.S 'title' $newName
+    Set-SRSessionPref $r.S 'model'          (Get-DropValue $ui.SetModel)
+    Set-SRSessionPref $r.S 'effort'         (Get-DropValue $ui.SetEffort)
+    Set-SRSessionPref $r.S 'permissionMode' (Get-DropValue $ui.SetPerm)
+    Set-SRSessionPref $r.S 'remoteControl'  ([bool]$ui.SetRemote.IsChecked)
+    Set-SRSessionPref $r.S 'hidden'         ([bool]$ui.SetHidden.IsChecked)
+    $script:dirty = $true
+    $now = (Get-SRSessionArgsLabel $r.S) + '|' + $newName
+
+    try { Save-SRRegistry -Registry $script:reg; $script:dirty = $false } catch {
+        Set-Status ('saved nothing: ' + $_.Exception.Message) 'bad'; return
+    }
+    Hide-Settings
+    Update-Model; Update-Surface
+
+    if ($was -eq $now) { Set-Status 'nothing changed' ; return }
+
+    # It is written down. Now the only thing that can make it real.
+    $live = $null
+    foreach ($x in $script:model) { if ($x.Id -eq $script:setFor) { $live = $x; break } }
+    if (-not ($live -and $live.A -and $live.A.Pid)) {
+        Set-Status 'saved - it takes effect the next time this conversation opens' 'ok'
+        return
+    }
+    if ("$($live.A.Status)" -eq 'busy') {
+        Set-Status 'saved, but this conversation is mid-turn - relaunch it yourself when it stops' 'warn'
+        return
+    }
+    if (Confirm-Action 'Relaunch to apply' `
+        ("claude reads these settings once, at startup, so '{0}' has to be closed and reopened for them to take effect.`n`nDo that now?" -f $newName)) {
+        Invoke-RelaunchOne $live
+    } else {
+        Set-Status 'saved - it takes effect the next time this conversation opens' 'ok'
+    }
 })
 
 $ui.Rescan.Add_Click({

@@ -3049,12 +3049,110 @@ function Resolve-SRWindowsTerminal {
 # have to go through here: a bare `claude` registers Remote Control against an
 # EMPTY conversation and the device then shows "<hostname>-graceful-unicorn"
 # forever, so -n / --remote-control are not optional on either path.
+# ===========================================================================
+# PER-SESSION SETTINGS — "the control plane".
+#
+# 🔴 EVERY ONE OF THESE IS A LAUNCH FLAG. claude reads them once, at startup;
+# there is no way to change the model, the permission mode or the tool limits of
+# a session that is already running. So changing one here does nothing until the
+# conversation is relaunched, and the window has to say so rather than let you
+# believe a dropdown took effect.
+#
+# They live on the session record in the registry as `prefs`, which is additive:
+# a session written before this existed simply has none, and an older build
+# ignores a key it does not know.
+# ===========================================================================
+
+# The values claude will actually accept, from `claude --help` on 2026-08-29.
+# Validated HERE rather than at the dropdown, because a bad value does not fail
+# politely - it fails the launch, and the conversation just never opens.
+$SR_PermissionModes = @('acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan')
+$SR_EffortLevels    = @('low', 'medium', 'high', 'xhigh', 'max')
+
+function Get-SRSessionPref { param($Session, [string]$Name)
+    if (-not $Session) { return $null }
+    $p = $Session.prefs
+    if (-not $p) { return $null }
+    if ($null -eq $p.PSObject.Properties[$Name]) { return $null }
+    return $p.$Name
+}
+
+function Set-SRSessionPref { param($Session, [string]$Name, $Value)
+    if (-not $Session) { return }
+    if ($null -eq $Session.PSObject.Properties['prefs'] -or -not $Session.prefs) {
+        $Session | Add-Member -NotePropertyName prefs -NotePropertyValue ([PSCustomObject]@{}) -Force
+    }
+    $p = $Session.prefs
+    if ($null -eq $p.PSObject.Properties[$Name]) {
+        $p | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+    } else { $p.$Name = $Value }
+}
+
+# Remote Control is ON unless a conversation says otherwise - that is what every
+# session on this machine has done since the tool shipped, and a settings feature
+# must not quietly switch it off for all of them.
+function Test-SRRemoteWanted { param($Session)
+    $v = Get-SRSessionPref $Session 'remoteControl'
+    if ($null -eq $v) { return $true }
+    return [bool]$v
+}
+
+function Test-SRHiddenWanted { param($Session)
+    return [bool](Get-SRSessionPref $Session 'hidden')
+}
+
+# A conversation's settings, as claude's own argv.
+#
+# 🪤 NO LEADING COMMA HERE, and that is deliberate - it is the ",@()" trap read
+# backwards. `return ,$arr` exists to stop a MULTI-element array being unrolled,
+# but applied to an EMPTY one it emits a one-element array holding the empty
+# array, so `@(Get-SRSessionArgs $s).Count` came back as 1 for a conversation
+# with no settings at all, and the first real flag landed at index 1 instead of
+# 0. Caught by the test written alongside this, not by reading it. Returned
+# bare: empty emits nothing (@() -> 0), and every caller either wraps in @() or
+# passes it to a [string[]] parameter, both of which are correct on the unrolled
+# form.
+function Get-SRSessionArgs { param($Session)
+    $a = New-Object System.Collections.Generic.List[string]
+    $m = "$(Get-SRSessionPref $Session 'model')".Trim()
+    if ($m) { $a.Add('--model'); $a.Add($m) }
+    $e = "$(Get-SRSessionPref $Session 'effort')".Trim()
+    if ($e -and $SR_EffortLevels -contains $e) { $a.Add('--effort'); $a.Add($e) }
+    $pm = "$(Get-SRSessionPref $Session 'permissionMode')".Trim()
+    if ($pm -and $SR_PermissionModes -contains $pm) { $a.Add('--permission-mode'); $a.Add($pm) }
+    foreach ($t in @(Get-SRSessionPref $Session 'allowedTools')) {
+        if ("$t".Trim()) { $a.Add('--allowedTools'); $a.Add("$t".Trim()) }
+    }
+    foreach ($t in @(Get-SRSessionPref $Session 'disallowedTools')) {
+        if ("$t".Trim()) { $a.Add('--disallowedTools'); $a.Add("$t".Trim()) }
+    }
+    return $a.ToArray()
+}
+
+# A one-line summary for the row, so the settings are visible without opening
+# anything. Empty when a conversation is on all the defaults.
+function Get-SRSessionArgsLabel { param($Session)
+    $bits = New-Object System.Collections.Generic.List[string]
+    $m = "$(Get-SRSessionPref $Session 'model')".Trim();  if ($m)  { $bits.Add($m) }
+    $e = "$(Get-SRSessionPref $Session 'effort')".Trim();  if ($e)  { $bits.Add($e) }
+    $pm = "$(Get-SRSessionPref $Session 'permissionMode')".Trim(); if ($pm) { $bits.Add($pm) }
+    if (-not (Test-SRRemoteWanted $Session)) { $bits.Add('no remote') }
+    if (Test-SRHiddenWanted $Session) { $bits.Add('hidden') }
+    $n = @(@(Get-SRSessionPref $Session 'allowedTools') + @(Get-SRSessionPref $Session 'disallowedTools') |
+           Where-Object { "$_".Trim() }).Count
+    if ($n) { $bits.Add("$n tool rule(s)") }
+    return (($bits | Where-Object { $_ }) -join '  ·  ')
+}
+
 function New-SRBootScript {
     param(
         [Parameter(Mandatory)][string]$Dir,
         [string]$SessionId,
         [Parameter(Mandatory)][string]$Title,
-        [string[]]$ClaudeArgs
+        [string[]]$ClaudeArgs,
+        # Remote Control names THIS remote session. Off means the flag is not
+        # passed at all, which is different from passing it with an empty name.
+        [bool]$RemoteControl = $true
     )
     if (-not (Test-Path -LiteralPath $SR_StateDir)) {
         New-Item -ItemType Directory -Path $SR_StateDir -Force | Out-Null
@@ -3106,7 +3204,8 @@ __CLAUDELINE__
     $q = { param($v) "'" + ([string]$v).Replace("'", "''") + "'" }
     $parts = @('& claude')
     if ($SessionId) { $parts += @('--resume', (& $q $SessionId)) }
-    $parts += @('-n', (& $q $Title), '--remote-control', (& $q $Title))
+    $parts += @('-n', (& $q $Title))
+    if ($RemoteControl) { $parts += @('--remote-control', (& $q $Title)) }
     foreach ($a in @($ClaudeArgs)) { if ($a) { $parts += (& $q $a) } }
 
     $body = $body.Replace('__SCRUBVARS__',  (($SR_ChildVars | ForEach-Object { "'" + $_ + "'" }) -join ','))
@@ -3175,4 +3274,65 @@ function Start-SRSession {
         '-File',   (ConvertTo-SRArg $BootScript)
     ) -join ' '
     Start-Process -FilePath $wt -ArgumentList $cmdline | Out-Null
+}
+
+# ===========================================================================
+# A HIDDEN SESSION — no window, and it outlives this tool.
+#
+# The same boot script, run in a console that is never shown, instead of in a
+# Windows Terminal tab. `powershell -WindowStyle Hidden` still gets a real
+# console: claude needs one, the relay reads one, and the window simply is not
+# painted.
+#
+# 🔑 PROVEN BEFORE IT WAS BUILT (2026-08-29). Against a throwaway `claude --bg`
+# session: the hidden console read back through [SRCon]::Screen, keys sent with
+# [SRCon]::Send REACHED THE SESSION - confirmed by finding the marker in
+# `claude logs`, i.e. asked of claude rather than of the screen it was typed
+# into - and killing the viewer left the session running. So hiding costs
+# nothing: a hidden conversation is still readable and still answerable.
+#
+# 🪤 NOT `claude --bg`. That is Claude Code's own background mode and it works,
+# but a --bg session can only be reached with `claude attach`, which un-hides it.
+# Running the ordinary boot script in an unshown console keeps every existing
+# mechanism - resume by session id, the transcript, the relay, Go to terminal -
+# working unchanged. The window is the only thing that differs.
+function Start-SRHiddenSession {
+    param(
+        [Parameter(Mandatory)][string]$Dir,
+        [Parameter(Mandatory)][string]$BootScript,
+        [Parameter(Mandatory)][string]$Title
+    )
+    if (-not (Test-Path -LiteralPath $Dir -PathType Container)) {
+        throw "directory no longer exists: $Dir"
+    }
+    $p = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden `
+            -WorkingDirectory $Dir `
+            -ArgumentList @('-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $BootScript)
+    Write-SRLog ("  [ok]   hidden session '{0}' started, shell pid {1}" -f $Title, $p.Id)
+    return $p.Id
+}
+
+# Bring a hidden conversation onto the screen. There is no way to move a console
+# between windows, so this opens the conversation in a REAL tab and stops the
+# hidden one - same conversation, same transcript, now visible.
+function Show-SRHiddenSession {
+    param(
+        [Parameter(Mandatory)][int]$ProcessId,
+        [Parameter(Mandatory)][string]$Dir,
+        [Parameter(Mandatory)][string]$BootScript,
+        [Parameter(Mandatory)][string]$Title
+    )
+    # Stop the hidden one FIRST: two claude processes on one conversation would
+    # both hold its transcript, and the second would resume a session the first
+    # is still writing.
+    $proc = $null
+    try { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop } catch { }
+    if ($proc) {
+        foreach ($kid in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$ProcessId" -ErrorAction SilentlyContinue)) {
+            if ($kid.Name -eq 'claude.exe') { try { Stop-Process -Id ([int]$kid.ProcessId) -Force -ErrorAction Stop } catch { } }
+        }
+        try { Stop-Process -Id $ProcessId -Force -ErrorAction Stop } catch { }
+        Start-Sleep -Milliseconds 600
+    }
+    Start-SRSession -Dir $Dir -BootScript $BootScript -Title $Title
 }
