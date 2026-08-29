@@ -479,6 +479,46 @@ Hide-Cast
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- how often a status can actually change ---'
+# ===========================================================================
+# 🔴 THE 6-SECOND PASS USED TO BE A REPAINT WEARING A REFRESH'S CLOTHES. It
+# re-derived bands from $script:model, which only the 45-second probe refreshed,
+# so a conversation you were not looking at could be three-quarters of a minute
+# stale while the window looked busy. The probe is 15 s now, and the fast pass
+# has a signal of its own: a transcript that is GROWING is a session working.
+if ($script:LiveSeconds -gt 20) { Fail "the probe runs every $($script:LiveSeconds)s - status would be that stale" }
+else { Pass "the probe refreshes status every $($script:LiveSeconds)s" }
+
+$liveRows = @($script:model.ToArray() | Where-Object { $_.Live })
+if (-not $liveRows.Count) { Note 'nothing is running, so the cheap tier cannot be posed' }
+else {
+    $cost = Ms { $null = Update-LiveWriters }
+    Note ("  the cheap tier stats $($liveRows.Count) live transcript(s) in {0:N1} ms" -f $cost)
+    if ($cost -gt 400) { Fail ("the 6-second tier costs {0:N0} ms - that is not a cheap tier" -f $cost) }
+    else { Pass ("the 6-second tier costs {0:N0} ms against the probe's ~1200" -f $cost) }
+
+    # 🩤 IT MOVES A ROW OUT OF NEEDS YOU, NEVER INTO IT. File activity proves a
+    # session is doing something; it can never prove one has started waiting.
+    $victim = $liveRows[0]
+    $bandWas = $victim.Band
+    $victim.Band = 'needs'
+    $script:liveStamp["$($victim.Id)"] = 'definitely-not-the-current-stamp'
+    $null = Update-LiveWriters
+    if ("$($victim.Band)" -ne 'working') {
+        Fail 'a live conversation whose transcript changed was left in NEEDS YOU'
+    } else { Pass 'a transcript that grew moves its row out of NEEDS YOU within the 6-second tick' }
+
+    # The inverse: a row that is NOT needing you is never pushed into needs.
+    $victim.Band = 'done'
+    $script:liveStamp["$($victim.Id)"] = 'also-not-the-current-stamp'
+    $null = Update-LiveWriters
+    if ("$($victim.Band)" -ne 'done') { Fail "the cheap tier moved a row INTO '$($victim.Band)' - only the probe may do that" }
+    else { Pass 'and never moves a row into a state it cannot measure' }
+    $victim.Band = $bandWas
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- what you actually wait on ---'
 # ===========================================================================
 # 🔴 THE PER-CONVERSATION NUMBER WAS NEVER THE THING YOU FEEL. It measures the
@@ -785,6 +825,72 @@ else {
 }
 $script:bandPick = $null
 Build-Sessions
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- each pane searches, sorts and filters itself ---'
+# ===========================================================================
+# 🔴 THE HEADER BOX IS GLOBAL; THESE ARE NOT. Being able to hold one term for
+# projects and another for conversations at the same time is the whole point of
+# having both, and is what "I am still missing the search in the work surface
+# projects and sessions" meant after the global box already reached both panes.
+$ui.ModeWork.IsChecked = $true
+Set-Surface 'work'
+$script:bandPick = $null; $script:railPick = $null
+$ui.Search.Text = ''; $ui.RailSearch.Text = ''; $ui.ListSearch.Text = ''
+Build-Rail; Build-Sessions
+$tiles0 = @($ui.RailList.ItemsSource).Count
+$rows0  = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' }).Count
+if ($tiles0 -lt 2 -or $rows0 -lt 2) { Note 'not enough on screen to pose the search' }
+else {
+    # The rail's box narrows the rail and LEAVES THE SESSIONS ALONE.
+    $ui.RailSearch.Text = 'algotrader'
+    Build-Rail; Build-Sessions
+    $tilesR = @($ui.RailList.ItemsSource)
+    $rowsR  = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' }).Count
+    $offName = @($tilesR | Where-Object { "$($_.Label)".ToLower() -notlike '*algotrader*' })
+    if (-not $tilesR.Count) { Fail "the rail search matched no project at all" }
+    elseif ($offName.Count) { Fail "$($offName.Count) project(s) survived a search they do not match" }
+    elseif ($tilesR.Count -ge $tiles0) { Fail "the rail search narrowed nothing ($($tilesR.Count) of $tiles0)" }
+    elseif ($rowsR -ne $rows0) { Fail "the rail's own box changed the SESSIONS column too ($rows0 -> $rowsR)" }
+    else { Pass "the rail box narrows the rail to $($tilesR.Count) of $tiles0 and leaves the sessions untouched" }
+    $ui.RailSearch.Text = ''
+
+    # And the sessions box narrows the sessions and LEAVES THE RAIL ALONE.
+    Build-Rail; Build-Sessions
+    $anyName = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })[0].Name
+    $frag = "$anyName".Substring(0, [Math]::Min(4, "$anyName".Length)).ToLower()
+    $ui.ListSearch.Text = $frag
+    Build-Rail; Build-Sessions
+    $tilesL = @($ui.RailList.ItemsSource).Count
+    $rowsL  = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })
+    $offRow = @($rowsL | Where-Object { "$($_.Name)".ToLower() -notlike "*$frag*" -and "$($_.Row.S.autoTitle)".ToLower() -notlike "*$frag*" })
+    if (-not $rowsL.Count) { Fail "the sessions search on '$frag' matched nothing, not even the row it came from" }
+    elseif ($offRow.Count) { Fail "$($offRow.Count) conversation(s) survived a search they do not match" }
+    elseif ($tilesL -ne $tiles0) { Fail "the sessions box changed the RAIL too ($tiles0 -> $tilesL)" }
+    else { Pass "the sessions box narrows to $($rowsL.Count) of $rows0 and leaves the rail untouched" }
+    $ui.ListSearch.Text = ''
+    Build-Rail; Build-Sessions
+}
+
+# The rail's own ordering, and its own filter.
+foreach ($k in @('recent', 'name', 'waiting', 'busiest')) {
+    $script:railSort = $k
+    try { Build-Rail } catch { Fail "ordering the rail by '$k' threw: $($_.Exception.Message)" }
+}
+$script:railSort = 'name'; Build-Rail
+$names = @($ui.RailList.ItemsSource | ForEach-Object { "$($_.Label)".ToLower() })
+$sorted = @($names | Sort-Object)
+if (($names -join '|') -ne ($sorted -join '|')) { Fail 'ordering the rail by name did not sort it' }
+else { Pass "the rail orders itself four ways ($($names.Count) projects, name order verified)" }
+$script:railSort = 'recent'
+
+$script:railOnlyLive = $true; Build-Rail
+$live = @($ui.RailList.ItemsSource)
+$dead = @($live | Where-Object { "$($_.State)" -like '*idle*' -and "$($_.State)" -notlike '*working*' -and "$($_.State)" -notlike '*waiting*' })
+if ($dead.Count) { Fail "$($dead.Count) project(s) with nothing running survived the 'only running' filter" }
+else { Pass "'only running' leaves $($live.Count) project(s), none of them idle" }
+$script:railOnlyLive = $false; Build-Rail
 
 # ===========================================================================
 Write-Host ''

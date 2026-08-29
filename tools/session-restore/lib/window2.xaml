@@ -998,15 +998,35 @@
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
-            <Border Grid.Row="0" Padding="16,12,12,8">
-              <Grid>
-                <TextBlock Text="PROJECTS" Style="{StaticResource Caption}" VerticalAlignment="Center"/>
-                <TextBlock x:Name="RailClear" Text="clear" Style="{StaticResource Dim}"
-                           HorizontalAlignment="Right" VerticalAlignment="Center"
-                           Cursor="Hand" Visibility="Collapsed"
-                           ToolTip="Stop filtering by project."/>
-              </Grid>
-            </Border>
+            <!-- 🔴 THE PANE SEARCHES, SORTS AND FILTERS ITSELF. The header box
+                 is the GLOBAL one and reaches both panes at once; that is not
+                 the same as narrowing this list while leaving the other alone,
+                 which is what the operator asked for twice. -->
+            <StackPanel Grid.Row="0">
+              <Border Padding="16,12,12,6">
+                <Grid>
+                  <TextBlock Text="PROJECTS" Style="{StaticResource Caption}" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="RailClear" Text="clear" Style="{StaticResource Dim}"
+                             HorizontalAlignment="Right" VerticalAlignment="Center"
+                             Cursor="Hand" Visibility="Collapsed"
+                             ToolTip="Stop filtering by project."/>
+                </Grid>
+              </Border>
+              <TextBox x:Name="RailSearch" Style="{StaticResource Search}"
+                       Margin="12,0,12,7" Tag="Find a project"
+                       AutomationProperties.Name="find a project"/>
+              <Border Padding="14,0,12,9">
+                <StackPanel Orientation="Horizontal">
+                  <TextBlock x:Name="RailSort" Style="{StaticResource Meta}" Cursor="Hand"
+                             VerticalAlignment="Center"
+                             ToolTip="Change how the projects are ordered"/>
+                  <TextBlock Text="  ·  " Style="{StaticResource Meta}" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="RailOnlyLive" Style="{StaticResource Meta}" Cursor="Hand"
+                             VerticalAlignment="Center"
+                             ToolTip="Show only projects with something running"/>
+                </StackPanel>
+              </Border>
+            </StackPanel>
             <ListBox x:Name="RailList" Grid.Row="1" Style="{StaticResource Plain}"
                      ItemContainerStyle="{StaticResource PlainItem}"
                      ItemTemplate="{StaticResource RailRowTpl}"
@@ -1027,9 +1047,10 @@
           <Grid>
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
               <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
-            <Border Grid.Row="0" Padding="16,12,12,8">
+            <Border Grid.Row="0" Padding="16,12,12,6">
               <Grid>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                   <TextBlock x:Name="ListCaption" Text="SESSIONS" Style="{StaticResource Caption}" VerticalAlignment="Center"/>
@@ -1043,7 +1064,11 @@
                            HorizontalAlignment="Right" VerticalAlignment="Center"/>
               </Grid>
             </Border>
-            <ListBox x:Name="SessionList" Grid.Row="1" Style="{StaticResource Plain}"
+            <!-- This pane's own search, independent of the header's global one. -->
+            <TextBox x:Name="ListSearch" Grid.Row="1" Style="{StaticResource Search}"
+                     Margin="12,0,12,8" Tag="Find a conversation"
+                     AutomationProperties.Name="find a conversation"/>
+            <ListBox x:Name="SessionList" Grid.Row="2" Style="{StaticResource Plain}"
                      ItemContainerStyle="{StaticResource PlainItem}"
                      ItemTemplate="{StaticResource SessionRowTpl}"
                      AutomationProperties.Name="sessions"/>

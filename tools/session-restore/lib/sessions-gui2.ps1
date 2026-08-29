@@ -124,8 +124,8 @@ foreach ($n in @(
     'Shell','TitleBar','WinMin','WinMax','WinClose',
     'LiveCount','Search','Stamp','Rescan','NewSession',
     'ModeWork','ModeManage','Broadcast',
-    'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear',
-    'ListPane','ListSplit','ListCaption','ListSort','ListCount','SessionList',
+    'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear','RailSearch','RailSort','RailOnlyLive',
+    'ListPane','ListSplit','ListCaption','ListSort','ListSearch','ListCount','SessionList',
     'OutputPane','PaneName','PaneState','PaneStateDot','PaneGoTo','PaneRelaunch','PaneSettings',
     'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
@@ -914,13 +914,25 @@ function Convert-HslToColor { param([double]$H, [double]$S, [double]$L)
         [byte][math]::Round(($b + $m) * 255))
 }
 
+# The rail's own ordering and its own filter, independent of the sessions column.
+$script:railSort = 'recent'
+$script:RailSorts = @(
+    @{ Key = 'recent';  Label = 'recent first' },
+    @{ Key = 'name';    Label = 'by name' },
+    @{ Key = 'waiting'; Label = 'most waiting' },
+    @{ Key = 'busiest'; Label = 'busiest' }
+)
+$script:railOnlyLive = $false
+
 function Build-Rail {
-    # 🔴 THE RAIL OBEYS THE SEARCH BOX. It did not, so typing a project name
-    # narrowed the sessions column while the rail went on listing all 29 - the
-    # half of "in the projects and sessions I would like to be able to search"
-    # that was missing. A project whose every conversation has been filtered out
-    # is not a project you can pick, so it goes.
+    # 🔴 TWO SEARCHES, AND THEY ARE NOT THE SAME QUESTION. The header box is
+    # GLOBAL and narrows both panes at once; this pane's own box narrows only
+    # the projects. Being able to hold "AlgoTrader" in one and "KERNEL" in the
+    # other is the whole reason for having both, and is what "I am still missing
+    # the search in the work surface projects and sessions" meant after the
+    # global box already reached here.
     $q = "$($ui.Search.Text)".Trim().ToLower()
+    $qr = "$($ui.RailSearch.Text)".Trim().ToLower()
     $byProj = @{}
     foreach ($r in $script:model) {
         if (-not (Test-OnSurface $r)) { continue }
@@ -934,15 +946,41 @@ function Build-Rail {
             $hay = ('{0} {1} {2}' -f $t, $pl, $r.D.path).ToLower()
             if ($hay -notlike "*$q*") { continue }
         }
+        if ($qr) {
+            # This box matches the PROJECT, not the conversation - it is the
+            # projects list, and matching conversation titles here would hide
+            # projects whose names you had typed correctly.
+            $pl2 = ''
+            if ("$($r.D.path)") { $pl2 = Get-ProjectLabel "$($r.D.path)" }
+            if (('{0} {1}' -f $pl2, $r.D.path).ToLower() -notlike "*$qr*") { continue }
+        }
         $k = "$($r.D.path)"
         if (-not $byProj.ContainsKey($k)) { $byProj[$k] = New-Object System.Collections.Generic.List[object] }
         $byProj[$k].Add($r)
     }
+    # 🔴 THE RAIL ORDERS ITSELF. 'recent' is the default and was the only
+    # one; the others exist because at 29 projects "which has something waiting"
+    # and "which is busiest" are different questions from "which did I touch
+    # last", and only the first was answerable.
     $order = @($byProj.Keys | Sort-Object {
-        $newest = [datetime]0
-        foreach ($x in $byProj[$_]) { try { $t = [datetime]$x.S.lastActive; if ($t -gt $newest) { $newest = $t } } catch { } }
-        - $newest.Ticks
+        $k2 = $_
+        $kids2 = $byProj[$k2]
+        switch ($script:railSort) {
+            'name'    { (Get-ProjectLabel $k2).ToLower() }
+            'waiting' { - @($kids2 | Where-Object { "$($_.Band)" -eq 'needs' }).Count }
+            'busiest' { - @($kids2 | Where-Object { $_.Live }).Count }
+            default   {
+                $newest = [datetime]0
+                foreach ($x in $kids2) { try { $t = [datetime]$x.S.lastActive; if ($t -gt $newest) { $newest = $t } } catch { } }
+                - $newest.Ticks
+            }
+        }
     })
+    if ($script:railOnlyLive) {
+        # A project with nothing running is not somewhere you are going to look
+        # next, which is the only thing this rail is for.
+        $order = @($order | Where-Object { @($byProj[$_] | Where-Object { $_.Live }).Count -gt 0 })
+    }
     $items = New-Object System.Collections.Generic.List[object]
     foreach ($k in $order) {
         $picked = ($script:railPick -eq $k)
@@ -1020,7 +1058,8 @@ function Sort-SessionRows { param($Rows)
 }
 
 function Build-Sessions {
-    $q = "$($ui.Search.Text)".Trim().ToLower()
+    $q  = "$($ui.Search.Text)".Trim().ToLower()
+    $ql = "$($ui.ListSearch.Text)".Trim().ToLower()
 
     $keep = New-Object System.Collections.Generic.List[object]
     foreach ($r in $script:model) {
@@ -1030,6 +1069,14 @@ function Build-Sessions {
             $t = (Get-Title $r.S $r.D).Text
             $hay = ('{0} {1} {2} {3}' -f $t, $r.S.autoTitle, $r.D.path, $r.Id).ToLower()
             if ($hay -notlike "*$q*") { continue }
+        }
+        if ($ql) {
+            # This pane's own box. Deliberately does NOT match the project path:
+            # narrowing projects is the other pane's job, and matching both here
+            # would make typing a project name in the sessions box silently do
+            # what the rail box does.
+            $t2 = (Get-Title $r.S $r.D).Text
+            if (('{0} {1}' -f $t2, $r.S.autoTitle).ToLower() -notlike "*$ql*") { continue }
         }
         $keep.Add($r)
     }
@@ -1931,7 +1978,10 @@ $ui.RailClear.Add_MouseLeftButtonUp({ $script:railPick = $null; Build-Rail; Buil
 # is a visibly laggy search box.
 $script:searchTimer = New-Object System.Windows.Threading.DispatcherTimer
 $script:searchTimer.Interval = [TimeSpan]::FromMilliseconds(180)
-$script:searchTimer.Add_Tick({ $script:searchTimer.Stop(); Build-Sessions })
+# 🔴 BOTH PANES. The header box narrows the rail as well as the list now, and
+# the rail has a box of its own - so a rebuild of only the sessions column would
+# leave the projects showing a set that no longer matches what you typed.
+$script:searchTimer.Add_Tick({ $script:searchTimer.Stop(); Build-Rail; Build-Sessions })
 $ui.Search.Add_TextChanged({ $script:searchTimer.Stop(); $script:searchTimer.Start() })
 
 # ===========================================================================
@@ -2122,6 +2172,37 @@ foreach ($pair in @(@('MgrAll', 'all'), @('MgrTicked', 'ticked'),
         Build-Manager
     })
 }
+
+# --- the two panes' own controls -------------------------------------------
+function Update-RailLabels {
+    $cur = @($script:RailSorts | Where-Object { $_.Key -eq $script:railSort })
+    $ui.RailSort.Text = $(if ($cur.Count) { "$($cur[0].Label)" } else { 'recent first' })
+    $ui.RailOnlyLive.Text = $(if ($script:railOnlyLive) { 'only running' } else { 'all projects' })
+    $ui.RailOnlyLive.Foreground = $window.FindResource($(if ($script:railOnlyLive) { 'TextMax' } else { 'TextLow' }))
+}
+$ui.RailSort.Add_MouseLeftButtonDown({
+    param($s, $e)
+    $keys = @($script:RailSorts | ForEach-Object { $_.Key })
+    $at = [array]::IndexOf($keys, $script:railSort)
+    $script:railSort = $keys[($at + 1) % $keys.Count]
+    Update-RailLabels
+    Build-Rail
+    $e.Handled = $true
+})
+$ui.RailOnlyLive.Add_MouseLeftButtonDown({
+    param($s, $e)
+    $script:railOnlyLive = -not $script:railOnlyLive
+    Update-RailLabels
+    Build-Rail
+    $e.Handled = $true
+})
+Update-RailLabels
+
+# 🪤 THE SAME DEBOUNCE THE HEADER BOX USES. Rebuilding on every keystroke over
+# 190 conversations is a stutter you can feel while typing; the timer collapses
+# a burst of keys into one rebuild.
+$ui.RailSearch.Add_TextChanged({ $script:searchTimer.Stop(); $script:searchTimer.Start() })
+$ui.ListSearch.Add_TextChanged({ $script:searchTimer.Stop(); $script:searchTimer.Start() })
 
 function Update-ListSortLabel {
     $cur = @($script:ListSorts | Where-Object { $_.Key -eq $script:listSort })
@@ -3316,7 +3397,13 @@ Set-Breakpoint
 # handed back and applied here, on the dispatcher.
 # ===========================================================================
 $script:FastSeconds = 6
-$script:LiveSeconds = 45
+# 🔴 15, NOT 45. The whole probe runs OFF the UI thread and was measured at
+# ~1.2 s (the agent map is 950 ms of it - `claude agents --json` is a process
+# spawn, so that cost is irreducible without changing the source of truth). At
+# 45 s a conversation you were not looking at could be three-quarters of a
+# minute stale, which is what "the sessions are not updating" kept meaning. 15 s
+# is an 8% background duty cycle for a threefold improvement in freshness.
+$script:LiveSeconds = 15
 $script:probeAt = Get-Date
 $script:probePs = $null
 $script:probeRs = $null
@@ -3353,13 +3440,53 @@ function Get-ModelFingerprint {
     return $sb.ToString()
 }
 
+# 🔴 THE 6-SECOND PASS COULD NOT DISCOVER ANYTHING. It re-derived the bands
+# from $script:model - which only the 45-second probe ever refreshed - so it was
+# a REPAINT wearing a refresh's clothes: six seconds of apparent attentiveness
+# over data that could be three-quarters of a minute old.
+#
+# This gives it a signal of its own, and a cheap one. A transcript that is
+# GROWING is a session that is working, and stating the live set costs 14.7 ms
+# for 15 conversations (measured) against the 950 ms the agent map costs. It is
+# the follow-tick's trick generalised from the selected conversation to every
+# live one.
+#
+# 🩤 IT ONLY EVER MOVES A ROW *OUT* OF NEEDS YOU. File activity proves a
+# session is doing something; it can never prove one has started waiting, and
+# claiming something wants you is a claim that has to be measured. The probe
+# stays the only thing that can put a row INTO needs.
+$script:liveStamp = @{}
+function Update-LiveWriters {
+    $moved = $false
+    foreach ($r in $script:model) {
+        if (-not $r.Live) { continue }
+        $j = "$($r.S.jsonl)"
+        if (-not $j) { continue }
+        $now = $null
+        try {
+            $fi = New-Object System.IO.FileInfo $j
+            if (-not $fi.Exists) { continue }
+            $now = ('{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks)
+        } catch { continue }
+        $key = "$($r.Id)"
+        $was = $script:liveStamp[$key]
+        $script:liveStamp[$key] = $now
+        if ($was -and $was -ne $now -and "$($r.Band)" -eq 'needs') {
+            $r.Band = 'working'
+            $moved = $true
+        }
+    }
+    return $moved
+}
+
 function Invoke-FastPass {
     # The stamp is the one thing that must move every tick: it is how you know
     # the window is still watching rather than frozen.
     $ui.Stamp.Text = ('as of {0}' -f $script:probeAt.ToString('HH:mm:ss'))
+    $moved = Update-LiveWriters
     if ($script:surface -ne 'work') { return }
     $fp = Get-ModelFingerprint
-    if ($fp -eq $script:lastFp) { return }
+    if (-not $moved -and $fp -eq $script:lastFp) { return }
     $script:lastFp = $fp
     Build-Sessions
 }
