@@ -43,9 +43,9 @@ point; every other file here does a different job.**
 ### It is an application, not a script that draws a window
 
 `Sessions.exe` **hosts the PowerShell runspace inside itself** and runs
-`sessions-gui.ps1` on its own STA thread. Nothing was rewritten — every line of the
-window is still the PowerShell you can open and read, still on disk beside the exe,
-still what the tests drive. What changed is the wrapper:
+`lib\sessions-gui2.ps1` on its own STA thread. Nothing was rewritten — every line of
+the window is still the PowerShell you can open and read, still on disk beside the
+exe, still what the tests drive. What changed is the wrapper:
 
 | | before | now |
 |---|---|---|
@@ -592,8 +592,9 @@ this folder, because they are yours and not the tool's.
 | `Enable Auto Logon.bat` | self-elevating wrapper for `enable-autologon.ps1` |
 | `lib/_common.ps1` | discovery, registry, the rolling auto-tick, guards, launching — shared, so there is one copy |
 | `lib/restore-sessions.ps1` | restore · `-Scan` · `-New` · `-Install` · `-Uninstall` |
-| `lib/sessions-gui.ps1` | the window itself: markup, `$ui`, handlers |
-| `lib/gui/` | the rest of it — `gui-model` (what a conversation is) · `gui-rows` (what a row shows) · `gui-notify` (tray, toasts) · `gui-read` (reading and replying) · `gui-actions` |
+| `lib/sessions-gui2.ps1` | the window: model, surfaces, handlers, the control plane |
+| `lib/window2.xaml` | its markup — palette, type scale, row templates, the three columns |
+| `lib/spawn2.xaml` | the New session dialog |
 | `CONTEXT.md` | the shared vocabulary, and the traps this subsystem keeps walking into |
 | `lib/enable-autologon.ps1` | auto-logon on/off, password into the LSA store — needs elevation |
 | `lib/profile.ps1` | the `cc` / `ccr` / `ccs` functions; your PowerShell profile gets a single dot-source line pointing here |

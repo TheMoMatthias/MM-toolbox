@@ -74,7 +74,7 @@ param(
     # `shot` is the odd one out: it draws the real window to PNG and asserts
     # almost nothing. It never runs in a full sweep -- only when asked for by
     # name -- because its output is something to LOOK at, not something to pass.
-    [ValidateSet('keys', 'state', 'inbox', 'jump', 'gui2', 'headless', 'relay', 'shot', 'app')]
+    [ValidateSet('state', 'gui2', 'jump', 'relay', 'shot', 'app')]
     [string]$Only,
     [switch]$NoGui,
 
@@ -138,17 +138,12 @@ function New-CommonHarness {
 # an unshown window, so no background scan starts and the state stays exactly
 # what the driver puts there.
 #
-# 🔴 READ THIS BEFORE TRUSTING A GREEN RUN.
-# Sessions.exe now launches lib\sessions-gui2.ps1. The suites that splice a
-# window - headless, inbox, keys, shot - still drive lib\sessions-gui.ps1, the
-# RETIRED one, because every assertion in them names elements that window2.xaml
-# does not have (RowList, InboxList, FbNeeds, ModeInbox, ReadPane, AskPanel,
-# NeedsBand...). Their green therefore means "the retired window still works".
-# It says NOTHING about the window that actually opens when you press the icon.
-# Porting them is the next job; until it is done, do not read this suite as
-# coverage of the shipped app.
+# There is one window now. lib\sessions-gui.ps1 and the suites that drove it
+# (headless, inbox, keys) were deleted once tests\gui2-driver.ps1 covered the
+# shipped one - a green suite that describes a window nobody launches is worse
+# than no suite, because it reads as coverage.
 function New-GuiHarness {
-    param([string]$Driver, [string]$OutFile, [string]$Gui = 'sessions-gui.ps1')
+    param([string]$Driver, [string]$OutFile, [string]$Gui = 'sessions-gui2.ps1')
 
     $src = @(Get-Content -LiteralPath (Join-Path $lib $Gui))
     $cut = -1
@@ -218,17 +213,6 @@ if (-not $Only -or $Only -eq 'state') {
     Record 'state' $LASTEXITCODE @($out)
 }
 
-# --- keys: drives the GUI, needs a desktop ----------------------------------
-if ((-not $Only -or $Only -eq 'keys') -and -not $NoGui -and -not $NoSteal) {
-    Write-Host "`n=== keys (GUI keyboard navigation) ===" -ForegroundColor Cyan
-    $drv = Join-Path $here 'keys-driver.ps1'
-    $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $drv 2>&1
-    $out | ForEach-Object { Write-Host $_ }
-    # 2 means it could not get keyboard focus, which is a statement about the
-    # desktop and not about the GUI. Not a pass, and deliberately not a failure.
-    Record 'keys' $LASTEXITCODE @($out)
-}
-
 # --- gui2: THE WINDOW THAT ACTUALLY OPENS -----------------------------------
 # 🔴 THIS IS THE ONE THAT COVERS THE APP. headless, inbox and keys below all
 # drive lib\sessions-gui.ps1, the RETIRED window; their green says nothing about
@@ -241,20 +225,6 @@ if (-not $Only -or $Only -eq 'gui2') {
     Record 'gui2' $LASTEXITCODE @($out)
 }
 
-# --- headless: the window is BUILT but never SHOWN --------------------------
-# Needs STA for WPF, needs no desktop attention at all: nothing appears, nothing
-# takes focus, nothing touches the mouse. This is where the bulk of the checking
-# belongs -- every bug that shipped from this subsystem was a code bug that a
-# built-but-unshown window would have caught.
-if (-not $Only -or $Only -eq 'headless') {
-    Write-Host "`n=== headless (built, never shown) ===" -ForegroundColor Cyan
-    $h = New-GuiHarness -Driver 'headless-driver.ps1' -OutFile 'headless-test.ps1'
-    if ($Shot) { $env:SR_TEST_SHOT = $Shot } else { Remove-Item Env:\SR_TEST_SHOT -ErrorAction SilentlyContinue }
-    $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
-    $out | ForEach-Object { Write-Host $_ }
-    Record 'headless' $LASTEXITCODE @($out)
-    Remove-Item Env:\SR_TEST_SHOT -ErrorAction SilentlyContinue
-}
 
 # --- relay: the question round trip, against a live console -----------------
 # Spawns a REPLICA of claude's menu in a real console and answers it through the
@@ -279,15 +249,6 @@ if ($Only -eq 'shot') {
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
     $out | ForEach-Object { Write-Host $_ }
     Record 'shot' $LASTEXITCODE @($out)
-}
-
-# --- inbox: drives the GUI, needs a desktop ---------------------------------
-if ((-not $Only -or $Only -eq 'inbox') -and -not $NoGui -and -not $NoSteal) {
-    Write-Host "`n=== inbox (the orchestration view) ===" -ForegroundColor Cyan
-    $drv = Join-Path $here 'inbox-driver.ps1'
-    $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $drv 2>&1
-    $out | ForEach-Object { Write-Host $_ }
-    Record 'inbox' $LASTEXITCODE @($out)
 }
 
 # --- jump: needs a desktop and the operator's real terminals -----------------

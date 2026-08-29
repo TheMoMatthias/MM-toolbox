@@ -209,14 +209,28 @@ else { Pass "the stamp moves every tick: '$($ui.Stamp.Text)'" }
 # 🔴 Build-Sessions replaces ItemsSource, which throws away the scroll position.
 # A repaint that changes nothing would yank the list from under your hand, every
 # six seconds.
-$script:lastFp = Get-ModelFingerprint
+# 🪤 THIS ASSERTION IS ONLY MEANINGFUL WHILE NOTHING MOVED, and the fingerprint
+# contains the AGE STRING - which ticks over on a minute boundary all by itself.
+# The first version failed in a slow sweep for exactly that reason and was
+# saying "the model changed", not "the code repainted wrongly". So the
+# fingerprint is re-checked afterwards, and a run where it genuinely moved is
+# retried rather than counted.
 $sentinel = [PSCustomObject]@{ Kind = 'sentinel' }
-$withMark = @(@($ui.SessionList.ItemsSource) + @($sentinel))
-$ui.SessionList.ItemsSource = $withMark
-Invoke-FastPass
-if (-not @($ui.SessionList.ItemsSource | Where-Object { $_.Kind -eq 'sentinel' }).Count) {
-    Fail 'the fast pass repainted although nothing changed - it would steal your scroll every 6s'
-} else { Pass 'nothing changed, so nothing was repainted' }
+$quiet = $false
+foreach ($attempt in 1, 2, 3) {
+    $fp0 = Get-ModelFingerprint
+    $script:lastFp = $fp0
+    $withMark = @(@($ui.SessionList.ItemsSource) + @($sentinel))
+    $ui.SessionList.ItemsSource = $withMark
+    Invoke-FastPass
+    $kept = @($ui.SessionList.ItemsSource | Where-Object { $_.Kind -eq 'sentinel' }).Count
+    if ((Get-ModelFingerprint) -ne $fp0) { Note "the model moved mid-check (attempt $attempt) - retrying"; continue }
+    if (-not $kept) { Fail 'the fast pass repainted although nothing changed - it would steal your scroll every 6s' }
+    else { Pass 'nothing changed, so nothing was repainted' }
+    $quiet = $true
+    break
+}
+if (-not $quiet) { Note 'the model never held still long enough to check this - not counted either way' }
 $ui.SessionList.ItemsSource = $withMark
 $script:lastFp = 'deliberately-different'
 Invoke-FastPass

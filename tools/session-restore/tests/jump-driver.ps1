@@ -146,7 +146,27 @@ Write-Host ''
 # an accident of enumeration order.
 $byName = @{}
 foreach ($t in @($tabs)) { $byName["$($t.Name)"] = [int]$byName["$($t.Name)"] + 1 }
-$probe = @($tabs | Where-Object { $byName["$($_.Name)"] -eq 1 })[0]
+$unique = @($tabs | Where-Object { $byName["$($_.Name)"] -eq 1 })
+
+# 🪤 AND IT MUST BE A TAB THAT WILL STILL BE THERE A MOMENT LATER. Update-SRTabIndex
+# re-enumerates, so a tab that dies between the two reads is remembered as
+# nothing and the suite reports a defect in the cache. Measured 2026-08-29: with
+# a CI runner active, the first uniquely-titled tab was
+# 'C:\actions-runner-8\externals\node24\bin\node.exe' - and by the next run it
+# was actions-runner-22, because those tabs live for seconds. Prefer a tab that
+# belongs to a conversation this tool knows about; those last. Any unique title
+# is the fallback, for a machine with no sessions up.
+$known = @{}
+try {
+    foreach ($d in (Get-SRRegistry).directories) {
+        foreach ($s in @($d.sessions)) {
+            $t = "$($s.title)".Trim()
+            if ($t -and $t -ne '(untitled)') { $known[$t.ToLower()] = $true }
+        }
+    }
+} catch { }
+$probe = @($unique | Where-Object { $known["$($_.Name)".Trim().ToLower()] })[0]
+if (-not $probe) { $probe = $unique[0] }
 if (-not $probe) {
     Note 'no terminal tab has a title of its own right now - the cache cannot be tested'
 } else {

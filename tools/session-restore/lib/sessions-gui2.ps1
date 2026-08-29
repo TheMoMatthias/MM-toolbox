@@ -123,7 +123,7 @@ $ui = @{}
 foreach ($n in @(
     'TitleBar','WinMin','WinMax','WinClose',
     'LiveCount','Search','Stamp','Rescan','NewSession',
-    'ModeWork','ModeManage','BandChips','Broadcast',
+    'ModeWork','ModeManage','Broadcast',
     'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear',
     'ListPane','ListSplit','ListCaption','ListCount','SessionList',
     'OutputPane','PaneName','PaneState','PaneStateDot','PaneGoTo','PaneRelaunch','PaneSettings',
@@ -135,7 +135,7 @@ foreach ($n in @(
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions',
-    'Status','HelpBtn','SaveBtn'
+    'Status','SaveBtn'
 )) {
     $el = $window.FindName($n)
     if (-not $el) { throw "window2.xaml has no element named '$n' - the script and the markup disagree." }

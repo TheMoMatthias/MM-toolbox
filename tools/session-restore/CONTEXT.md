@@ -3,7 +3,7 @@
 The shared vocabulary for this subsystem. One sentence each, so the same word
 means the same thing in the code, the commits, the UI and the conversation.
 
-Read this before changing `sessions-gui.ps1` or `_common.ps1`. Several of the
+Read this before changing `sessions-gui2.ps1` or `_common.ps1`. Several of the
 entries exist because two names for one idea, or one name for two ideas, shipped
 a bug that took an afternoon to find.
 
@@ -30,8 +30,8 @@ its OWN git index, which is why it gets its own lane and its own auto-tick
 budget instead of competing with main for one.
 
 **the host** — `Sessions.exe`, built from `app\SessionsHost.cs`. It opens a
-Windows PowerShell runspace **inside itself** and runs `sessions-gui.ps1` on its
-own STA thread. It is a WRAPPER, not a port: no PowerShell moved into C#, the
+Windows PowerShell runspace **inside itself** and runs `lib\sessions-gui2.ps1` on
+its own STA thread. It is a WRAPPER, not a port: no PowerShell moved into C#, the
 scripts stay on disk beside it, and every test driver still runs them directly.
 Say "the host" for the exe and "the window" for what the PowerShell draws — they
 are two things and only one of them was added.
@@ -468,7 +468,7 @@ starts with a dash and must stay quoted. `app-driver.ps1` now asserts
 nothing tested it.
 
 **🔴 DPI AWARENESS IS FIXED BY THE FIRST HWND, AND A SPLASH IS AN HWND.**
-`sessions-gui.ps1` calls `SetProcessDpiAwarenessContext` before it creates its
+The window script calls `SetProcessDpiAwarenessContext` before it creates its
 first window, and its own comment says why that position matters. Adding a
 splash to the host put a window on screen *first*, which would have pinned the
 process DPI-unaware and gone soft on every non-96-DPI screen — with nothing

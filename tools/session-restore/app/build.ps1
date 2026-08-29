@@ -12,7 +12,7 @@
     no NuGet, no MSBuild and no project file.
 
     WHAT IS BUILT is a ~15 KB launcher that hosts a PowerShell runspace and runs
-    sessions-gui.ps1 inside it. The scripts are NOT compiled in and NOT hidden --
+    libsessions-gui2.ps1 inside it. The scripts are NOT compiled in and NOT hidden --
     they stay on disk next to the exe, readable and editable, and every test
     driver keeps running them directly. Editing a .ps1 does not need a rebuild;
     only editing SessionsHost.cs does.

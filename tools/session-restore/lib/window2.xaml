@@ -714,8 +714,10 @@
                          ToolTip="What comes back at logon: every conversation by project, with the tick that decides."/>
           </StackPanel>
         </Border>
-        <StackPanel x:Name="BandChips" Grid.Column="1" Orientation="Horizontal"
-                    Margin="16,0,0,0" VerticalAlignment="Center"/>
+        <!-- Column 1 is deliberately empty. It carried a row of band chips that
+             was never populated: the band headings inside the list already show
+             every count, and duplicating them in the chrome was the thing the
+             redesign set out to remove. -->
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
           <Button x:Name="Broadcast" Content="Send to many" Style="{StaticResource Btn}"/>
         </StackPanel>
@@ -1123,8 +1125,10 @@
                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
         <StackPanel Grid.Column="1" Orientation="Horizontal">
           <!-- No Close here any more: the title bar has one, and two buttons
-               that do the same thing in one window is one too many. -->
-          <Button x:Name="HelpBtn" Content="?" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
+               that do the same thing in one window is one too many. The '?'
+               that used to sit here had no handler at all - a control that does
+               nothing when pressed is the exact defect this window was rebuilt
+               to stop having. -->
           <Button x:Name="SaveBtn" Content="Save" Style="{StaticResource BtnPrimary}"/>
         </StackPanel>
       </Grid>

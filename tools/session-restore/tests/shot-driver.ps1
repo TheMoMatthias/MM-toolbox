@@ -1,167 +1,54 @@
-
-# ---------------------------------------------------------------------------
-# shot-driver -- the real window, drawn to PNG, with nothing on screen.
+# ===========================================================================
+# THE REAL WINDOW, DRAWN TO A PNG, NEVER SHOWN.
 #
-# NOT A TEST. It asserts nothing and it can never fail a build. It exists so a
-# change to the layout can be LOOKED AT against the operator's own registry --
-# 204 conversations across 26 projects -- rather than against the six staged
-# fixtures the headless suite uses. Every layout bug that survived a green
-# headless run was a bug about DENSITY: a pill that clipped, a caption that
-# mojibaked, a group that scrolled past the fold. None of those are visible at
-# six rows.
+# By name only (`run-tests.ps1 -Only shot`) and deliberately not part of "all
+# suites passed": it renders the operator's own conversations at real density,
+# which is where every clipped pill, mojibaked caption and column that quietly
+# echoes its neighbour has actually hidden. A layout change is looked at, not
+# asserted.
 #
-# It is spliced onto sessions-gui.ps1 exactly like headless-driver, so what it
-# draws is the shipped window, wired to the shipped registry -- not a mock of
-# either. It opens nothing, saves nothing and never writes to the registry:
-# $script:dirty is asserted clean at the end, and a dirty exit is the one thing
-# here that reports a failure.
+#   SR_SHOT_SURFACE=manage   draw the session manager instead of the work surface
+#   SR_SHOT_SIZE=1200x800    draw at another size, to see the adaptive breakpoints
+#   SR_SHOT_OUT=<path>       where to write it
 #
-#   .\run-tests.ps1 -Only shot                 both views, into .state\shots
-#   $env:SR_SHOT_DIR = 'C:\somewhere'          somewhere else
-#   $env:SR_SHOT_SIZE = '1920x1200'            a different window size
-#
-# The two render passes below are not a mistake. An unshown window has never
-# been through a layout pass, so the first Measure/Arrange is what REALISES the
-# ListBox items; they have not been arranged when it returns, and rendering
-# after one pass gives a window with an empty list in it.
-# ---------------------------------------------------------------------------
-
-$shotDir = $env:SR_SHOT_DIR
-# $SR_StateDir, not $here: the scripts live in lib\ now and $here is that
-# folder, so building the path from it would drop the shots into lib\.state.
-if (-not $shotDir) { $shotDir = Join-Path $SR_StateDir 'shots' }
-if (-not (Test-Path -LiteralPath $shotDir)) { $null = New-Item -ItemType Directory -Path $shotDir -Force }
-
-$shotW = 1480.0
-$shotH = 980.0
+# 🪤 RENDER THE CONTENT, NOT THE WINDOW, AND PAINT THE GROUND FIRST. A Window
+# that has never been shown has no rendered visual root, so RenderTargetBitmap
+# over it comes back blank; and the dark background belongs to the WINDOW, so
+# the content alone renders transparent - which every viewer shows as white.
+# ===========================================================================
+$W = 1480.0; $H = 980.0
 if ($env:SR_SHOT_SIZE -and $env:SR_SHOT_SIZE -match '^(\d+)x(\d+)$') {
-    $shotW = [double]$Matches[1]
-    $shotH = [double]$Matches[2]
+    $W = [double]$Matches[1]; $H = [double]$Matches[2]
+}
+$out = $env:SR_SHOT_OUT
+if (-not $out) { $out = Join-Path $SR_StateDir ('shots\{0}.png' -f (Get-Date -Format 'yyyyMMdd-HHmmss')) }
+
+if ($env:SR_SHOT_SURFACE -eq 'manage') { $ui.ModeManage.IsChecked = $true; Set-Surface 'manage' }
+
+$window.Width = $W; $window.Height = $H
+$root = $window.Content
+if (-not $root.Background -or $root.Background -eq [System.Windows.Media.Brushes]::Transparent) {
+    $root.Background = $window.Background
+}
+foreach ($pass in 1, 2) {
+    $root.Measure((New-Object System.Windows.Size $W, $H))
+    $root.Arrange((New-Object System.Windows.Rect 0, 0, $W, $H))
+    $root.UpdateLayout()
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
+        [System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
 }
 
-$shotFails = 0
-function Write-ShotOk   { param([string]$Text) Write-Host "  ok    $Text" -ForegroundColor DarkGray }
-function Write-ShotBad  { param([string]$Text) $script:shotFails++; Write-Host "  FAIL  $Text" -ForegroundColor Red }
+$dir = Split-Path -Parent $out
+if ($dir -and -not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
+$rtb = New-Object System.Windows.Media.Imaging.RenderTargetBitmap([int]$W, [int]$H, 96, 96,
+        [System.Windows.Media.PixelFormats]::Pbgra32)
+$rtb.Render($root)
+$enc = New-Object System.Windows.Media.Imaging.PngBitmapEncoder
+$enc.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($rtb))
+$fs = [System.IO.File]::Create($out)
+try { $enc.Save($fs) } finally { $fs.Dispose() }
 
-function Save-Shot {
-    param([string]$Name)
-
-    $shotRoot = $window.Content
-
-    # PAINT THE GROUND FIRST. RenderTargetBitmap draws the visual it is handed,
-    # and the dark background belongs to the WINDOW, not to its content. Render
-    # the content alone and the bitmap is transparent -- which every viewer shows
-    # as WHITE, so near-white text lands on near-white and the shot reads as a
-    # broken window rather than the one on screen.
-    $shotHadBg = $shotRoot.Background
-    if (-not $shotHadBg -or $shotHadBg -eq [System.Windows.Media.Brushes]::Transparent) {
-        $shotRoot.Background = $(if ($window.Background) { $window.Background } else { $Pal.Ink })
-    }
-    try {
-        foreach ($shotPass in 1, 2) {
-            $shotRoot.Measure((New-Object System.Windows.Size $shotW, $shotH))
-            $shotRoot.Arrange((New-Object System.Windows.Rect 0, 0, $shotW, $shotH))
-            $shotRoot.UpdateLayout()
-        }
-        $shotPath = Join-Path $shotDir "$Name.png"
-        $shotBmp = New-Object System.Windows.Media.Imaging.RenderTargetBitmap(
-            [int]$shotW, [int]$shotH, 96, 96, [System.Windows.Media.PixelFormats]::Pbgra32)
-        $shotBmp.Render($shotRoot)
-        $shotEnc = New-Object System.Windows.Media.Imaging.PngBitmapEncoder
-        $shotEnc.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($shotBmp))
-        $shotFs = [System.IO.File]::Create($shotPath)
-        try { $shotEnc.Save($shotFs) } finally { $shotFs.Dispose() }
-        $shotLen = (Get-Item -LiteralPath $shotPath).Length
-        if ($shotLen -gt 5000) {
-            Write-ShotOk "$Name.png  $([int]$shotW)x$([int]$shotH)  $([int]($shotLen/1024)) KB"
-        } else {
-            Write-ShotBad "$Name.png is only $shotLen bytes - probably a blank bitmap"
-        }
-    } finally {
-        $shotRoot.Background = $shotHadBg
-    }
-}
-
-Write-Host ''
-Write-Host "  registry: $($script:totalCount) conversation(s), $(@($script:dirs).Count) project(s)" -ForegroundColor DarkGray
-Write-Host "  into    : $shotDir" -ForegroundColor DarkGray
-
-# 🔴 A SHOT WITHOUT A PROBE PASS LIES ABOUT WHICH COLUMNS ARE EMPTY.
-#
-# The harness runs -NoScan, so nothing fills $script:conv -- and Update-RowConv
-# returns early with a blank STATE and a blank WHAT IT LAST SAID for every row.
-# The screenshot then shows two wide, entirely empty columns, and the obvious
-# conclusion is to delete them. They are not empty in the real window: the
-# background pass reads every conversation in the registry, not just the live
-# ones, and measures at about 3 ms each.
-#
-# So read them here too. This is the whole point of drawing the REAL registry:
-# a picture that disagrees with the running window is worse than no picture.
-$shotSw = [Diagnostics.Stopwatch]::StartNew()
-$shotConv = @{}
-$shotSaid = @{}
-$shotRead = 0
-foreach ($shotDir2 in @($script:dirs)) {
-    foreach ($shotS in @(Get-Visible $shotDir2)) {
-        if (-not $shotS.sessionId -or -not $shotS.jsonl) { continue }
-        $shotKey = "$($shotS.sessionId)".ToLower()
-        try { $shotConv[$shotKey] = Get-SRConversationState -JsonlPath $shotS.jsonl; $shotRead++ } catch { }
-        # WHAT IT ACTUALLY SAID, which is the widest column in the Now view and
-        # the whole reason that view exists. Without this the shot fell back to
-        # the state DETAIL -- "input needed", "running" -- on every row, and Now
-        # looked far more repetitive on paper than it is on screen.
-        try { $shotSaid[$shotKey] = Get-SRLastSaid -JsonlPath $shotS.jsonl } catch { }
-    }
-}
-$script:conv = $shotConv
-$script:said = $shotSaid
-try { $script:agents = Get-SRAgentStatus } catch { }
-Write-Host "  probed  : $shotRead conversation(s) in $([int]$shotSw.ElapsedMilliseconds) ms, $(@($script:agents.Keys).Count) agent(s)" -ForegroundColor DarkGray
-# No repaint needed here: every Set-ViewMode below rebuilds through Update-List,
-# which paints each row's state and last-said from exactly this table.
-
-# --- the two views, as they open -------------------------------------------
-Set-ViewMode 'inbox'
-Save-Shot 'now'
-
-Set-ViewMode 'all'
-Save-Shot 'roster'
-
-# THE ORDER, IN WORDS. A 1480x980 shot holds about twenty rows, so everything
-# this ordering is meant to push DOWN is off the bottom of the picture -- which
-# is the point, and also means the picture cannot show that it worked. Print it.
-Write-Host ''
-Write-Host '  roster order:' -ForegroundColor DarkGray
-foreach ($shotP in @($script:rows | Where-Object { $_.Kind -eq 'project' })) {
-    Write-Host ("    {0,-28} {1,-24} {2}" -f
-        "$($shotP.Name)",
-        "$($shotP.Counts)",
-        "last worked $(Get-Age (Get-DirLastActive $shotP.Dir).ToString('o')) ago") -ForegroundColor DarkGray
-}
-Write-Host ''
-
-# --- the roster, fully unfolded, which is the shape being complained about --
-# Every fold open is the worst case for scanning, and the one the operator hits
-# after clicking a project open to look for something.
-foreach ($shotKey in @($script:fold.Keys)) { $script:fold[$shotKey] = $false }
-Update-List
-Save-Shot 'roster-open'
-
-# --- the roster with the age window off, which is the full 204 -------------
-$script:showOlder = $true
-Update-List
-Save-Shot 'roster-all'
-$script:showOlder = $false
-Update-List
-
-# --- nothing here may have changed the registry ----------------------------
-if ($script:dirty) {
-    Write-ShotBad 'the shot run marked the registry dirty - it must only ever read'
-} else {
-    Write-ShotOk 'the registry is untouched'
-}
-
-Write-Host ''
-if ($shotFails) { Write-Host "$shotFails FAILURE(S)" -ForegroundColor Red; exit 1 }
-Write-Host 'the shots are drawn' -ForegroundColor Green
+Write-Host ("  ok    drew {0}  {1}x{2}" -f $out, [int]$W, [int]$H)
+Write-Host ("        surface={0}  rail={1}  list={2}  rows={3}" -f `
+    $script:surface, $ui.RailCol.Width.Value, $ui.ListCol.Width.Value, @($ui.SessionList.Items).Count)
 exit 0

@@ -3,10 +3,10 @@
 //
 // WHAT THIS IS NOT: a rewrite. Not one line of the ~10,000 lines of PowerShell
 // behind the window moved. This process opens a Windows PowerShell 5.1 runspace
-// IN ITSELF and runs sessions-gui.ps1 inside it, on this thread. The script sees
-// the same $PSScriptRoot, dot-sources the same _common.ps1, and reads the same
-// gui-window.xaml as it always did. Every test driver still drives the .ps1
-// files directly and is unaffected by this file existing.
+// IN ITSELF and runs lib\sessions-gui2.ps1 inside it, on this thread. The script
+// sees the same $PSScriptRoot, dot-sources the same _common.ps1, and reads the
+// same window2.xaml as it does when you run it by hand. Every test driver still
+// drives the .ps1 files directly and is unaffected by this file existing.
 //
 // WHY IT EXISTS: launching through powershell.exe cost four things that the .vbs
 // wrapper hides but cannot fix.
@@ -37,14 +37,14 @@
 // double-click to window it is about 3 per cent. SPEED IS NOT WHAT THIS BOUGHT,
 // and the docs say so.
 //
-// APARTMENT. WPF requires STA, and sessions-gui.ps1 defends itself by
+// APARTMENT. WPF requires STA, and the window script defends itself by
 // re-launching through powershell.exe when it does not get one -- which here
 // would silently reintroduce the process this file removes. Main is [STAThread]
 // and the runspace is pinned to this thread (UseCurrentThread), so the script's
 // guard sees STA, does nothing, and the window's message loop is this process's
 // own.
 //
-// 🔴 DPI, AND WHY IT IS HANDLED HERE NOW. sessions-gui.ps1 calls
+// 🔴 DPI, AND WHY IT IS HANDLED HERE NOW. The window script calls
 // SetProcessDpiAwarenessContext before it creates its first window, and its own
 // comment says why that position matters: process DPI awareness is fixed when
 // the first HWND is created and cannot be changed afterwards. THE SPLASH IS AN
@@ -101,14 +101,13 @@ namespace MMToolbox.SessionRestore
         // over their own registry, and neither blocks the other.
         private const string MutexName = @"Local\MMToolbox.SessionRestore.Gui";
 
-        // Must match Title= in gui-window.xaml. Used to raise an instance that is
+        // Must match Title= in window2.xaml. Used to raise an instance that is
         // already running, and by the splash to know when to get out of the way.
         internal const string WindowTitle = "Claude sessions";
 
-        // THE SHIPPED WINDOW. sessions-gui.ps1 is the retired one it replaced; it
-        // stays on disk for one more commit because it is still the only window
-        // the headless/inbox/keys suites can drive. Point this back at it to roll
-        // the whole app back to the old surface in one line.
+        // THE WINDOW. There is only one now: lib\sessions-gui.ps1 and the three
+        // suites that drove it were deleted once tests\gui2-driver.ps1 covered
+        // this one. Changing this line changes what the app opens.
         private const string GuiScript = @"lib\sessions-gui2.ps1";
         private const string RestoreScript = @"lib\restore-sessions.ps1";
 
