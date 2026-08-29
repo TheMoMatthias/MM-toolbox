@@ -736,6 +736,79 @@ else { Pass 'numbered prose that is not consecutive is not a menu' }
 $single = @('  1. only one option') -join "`n"
 if (Invoke-SRParseScreenQuestion -Text $single) { Fail 'a single numbered line was read as a menu' }
 else { Pass 'one numbered line is not a menu' }
+# ===========================================================================
+Write-Host ''
+Write-Host '--- two windows must not discard each other''s ticks ---'
+# ===========================================================================
+# 🔴 MEASURED, NOT SUPPOSED. Window A ticks a conversation and saves; window
+# B, holding a copy read before that, ticks another and saves - and A's tick was
+# simply gone. The whole file is serialised on every save, so the last writer
+# won over everything, and the ticks decide what comes back at the next logon.
+#
+# 🔴 IT RUNS IN A SANDBOXED CHILD PROCESS, AND THAT IS NOT TIDINESS. A first
+# version of this seeded a two-conversation registry through Save-SRRegistry -
+# which writes $SR_RegistryPath, the OPERATOR'S REAL REGISTRY - and restored it
+# in a finally. A run that died before the finally left the operator with two
+# conversations instead of two hundred and their tick set gone. A test that can
+# reach live data will eventually destroy it, however careful the finally is, so
+# this one CANNOT: the child gets its own root, its own .state, and never learns
+# where the real one lives.
+#
+# 🪤 The stamp is per-session-state, so this also cannot be posed by reading
+# twice in ONE process - the second read overwrites the first's stamp and the
+# save is correctly allowed. Two windows are two PROCESSES.
+$sandRoot = Join-Path $tmp ('twowin-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$null = New-Item -ItemType Directory -Path $sandRoot -Force
+$null = New-Item -ItemType Directory -Path (Join-Path $sandRoot '.state') -Force
+Copy-Item -LiteralPath (Join-Path $SR_LibDir '_common.ps1') -Destination (Join-Path $sandRoot '_common.ps1')
+$cfgSrc = Join-Path (Split-Path -Parent $SR_LibDir) 'session-restore.config.json'
+if (Test-Path -LiteralPath $cfgSrc) { Copy-Item -LiteralPath $cfgSrc -Destination $sandRoot }
+
+$scenario = @'
+. (Join-Path $PSScriptRoot '_common.ps1')
+$seed = [PSCustomObject]@{ version = 2; lastScan = $null; directories = @(
+    [PSCustomObject]@{ path = 'C:/probe'; enabled = $true; missing = $false; sessions = @(
+        [PSCustomObject]@{ sessionId = 'aaa'; title = 'A'; enabled = $false; lastActive = (Get-Date).ToString('o') },
+        [PSCustomObject]@{ sessionId = 'bbb'; title = 'B'; enabled = $false; lastActive = (Get-Date).ToString('o') }) } ) }
+Save-SRRegistry -Registry $seed
+$stampA = Get-SRRegistryStamp
+
+# Window B reads, ticks 'B' and saves. The ordinary path.
+$b = Get-SRRegistry
+$b.directories[0].sessions[1].enabled = $true
+Save-SRRegistry -Registry $b
+
+# Window A, still holding the stamp from before B wrote, tries to save.
+$a = Get-SRRegistry
+Set-SRRegistryStamp $stampA
+$a.directories[0].sessions[0].enabled = $true
+try { Save-SRRegistry -Registry $a; 'A_SAVED' } catch { 'A_REFUSED' }
+$f = Get-SRRegistry
+'B_KEPT=' + [bool]$f.directories[0].sessions[1].enabled
+
+# A normal save after re-reading must still work, or this is a tool that cannot save.
+$c = Get-SRRegistry
+$c.directories[0].sessions[0].enabled = $true
+try { Save-SRRegistry -Registry $c; 'NORMAL_OK' } catch { 'NORMAL_REFUSED' }
+
+# -Force is the deliberate override.
+Set-SRRegistryStamp 'not-the-current-stamp'
+try { Save-SRRegistry -Registry $c -Force; 'FORCE_OK' } catch { 'FORCE_REFUSED' }
+'@
+Set-Content -LiteralPath (Join-Path $sandRoot 'scenario.ps1') -Value $scenario -Encoding utf8
+$res = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $sandRoot 'scenario.ps1') 2>&1
+$res = @($res | ForEach-Object { "$_" })
+
+if ($res -notcontains 'A_REFUSED') {
+    Fail ('a stale window was allowed to save over the other''s ticks: ' + (($res | Select-Object -Last 5) -join ' | '))
+} elseif ($res -notcontains 'B_KEPT=True') {
+    Fail 'the other window''s tick was lost anyway'
+} else { Pass 'a stale window is refused rather than silently discarding the other''s ticks' }
+if ($res -notcontains 'NORMAL_OK') { Fail 'a normal save after re-reading was refused - the check is too strict' }
+else { Pass 'a normal save, after re-reading, still goes through' }
+if ($res -notcontains 'FORCE_OK') { Fail '-Force did not override the staleness check' }
+else { Pass '-Force overrides it, for a caller that has already asked' }
+
 Write-Host ''
 if ($fails) { Write-Host ("$fails FAILURE(S)") -ForegroundColor Red; exit 1 }
 Write-Host 'all conversation-state tests passed' -ForegroundColor Green

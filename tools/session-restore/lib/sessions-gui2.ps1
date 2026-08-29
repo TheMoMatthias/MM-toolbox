@@ -3665,8 +3665,8 @@ $script:lastFp = $null
 # run on the dispatcher every 45 seconds.
 $script:ProbeJob = {
     . (Join-Path $SRHere '_common.ps1')
-    $out = @{ Reg = $null; Agents = @{}; Said = @{}; Ask = $null; AskFor = '' }
-    try { $out.Reg = Get-SRRegistry } catch { }
+    $out = @{ Reg = $null; Agents = @{}; Said = @{}; Ask = $null; AskFor = ''; RegStamp = '' }
+    try { $out.Reg = Get-SRRegistry; $out.RegStamp = Get-SRRegistryStamp } catch { }
     try { $out.Agents = Get-SRAgentStatus -Refresh } catch { }
 
     # Only the live and the recent, exactly as the foreground pass decides it:
@@ -3778,6 +3778,11 @@ function Complete-LiveProbe {
     # then the ROWS ARE NOT REBOUND EITHER, because the rows must always point
     # into whichever registry $script:reg is.
     if (-not $script:dirty -and $res.Reg) {
+        # 🪤 THE STAMP COMES WITH THE DATA. The probe read the registry in its
+        # own runspace, so this window is now holding something newer than its
+        # own stamp - and the stale-write check would refuse the next save
+        # against a file it actually agrees with.
+        if ("$($res.RegStamp)") { Set-SRRegistryStamp "$($res.RegStamp)" }
         Update-Model -Registry $res.Reg -Agents $res.Agents -Said $res.Said
     } elseif ($res.Agents) {
         $script:agents = $res.Agents
