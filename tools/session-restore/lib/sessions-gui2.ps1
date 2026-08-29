@@ -776,6 +776,8 @@ function Update-Model {
             try { $at = ([datetime]$s.lastActive).Ticks } catch { }
             $rows.Add([PSCustomObject]@{
                 Id = $id; S = $s; D = $d; A = $a; Conv = $conv; Said = $line; Live = $live; Band = 'quiet'
+                # Filled below, once the project labels exist. See the note there.
+                Hay = ''; HayProj = ''
                 At = $at; Warm = ($at -gt $warmCut)
             })
         }
@@ -783,6 +785,22 @@ function Update-Model {
     foreach ($r in $rows) { $r.Band = Get-Band $r }
     $script:model = $rows
     Update-ProjectLabels
+
+    # 🔴 THE SEARCH HAYSTACK IS BUILT ONCE, HERE. Typing in the header box cost
+    # 338 ms per rebuild - over budget for a gesture that happens on a KEYSTROKE
+    # - because both builders composed the same string per row: a Get-Title and
+    # a Get-ProjectLabel across 191 conversations, twice over. None of the
+    # inputs change between rebuilds; they change when the MODEL changes, which
+    # is exactly here. Two haystacks, because the two boxes ask different
+    # questions - the rail's matches the project only.
+    foreach ($r in $rows) {
+        $t = ''
+        try { $t = (Get-Title $r.S $r.D).Text } catch { }
+        $pl = ''
+        if ("$($r.D.path)") { $pl = Get-ProjectLabel "$($r.D.path)" }
+        $r.Hay     = ('{0} {1} {2} {3} {4}' -f $t, $r.S.autoTitle, $r.D.path, $r.Id, $pl).ToLower()
+        $r.HayProj = ('{0} {1}' -f $pl, $r.D.path).ToLower()
+    }
 }
 
 # What the work surface shows: live, or spoke in the last day. It is not a
@@ -936,24 +954,11 @@ function Build-Rail {
     $byProj = @{}
     foreach ($r in $script:model) {
         if (-not (Test-OnSurface $r)) { continue }
-        if ($q) {
-            $t = (Get-Title $r.S $r.D).Text
-            # 🩤 NOT EVERY ROW HAS A PATH. Get-ProjectLabel splits one and throws
-            # on an empty string, and the rail had never called it per-row before
-            # - only per project key, which is non-empty by construction.
-            $pl = ''
-            if ("$($r.D.path)") { $pl = Get-ProjectLabel "$($r.D.path)" }
-            $hay = ('{0} {1} {2}' -f $t, $pl, $r.D.path).ToLower()
-            if ($hay -notlike "*$q*") { continue }
-        }
-        if ($qr) {
-            # This box matches the PROJECT, not the conversation - it is the
-            # projects list, and matching conversation titles here would hide
-            # projects whose names you had typed correctly.
-            $pl2 = ''
-            if ("$($r.D.path)") { $pl2 = Get-ProjectLabel "$($r.D.path)" }
-            if (('{0} {1}' -f $pl2, $r.D.path).ToLower() -notlike "*$qr*") { continue }
-        }
+        if ($q -and "$($r.Hay)" -notlike "*$q*") { continue }
+        # This box matches the PROJECT, not the conversation - it is the projects
+        # list, and matching conversation titles would hide projects whose names
+        # you had typed correctly.
+        if ($qr -and "$($r.HayProj)" -notlike "*$qr*") { continue }
         $k = "$($r.D.path)"
         if (-not $byProj.ContainsKey($k)) { $byProj[$k] = New-Object System.Collections.Generic.List[object] }
         $byProj[$k].Add($r)
@@ -1070,13 +1075,10 @@ function Build-Sessions {
         # was built - up to 573 calls over 191 conversations on a pass that runs
         # every six seconds. It depends only on S and D, neither of which
         # changes inside this loop.
-        $t = $null
-        if ($q -or $ql) { $t = (Get-Title $r.S $r.D).Text }
-        if ($q) {
-            $hay = ('{0} {1} {2} {3}' -f $t, $r.S.autoTitle, $r.D.path, $r.Id).ToLower()
-            if ($hay -notlike "*$q*") { continue }
-        }
+        # Both haystacks were composed once in Update-Model - see the note there.
+        if ($q -and "$($r.Hay)" -notlike "*$q*") { continue }
         if ($ql) {
+            $t = (Get-Title $r.S $r.D).Text
             # This pane's own box. Deliberately does NOT match the project path:
             # narrowing projects is the other pane's job, and matching both here
             # would make typing a project name in the sessions box silently do

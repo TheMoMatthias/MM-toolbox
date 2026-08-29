@@ -74,7 +74,7 @@ param(
     # `shot` is the odd one out: it draws the real window to PNG and asserts
     # almost nothing. It never runs in a full sweep -- only when asked for by
     # name -- because its output is something to LOOK at, not something to pass.
-    [ValidateSet('state', 'gui2', 'live', 'jump', 'relay', 'shot', 'app')]
+    [ValidateSet('state', 'gui2', 'live', 'jump', 'relay', 'shot', 'perf', 'app')]
     [string]$Only,
     [switch]$NoGui,
 
@@ -268,6 +268,19 @@ if ($Only -eq 'shot' -or $Shot) {
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
     $out | ForEach-Object { Write-Host $_ }
     Record 'shot' $LASTEXITCODE @($out)
+}
+
+# --- perf: every operation the operator can cause, timed ---------------------
+# BY NAME ONLY, like shot, and for the same reason: it runs against the
+# operator's own registry at real size and its output is a table to read rather
+# than a verdict. It fails only on a genuine STALL - see the note in the driver
+# about benchmarks that cry wolf.
+if ($Only -eq 'perf') {
+    Write-Host "`n=== perf (every operation, timed) ===" -ForegroundColor Cyan
+    $h = New-GuiHarness -Driver 'perf-driver.ps1' -OutFile 'perf-test.ps1'
+    $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'perf' $LASTEXITCODE @($out)
 }
 
 # --- jump: needs a desktop and the operator's real terminals -----------------
