@@ -74,7 +74,7 @@ param(
     # `shot` is the odd one out: it draws the real window to PNG and asserts
     # almost nothing. It never runs in a full sweep -- only when asked for by
     # name -- because its output is something to LOOK at, not something to pass.
-    [ValidateSet('state', 'gui2', 'jump', 'relay', 'shot', 'app')]
+    [ValidateSet('state', 'gui2', 'live', 'jump', 'relay', 'shot', 'app')]
     [string]$Only,
     [switch]$NoGui,
 
@@ -225,6 +225,24 @@ if (-not $Only -or $Only -eq 'gui2') {
     Record 'gui2' $LASTEXITCODE @($out)
 }
 
+
+# --- live: an HWND, but never a window anybody sees --------------------------
+# The three things a never-shown window cannot answer: whether Windows will DRAG
+# it, whether a click can land in the skill picker, and whether the transcript
+# follows the newest line. It shows the window UNACTIVATED on a secondary
+# display (off-screen when there is only one) and asks Windows via WM_NCHITTEST
+# instead of moving the mouse - so it never takes focus and never touches the
+# cursor. That is why it is NOT behind -NoSteal: it is safe to run while
+# somebody is using the machine.
+if (-not $Only -or $Only -eq 'live') {
+    Write-Host "`n=== live (an HWND, unactivated and out of sight) ===" -ForegroundColor Cyan
+    # -Place was declared and wired to nothing. This is the suite it was for.
+    if ($Place) { $env:SR_PLACE = $Place } else { Remove-Item Env:\SR_PLACE -ErrorAction SilentlyContinue }
+    $h = New-GuiHarness -Driver 'live-driver.ps1' -OutFile 'live-test.ps1'
+    $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'live' $LASTEXITCODE @($out)
+}
 
 # --- relay: the question round trip, against a live console -----------------
 # Spawns a REPLICA of claude's menu in a real console and answers it through the
