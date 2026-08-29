@@ -1021,11 +1021,27 @@ function Update-Document {
     $ui.PaneEmpty.Visibility = $V_Hide
 }
 
-function Show-Selected {
+# 🔴 THE EXPENSIVE HALF ONLY RUNS WHEN THE SELECTION ACTUALLY MOVED.
+#
+# Build-Sessions rebuilds its rows as NEW objects and then restores the
+# selection by id, which fires SelectionChanged even though the same
+# conversation is still selected. That re-rendered the transcript AND spawned a
+# child process to read the session's console - measured 2,336 ms for one
+# repaint, more than a full model rebuild. Every search keystroke paid it, so
+# typing in the search box froze the window for two seconds a time, and it is
+# what would have made a 6-second refresh timer unusable.
+#
+# It also silently undid 'load earlier': tailBytes was reset on every repaint,
+# so a conversation you had expanded snapped back to the budget on the next
+# rebuild.
+#
+# -Force is for the caller that knows the CONTENT moved even though the
+# selection did not - the periodic refresh.
+function Show-Selected { param([switch]$Force)
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
+    $same = ($script:selId -eq $it.Id)
     $script:selId = $it.Id
-    $script:tailBytes = $script:TailBase     # a new conversation starts at the budget
     $r = $it.Row
     $t = Get-Title $r.S $r.D
     $ui.PaneName.Text = $t.Text
@@ -1033,6 +1049,12 @@ function Show-Selected {
     $ui.PaneStateDot.Background = $(if ($b.Count) { $window.FindResource($b[0].Acc) } else { $window.FindResource('AccIdle') })
     $detail = $(if ($r.Conv -and "$($r.Conv.Detail)") { "$($r.Conv.Detail)" } else { 'no process is holding it' })
     $ui.PaneState.Text = ('{0}   |   {1}   |   {2}' -f $(if ($b.Count) { $b[0].Label } else { '' }), $detail, (Get-ProjectLabel "$($r.D.path)"))
+
+    # Everything above is a few string assignments and is always safe to redo.
+    # Everything below reads files and spawns a process.
+    if ($same -and -not $Force) { return }
+
+    $script:tailBytes = $script:TailBase     # a new conversation starts at the budget
     Update-Document
     Update-Ask $r
     Update-SendState
@@ -2071,11 +2093,163 @@ Update-Surface
 Set-Surface 'work'
 Set-Breakpoint
 
+# ===========================================================================
+# KEEPING THE WINDOW HONEST WHILE IT SITS THERE
+#
+# 🔴 THE WINDOW DID NOT REFRESH AT ALL. Update-Model ran once at startup and
+# then only on Rescan or an action, so the "as of" stamp froze, ages froze, and
+# a conversation that started waiting on you NEVER moved into NEEDS YOU. That is
+# the whole job of the work surface, and it is a regression against the retired
+# window, which said so in its own comment: "A window that sits open all day
+# would go stale."
+#
+# TWO TIERS, and the split is chosen from measurements on this machine rather
+# than from a feeling:
+#
+#   Update-Model (full)        1,681 ms   <- far too slow for a short timer
+#     of which agents --json   1,100 ms   <- a subprocess; the dominant cost
+#   agent status, cached           4 ms
+#   Build-Sessions repaint     2,336 ms   <- was the SELECTION side-effect, now fixed
+#
+#   FAST  6s   no subprocess, no transcript reads. Recomputes ages and the
+#              stamp, and repaints ONLY if a visible string actually changed -
+#              a repaint that changes nothing still steals your scroll position.
+#   LIVE  45s  the full pass, run on a BACKGROUND RUNSPACE so the 1.7 seconds
+#              never lands on the UI thread. A poll timer picks the result up.
+#
+# 🪤 THE JOB MAY NOT TOUCH THE UI. It runs on another thread; every result is
+# handed back and applied here, on the dispatcher.
+# ===========================================================================
+$script:FastSeconds = 6
+$script:LiveSeconds = 45
+$script:probeAt = Get-Date
+$script:probePs = $null
+$script:probeRs = $null
+$script:probeHandle = $null
+
+# 🔴 COMPARE BEFORE REBUILDING, NEVER AFTER. Build-Sessions replaces
+# ItemsSource, which throws away the scroll position - so a repaint that changes
+# nothing still yanks the list back to the top under your hand. Every six
+# seconds. The fingerprint is computed from the MODEL, which costs string
+# formatting and no I/O, and the rebuild only happens when it moved.
+function Get-ModelFingerprint {
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($r in $script:model) {
+        if (-not (Test-OnSurface $r)) { continue }
+        $said = ''
+        if ($r.Said -and "$($r.Said.Said)") { $said = "$($r.Said.Said)".Substring(0, [Math]::Min(40, "$($r.Said.Said)".Length)) }
+        $null = $sb.Append("$($r.Id)|$($r.Band)|$(Get-Age $r.S.lastActive)|$said`n")
+    }
+    return $sb.ToString()
+}
+
+function Invoke-FastPass {
+    # The stamp is the one thing that must move every tick: it is how you know
+    # the window is still watching rather than frozen.
+    $ui.Stamp.Text = ('as of {0}' -f $script:probeAt.ToString('HH:mm:ss'))
+    if ($script:surface -ne 'work') { return }
+    $fp = Get-ModelFingerprint
+    if ($fp -eq $script:lastFp) { return }
+    $script:lastFp = $fp
+    Build-Sessions
+}
+$script:lastFp = $null
+
+# The slow half, off the UI thread. It returns the registry and the agent map;
+# nothing is drawn from in here.
+$script:ProbeJob = {
+    . (Join-Path $SRHere '_common.ps1')
+    $out = @{}
+    try { $out.Reg = Get-SRRegistry } catch { $out.Reg = $null }
+    try { $out.Agents = Get-SRAgentStatus -Refresh } catch { $out.Agents = @{} }
+    $out
+}
+
+function Start-LiveProbe {
+    if ($script:probePs) { return }        # one at a time; a queue would pile up
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'MTA'
+        $rs.ThreadOptions  = 'ReuseThread'
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript($script:ProbeJob)
+        $script:probeRs = $rs
+        $script:probePs = $ps
+        $script:probeHandle = $ps.BeginInvoke()
+    } catch {
+        Write-SRLog ('  [FAIL] the live probe would not start: {0}' -f $_.Exception.Message)
+        $script:probePs = $null
+    }
+}
+
+function Complete-LiveProbe {
+    if (-not $script:probePs -or -not $script:probeHandle -or -not $script:probeHandle.IsCompleted) { return }
+    $res = $null
+    try { $res = @($script:probePs.EndInvoke($script:probeHandle)) | Select-Object -Last 1 } catch { }
+    try { $script:probePs.Dispose() } catch { }
+    try { $script:probeRs.Close(); $script:probeRs.Dispose() } catch { }
+    $script:probePs = $null; $script:probeHandle = $null; $script:probeRs = $null
+    if (-not $res) { return }
+
+    # 🔴 NEVER OVERWRITE UNSAVED TICKS. The probe carries a registry read from
+    # disk; adopting it while there are unsaved changes would silently discard
+    # what you just ticked. The agent map is safe either way.
+    if (-not $script:dirty -and $res.Reg) { $script:reg = $res.Reg; $script:dirs = @($res.Reg.directories) }
+    if ($res.Agents) { $script:agents = $res.Agents }
+    Rebuild-FromProbe
+    $script:probeAt = Get-Date
+}
+
+# Re-derive the bands from the fresh agent map, WITHOUT re-reading transcripts:
+# that is what makes a conversation move into NEEDS YOU, and it is the reason
+# this tier exists at all.
+function Rebuild-FromProbe {
+    foreach ($r in $script:model) {
+        $a = $script:agents["$($r.Id)"]
+        $r.A = $a
+        $r.Live = [bool]$a
+        try { $r.Conv = Resolve-SRSessionState -Agent $a -Conv $null } catch { }
+        $r.Band = Get-Band $r
+    }
+    if ($script:surface -eq 'work') { Build-Sessions } else { Build-Manager }
+    $ui.LiveCount.Text = ('{0} live of {1} conversations across {2} projects' -f `
+        @($script:model | Where-Object { $_.Live }).Count, $script:model.Count, @($script:dirs).Count)
+    # The pane is showing ONE conversation and its state may have moved too -
+    # the pending question especially, which is the thing you are waiting for.
+    Show-Selected -Force
+}
+
+$script:fastTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:fastTimer.Interval = [TimeSpan]::FromSeconds($script:FastSeconds)
+$script:fastTimer.Add_Tick({ try { Invoke-FastPass } catch { Write-SRLog ('fast pass failed: ' + $_.Exception.Message) } })
+
+$script:liveTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:liveTimer.Interval = [TimeSpan]::FromSeconds($script:LiveSeconds)
+$script:liveTimer.Add_Tick({ try { Start-LiveProbe } catch { Write-SRLog ('live probe failed: ' + $_.Exception.Message) } })
+
+# The collector. Cheap enough to run often; it does nothing until the job ends.
+$script:pollTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:pollTimer.Interval = [TimeSpan]::FromMilliseconds(200)
+$script:pollTimer.Add_Tick({ try { Complete-LiveProbe } catch { Write-SRLog ('probe collect failed: ' + $_.Exception.Message) } })
+
 $window.Add_ContentRendered({
     Set-Breakpoint
     $null = $ui.SessionList.Focus()
     $script:followTimer.Start()
+    $script:fastTimer.Start()
+    $script:liveTimer.Start()
+    $script:pollTimer.Start()
 })
-$window.Add_Closed({ try { $script:followTimer.Stop() } catch { } })
+$window.Add_Closed({
+    foreach ($t in @($script:followTimer, $script:fastTimer, $script:liveTimer, $script:pollTimer)) {
+        try { $t.Stop() } catch { }
+    }
+    # A runspace left open holds a thread after the window is gone.
+    try { if ($script:probePs) { $script:probePs.Dispose() } } catch { }
+    try { if ($script:probeRs) { $script:probeRs.Close(); $script:probeRs.Dispose() } } catch { }
+})
 
 $null = $window.ShowDialog()
