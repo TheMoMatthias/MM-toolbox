@@ -322,6 +322,56 @@ else { Pass 'no empty tool rule can reach the command line' }
 if (($fl -join ' ') -ne '--allowedTools Read --allowedTools Grep') { Fail "tool rules built as: $($fl -join ' ')" }
 else { Pass 'each tool rule becomes its own flag' }
 
+# --- and what the LAUNCH LINE ends up being --------------------------------
+# 🔴 THE FLAGS ARE ONLY REAL IF THEY REACH `& claude`. Everything above tests
+# the builder; this tests the line that is actually run. Read from the boot
+# script's claude line ONLY - an earlier test in this suite matched
+# '--remote-control' inside a COMMENT and would have passed however the code
+# behaved - and always as a PAIR, on and off, so neither answer can come from a
+# grep that always finds it or never does.
+$bootDir = $SR_StateDir
+# 🪤 NOT $Args - THAT IS AN AUTOMATIC VARIABLE. The first version of this helper
+# took a parameter called $Args, which collides with PowerShell's own, and the
+# flags silently never reached New-SRBootScript: four assertions failed against
+# code that was correct. The same class of bug as the $Said collision this suite
+# was extended to catch, hit while writing the test for it.
+function Get-ClaudeLine { param([bool]$Remote, [string[]]$Extra)
+    $p = New-SRBootScript -Dir $env:TEMP -SessionId '11111111-2222-3333-4444-555555555555' `
+            -Title 'PROBE-1' -ClaudeArgs $Extra -RemoteControl $Remote
+    $line = ''
+    try {
+        $line = @(Get-Content -LiteralPath $p -Encoding UTF8 |
+                  Where-Object { $_ -match '^\s*&\s*claude\b' })[0]
+    } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+    return "$line"
+}
+$onLine  = Get-ClaudeLine -Remote $true  -Args @()
+$offLine = Get-ClaudeLine -Remote $false -Args @()
+if ($onLine -notmatch '--remote-control') { Fail "Remote Control ON produced no flag: $onLine" }
+elseif ($offLine -match '--remote-control') { Fail "Remote Control OFF still passed the flag: $offLine" }
+else { Pass 'Remote Control reaches the launch line when on, and is absent when off' }
+if ($onLine -notmatch "-n\s+'PROBE-1'") { Fail "the conversation name does not reach the launch line: $onLine" }
+else { Pass 'the name you type is the name the session launches under' }
+
+$withArgs = Get-ClaudeLine -Remote $true -Extra @('--model', 'opus', '--permission-mode', 'plan')
+foreach ($bit in @('--model', 'opus', '--permission-mode', 'plan')) {
+    if ($withArgs -notmatch [regex]::Escape($bit)) { Fail "'$bit' never reached the launch line: $withArgs" }
+}
+if ($withArgs -match '--model' -and $withArgs -match 'plan') {
+    Pass 'the per-session settings arrive on the command the session is started with'
+}
+
+# Hidden is a LAUNCH decision, not a claude flag - it changes how the shell is
+# started, so it must never appear on the claude line.
+$hidProbe = [PSCustomObject]@{ sessionId = '99999999-8888-7777-6666-555555555555'; title = 'hidden probe' }
+if (Test-SRHiddenWanted $hidProbe) { Fail 'a conversation with no preference is treated as hidden' }
+else {
+    Set-SRSessionPref $hidProbe 'hidden' $true
+    if (-not (Test-SRHiddenWanted $hidProbe)) { Fail 'setting hidden did not take' }
+    elseif (@(Get-SRSessionArgs $hidProbe) -match 'hidden') { Fail "'hidden' leaked onto the claude command line" }
+    else { Pass 'hidden is a launch decision and never becomes a claude flag' }
+}
+
 # ===========================================================================
 Write-Host ''
 Write-Host '--- send to many ---'
@@ -346,6 +396,70 @@ Build-Cast
 if ($ui.CastSend.IsEnabled) { Fail 'Send is armed with nothing ticked and no message' }
 else { Pass 'Send arms only with both a target and a message' }
 Hide-Cast
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the prose under the answers ---'
+# ===========================================================================
+# 🔴 THE FIRST THING THE OPERATOR REPORTED, AND NOTHING TESTED IT. "I do not see
+# the text that oftentimes is below the selectable answers" - the reasoning
+# claude writes under each option, which is usually the only thing that tells
+# the two options apart. It was built and never asserted, which is precisely the
+# shape of the two features found dead this session: present in the markup,
+# green in the suite, and never checked against what is on screen.
+#
+# Driven with a synthetic parse rather than a live conversation: a real one is
+# whatever happens to be asking right now, which is nothing most of the time.
+$fake = [PSCustomObject]@{
+    Header   = 'it is asking'
+    Question = 'Which way do you want this handled?'
+    Options  = @('Add the allow rule', 'Keep digging for a proof', 'Leave it')
+    Details  = @('One change, unblocks every lane.', 'Costs time and ends in the same place.', '')
+    Footer   = 'Enter to confirm - Esc to go back'
+    Multi    = $false
+    Screen   = ''
+}
+Show-Ask $fake
+$btns = @($ui.AskOptions.ItemsSource)
+if ($btns.Count -ne 3) { Fail "the panel built $($btns.Count) buttons for 3 options" }
+else {
+    # An option's button is a StackPanel: the label, then the reasoning under it.
+    $withProse = 0
+    $labels = @()
+    foreach ($b in $btns) {
+        $kids = @($b.Content.Children)
+        $labels += "$($kids[0].Text)"
+        if ($kids.Count -ge 2 -and "$($kids[1].Text)".Trim()) { $withProse++ }
+    }
+    if ($withProse -ne 2) {
+        Fail "$withProse of the 3 options carry their reasoning underneath - two were given some"
+    } else { Pass 'each option shows the reasoning written under it, and the one without stays bare' }
+    if ("$($labels[0])" -notlike '1.*Add the allow rule*') {
+        Fail "the first option reads '$($labels[0])' - it must keep claude's own numbering"
+    } else { Pass 'the options keep the numbers the operator will actually type' }
+}
+if ($ui.AskFooter.Visibility -ne $V_Show -or "$($ui.AskFooter.Text)" -ne 'Enter to confirm - Esc to go back') {
+    Fail 'the footer that qualifies the whole question is not shown'
+} else { Pass 'the footer under the buttons is shown when there is one' }
+
+# And the inverse, or the assertion above would pass on a panel that always
+# shows everything it has ever been given.
+$bare = [PSCustomObject]@{
+    Header = 'it is asking'; Question = 'Yes or no?'; Options = @('Yes', 'No')
+    Details = @(); Footer = ''; Multi = $false; Screen = ''
+}
+Show-Ask $bare
+if ($ui.AskFooter.Visibility -ne $V_Hide) { Fail 'the footer stays up for a question that has none' }
+elseif (@(@($ui.AskOptions.ItemsSource)[0].Content.Children).Count -ne 1) {
+    Fail 'an option with no reasoning still draws a second line'
+} else { Pass 'a question with neither shows neither' }
+
+# Clearing has to be complete: a stale question filed against a new answer is
+# the defect the $lastAsk comment above this function was written for.
+Show-Ask $null
+if ($ui.AskBox.Visibility -ne $V_Hide) { Fail 'the ask panel stays up with nothing to ask' }
+elseif ($script:lastAsk) { Fail 'the previous question is still on record after it was cleared' }
+else { Pass 'nothing to ask clears the panel and the record together' }
 
 # ===========================================================================
 Write-Host ''
