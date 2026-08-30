@@ -2571,40 +2571,52 @@ function Format-Clock { param([double]$Seconds)
     return ('{0}h {1}m' -f $h, ($m - $h * 60))
 }
 
+# ===========================================================================
+# 🔴 REFERENCE, NOT HEADLINES. This strip answers questions you did not ask
+# out loud - which model, how full, which branch - so it has to be READABLE
+# without being LOUD. It was neither: pill-sized padding, semibold 11.5, and
+# the four accent chips carrying a tinted wash AND a coloured border, which
+# made "remote control" the brightest thing in a header whose subject is the
+# conversation's name.
+#
+# So one rule now, and it is the rule the rest of the window already follows:
+# the chip body is always glass, and HUE LIVES IN THE DOT AND THE TEXT. That
+# still tells the four accent chips apart at a glance - a teal dot reads as
+# teal - while none of them outshouts the title above.
+$SR_ChipFont = 10.5
 function New-Chip {
-    param([string]$Text, $Fg, $Bg, $Stroke, $Dot, [double]$Bar = -1, $BarFg, [string]$Tip, [switch]$Square)
+    param([string]$Text, $Fg, $Bg, $Dot, [double]$Bar = -1, $BarFg, [string]$Tip, [switch]$Square)
     $bd = New-Object System.Windows.Controls.Border
     if ($Bg) { $bd.Background = $Bg }
-    if ($Stroke) { $bd.BorderBrush = $Stroke; $bd.BorderThickness = New-Object System.Windows.Thickness 1 }
-    $bd.CornerRadius = New-Object System.Windows.CornerRadius 7
-    $bd.Padding = New-Object System.Windows.Thickness 9, 4, 10, 5
-    $bd.Margin = New-Object System.Windows.Thickness 0, 0, 7, 5
+    $bd.CornerRadius = New-Object System.Windows.CornerRadius 5
+    $bd.Padding = New-Object System.Windows.Thickness 7, 2, 8, 3
+    $bd.Margin = New-Object System.Windows.Thickness 0, 0, 6, 4
     if ($Tip) { $bd.ToolTip = $Tip }
     $sp = New-Object System.Windows.Controls.StackPanel
     $sp.Orientation = 'Horizontal'
     if ($Dot) {
         $d = New-Object System.Windows.Controls.Border
-        $d.Width = 6; $d.Height = 6
+        $d.Width = 5; $d.Height = 5
         # Round for a sub-agent, square for a background shell - the same pair
         # the session rows use, so the two surfaces teach the same vocabulary.
-        $d.CornerRadius = New-Object System.Windows.CornerRadius $(if ($Square) { 1 } else { 3 })
+        $d.CornerRadius = New-Object System.Windows.CornerRadius $(if ($Square) { 1 } else { 2.5 })
         $d.Background = $Dot
         $d.VerticalAlignment = 'Center'
-        $d.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
+        $d.Margin = New-Object System.Windows.Thickness 0, 0, 6, 0
         $null = $sp.Children.Add($d)
     }
     if ($Bar -ge 0) {
         $track = New-Object System.Windows.Controls.Border
-        $track.Width = 46; $track.Height = 5
-        $track.CornerRadius = New-Object System.Windows.CornerRadius 3
+        $track.Width = 38; $track.Height = 4
+        $track.CornerRadius = New-Object System.Windows.CornerRadius 2
         $track.Background = $PalSunk
         $track.VerticalAlignment = 'Center'
         $track.HorizontalAlignment = 'Left'
-        $track.Margin = New-Object System.Windows.Thickness 0, 0, 8, 0
+        $track.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
         $fill = New-Object System.Windows.Controls.Border
-        $fill.Height = 5
-        $fill.Width = [Math]::Max(2.0, 46.0 * [Math]::Min(1.0, $Bar))
-        $fill.CornerRadius = New-Object System.Windows.CornerRadius 3
+        $fill.Height = 4
+        $fill.Width = [Math]::Max(2.0, 38.0 * [Math]::Min(1.0, $Bar))
+        $fill.CornerRadius = New-Object System.Windows.CornerRadius 2
         $fill.Background = $BarFg
         $fill.HorizontalAlignment = 'Left'
         $track.Child = $fill
@@ -2613,8 +2625,8 @@ function New-Chip {
     $tb = New-Object System.Windows.Controls.TextBlock
     $tb.Text = $Text
     $tb.Foreground = $Fg
-    $tb.FontSize = 11.5
-    $tb.FontWeight = $FW_Semi
+    $tb.FontSize = $SR_ChipFont
+    $tb.FontWeight = $FW_Normal
     $tb.FontFamily = $script:UiFace
     $null = $sp.Children.Add($tb)
     $bd.Child = $sp
@@ -2668,26 +2680,26 @@ function Update-Chips { param($R, [switch]$Force)
     if ($v.Added -ge 0) {
         $bd = New-Object System.Windows.Controls.Border
         $bd.Background = $glass
-        $bd.CornerRadius = New-Object System.Windows.CornerRadius 7
-        $bd.Padding = New-Object System.Windows.Thickness 9, 4, 10, 5
-        $bd.Margin = New-Object System.Windows.Thickness 0, 0, 7, 5
+        $bd.CornerRadius = New-Object System.Windows.CornerRadius 5
+        $bd.Padding = New-Object System.Windows.Thickness 7, 2, 8, 3
+        $bd.Margin = New-Object System.Windows.Thickness 0, 0, 6, 4
         $bd.ToolTip = 'The working tree against HEAD'
         $sp = New-Object System.Windows.Controls.StackPanel
         $sp.Orientation = 'Horizontal'
         foreach ($part in @(@(('+' + $v.Added), $Pal.Ask), @(('   ' + [string][char]0x2212 + $v.Removed), $Pal.Bad))) {
             $t = New-Object System.Windows.Controls.TextBlock
             $t.Text = $part[0]; $t.Foreground = $part[1]
-            $t.FontSize = 11.5; $t.FontWeight = $FW_Semi; $t.FontFamily = $script:UiFace
+            $t.FontSize = $SR_ChipFont; $t.FontWeight = $FW_Normal; $t.FontFamily = $script:UiFace
             $null = $sp.Children.Add($t)
         }
         $bd.Child = $sp
         $null = $ui.PaneChips.Children.Add($bd)
     }
     if ($v.Remote) {
-        $null = $ui.PaneChips.Children.Add((New-Chip -Text 'remote control' -Fg $Pal.Ask -Bg $PalWash.Ask -Stroke $PalEdge.Ask -Dot $Pal.Ask -Tip 'This conversation can be driven from the Claude app').Border)
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text 'remote control' -Fg $Pal.Ask -Bg $glass -Dot $Pal.Ask -Tip 'This conversation can be driven from the Claude app').Border)
     }
     if ($v.Mode) {
-        $null = $ui.PaneChips.Children.Add((New-Chip -Text (($v.Mode -creplace '([a-z])([A-Z])', '$1 $2').ToLower()) -Fg $Pal.Warn -Bg $PalWash.Warn -Stroke $PalEdge.Warn -Tip 'The permission mode it was launched with').Border)
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text (($v.Mode -creplace '([a-z])([A-Z])', '$1 $2').ToLower()) -Fg $Pal.Warn -Bg $glass -Dot $Pal.Warn -Tip 'The permission mode it was launched with').Border)
     }
     if ($v.Effort) {
         $null = $ui.PaneChips.Children.Add((New-Chip -Text ($v.Effort + ' effort') -Fg $Pal.TextMid -Bg $glass -Tip 'The thinking effort it was launched with').Border)
@@ -2697,11 +2709,11 @@ function Update-Chips { param($R, [switch]$Force)
     # absence is the other half of that signal.
     if ($v.Shells -gt 0) {
         $w = 'shells'; if ($v.Shells -eq 1) { $w = 'shell' }
-        $null = $ui.PaneChips.Children.Add((New-Chip -Text ('{0} {1}' -f $v.Shells, $w) -Fg $Pal.Tool -Bg $PalWash.Tool -Stroke $PalEdge.Tool -Dot $Pal.Tool -Square -Tip 'Background commands still running - a square mark means machinery, a round one means a sub-agent').Border)
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text ('{0} {1}' -f $v.Shells, $w) -Fg $Pal.Tool -Bg $glass -Dot $Pal.Tool -Square -Tip 'Background commands still running - a square mark means machinery, a round one means a sub-agent').Border)
     }
     if ($v.Agents -gt 0) {
         $w = 'sub-agents'; if ($v.Agents -eq 1) { $w = 'sub-agent' }
-        $null = $ui.PaneChips.Children.Add((New-Chip -Text ('{0} {1}' -f $v.Agents, $w) -Fg $Pal.Out -Bg $PalWash.Out -Stroke $PalEdge.Out -Dot $Pal.Out -Tip 'Sub-agents started and not yet reported back').Border)
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text ('{0} {1}' -f $v.Agents, $w) -Fg $Pal.Out -Bg $glass -Dot $Pal.Out -Tip 'Sub-agents started and not yet reported back').Border)
     }
 
     $clock = New-Chip -Text '' -Fg $Pal.TextLow -Bg $glass -Tip 'How long this turn has been running, and what it has written'

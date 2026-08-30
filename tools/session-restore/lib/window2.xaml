@@ -553,6 +553,16 @@
       </Setter>
     </Style>
 
+    <!-- 🪤 ITS OWN STYLE, NOT A SMALLER Btn. Btn is also the top bar's New
+         session / Rescan / Send to many and the footer's Save, which are
+         primary actions and should not shrink with these. These six sit under
+         a title as secondary controls: same shape, one step quieter. -->
+    <Style x:Key="BtnSlim" TargetType="Button" BasedOn="{StaticResource Btn}">
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
+      <Setter Property="Padding" Value="9,3,9,4"/>
+    </Style>
+
     <!-- An answer to a question, not a control on a toolbar. It is a full-width
          row carrying a label and the reasoning under it, so it needs a taller
          ground, a left alignment and room for two lines of type - and it sits
@@ -1279,16 +1289,16 @@
                    line instead of pushing it off the edge. -->
               <WrapPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal"
                          HorizontalAlignment="Right" Margin="0,10,0,0">
-                <Button x:Name="PaneCompact" Content="Compact" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                <Button x:Name="PaneCompact" Content="Compact" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
                         ToolTip="Send /compact into this conversation now - watch the context bar to the left"/>
-                <Button x:Name="PaneTools" Content="Steps: folded" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                <Button x:Name="PaneTools" Content="Steps: folded" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
                         ToolTip="How much of the machinery this pane shows - folded, full, or hidden. Remembered."/>
-                <Button x:Name="PaneWorktree" Content="New on worktree" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                <Button x:Name="PaneWorktree" Content="New on worktree" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
                         ToolTip="Start a fresh conversation in another worktree of this project"/>
-                <Button x:Name="PaneSettings" Content="Settings" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                <Button x:Name="PaneSettings" Content="Settings" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
                         ToolTip="Name, model, effort, permissions, Remote Control, hidden"/>
-                <Button x:Name="PaneGoTo" Content="Go to terminal" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
-                <Button x:Name="PaneRelaunch" Content="Relaunch" Style="{StaticResource Btn}"/>
+                <Button x:Name="PaneGoTo" Content="Go to terminal" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"/>
+                <Button x:Name="PaneRelaunch" Content="Relaunch" Style="{StaticResource BtnSlim}" Margin="0,0,0,4"/>
               </WrapPanel>
               <!-- 🪤 ITS OWN ROW, SPANNING BOTH COLUMNS. Inside the left column
                    it only ever got the width the five buttons left over, so on
