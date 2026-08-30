@@ -3153,16 +3153,52 @@ function Invoke-SRGitLine { param([string]$Path, [string[]]$Arguments, [int]$Tim
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    # 🔴 STDIN IS REDIRECTED AND THEN CLOSED IMMEDIATELY. Left inherited, git
+    # can sit waiting on input that is never coming - a credential helper, a
+    # pager, a prompt - and it waits forever, which is what eight git processes
+    # at zero CPU looked like. Closing the handle turns any such wait into an
+    # instant EOF. GIT_TERMINAL_PROMPT settles the credential case explicitly
+    # rather than relying on that.
+    $psi.RedirectStandardInput = $true
+    $null = $psi.EnvironmentVariables.Remove('GIT_TERMINAL_PROMPT')
+    $psi.EnvironmentVariables['GIT_TERMINAL_PROMPT'] = '0'
+    $psi.EnvironmentVariables['GIT_OPTIONAL_LOCKS'] = '0'
     $psi.WorkingDirectory = $Path
-    $all = @('--no-optional-locks') + @($Arguments)
+    # -c core.pager=cat: git pages by default for some commands, and a pager
+    # waiting for a keypress is the same hang by another route.
+    $all = @('--no-optional-locks', '-c', 'core.pager=cat') + @($Arguments)
     $psi.Arguments = ($all | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
     $p = $null
     try {
         $p = [System.Diagnostics.Process]::Start($psi)
-        $out = $p.StandardOutput.ReadToEnd()
-        $null = $p.StandardError.ReadToEnd()
-        if (-not $p.WaitForExit($TimeoutMs)) { try { $p.Kill() } catch { }; return '' }
-        return "$out"
+        try { $p.StandardInput.Close() } catch { }
+        # 🔴 ASYNCHRONOUS, AND THE TIMEOUT IS THE POINT.
+        #
+        # This was ReadToEnd() on stdout, then ReadToEnd() on stderr, THEN
+        # WaitForExit($TimeoutMs) - and that timeout could never fire, because
+        # the first ReadToEnd blocks until the child closes the stream. Measured
+        # 2026-08-30: two git processes sat at zero CPU for twenty-two minutes
+        # with the caller blocked in ReadToEnd, and the benchmark that started
+        # them leaked a fresh pair on every call. In the window this is the UI
+        # thread, and it would have frozen the whole surface the first time git
+        # was slow - the exact failure a hung probe caused here once already.
+        #
+        # 🪤 BOTH pipes are drained, and concurrently. Draining one while the
+        # child fills the other deadlocks the moment stderr exceeds its buffer,
+        # which is a warning this function's first version carried and then did
+        # not honour.
+        $tOut = $p.StandardOutput.ReadToEndAsync()
+        $tErr = $p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($TimeoutMs)) {
+            try { $p.Kill() } catch { }
+            # Give the kill a moment to land so the handles close; a git left
+            # running is a git left holding a lock in the operator's repo.
+            try { $null = $p.WaitForExit(1000) } catch { }
+            Write-SRLog ('  [warn] git {0} in {1} did not answer in {2} ms and was stopped' -f ($Arguments -join ' '), $Path, $TimeoutMs)
+            return ''
+        }
+        if ($tOut.Wait($TimeoutMs)) { return "$($tOut.Result)" }
+        return ''
     } catch { return '' }
     finally { if ($p) { try { $p.Dispose() } catch { } } }
 }

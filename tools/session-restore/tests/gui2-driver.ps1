@@ -1263,6 +1263,31 @@ else {
     if ($readMs -le ($clockMs / 50)) {
         Fail ("a full vitals read cost {0:N1} ms, no more than one clock tick - the timing check above proves nothing" -f $readMs)
     } else { Pass ("a full read costs {0:N1} ms against {1:N2} ms a tick, so the cheap path is really the cheap one" -f $readMs, ($clockMs / 50)) }
+
+    # 🔴 THE GIT CALL MUST RETURN, AND MUST LEAVE NOTHING BEHIND.
+    #
+    # Its first version read stdout to the end BEFORE WaitForExit, so the
+    # timeout could never fire; measured 2026-08-30, two git processes sat at
+    # zero CPU for twenty-two minutes with the caller blocked inside ReadToEnd,
+    # and every further call leaked another pair. On the UI thread that is the
+    # whole window frozen, permanently, the first time git is slow.
+    #
+    # Counting processes is the assertion that would have caught it: a call that
+    # deadlocks leaves its child running, and one that times out correctly kills
+    # it. Timing alone would not - the first version returned promptly whenever
+    # git happened to be fast, which was every time it was tried by hand.
+    $gitBefore = @(Get-Process git -ErrorAction SilentlyContinue).Count
+    $gitMs = Ms {
+        for ($gi = 0; $gi -lt 4; $gi++) { $null = Get-SRWorkingDiff -Path (Split-Path -Parent $SR_LibDir) }
+    }
+    Start-Sleep -Milliseconds 400
+    $gitAfter = @(Get-Process git -ErrorAction SilentlyContinue).Count
+    if ($gitAfter -gt $gitBefore) {
+        Fail ("git processes went {0} -> {1} - a call is leaving its child behind" -f $gitBefore, $gitAfter)
+    } else { Pass ("4 working-tree reads in {0:N0} ms and no git process left behind" -f $gitMs) }
+    if ($gitMs -gt 12000) {
+        Fail ("4 working-tree reads took {0:N0} ms - the timeout is not bounding them" -f $gitMs)
+    } else { Pass ('the working-tree read is bounded') }
 }
 
 Write-Host ''
