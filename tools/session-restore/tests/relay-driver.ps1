@@ -401,6 +401,65 @@ try {
         } else { Pass 'a committed typed answer is read back as both the text and the choice' }
     }
 
+    # =====================================================================
+    # THE TURN CLOCK AND THE EFFORT, off two more real screens.
+    #
+    # 🔴 THE TOOL'S OWN CLOCK WAS WRONG IN BOTH DIRECTIONS, measured across
+    # ten live sessions on 2026-08-30: an idle one read 10,734 s (three hours)
+    # against its own "for 2m 49s · done", because now-minus-the-last-human-
+    # turn never stops when the turn does; a busy one read 12 s against its own
+    # "(1h 27m 38s ...)", because something other than a human message resets
+    # the start. These two files are those screens.
+    # =====================================================================
+    Write-Host ''
+    Write-Host '--- the turn clock and the effort, off real screens ---'
+    $shotRun  = Join-Path $shots 'turn-running.txt'
+    $shotDone = Join-Path $shots 'turn-done.txt'
+    if (-not (Test-Path -LiteralPath $shotRun) -or -not (Test-Path -LiteralPath $shotDone)) {
+        Fail 'the captured turn screens are missing'
+    } else {
+        $vRun  = Read-SRScreenVitals -ScreenText ([System.IO.File]::ReadAllText($shotRun))
+        $vDone = Read-SRScreenVitals -ScreenText ([System.IO.File]::ReadAllText($shotDone))
+
+        if (-not $vRun.SawTurn) { Fail 'a running turn was on screen and no elapsed was read' }
+        elseif ($vRun.TurnDone) { Fail 'a turn still running was read as finished' }
+        elseif ([int]$vRun.TurnSecs -ne 157) { Fail "the running turn read $($vRun.TurnSecs)s; the screen says 2m 37s" }
+        else { Pass 'a running turn is read off the screen as 2m 37s, still going' }
+
+        # 🪤 THE SAME SCREEN ALSO CARRIES A FINISHED LINE ABOVE IT AND A TOOL'S
+        # OWN TIMER BELOW - "(21s · timeout 6m 40s)". A tool timer has the
+        # identical shape and would read as a turn that had just started, which
+        # is why it is excluded by BOTH the elbow it hangs off and the word
+        # timeout. Reading 21 here instead of 157 is the failure this guards.
+        if ([int]$vRun.TurnSecs -eq 21) { Fail "a tool's own timer was read as the turn" }
+        else { Pass "and a tool's own countdown on the same screen is not mistaken for it" }
+
+        if (-not $vDone.SawTurn) { Fail 'a finished turn was on screen and no duration was read' }
+        elseif (-not $vDone.TurnDone) { Fail 'a finished turn was read as still running' }
+        elseif ([int]$vDone.TurnSecs -ne 169) { Fail "the finished turn read $($vDone.TurnSecs)s; the screen says 2m 49s" }
+        else { Pass 'a finished turn is read as 2m 49s and marked done, so the clock stops where it stopped' }
+
+        # 🔑 EFFORT COMES OFF THE BANNER TOO, which matters because the banner is
+        # what is on screen when a session is NOT mid-turn - most rows, most of
+        # the time. Matching only "thinking with" would have found nothing here.
+        if (-not $vDone.SawEffort) { Fail 'the screen says "with xhigh effort" and nothing was read' }
+        elseif ("$($vDone.Effort)" -ne 'xhigh') { Fail "the effort read as '$($vDone.Effort)', the screen says xhigh" }
+        else { Pass 'the effort level is read off the session''s own banner: xhigh' }
+
+        # The inverse, or the readings above would pass on a reader that answers
+        # for anything. Two separate screens, because the two figures are absent
+        # in different places: the menu screen names no effort (it DOES carry a
+        # finished turn, "Crunched for 6s · done", so it is the wrong screen to
+        # ask about the clock), and a screen with no duration text at all must
+        # report no turn rather than zero.
+        $vMenu = Read-SRScreenVitals -ScreenText ([System.IO.File]::ReadAllText((Join-Path $shots 'round-single-fresh.txt')))
+        if ($vMenu.SawEffort) { Fail "a screen naming no effort reported '$($vMenu.Effort)'" }
+        else { Pass 'a screen that names no effort reports none' }
+        $vBare = Read-SRScreenVitals -ScreenText "a line of prose`nand another with 5s in it`n"
+        if ($vBare.SawTurn) { Fail "prose mentioning seconds was read as a turn of $($vBare.TurnSecs)s" }
+        else { Pass 'prose that merely mentions seconds is not read as a turn clock' }
+    }
+
     # 🔑 THE SUBMIT TAB IS A REVIEW of the whole round - the one screen that
     # says how every question currently stands.
     $rev = Get-Shot 'round-review.txt'

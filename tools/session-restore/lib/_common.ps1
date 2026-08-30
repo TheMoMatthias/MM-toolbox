@@ -2989,7 +2989,12 @@ function Get-SRScreenText {
 # the status line does not always name sub-agents, and the transcript CAN see
 # them, so a silent line there means "ask the transcript", not "there are none".
 function Read-SRScreenVitals { param([string]$ScreenText)
-    $v = [PSCustomObject]@{ Shells = 0; Agents = 0; Ok = $false; SawShells = $false; SawAgents = $false }
+    $v = [PSCustomObject]@{
+        Shells = 0; Agents = 0; Ok = $false; SawShells = $false; SawAgents = $false
+        # What the session says about the turn it is on, and how hard it is
+        # thinking. -1 / '' mean the screen did not say.
+        Effort = ''; SawEffort = $false; TurnSecs = -1; TurnDone = $false; SawTurn = $false
+    }
     if (-not $ScreenText) { return $v }
     $m = [regex]::Match($ScreenText, '(\d+)\s+shells?\b')
     if ($m.Success) { $v.Shells = [int]$m.Groups[1].Value; $v.Ok = $true; $v.SawShells = $true }
@@ -2997,6 +3002,70 @@ function Read-SRScreenVitals { param([string]$ScreenText)
     # appears when there is one, so a bare mention must not be read as a hit.
     $m = [regex]::Match($ScreenText, '(\d+)\s+(?:sub-?)?agents?\b')
     if ($m.Success) { $v.Agents = [int]$m.Groups[1].Value; $v.Ok = $true; $v.SawAgents = $true }
+
+    # =====================================================================
+    # THE TURN CLOCK AND THE EFFORT, OFF THE SPINNER LINE.
+    #
+    # 🔴 THE TOOL'S OWN CLOCK WAS WRONG IN BOTH DIRECTIONS, measured
+    # 2026-08-30 against ten live sessions. It computes now-minus-the-last-
+    # human-turn, which:
+    #   - NEVER STOPS. An idle session read 10,734 s (three hours) while its
+    #     own line said "Sautéed for 2m 49s · done 5:06 PM". The turn ended;
+    #     nothing told the subtraction to stop.
+    #   - RESETS TOO OFTEN. A busy session read 12 s against its own
+    #     "Contemplating… (1h 27m 38s ...)". Something other than a human
+    #     message is being counted as the start of a turn.
+    # The session prints the true figure and this reads it, which is the same
+    # rule the shell count already follows.
+    #
+    #   ✻ Cooked for 3m 9s · done 9:03 PM
+    #   ✢ Deciphering… (32s · ↓ 1.7k tokens · thinking with xhigh effort)
+    #
+    # 🪤 A TOOL'S OWN TIMER IS NOT THE TURN'S. "⎿  Running… (2s · timeout 5m)"
+    # has the identical shape and would have been read as a turn that had just
+    # started. Two discriminators, because either alone is thin: a tool line
+    # carries "timeout", and it hangs off the U+23BF elbow.
+    $elbow = [string][char]0x23BF
+    foreach ($ln in @("$ScreenText" -split "`n")) {
+        $t = "$ln".Trim()
+        if (-not $t) { continue }
+        if ($t.StartsWith($elbow)) { continue }
+        if ($t -match '(?i)\btimeout\b') { continue }
+        # Finished: "for 3m 9s · done"
+        $d = [regex]::Match($t, '(?i)\bfor\s+(?:(\d+)h\s+)?(?:(\d+)m\s+)?(\d+)s\b[^\n]*?\bdone\b')
+        if ($d.Success) {
+            $v.TurnSecs = ([int]$(if ($d.Groups[1].Success) { $d.Groups[1].Value } else { 0 }) * 3600) +
+                          ([int]$(if ($d.Groups[2].Success) { $d.Groups[2].Value } else { 0 }) * 60) +
+                          [int]$d.Groups[3].Value
+            $v.TurnDone = $true
+            $v.SawTurn = $true
+            $v.Ok = $true
+        }
+        # Running: an ellipsis, then the elapsed in parentheses.
+        $r = [regex]::Match($t, [regex]::Escape([string][char]0x2026) + '\s*\((?:(\d+)h\s+)?(?:(\d+)m\s+)?(\d+)s\b')
+        if ($r.Success) {
+            $v.TurnSecs = ([int]$(if ($r.Groups[1].Success) { $r.Groups[1].Value } else { 0 }) * 3600) +
+                          ([int]$(if ($r.Groups[2].Success) { $r.Groups[2].Value } else { 0 }) * 60) +
+                          [int]$r.Groups[3].Value
+            $v.TurnDone = $false
+            $v.SawTurn = $true
+            $v.Ok = $true
+        }
+    }
+
+    # THE EFFORT LEVEL, and the chip was blank on every session because it was
+    # read from a launch preference nobody had set. The session prints it in TWO
+    # places and this takes either:
+    #
+    #   Opus 5 (1M context) with xhigh effort · Claude Max      the banner
+    #   ✢ Deciphering… (32s · thinking with xhigh effort)       while working
+    #
+    # 🪤 Matched on "with <word> effort" rather than on "thinking with", because
+    # the banner - which is the one still on screen when the session is NOT
+    # mid-turn, and so the one that answers for most rows - does not say
+    # "thinking" at all.
+    $e = [regex]::Match($ScreenText, '(?i)\bwith\s+(\w+)\s+effort\b')
+    if ($e.Success) { $v.Effort = $e.Groups[1].Value.ToLower(); $v.SawEffort = $true; $v.Ok = $true }
     return $v
 }
 

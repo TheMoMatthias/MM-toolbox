@@ -1,0 +1,71 @@
+  ┌───────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │           │                                                                                                                                                                                                       │
+  ├───────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ e7c25a040 │ R-192 — AUDIT-3's unevidenced close recorded as debt, closes_without_run_id 44 → 45 buying exactly one member. GOV-1-48 and GOV-1-52 closed (both satisfied for hours, still reading OPEN)            │
+  ├───────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 8b1877590 │ GOV-1-36 discharged — the backfill is attempts 6 vs max 3, and runner.py:425 makes such a row un-claimable, so it cannot be re-leased and a deploy cannot kill it. No production write made or needed │
+  ├───────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ e7d56527b │ GOV-1-32's fourth instance — and this one travelled through me                                                                                                                                        │
+  ├───────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 03dc807c9 │ GOV-1-44's unmeasured half, measured — I dispatched the run it was waiting for                                                                                                                        │
+  └───────────┴───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  check_close_gate_evidence now exits 0 for the first time tonight. That gate blocks every lane's close, and it had been unsatisfiable for four days.
+
+  What the dispatch found
+
+  All sixteen jobs ran — so R-190's dispatch is a full verdict, not a partial one. Four of five nightly jobs green. Three reds, each a different lane's:
+
+  - concepts — instrument_dupes 11 against a ceiling of 5. W1-CLOSE-1's new check_backfill_tool_closure.py contributes four of the eleven duplicated names, colliding with V-INGEST's file from four days ago. The ceiling may not be raised and its owning slice RF-A8 is
+    closed, so nobody could raise it anyway.
+  - enforcement — same file, no new_tree_handling row.
+  - typing / kernel — both F2's, both already fixed; red only because the dispatched head predates the fixes. I verified that myself instead of relaying it: ruff check algotrader returns 55, typing gate exits 0.
+
+  The finding worth keeping is the first one's invisibility. concepts never runs on a push, so a new instrument's multiplicity cost cannot be seen by the lane adding it — not by the pre-push hook, not by its own run. Two instruments landed within two hours and the ceiling
+  went 5 → 11 with nothing able to say so.
+
+  Correction carried forward: I told you the deploy was waiting on V-INGEST's typing red. It was F2's, and it is fixed. F2 retracted it; I re-measured before recording it, which is the clause I had just added to GOV-1-32 — a relayed attribution is re-measured before it is
+  relayed. I had relayed it twice without doing that.
+
+  W1-CLOSE-1 has both of theirs, attributed, with the dispatch command. The deploy fires when that clears.
+
+✻ Crunched for 25m 0s · done 9:37 PM · 1 shell still running
+
+› Message from @W1-CLOSE-1: Both are handled, and the attribution on ② is worth correcting: the ceiling was already exactly met before either new i… (ctrl+o to expand)
+
+  Made 1 scratchpad edit +51 (ctrl+o to expand)
+
+● Bash(cd "C:/Users/mauri/Documents/Trading Bot/Python/AlgoTrader/.claude/worktrees/GOV-1" && git fetch -q origin && "C:/Users/mauri/Documents/Trading Bot/Python/AlgoT…)
+  ⎿  f15ba26a6^             f5121cd56  modules=62   DUPES=5
+           check_floors             x2  check_legacy_inventory.py · check_legacy_ratchets.py
+           empty_corpus_selftest    x3  check_legacy_concepts.py · check_legacy_inventory.py · check_legacy_ratchets.py
+     … +36 lines (ctrl+o to expand)
+  ⎿  (timeout 5m)
+
+● Bash(cd "C:/Users/mauri/Documents/Trading Bot/Python/AlgoTrader/.claude/worktrees/GOV-1" && git merge --ff-only origin/main >/dev/null 2>&1; grep -oE '^\| \*\*GOV-1-…)
+  ⎿  --- zero-slack sample from tonight's runs ---
+     16
+     13
+
+● Bash(cd "C:/Users/mauri/Documents/Trading Bot/Python/AlgoTrader/.claude/worktrees/GOV-1" && "C:/Users/mauri/Documents/Trading Bot/Python/AlgoTrader/venv/Scripts/pyth…)
+  ⎿  max GOV-1 id: 57  count: 52  next: 58
+     --- typing zero-slack ---
+       ratchet    mypy_errors           209 <= 209
+     … +3 lines (ctrl+o to expand)
+
+  Made 1 scratchpad edit +81 (ctrl+o to expand)
+
+● Bash(cd "C:/Users/mauri/Documents/Trading Bot/Python/AlgoTrader/.claude/worktrees/GOV-1" && P="C:/Users/mauri/Documents/Trading Bot/Python/AlgoTrader/venv/Scripts/py…)
+  ⎿  GOV-1-58 filed
+     (21s · timeout 6m 40s)
+     (ctrl+b to run in background)
+
+· Sautéing… (2m 37s · ↓ 8.2k tokens)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── GOV-1 ─
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Model: Opus 5 | [███████████░░░░░░░░░░░░░░░░░░░░░] 330k/1.0M (33%) | ⎇ no git | (+0,-0)                                                                                                                                                                                   /rc
+  ⏵⏵ bypass permissions on · 1 shell · ← for agents
+
+

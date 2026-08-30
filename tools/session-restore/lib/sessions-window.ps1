@@ -2820,6 +2820,10 @@ $script:chipClock = $null
 # The last vitals actually read. The clock ticks off THIS rather than off the
 # transcript - see Step-ChipClock.
 $script:chipVitals = $null
+# Which conversation the strip is currently showing, so the clock can find that
+# session's own figure rather than the selected row's - they are the same thing
+# until the selection moves mid-tick.
+$script:clockId = ''
 
 function Get-ShortModel { param([string]$Model)
     if (-not $Model) { return 'model unknown' }
@@ -2918,13 +2922,13 @@ function New-Chip {
 }
 
 function Update-Chips { param($R, [switch]$Force)
-    if (-not $R) { $ui.PaneChips.Children.Clear(); $script:chipStamp = ''; $script:chipClock = $null; $script:chipVitals = $null; return }
+    if (-not $R) { $ui.PaneChips.Children.Clear(); $script:chipStamp = ''; $script:chipClock = $null; $script:chipVitals = $null; $script:clockId = ''; return }
     $v = $null
     try {
         $v = Get-SRSessionVitals -JsonlPath "$($R.S.jsonl)" -Session $R.S -WorkDir "$($R.D.path)"
     } catch { }
     if (-not $v -or -not $v.Ok) {
-        $ui.PaneChips.Children.Clear(); $script:chipStamp = ''; $script:chipClock = $null; $script:chipVitals = $null; return
+        $ui.PaneChips.Children.Clear(); $script:chipStamp = ''; $script:chipClock = $null; $script:chipVitals = $null; $script:clockId = ''; return
     }
     # 🔴 THE SESSION'S OWN COUNT WINS. The transcript estimate cannot see a
     # background shell at all - a Bash call with run_in_background gets its
@@ -2935,6 +2939,7 @@ function Update-Chips { param($R, [switch]$Force)
     if ($script:screenShells -ge 0) { $v.Shells = $script:screenShells }
     if ($script:screenAgents -ge 0) { $v.Agents = $script:screenAgents }
     $script:chipVitals = $v
+    $script:clockId = "$($R.Id)"
 
     # Everything except the clock. If none of it moved, only the clock is
     # rewritten - which is one property set rather than ten object graphs.
@@ -2985,8 +2990,18 @@ function Update-Chips { param($R, [switch]$Force)
     if ($v.Mode) {
         $null = $ui.PaneChips.Children.Add((New-Chip -Text (($v.Mode -creplace '([a-z])([A-Z])', '$1 $2').ToLower()) -Fg $Pal.Warn -Bg $glass -Dot $Pal.Warn -Tip 'The permission mode it was launched with').Border)
     }
-    if ($v.Effort) {
-        $null = $ui.PaneChips.Children.Add((New-Chip -Text ($v.Effort + ' effort') -Fg $Pal.TextMid -Bg $glass -Tip 'The thinking effort it was launched with').Border)
+    # 🔑 THE EFFORT THE SESSION IS ACTUALLY THINKING AT, not the one it was
+    # launched with. This read a per-session launch PREFERENCE, which nobody had
+    # set on any of ten live sessions - so the chip was blank everywhere and the
+    # operator asked for a figure that was already meant to be there. The
+    # session prints it on its spinner line, "thinking with xhigh effort", and
+    # the sweep now files it. The preference stays as the fallback for a session
+    # that is not mid-turn and so is not printing one.
+    $eff = "$($v.Effort)"
+    $sig = Get-RowScreenSig "$($R.Id)"
+    if ($sig -and "$($sig.Effort)") { $eff = "$($sig.Effort)" }
+    if ($eff) {
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text ($eff + ' effort') -Fg $Pal.TextMid -Bg $glass -Tip 'How hard it is thinking - read off the session''s own line while it works').Border)
     }
     # 🪤 SHOWN ONLY WHEN THERE ARE SOME. A permanent "0 shells" is noise on a
     # strip that is meant to be scanned: what is running is the signal, and its
@@ -3012,6 +3027,26 @@ function Update-ChipClock { param($V)
     # returned - that number was true once and is a second staler on every tick.
     $secs = $V.Elapsed
     if ($V.TurnAt) { $secs = ([datetime]::UtcNow - $V.TurnAt).TotalSeconds }
+
+    # 🔴 THE SESSION'S OWN FIGURE WINS, because the transcript-derived one was
+    # wrong in BOTH directions - measured across ten live sessions:
+    #   idle : the tool said 10,734 s where the session said "for 2m 49s · done"
+    #          -- now-minus-the-last-human-turn never stops when the turn does
+    #   busy : the tool said 12 s where the session said "(1h 27m 38s ...)"
+    #          -- something other than a human message resets the start
+    # The screen carries what the terminal is showing the operator, and being
+    # identical to the terminal is the whole point of this strip.
+    #
+    # 🪤 A FINISHED TURN IS A FIXED NUMBER. Only a RUNNING one gets the drift
+    # since the read added to it; adding it to a "done" figure would invent the
+    # very forward creep this replaces.
+    $done = $false
+    $sig = Get-RowScreenSig "$($script:clockId)"
+    if ($sig -and [int]$sig.TurnSecs -ge 0) {
+        $secs = [int]$sig.TurnSecs
+        $done = [bool]$sig.TurnDone
+        if (-not $done) { $secs += [Math]::Max(0.0, ((Get-Date) - $sig.At).TotalSeconds) }
+    }
     $t = Format-Clock $secs
     if (-not $t) { $script:chipClock.Text = ''; return }
     if ($V.TurnTokens -gt 0) {
@@ -4429,11 +4464,19 @@ $script:rowScreen = @{}
 # anything at all.
 $SR_RowScreenTTL = 45
 
-function Set-RowScreenSig { param([string]$Id, [int]$Shells, [int]$Agents)
+function Set-RowScreenSig {
+    param([string]$Id, [int]$Shells, [int]$Agents, [string]$Effort = '', [int]$TurnSecs = -1, [bool]$TurnDone = $false)
     if (-not $Id) { return $false }
     $was = $script:rowScreen[$Id]
+    # Only the two MARKS decide whether the list needs redrawing; the clock and
+    # the effort live on the strip, which repaints on its own tick. A redraw of
+    # every row once a second because a timer moved would be the opposite of
+    # what the sweep is for.
     $changed = (-not $was) -or ([int]$was.Shells -ne $Shells) -or ([int]$was.Agents -ne $Agents)
-    $script:rowScreen[$Id] = @{ At = (Get-Date); Shells = $Shells; Agents = $Agents }
+    $script:rowScreen[$Id] = @{
+        At = (Get-Date); Shells = $Shells; Agents = $Agents
+        Effort = "$Effort"; TurnSecs = $TurnSecs; TurnDone = $TurnDone
+    }
     return $changed
 }
 
@@ -4492,6 +4535,12 @@ $script:SweepJob = {
                 Shells = [int]$v.Shells
                 Agents = $(if ($v.SawAgents) { [int]$v.Agents } else { -1 })
                 Asking = [bool]($q -and @($q.Options).Count -ge 2)
+                # What the session says about its own turn and how hard it is
+                # thinking. Both are '' / -1 when the screen did not say, which
+                # is not the same as zero.
+                Effort   = $(if ($v.SawEffort) { "$($v.Effort)" } else { '' })
+                TurnSecs = $(if ($v.SawTurn) { [int]$v.TurnSecs } else { -1 })
+                TurnDone = [bool]$v.TurnDone
             }
         }
     } catch { }
@@ -4557,7 +4606,8 @@ function Complete-VitalsSweep {
         # and writing a zero here would clear a mark on no evidence - the entry
         # ages out on its own if the reads keep failing.
         if (-not $got) { continue }
-        if (Set-RowScreenSig -Id "$($row.Id)" -Shells ([int]$got.Shells) -Agents ([int]$got.Agents)) {
+        if (Set-RowScreenSig -Id "$($row.Id)" -Shells ([int]$got.Shells) -Agents ([int]$got.Agents) `
+                             -Effort "$($got.Effort)" -TurnSecs ([int]$got.TurnSecs) -TurnDone ([bool]$got.TurnDone)) {
             $changed = $true
         }
 
