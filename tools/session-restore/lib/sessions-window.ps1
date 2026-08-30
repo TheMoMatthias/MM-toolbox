@@ -4038,6 +4038,152 @@ function Start-TranscriptWatch { param([string]$Path)
 # assignment is atomic, and the worst a race costs here is one extra refresh.
 $script:transcriptDirty = $false
 
+# ===========================================================================
+# EVERY LIVE CONVERSATION, NOT JUST THE ONE ON SCREEN.
+#
+# 🔴 A STATUS CHANGE WAITED UP TO SIX SECONDS. Update-LiveWriters already moves
+# any session whose transcript grew out of NEEDS YOU and into WORKING - for ALL
+# live sessions, not only the selected one - but it ran on the six-second pass.
+# So a conversation starting work, or picking up after you answered it, changed
+# colour some seconds later.
+#
+# Every transcript on the machine lives under one root, so ONE watcher with
+# subdirectories covers all of them - cheaper than a watcher each and far
+# cheaper than stat-ing twenty-four files on a timer. It raises an event, the
+# lane drains it and runs the file-stat pass that already existed.
+#
+# 🪤 NO -Action, for the reason the transcript watcher records the hard way: an
+# -Action block runs in its own scope and cannot write $script: state, which is
+# how the first watcher in this window silently never fired at all.
+$script:projWatcher = $null
+
+# ===========================================================================
+# A SESSION THAT WENT QUIET IS PROBABLY ASKING YOU SOMETHING.
+#
+# 🔴 WORKING -> NEEDS YOU WAS THE SLOWEST TRANSITION IN THE TOOL. It comes from
+# the agent probe, and the agent probe spawns claude - 536 ms measured - so it
+# runs every fifteen seconds and a conversation could sit in WORKING for that
+# long after it had actually stopped and asked.
+#
+# The other direction is already instant: a transcript that GROWS is a session
+# that is working, which the projects watcher now catches in 16 ms. This is the
+# mirror of it. A transcript that has STOPPED growing is the only cheap signal
+# that a session may have finished its turn, and a screen read - 66 ms since the
+# reader was compiled, down from 560 - can then say whether a menu is up.
+#
+# 🪤 BOUNDED THREE WAYS, because this is the expensive direction. One session
+# per pass, never one that was checked in the last ten seconds, and only after
+# it has been quiet for three - a session mid-reply pauses constantly between
+# tool calls, and reading the screen on every pause would spend the saving.
+$script:quietSince = @{}
+$script:quietChecked = @{}
+$script:quietPs = $null
+$script:quietRs = $null
+$script:quietHandle = $null
+$script:quietFor = ''
+$script:quietAt = $null
+
+$script:QuietJob = {
+    . (Join-Path $SRHere '_common.ps1')
+    $out = @{ Asking = $false }
+    try {
+        $txt = Get-SRScreenText -ProcessId $SRQuiet.Pid
+        if ($txt) {
+            $q = Invoke-SRParseScreenQuestion -Text $txt
+            if ($q -and @($q.Options).Count -ge 2) { $out.Asking = $true }
+        }
+    } catch { }
+    $out
+}
+
+function Start-QuietCheck {
+    if ($script:quietPs) { return }
+    $now = Get-Date
+    $pick = $null
+    foreach ($r in $script:model) {
+        if (-not $r.Live -or "$($r.Band)" -ne 'working') { continue }
+        if (-not $r.A -or -not $r.A.Pid) { continue }
+        $key = "$($r.Id)"
+        $since = $script:quietSince[$key]
+        if (-not $since -or ($now - $since).TotalSeconds -lt 3) { continue }
+        $last = $script:quietChecked[$key]
+        if ($last -and ($now - $last).TotalSeconds -lt 10) { continue }
+        $pick = $r
+        break
+    }
+    if (-not $pick) { return }
+    $script:quietChecked["$($pick.Id)"] = $now
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'MTA'
+        $rs.ThreadOptions = 'ReuseThread'
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        $rs.SessionStateProxy.SetVariable('SRQuiet', @{ Pid = [int]$pick.A.Pid })
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript($script:QuietJob)
+        $script:quietRs = $rs
+        $script:quietPs = $ps
+        $script:quietHandle = $ps.BeginInvoke()
+        $script:quietFor = "$($pick.Id)"
+    } catch { $script:quietPs = $null }
+}
+
+function Complete-QuietCheck {
+    if (-not $script:quietPs -or -not $script:quietHandle) { return $false }
+    if (-not $script:quietHandle.IsCompleted) { return $false }
+    $res = $null
+    try { $res = @($script:quietPs.EndInvoke($script:quietHandle))[0] } catch { }
+    try { $script:quietPs.Dispose(); $script:quietRs.Close(); $script:quietRs.Dispose() } catch { }
+    $script:quietPs = $null; $script:quietRs = $null; $script:quietHandle = $null
+    if (-not $res -or -not $res.Asking) { return $false }
+    # 🔴 ONLY EVER INTO 'needs', and only on a menu actually seen. Claiming a
+    # conversation wants you is a claim that has to be measured - the same rule
+    # the follow tick states for the opposite direction, where growth may only
+    # move a row OUT of needing you.
+    $row = @($script:model | Where-Object { "$($_.Id)" -eq $script:quietFor })
+    if (-not $row.Count) { return $false }
+    if ("$($row[0].Band)" -eq 'working') {
+        $row[0].Band = 'needs'
+        return $true
+    }
+    return $false
+}
+
+function Stop-ProjectsWatch {
+    try { Unregister-Event -SourceIdentifier 'SRProjects' -Force -ErrorAction SilentlyContinue } catch { }
+    if (-not $script:projWatcher) { return }
+    try { $script:projWatcher.EnableRaisingEvents = $false } catch { }
+    try { $script:projWatcher.Dispose() } catch { }
+    $script:projWatcher = $null
+}
+
+function Start-ProjectsWatch {
+    if ($script:projWatcher) { return }
+    $root = Join-Path $env:USERPROFILE '.claude\projects'
+    if (-not (Test-Path -LiteralPath $root)) { return }
+    try {
+        $w = New-Object System.IO.FileSystemWatcher
+        $w.Path = $root
+        $w.Filter = '*.jsonl'
+        $w.IncludeSubdirectories = $true
+        $w.NotifyFilter = [System.IO.NotifyFilters]::LastWrite -bor [System.IO.NotifyFilters]::Size
+        # 🪤 A BIGGER BUFFER THAN THE DEFAULT. Two dozen conversations writing at
+        # once overflows the default 8 KB queue, and an overflowed watcher drops
+        # events SILENTLY - which would look exactly like a session whose status
+        # stopped updating, the very complaint this is here to fix.
+        $w.InternalBufferSize = 65536
+        $null = Register-ObjectEvent -InputObject $w -EventName Changed -SourceIdentifier 'SRProjects'
+        $w.EnableRaisingEvents = $true
+        $script:projWatcher = $w
+        Write-SRLog '  watching every live transcript for status changes'
+    } catch {
+        Write-SRLog ('  [skip] could not watch the projects root; status falls back to the 6s pass: ' + $_.Exception.Message)
+        Stop-ProjectsWatch
+    }
+}
+
 # 🔴 THE FAST LANE. It runs ten times a second, does NOTHING at all unless the
 # watcher raised the flag, and then does only what a write can have changed -
 # the document and the send state. The vitals, the bands and the question all
@@ -4078,6 +4224,30 @@ function Invoke-WriteLane {
             $script:transcriptDirty = $true
         }
     } catch { }
+
+    # ANY live conversation writing, not just the one on screen. Coalesced the
+    # same way: two dozen sessions writing between two ticks is one pass over
+    # the file stamps and at most one redraw of the list.
+    try {
+        $projHit = $false
+        foreach ($pv in @(Get-Event -SourceIdentifier 'SRProjects' -ErrorAction SilentlyContinue)) {
+            Remove-Event -EventIdentifier $pv.EventIdentifier -ErrorAction SilentlyContinue
+            $projHit = $true
+        }
+        if ($projHit -and $script:sheetDepth -eq 0) {
+            if (Update-LiveWriters) { Build-Sessions }
+        }
+    } catch { }
+
+    # The other direction: a session that has STOPPED writing may be asking.
+    # Collected first, then at most one new check a second.
+    if ($script:sheetDepth -eq 0) {
+        try { if (Complete-QuietCheck) { Build-Sessions } } catch { }
+        if (-not $script:quietAt -or ((Get-Date) - $script:quietAt).TotalMilliseconds -ge 1000) {
+            $script:quietAt = Get-Date
+            try { Start-QuietCheck } catch { }
+        }
+    }
     # Returns whether it actually redrew. The tick discards it; the suite needs
     # it, because the flag is consumed in the same call that sets it and there
     # is otherwise nothing to observe from outside.
@@ -4114,6 +4284,10 @@ function Invoke-WriteLane {
 }
 $script:writeTimer.Add_Tick({ Invoke-WriteLane })
 $script:writeTimer.Start()
+# One watcher over every transcript on the machine, so a status change does not
+# wait for the six-second pass. Started here rather than on first selection:
+# the list is showing statuses before anything is clicked.
+try { Start-ProjectsWatch } catch { }
 
 # A NEW CONVERSATION IN ANOTHER WORKTREE - never this one moved. A claude
 # conversation is bound to the directory it was started in and its transcript is
@@ -4850,6 +5024,8 @@ function Update-LiveWriters {
         $key = "$($r.Id)"
         $was = $script:liveStamp[$key]
         $script:liveStamp[$key] = $now
+        # When it last moved, which is what makes 'gone quiet' answerable at all.
+        if ($was -ne $now) { $script:quietSince[$key] = Get-Date }
         if ($was -and $was -ne $now -and "$($r.Band)" -eq 'needs') {
             $r.Band = 'working'
             $moved = $true

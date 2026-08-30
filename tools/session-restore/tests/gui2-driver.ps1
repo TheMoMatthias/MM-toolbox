@@ -1624,6 +1624,50 @@ else {
             } else { Pass 'the answer leaves in well under a quarter second' }
         }
 
+        # 🔴 THE QUIET CHECK, against the same real console. Working -> needs you
+        # was the slowest transition in the tool: it came from the agent probe,
+        # which spawns claude, so a conversation could sit in WORKING for fifteen
+        # seconds after it had stopped and asked. A transcript that has stopped
+        # growing plus one 66 ms screen read answers it in about three.
+        $qRow = $probeItem.Row
+        $qBandWas = "$($qRow.Band)"
+        $script:quietSince["$($qRow.Id)"] = (Get-Date).AddSeconds(-30)
+        $script:quietChecked = @{}
+        $qRow.Band = 'working'
+        try {
+            $qsw = [Diagnostics.Stopwatch]::StartNew()
+            $qMoved = $false
+            while ($qsw.Elapsed.TotalSeconds -lt 30 -and -not $qMoved) {
+                if (-not $script:quietPs) { Start-QuietCheck }
+                Start-Sleep -Milliseconds 100
+                if (Complete-QuietCheck) { $qMoved = $true }
+            }
+            $qsw.Stop()
+            if (-not $qMoved) { Fail 'a quiet session showing a menu was never moved into NEEDS YOU' }
+            elseif ("$($qRow.Band)" -ne 'needs') { Fail "the quiet check moved the row to '$($qRow.Band)' rather than needs" }
+            else { Pass ("a quiet session showing a menu reaches NEEDS YOU in {0:N1}s" -f $qsw.Elapsed.TotalSeconds) }
+
+            # 🪤 AND IT MAY ONLY EVER MOVE INTO 'needs'. Claiming a conversation
+            # wants you is a claim that has to be measured - the same rule the
+            # follow tick states for the opposite direction. A row that is NOT
+            # working must be left exactly where it is, whatever the screen says.
+            foreach ($otherBand in @('done', 'idle', 'quiet')) {
+                $qRow.Band = $otherBand
+                $script:quietFor = "$($qRow.Id)"
+                $script:quietPs = $null
+                # Feed it a positive result directly: the question is what it
+                # does with one, not whether it can get one.
+                $null = Complete-QuietCheck
+                if ("$($qRow.Band)" -ne $otherBand) {
+                    Fail ("the quiet check moved a '{0}' row to '{1}' - it may only ever move a WORKING one" -f $otherBand, $qRow.Band)
+                } else { Pass ("a '{0}' row is left alone by the quiet check" -f $otherBand) }
+            }
+        } finally {
+            $qRow.Band = $qBandWas
+            $script:quietChecked = @{}
+            $script:quietSince = @{}
+        }
+
         # 🪤 AND THE BUSY GATE, on the same live console. Without this the two
         # assertions above would pass on a probe that reads any session at all,
         # which is exactly the defect that drew a numbered list as a menu.
@@ -1862,6 +1906,78 @@ else {
         Stop-TranscriptWatch
         Remove-Item -LiteralPath $watchCopy -Force -ErrorAction SilentlyContinue
     }
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- how fast a status changes ---'
+# ===========================================================================
+# 🔴 THE BAND IS THE WHOLE POINT OF THE LIST. It says which conversations want
+# you and which are working, and it used to change on the six-second pass at
+# best - the authoritative state behind it comes from the agent probe, which
+# spawns claude every fifteen. Answering a question and watching the row stay
+# in NEEDS YOU is the complaint this measures.
+$statRows = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and $_.Row.Live })
+if (-not $statRows.Count) { Note 'nothing is live, so a status change cannot be timed' }
+else {
+    # 1. ANSWERING. Move-RowToWorking is called by Invoke-Answer, Invoke-Send
+    #    and Invoke-Compact the moment the send succeeds - this proves the row
+    #    really is in WORKING before anything else has had to run.
+    $statRow = $statRows[0].Row
+    $bandWas2 = "$($statRow.Band)"
+    $statRow.Band = 'needs'
+    Build-Sessions
+    $mv = Ms { Move-RowToWorking $statRow }
+    $drawn = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and $_.Id -eq $statRows[0].Id })
+    if ("$($statRow.Band)" -ne 'working') { Fail 'replying did not move the conversation into WORKING' }
+    elseif (-not $drawn.Count) { Fail 'the row vanished from the list after replying' }
+    elseif ($mv -gt 250) { Fail ("replying takes {0:N0} ms to show as working" -f $mv) }
+    else { Pass ("replying shows as working in {0:N0} ms" -f $mv) }
+    $statRow.Band = $bandWas2
+
+    # 2. A SESSION STARTS WRITING. One watcher covers every transcript on the
+    #    machine; the lane drains it and runs the file-stat pass. Timed against
+    #    a COPY - writing into a live conversation's transcript to time a redraw
+    #    would corrupt the record the whole tool reads.
+    $statCopy = Join-Path $SR_StateDir ('band-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.jsonl')
+    try {
+        Start-ProjectsWatch
+        if (-not $script:projWatcher) { Fail 'the projects watcher would not start - every status change waits for the 6s pass' }
+        else {
+            Pass 'every transcript on the machine is watched, not just the selected one'
+            # The watcher covers the projects root; a file written anywhere under
+            # it must raise an event, which is what the lane acts on.
+            $probeDir = Join-Path $env:USERPROFILE '.claude\projects'
+            $probeFile = Join-Path $probeDir ('zz-band-probe-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.jsonl')
+            try {
+                $null = @(Get-Event -SourceIdentifier 'SRProjects' -ErrorAction SilentlyContinue |
+                          ForEach-Object { Remove-Event -EventIdentifier $_.EventIdentifier -ErrorAction SilentlyContinue })
+                $bsw = [Diagnostics.Stopwatch]::StartNew()
+                [System.IO.File]::WriteAllText($probeFile, "{}`n", (New-Object System.Text.UTF8Encoding($false)))
+                [System.IO.File]::AppendAllText($probeFile, "{}`n", (New-Object System.Text.UTF8Encoding($false)))
+                $sawBand = $false
+                while ($bsw.Elapsed.TotalSeconds -lt 8 -and -not $sawBand) {
+                    Start-Sleep -Milliseconds 5
+                    foreach ($bv in @(Get-Event -SourceIdentifier 'SRProjects' -ErrorAction SilentlyContinue)) {
+                        Remove-Event -EventIdentifier $bv.EventIdentifier -ErrorAction SilentlyContinue
+                        $sawBand = $true
+                    }
+                }
+                $bsw.Stop()
+                if (-not $sawBand) {
+                    Fail 'a transcript was written and the watcher never saw it - statuses are back on the 6s pass'
+                } elseif ($bsw.Elapsed.TotalMilliseconds -gt 700) {
+                    Fail ("a transcript write takes {0:N0} ms to reach the status pass" -f $bsw.Elapsed.TotalMilliseconds)
+                } else { Pass ("any session writing reaches the status pass in {0:N0} ms" -f $bsw.Elapsed.TotalMilliseconds) }
+            } finally { Remove-Item -LiteralPath $probeFile -Force -ErrorAction SilentlyContinue }
+        }
+    } finally { Remove-Item -LiteralPath $statCopy -Force -ErrorAction SilentlyContinue }
+
+    # 3. AND THE PASS ITSELF STAYS CHEAP, because it now runs on every write
+    #    rather than every six seconds.
+    $lwMs = Ms { $null = Update-LiveWriters }
+    if ($lwMs -gt 50) { Fail ("the status pass costs {0:N0} ms and now runs on every write" -f $lwMs) }
+    else { Pass ("the status pass costs {0:N1} ms" -f $lwMs) }
 }
 
 Write-Host ''
