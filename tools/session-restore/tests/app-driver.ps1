@@ -75,7 +75,50 @@ public delegate bool EnumWindowsProc(IntPtr h, IntPtr l);
 [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
 [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, System.Text.StringBuilder s, int n);
 [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 '@
+}
+
+# ===========================================================================
+# THE ONE WINDOW THIS SUITE PUTS ON A SCREEN GOES WHERE IT IS ASKED TO.
+#
+# 🔴 EVERY OTHER SPAWNED WINDOW IN THE SUITES IS MINIMIZED ON PURPOSE - the
+# menu replicas take -WindowStyle Minimized so a real console exists to be read
+# without ever appearing. Sessions.exe is the exception: the point of the test
+# is that a window opens, so it opens on the primary display, which is not
+# always the display the operator is using for something else.
+#
+# 🪤 LEFTMOST BY DEFAULT, AND OVERRIDABLE. There is no supported way to map a
+# monitor's friendly name onto its GDI device from PowerShell without the CCD
+# API, so this picks by position rather than pretending to know the make:
+# SR_TEST_SCREEN=left (default) | right | primary.
+function Move-ToTestScreen { param($Proc, [int]$WaitMs = 4000)
+    if (-not $Proc) { return }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $screens = @([System.Windows.Forms.Screen]::AllScreens)
+        if ($screens.Count -lt 2) { return }
+        $want = "$env:SR_TEST_SCREEN"
+        $target = switch ($want) {
+            'right'   { @($screens | Sort-Object { $_.Bounds.X } -Descending)[0] }
+            'primary' { @($screens | Where-Object { $_.Primary })[0] }
+            default   { @($screens | Sort-Object { $_.Bounds.X })[0] }
+        }
+        if (-not $target) { return }
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        while ($sw.Elapsed.TotalMilliseconds -lt $WaitMs) {
+            $Proc.Refresh()
+            if ($Proc.HasExited) { return }
+            if ($Proc.MainWindowHandle -ne [IntPtr]::Zero) { break }
+            Start-Sleep -Milliseconds 150
+        }
+        if ($Proc.MainWindowHandle -eq [IntPtr]::Zero) { return }
+        $b = $target.WorkingArea
+        # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE - move it, do not resize it,
+        # do not steal focus from whatever the operator is doing.
+        $null = [SRApp.Win]::SetWindowPos($Proc.MainWindowHandle, [IntPtr]::Zero,
+                    ($b.X + 60), ($b.Y + 60), 0, 0, 0x0001 -bor 0x0004 -bor 0x0010)
+    } catch { }
 }
 function Get-WindowCount {
     $owners = New-Object 'System.Collections.Generic.HashSet[uint32]'
@@ -260,6 +303,7 @@ try {
 
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $started = Start-Process -FilePath $exe -ArgumentList '-NoScan' -PassThru
+    Move-ToTestScreen -Proc $started
     $title = ''
     while ($sw.Elapsed.TotalSeconds -lt 90) {
         Start-Sleep -Milliseconds 300
@@ -433,6 +477,7 @@ try {
     if ((Get-WindowCount) -eq 0 -and @(Get-Process -Name Sessions -ErrorAction SilentlyContinue).Count -eq 0) {
         $env:SR_GUI_SHOW = '1'
         $shown = Start-Process -FilePath $exe -ArgumentList '-NoScan' -PassThru
+        Move-ToTestScreen -Proc $shown
         Remove-Item Env:\SR_GUI_SHOW -ErrorAction SilentlyContinue
         try {
             $sw2 = [Diagnostics.Stopwatch]::StartNew()

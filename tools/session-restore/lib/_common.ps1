@@ -2779,15 +2779,24 @@ function Get-SRScreenText {
 # 🪤 It only knows about a session whose screen has actually been read, which is
 # the one on the pane. Rows keep the transcript estimate, and where the two can
 # disagree the strip is the one to believe.
+#
+# 🪤 SawShells / SawAgents ARE NOT Ok, AND THE DIFFERENCE MATTERS. Ok says the
+# read produced something; the two Saw flags say WHICH of the two figures the
+# line actually printed. A session with no shells prints no shell count, so
+# "did not print one" has to be readable as a true zero - otherwise a shell
+# that has finished leaves its mark on the row until something else happens to
+# overwrite it. The agent side needs the opposite answer from the same flag:
+# the status line does not always name sub-agents, and the transcript CAN see
+# them, so a silent line there means "ask the transcript", not "there are none".
 function Read-SRScreenVitals { param([string]$ScreenText)
-    $v = [PSCustomObject]@{ Shells = 0; Agents = 0; Ok = $false }
+    $v = [PSCustomObject]@{ Shells = 0; Agents = 0; Ok = $false; SawShells = $false; SawAgents = $false }
     if (-not $ScreenText) { return $v }
     $m = [regex]::Match($ScreenText, '(\d+)\s+shells?\b')
-    if ($m.Success) { $v.Shells = [int]$m.Groups[1].Value; $v.Ok = $true }
+    if ($m.Success) { $v.Shells = [int]$m.Groups[1].Value; $v.Ok = $true; $v.SawShells = $true }
     # "<- for agents" carries no number and means none are out; a count only
     # appears when there is one, so a bare mention must not be read as a hit.
     $m = [regex]::Match($ScreenText, '(\d+)\s+(?:sub-?)?agents?\b')
-    if ($m.Success) { $v.Agents = [int]$m.Groups[1].Value; $v.Ok = $true }
+    if ($m.Success) { $v.Agents = [int]$m.Groups[1].Value; $v.Ok = $true; $v.SawAgents = $true }
     return $v
 }
 
@@ -3554,31 +3563,30 @@ function Get-SRRowSignals { param([string]$JsonlPath)
     # different questions: a sub-agent is another conversation working on your
     # behalf, a background shell is a command still running.
     $agents = @{}
-    $shells = @{}
     foreach ($m in [regex]::Matches($text, '"id":"(toolu_[A-Za-z0-9_]+)","name":"Task"')) {
         $agents[$m.Groups[1].Value] = $true
-    }
-    # 🪤 A BOUNDED WINDOW AFTER THE NAME, not a nested-brace match. run_in_background
-    # sits somewhere inside the input object and the key order is not promised,
-    # so this looks ahead a fixed distance instead of trying to balance braces
-    # with a regex - which is the classic way to write a pattern that backtracks
-    # for seconds on a large input.
-    foreach ($m in [regex]::Matches($text, '"id":"(toolu_[A-Za-z0-9_]+)","name":"Bash","input":\{.{0,600}?"run_in_background":true')) {
-        $shells[$m.Groups[1].Value] = $true
     }
     foreach ($m in [regex]::Matches($text, '"tool_use_id":"(toolu_[A-Za-z0-9_]+)"')) {
         $id = $m.Groups[1].Value
         if ($agents.ContainsKey($id)) { $null = $agents.Remove($id) }
-        if ($shells.ContainsKey($id)) { $null = $shells.Remove($id) }
     }
+    # 🔴 NO SHELL COUNT HERE, AND THAT IS THE ANSWER RATHER THAN A GAP. This
+    # used to run the same unanswered-call test over a Bash carrying
+    # run_in_background, and it could only ever return zero: a background Bash
+    # gets its tool_result back IMMEDIATELY, carrying the shell id, so the call
+    # is answered the instant it is made and nothing is ever left outstanding.
+    # Measured on a live transcript - one background shell launched, one result
+    # written - which is why the square mark never once appeared on a row.
+    # The count the session prints on its own status line is the only true one;
+    # Read-SRScreenVitals reads it and the window caches it per session.
 
     $window = 200000
     if ($tokens -gt 200000) { $window = 1000000 }
     $v = [PSCustomObject]@{
         Tokens = $tokens; Window = $window
         Frac = $(if ($window -gt 0) { [double]$tokens / [double]$window } else { 0.0 })
-        Agents = $agents.Count; Shells = $shells.Count
-        Ok = ($tokens -gt 0 -or $agents.Count -gt 0 -or $shells.Count -gt 0)
+        Agents = $agents.Count; Shells = 0
+        Ok = ($tokens -gt 0 -or $agents.Count -gt 0)
     }
     $script:SR_SigCache[$key] = @{ Stamp = $stamp; Value = $v }
     return $v

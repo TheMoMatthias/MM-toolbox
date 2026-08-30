@@ -1637,10 +1637,17 @@ else {
         try {
             $qsw = [Diagnostics.Stopwatch]::StartNew()
             $qMoved = $false
+            # 🪤 THE BAND IS THE ASSERTION, NOT THE RETURN VALUE. Complete-QuietCheck
+            # answers "does the list need redrawing", and it now says yes for the
+            # OTHER thing it files - what the session printed about its shells and
+            # sub-agents. Looping on the return therefore stopped on the first
+            # completed read of any session and then asked why this row had not
+            # moved. What is under test is where this row ended up.
             while ($qsw.Elapsed.TotalSeconds -lt 30 -and -not $qMoved) {
                 if (-not $script:quietPs) { Start-QuietCheck }
                 Start-Sleep -Milliseconds 100
-                if (Complete-QuietCheck) { $qMoved = $true }
+                $null = Complete-QuietCheck
+                if ("$($qRow.Band)" -eq 'needs') { $qMoved = $true }
             }
             $qsw.Stop()
             if (-not $qMoved) { Fail 'a quiet session showing a menu was never moved into NEEDS YOU' }
@@ -1651,13 +1658,25 @@ else {
             # wants you is a claim that has to be measured - the same rule the
             # follow tick states for the opposite direction. A row that is NOT
             # working must be left exactly where it is, whatever the screen says.
+            # 🔴 THROUGH Test-QuietVerdict, WITH Asking=$true. Driven through
+            # Complete-QuietCheck with no job in flight, these three passed
+            # because the collector returns at its first line when there is
+            # nothing to collect - the rule was never reached and the green
+            # could not go red. The verdict is its own function so a real
+            # positive can be handed to it.
+            $qRow.Band = 'working'
+            if (-not (Test-QuietVerdict -Row $qRow -Asking $true) -or "$($qRow.Band)" -ne 'needs') {
+                Fail 'a WORKING row shown a menu was not moved into needs - the positive case does not fire'
+            } else { Pass 'a working row shown a menu is moved into needs' }
+            $qRow.Band = 'working'
+            if ((Test-QuietVerdict -Row $qRow -Asking $false) -or "$($qRow.Band)" -ne 'working') {
+                Fail 'a row with no menu on screen was moved anyway'
+            } else { Pass 'no menu on screen moves nothing' }
             foreach ($otherBand in @('done', 'idle', 'quiet')) {
                 $qRow.Band = $otherBand
-                $script:quietFor = "$($qRow.Id)"
-                $script:quietPs = $null
                 # Feed it a positive result directly: the question is what it
                 # does with one, not whether it can get one.
-                $null = Complete-QuietCheck
+                $null = Test-QuietVerdict -Row $qRow -Asking $true
                 if ("$($qRow.Band)" -ne $otherBand) {
                     Fail ("the quiet check moved a '{0}' row to '{1}' - it may only ever move a WORKING one" -f $otherBand, $qRow.Band)
                 } else { Pass ("a '{0}' row is left alone by the quiet check" -f $otherBand) }
@@ -1666,6 +1685,60 @@ else {
             $qRow.Band = $qBandWas
             $script:quietChecked = @{}
             $script:quietSince = @{}
+        }
+
+        # ===================================================================
+        # 🔴 THE SQUARE SHELL MARK, WHICH HAD NEVER APPEARED ON A ROW AT ALL.
+        # The row drew it from Get-SRRowSignals, which looked for a Bash call
+        # nobody had answered - and a background Bash is answered the instant it
+        # is launched, so that count was structurally zero. Both halves are
+        # asserted: that the transcript really cannot see one, and that the
+        # count read off the session's own status line reaches the row.
+        # ===================================================================
+        $bgLine = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_TESTBG01","name":"Bash","input":{"command":"sleep 60","run_in_background":true}}]}}'
+        $bgAns = '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_TESTBG01","content":"started"}]}}'
+        $bgFile = Join-Path $SR_StateDir ('shellsig-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.jsonl')
+        try {
+            [System.IO.File]::WriteAllText($bgFile, ($bgLine + "`n" + $bgAns + "`n"))
+            $bgSig = Get-SRRowSignals $bgFile
+            if ([int]$bgSig.Shells -ne 0) {
+                Fail ("the transcript reader claims {0} shell(s) - it cannot know that" -f $bgSig.Shells)
+            } else { Pass 'a launched background shell leaves nothing outstanding in the transcript - the row cannot learn it there' }
+        } finally { Remove-Item -LiteralPath $bgFile -Force -ErrorAction SilentlyContinue }
+
+        $sigId = "$($probeItem.Row.Id)"
+        $sigWas = $script:rowScreen[$sigId]
+        try {
+            $null = Set-RowScreenSig -Id $sigId -Shells 2 -Agents -1
+            Build-Sessions
+            $drawn = @($ui.SessionList.ItemsSource | Where-Object { "$($_.Id)" -eq $sigId })
+            if (-not $drawn.Count) { Fail 'the conversation under test is not in the list' }
+            elseif ("$($drawn[0].ShellVis)" -ne 'Visible') { Fail 'a session with 2 shells running draws no shell mark' }
+            elseif ("$($drawn[0].ShellText)" -ne '2') { Fail "the shell mark reads '$($drawn[0].ShellText)' rather than 2" }
+            else { Pass 'a shell count read off the status line reaches the row as a square mark' }
+
+            # 🪤 AND IT HAS TO CLEAR. A finished shell prints no count, which is
+            # a true zero - if that read only ever overwrote a positive the mark
+            # would stay up for the life of the window.
+            $null = Set-RowScreenSig -Id $sigId -Shells 0 -Agents -1
+            Build-Sessions
+            $drawn = @($ui.SessionList.ItemsSource | Where-Object { "$($_.Id)" -eq $sigId })
+            if ($drawn.Count -and "$($drawn[0].ShellVis)" -eq 'Visible') {
+                Fail 'the shell mark stayed up after the session stopped reporting one'
+            } else { Pass 'the mark clears when the shell finishes' }
+
+            # 🪤 A COUNT THE STATUS LINE NEVER PRINTED IS NOT A ZERO. Sub-agents
+            # the transcript CAN see, so -1 there means "ask the transcript"
+            # rather than "there are none" - the opposite default to shells.
+            $script:rowScreen[$sigId] = @{ At = (Get-Date).AddSeconds(-600); Shells = 3; Agents = 3 }
+            Build-Sessions
+            $drawn = @($ui.SessionList.ItemsSource | Where-Object { "$($_.Id)" -eq $sigId })
+            if ($drawn.Count -and "$($drawn[0].ShellVis)" -eq 'Visible') {
+                Fail 'a ten-minute-old count is still being drawn - it describes a session that has since done anything at all'
+            } else { Pass 'a count past its life is not drawn' }
+        } finally {
+            if ($sigWas) { $script:rowScreen[$sigId] = $sigWas } else { $script:rowScreen.Remove($sigId) }
+            Build-Sessions
         }
 
         # 🪤 AND THE BUSY GATE, on the same live console. Without this the two

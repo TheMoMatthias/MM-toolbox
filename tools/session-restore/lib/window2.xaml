@@ -1220,8 +1220,20 @@
 
           <Border Grid.Row="0" Background="{StaticResource Panel}"
                   BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="18,12,18,12">
+            <!-- ================== THREE STACKED ROWS ==================
+                 🔴 THE NAME AND THE BUTTONS NO LONGER SHARE A LINE. They did,
+                 in two columns, and the buttons are Auto-width: six of them
+                 take what they need and the name got the remainder, which on a
+                 pane this wide was about a fifth of the header. So the title
+                 read "millwright-str..." and the state line under it ran out
+                 of room mid-word - two pieces of text ending in the same place
+                 for no reason a reader could see, which is what "overlapping"
+                 looked like. Stacked, each row has the whole width and nothing
+                 is competing for it.
+                 ======================================================== -->
             <Grid>
               <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
               </Grid.RowDefinitions>
@@ -1229,13 +1241,25 @@
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
               </Grid.ColumnDefinitions>
-              <StackPanel Grid.Row="0" Grid.Column="0" VerticalAlignment="Center">
+              <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" VerticalAlignment="Center">
                 <TextBlock x:Name="PaneName" Style="{StaticResource H1}" Text="" TextTrimming="CharacterEllipsis"/>
-                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
-                  <Border x:Name="PaneStateDot" Width="7" Height="7" CornerRadius="4"
+                <!-- 🪤 A GRID, NOT A HORIZONTAL StackPanel. A horizontal stack
+                     measures its children against infinite width, so the state
+                     line never learned it had run out of room: it was cut off
+                     mid-word at the column edge and read as if it ran UNDER the
+                     button strip. In a Grid the text column is star-width, so
+                     it is measured against what is actually left and trims with
+                     an ellipsis the way the name above it always has. -->
+                <Grid Margin="0,2,0,0">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                  </Grid.ColumnDefinitions>
+                  <Border x:Name="PaneStateDot" Grid.Column="0" Width="7" Height="7" CornerRadius="4"
                           Background="{StaticResource AccIdle}" VerticalAlignment="Center" Margin="0,0,7,0"/>
-                  <TextBlock x:Name="PaneState" Style="{StaticResource Dim}" Text=""/>
-                </StackPanel>
+                  <TextBlock x:Name="PaneState" Grid.Column="1" Style="{StaticResource Dim}" Text=""
+                             TextTrimming="CharacterEllipsis"/>
+                </Grid>
                 <!-- ================== THE VITALS ==================
                      What the terminal's own status line shows, for the session
                      you are looking at: which model, how much context it has
@@ -1249,7 +1273,12 @@
                      Only the +N -N asks git, and that answer is cached.
                      ================================================ -->
               </StackPanel>
-              <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top" Margin="0,2,0,0">
+              <!-- 🪤 A WrapPanel, RIGHT-ALIGNED, ON ITS OWN ROW. Right-aligned
+                   so the eye still finds the actions where it always did, and
+                   wrapping so a narrow pane drops the last button to a second
+                   line instead of pushing it off the edge. -->
+              <WrapPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal"
+                         HorizontalAlignment="Right" Margin="0,10,0,0">
                 <Button x:Name="PaneCompact" Content="Compact" Style="{StaticResource Btn}" Margin="0,0,8,0"
                         ToolTip="Send /compact into this conversation now - watch the context bar to the left"/>
                 <Button x:Name="PaneTools" Content="Steps: folded" Style="{StaticResource Btn}" Margin="0,0,8,0"
@@ -1260,13 +1289,13 @@
                         ToolTip="Name, model, effort, permissions, Remote Control, hidden"/>
                 <Button x:Name="PaneGoTo" Content="Go to terminal" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
                 <Button x:Name="PaneRelaunch" Content="Relaunch" Style="{StaticResource Btn}"/>
-              </StackPanel>
+              </WrapPanel>
               <!-- 🪤 ITS OWN ROW, SPANNING BOTH COLUMNS. Inside the left column
                    it only ever got the width the five buttons left over, so on
                    a live session it wrapped onto two lines and the strip read
                    as a stack rather than as a status line. Across the full
                    header it is one line, which is what makes it scannable. -->
-              <WrapPanel x:Name="PaneChips" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,11,0,0"/>
+              <WrapPanel x:Name="PaneChips" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,11,0,0"/>
             </Grid>
           </Border>
 

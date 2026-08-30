@@ -1216,6 +1216,12 @@ function Build-Sessions {
             $saidText = ''
             if ($r.Said -and "$($r.Said.Said)".Trim()) { $saidText = ("$($r.Said.Said)".Trim() -replace '\s+', ' ') }
             elseif ($r.Conv -and "$($r.Conv.Detail)") { $saidText = "$($r.Conv.Detail)" }
+            # What this conversation has out, from the two readers that can each
+            # answer half of it. See the note beside the marks below.
+            $scr = Get-RowScreenSig "$($r.Id)"
+            $rowShells = $(if ($scr) { [int]$scr.Shells } else { 0 })
+            $rowAgents = $(if ($r.Sig) { [int]$r.Sig.Agents } else { 0 })
+            if ($scr -and [int]$scr.Agents -ge 0) { $rowAgents = [int]$scr.Agents }
             $items.Add([PSCustomObject]@{
                 Kind = 'session'; Id = $r.Id; Row = $r
                 BandVis = $V_Hide; RowVis = $V_Show
@@ -1247,10 +1253,19 @@ function Build-Sessions {
                 # with a total on it. Shape carries the distinction so it also
                 # survives a greyscale screenshot and colour blindness, which is
                 # the rule the rest of this window is built on.
-                AgentVis = $(if ($r.Sig -and $r.Sig.Agents -gt 0) { $V_Show } else { $V_Hide })
-                AgentText = $(if ($r.Sig -and $r.Sig.Agents -gt 0) { "$($r.Sig.Agents)" } else { '' })
-                ShellVis = $(if ($r.Sig -and $r.Sig.Shells -gt 0) { $V_Show } else { $V_Hide })
-                ShellText = $(if ($r.Sig -and $r.Sig.Shells -gt 0) { "$($r.Sig.Shells)" } else { '' })
+                #
+                # 🪤 THE SHELL COUNT DOES NOT COME FROM Sig AND CANNOT. The
+                # transcript answers a background Bash immediately, so the row's
+                # own reader can only ever say zero; the true figure is the one
+                # the session prints on its status line, filed per session by
+                # the screen read. Sub-agents are the other way round - the
+                # transcript sees them reliably and the status line may not name
+                # them at all - so the screen only overrides there when it
+                # actually said a number.
+                AgentVis = $(if ($rowAgents -gt 0) { $V_Show } else { $V_Hide })
+                AgentText = $(if ($rowAgents -gt 0) { "$rowAgents" } else { '' })
+                ShellVis = $(if ($rowShells -gt 0) { $V_Show } else { $V_Hide })
+                ShellText = $(if ($rowShells -gt 0) { "$rowShells" } else { '' })
             })
         }
     }
@@ -4083,14 +4098,61 @@ $script:quietHandle = $null
 $script:quietFor = ''
 $script:quietAt = $null
 
+# ===========================================================================
+# WHAT EACH LIVE SESSION SAYS IT HAS RUNNING, KEPT PER SESSION.
+#
+# 🔴 THE SQUARE SHELL MARK HAD NEVER ONCE APPEARED ON A ROW, and it could not
+# have: the row read its shell count off the transcript, where a background
+# Bash is answered the instant it is launched, so the count was structurally
+# zero (see Get-SRRowSignals). The strip already knew better - it reads the
+# figure the session prints on its own status line - but only for the ONE
+# conversation on the pane, and the operator was looking at the list.
+#
+# So the screen read that the quiet check already makes now answers both
+# questions from the one screen it has in hand, and the answer is filed per
+# session here. Rows draw from this; nothing else can tell them.
+#
+# 🪤 -1 MEANS "THE LINE DID NOT SAY", WHICH IS NOT ZERO, and the two figures
+# want opposite defaults. A session with no shells prints no shell count, so
+# silence there IS zero and a finished shell has to clear its mark. Sub-agents
+# the line does not always name at all - and the transcript CAN see those - so
+# silence there means "ask the transcript" instead.
+$script:rowScreen = @{}
+$SR_RowScreenTTL = 45      # seconds a filed count is still worth drawing
+$SR_RowScreenAge = 20      # seconds before a live session is worth re-reading
+
+function Set-RowScreenSig { param([string]$Id, [int]$Shells, [int]$Agents)
+    if (-not $Id) { return $false }
+    $was = $script:rowScreen[$Id]
+    $changed = (-not $was) -or ([int]$was.Shells -ne $Shells) -or ([int]$was.Agents -ne $Agents)
+    $script:rowScreen[$Id] = @{ At = (Get-Date); Shells = $Shells; Agents = $Agents }
+    return $changed
+}
+
+function Get-RowScreenSig { param([string]$Id)
+    if (-not $Id) { return $null }
+    $v = $script:rowScreen[$Id]
+    if (-not $v) { return $null }
+    # A count read four minutes ago describes a session that has since done
+    # anything at all. Past its life it is not evidence and must not draw.
+    if (((Get-Date) - $v.At).TotalSeconds -gt $SR_RowScreenTTL) { return $null }
+    return $v
+}
+
 $script:QuietJob = {
     . (Join-Path $SRHere '_common.ps1')
-    $out = @{ Asking = $false }
+    $out = @{ Asking = $false; Read = $false; Shells = 0; Agents = -1 }
     try {
         $txt = Get-SRScreenText -ProcessId $SRQuiet.Pid
         if ($txt) {
+            $out.Read = $true
             $q = Invoke-SRParseScreenQuestion -Text $txt
             if ($q -and @($q.Options).Count -ge 2) { $out.Asking = $true }
+            # The same screen answers the other thing a row wants to know, so
+            # it costs nothing beyond the read that was already being made.
+            $sv = Read-SRScreenVitals -ScreenText $txt
+            if ($sv.SawShells) { $out.Shells = [int]$sv.Shells }
+            if ($sv.SawAgents) { $out.Agents = [int]$sv.Agents }
         }
     } catch { }
     $out
@@ -4110,6 +4172,25 @@ function Start-QuietCheck {
         if ($last -and ($now - $last).TotalSeconds -lt 10) { continue }
         $pick = $r
         break
+    }
+    # 🔴 SECOND CHOICE, AND ONLY WHEN THE FIRST FOUND NOBODY. Asking whether a
+    # session has stopped and put a menu up is the urgent question and keeps
+    # first refusal; refreshing what a session has RUNNING is the patient one,
+    # so it fills the passes the urgent question does not want. It is also the
+    # only way the marks reach a session that is not in WORKING - a shell
+    # outlives the turn that started it, and a conversation waiting on you with
+    # a build still going is exactly the row that has to say so.
+    if (-not $pick) {
+        foreach ($r in $script:model) {
+            if (-not $r.Live -or -not $r.A -or -not $r.A.Pid) { continue }
+            $key = "$($r.Id)"
+            $last = $script:quietChecked[$key]
+            if ($last -and ($now - $last).TotalSeconds -lt 10) { continue }
+            $sig = $script:rowScreen[$key]
+            if ($sig -and ($now - $sig.At).TotalSeconds -lt $SR_RowScreenAge) { continue }
+            $pick = $r
+            break
+        }
     }
     if (-not $pick) { return }
     $script:quietChecked["$($pick.Id)"] = $now
@@ -4137,18 +4218,36 @@ function Complete-QuietCheck {
     try { $res = @($script:quietPs.EndInvoke($script:quietHandle))[0] } catch { }
     try { $script:quietPs.Dispose(); $script:quietRs.Close(); $script:quietRs.Dispose() } catch { }
     $script:quietPs = $null; $script:quietRs = $null; $script:quietHandle = $null
-    if (-not $res -or -not $res.Asking) { return $false }
-    # 🔴 ONLY EVER INTO 'needs', and only on a menu actually seen. Claiming a
-    # conversation wants you is a claim that has to be measured - the same rule
-    # the follow tick states for the opposite direction, where growth may only
-    # move a row OUT of needing you.
-    $row = @($script:model | Where-Object { "$($_.Id)" -eq $script:quietFor })
-    if (-not $row.Count) { return $false }
-    if ("$($row[0].Band)" -eq 'working') {
-        $row[0].Band = 'needs'
-        return $true
+    if (-not $res) { return $false }
+    # What it has running is filed whatever the answer about the menu was - a
+    # read that found no question still read the status line successfully.
+    $redraw = $false
+    if ($res.Read) {
+        if (Set-RowScreenSig -Id "$($script:quietFor)" -Shells ([int]$res.Shells) -Agents ([int]$res.Agents)) {
+            $redraw = $true
+        }
     }
-    return $false
+    $row = @($script:model | Where-Object { "$($_.Id)" -eq $script:quietFor })
+    if (-not $row.Count) { return $redraw }
+    if (Test-QuietVerdict -Row $row[0] -Asking ([bool]$res.Asking)) { return $true }
+    return $redraw
+}
+
+# 🔴 ONLY EVER INTO 'needs', AND ONLY ON A MENU ACTUALLY SEEN. Claiming a
+# conversation wants you is a claim that has to be measured - the same rule the
+# follow tick states for the opposite direction, where growth may only move a
+# row OUT of needing you.
+#
+# 🪤 ITS OWN FUNCTION SO THE RULE CAN BE PUT UNDER TEST. Inside the collector it
+# could only be reached by a completed screen read, so the suite drove it with
+# no job in flight - and Complete-QuietCheck returns at its first line when
+# there is none. Three assertions that a done/idle/quiet row is left alone were
+# passing because nothing ran at all, which is a green that cannot go red.
+function Test-QuietVerdict { param($Row, [bool]$Asking)
+    if (-not $Row -or -not $Asking) { return $false }
+    if ("$($Row.Band)" -ne 'working') { return $false }
+    $Row.Band = 'needs'
+    return $true
 }
 
 function Stop-ProjectsWatch {
@@ -5137,7 +5236,7 @@ $script:askStartedAt = $null
 
 $script:AskJob = {
     . (Join-Path $SRHere '_common.ps1')
-    $out = @{ Ask = $null; Shells = -1; Agents = -1 }
+    $out = @{ Ask = $null; Read = $false; Shells = -1; Agents = -1 }
     try {
         # ONE screen read serves both answers - the question and the counts the
         # session prints about itself are on the same screen, and reading it
@@ -5157,8 +5256,14 @@ $script:AskJob = {
             # of what was actually on screen when the options were offered.
             if ($q) { $q | Add-Member -NotePropertyName Screen -NotePropertyValue $txt -Force }
             $out.Ask = $q
+            $out.Read = $true
             $sv = Read-SRScreenVitals -ScreenText $txt
-            if ($sv.Ok) { $out.Shells = $sv.Shells; $out.Agents = $sv.Agents }
+            # 🪤 A SUCCESSFUL READ THAT NAMED NO SHELLS IS A TRUE ZERO. Gating
+            # this on $sv.Ok - which is only set when one of the two figures
+            # was actually printed - left the chip showing the count from the
+            # last session that HAD one, because -1 means "do not overwrite".
+            $out.Shells = [int]$sv.Shells
+            if ($sv.SawAgents) { $out.Agents = [int]$sv.Agents }
         }
     } catch { }
     $out
@@ -5221,9 +5326,16 @@ function Complete-AskProbe {
     Show-Ask $res.Ask
     # The counts the session printed about itself. -1 means the screen could not
     # be read, which is not the same as zero and must not overwrite anything.
-    if ([int]$res.Shells -ge 0 -or [int]$res.Agents -ge 0) {
+    if ($res.Read) {
         $script:screenShells = [int]$res.Shells
         $script:screenAgents = [int]$res.Agents
+        # The row wants the same figure the strip is about to show, and this is
+        # the freshest read of it there will be - so the list is told too, and
+        # the conversation you just clicked carries its marks immediately
+        # instead of waiting for the rotation to come round to it.
+        if (Set-RowScreenSig -Id "$($script:askFor)" -Shells ([int]$res.Shells) -Agents ([int]$res.Agents)) {
+            try { Build-Sessions } catch { }
+        }
         try { Update-Chips $row -Force } catch { }
     }
 }

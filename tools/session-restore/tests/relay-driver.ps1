@@ -281,6 +281,14 @@ try {
             # session that has none.
             if ($vit.Agents -ne 0) { Fail "no agent count was printed and the reader invented $($vit.Agents)" }
             else { Pass 'the bare agents hint is not read as a count' }
+            # 🔴 WHICH OF THE TWO THE LINE ACTUALLY PRINTED, separately from Ok.
+            # The row marks turn on this: a shell count the line did not print
+            # is a true zero and has to clear the mark, while an agent count it
+            # did not print means "ask the transcript" - so one flag for each,
+            # and Ok cannot answer for both at once.
+            if (-not $vit.SawShells) { Fail 'the line printed a shell count and SawShells is false' }
+            elseif ($vit.SawAgents) { Fail 'no agent count was printed and SawAgents says one was' }
+            else { Pass 'the reader says which of the two figures the line carried' }
         }
     }
 
