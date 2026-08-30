@@ -2630,7 +2630,26 @@ $script:DocJob = {
     . (Join-Path $SRHere '_common.ps1')
     $out = @{ Blocks = @() }
     try {
-        $out.Blocks = @(Get-SRTranscriptBlocks -JsonlPath $SRDoc.Path -MaxRecords 220 -MaxTailBytes $SRDoc.Tail)
+        # 🔴 ASSIGN, THEN WRAP. NEVER @(Get-SRTranscriptBlocks ...) IN ONE STEP.
+        #
+        # That function ends with `return ,@($out.ToArray())` - the comma guard
+        # that stops the pipeline unrolling the array. So it emits ONE object
+        # which IS the array, and @() around a command does not flatten a nested
+        # array: it produces a one-element array holding all sixteen blocks.
+        #
+        # Everything downstream then behaved perfectly on one nonsense block.
+        # @($Blocks).Count was 1, so Build-ReadDocument skipped its "nothing
+        # readable" path and drew the truncation notice; Get-ReadTurns made a
+        # single turn whose Kind was every kind joined into one string by
+        # PowerShell's member enumeration, which matched no case in the switch,
+        # so not one turn was rendered. The pane showed the header and nothing
+        # else - for every conversation - while every assertion stayed green,
+        # because the only thing being asserted was that a Document EXISTED.
+        #
+        # Assigning first gives the array itself, and @() on a variable holding
+        # an array is the identity. The two forms are not interchangeable.
+        $got = Get-SRTranscriptBlocks -JsonlPath $SRDoc.Path -MaxRecords 220 -MaxTailBytes $SRDoc.Tail
+        $out.Blocks = @($got)
     } catch { }
     $out
 }

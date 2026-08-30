@@ -1113,7 +1113,10 @@ try {
         '{"type":"assistant","message":{"role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"Back after the compact."}]},"timestamp":"2026-08-30T14:00:08.000Z","uuid":"a9"}'
     ), (New-Object System.Text.UTF8Encoding($false)))
 
-    $mix = @(Get-SRTranscriptBlocks -JsonlPath $mixPath -MaxRecords 60 -MaxTailBytes 60000)
+    # Assign, then wrap: @(Get-SRTranscriptBlocks ...) in one step yields ONE
+    # element holding every block, because the function comma-guards its return.
+    $mixGot = Get-SRTranscriptBlocks -JsonlPath $mixPath -MaxRecords 60 -MaxTailBytes 60000
+    $mix = @($mixGot)
     foreach ($want in @(
         @('compact', 'the compact boundary'),
         @('hook',    "the hook's own output"),

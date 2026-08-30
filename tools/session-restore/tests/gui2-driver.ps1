@@ -2132,6 +2132,80 @@ else {
     elseif ($e2eBest -gt 400) { Fail ("a conversation takes {0:N0} ms to become readable - that is a wait, not a load" -f $e2eBest) }
     else { Pass ("select to readable: {0:N0} ms" -f $e2eBest) }
 
+    # ===================================================================
+    # 🔴 AND IT HAS TO HAVE SOMETHING IN IT. Everything above asks whether a
+    # Document OBJECT exists, which an EMPTY document satisfies perfectly -
+    # so the operator reported a pane that showed the "last 96 KB" header
+    # and nothing else while every assertion here stayed green. A test that
+    # cannot go red on a blank page is not testing the page.
+    #
+    # Three separate claims, because they fail differently: the document has
+    # blocks at all, some of those blocks carry the conversation's own words,
+    # and those words are not just the header the pane draws for itself.
+    # ===================================================================
+    $docRow = $e2eRows[0]
+    $script:selId = $null
+    $ui.PaneDoc.Document = $null
+    $ui.SessionList.SelectedItem = $docRow
+    Show-Selected
+    $docSw = [Diagnostics.Stopwatch]::StartNew()
+    while ($docSw.Elapsed.TotalSeconds -lt 10 -and -not $ui.PaneDoc.Document) {
+        Start-Sleep -Milliseconds 5
+        $null = Complete-DocParse
+    }
+    # Each stage counted separately, so a blank pane says WHICH stage lost the
+    # conversation rather than just that it is gone.
+    $diagBlocks = @()
+    # Assign, then wrap - see the note in the DocJob. The one-step form is
+    # what put a blank pane in front of the operator.
+    try { $diagGot = Get-SRTranscriptBlocks -JsonlPath "$($docRow.Row.S.jsonl)"; $diagBlocks = @($diagGot) } catch { Note "blocks threw: $($_.Exception.Message)" }
+    $diagTurns = @()
+    try { $diagTurns = @(Get-ReadTurns $diagBlocks) } catch { Note "turns threw: $($_.Exception.Message)" }
+    $diagKinds = @{}
+    foreach ($dt in $diagTurns) { $dk = "$($dt.Kind)"; $diagKinds[$dk] = [int]$diagKinds[$dk] + 1 }
+    Note ("transcript -> {0} block(s) -> {1} turn(s): {2}" -f $diagBlocks.Count, $diagTurns.Count,
+          (@($diagKinds.Keys | Sort-Object | ForEach-Object { "$_=$($diagKinds[$_])" }) -join ' '))
+    Note ("toolView is '$($script:toolView)'")
+
+    $doc = $ui.PaneDoc.Document
+    if (-not $doc) { Fail 'no document at all for the conversation under test' }
+    else {
+        $docBlocks = @($doc.Blocks)
+        if ($docBlocks.Count -lt 1) {
+            Fail 'the document is EMPTY - the pane would show nothing at all'
+        } else {
+            Pass ("the document carries {0} block(s)" -f $docBlocks.Count)
+            # Pull every run of text out of the flow, whatever it is nested in.
+            $docText = New-Object System.Text.StringBuilder
+            $stack = New-Object System.Collections.Generic.Stack[object]
+            foreach ($blk in $docBlocks) { $stack.Push($blk) }
+            $guard = 0
+            while ($stack.Count -and $guard -lt 20000) {
+                $guard++
+                $el = $stack.Pop()
+                if ($el -is [System.Windows.Documents.Run]) { $null = $docText.Append("$($el.Text)").Append(' ') ; continue }
+                foreach ($p in @('Blocks', 'Inlines', 'ListItems', 'Cells', 'Rows', 'RowGroups')) {
+                    try {
+                        if ($el.PSObject.Properties[$p] -and $el.$p) { foreach ($kid in $el.$p) { $stack.Push($kid) } }
+                    } catch { }
+                }
+                try { if ($el.PSObject.Properties['Child'] -and $el.Child) { $stack.Push($el.Child) } } catch { }
+                try { if ($el.PSObject.Properties['Children'] -and $el.Children) { foreach ($kid in $el.Children) { $stack.Push($kid) } } } catch { }
+            }
+            $flat = "$($docText.ToString())".Trim()
+            if ($flat.Length -lt 40) {
+                Fail ("the document renders {0} character(s) of text - the pane is effectively blank" -f $flat.Length)
+            } else { Pass ("the document renders {0:N0} characters of the conversation" -f $flat.Length) }
+            # 🪤 AND NOT MERELY THE PANE'S OWN FURNITURE. The truncation notice
+            # is text too, so a document holding only that would pass the length
+            # check while showing the operator nothing they came for.
+            $furniture = $flat -replace 'showing the last[^\n]*', '' -replace 'press L to load earlier', ''
+            if ("$furniture".Trim().Length -lt 40) {
+                Fail 'the only text in the document is the pane''s own truncation notice'
+            } else { Pass 'and that text is the conversation, not just the header the pane draws' }
+        }
+    }
+
     # A SESSION WRITES -> YOU SEE IT. The watcher raises an event, the lane
     # redraws. This is the number behind "I want to see what is happening".
     $liveFile = "$($e2eRows[0].Row.S.jsonl)"
