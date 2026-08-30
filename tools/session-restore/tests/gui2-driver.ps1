@@ -1438,6 +1438,15 @@ else {
             Added = 166; Removed = 66; Ok = $true; TurnAt = ([datetime]::UtcNow.AddSeconds(-570))
         }
     }
+    # 🔴 THE CONTEXT COMES OFF THE SCREEN NOW, so the screen is what this test
+    # has to supply. It used to force Tokens/Window through the vitals, which is
+    # exactly the path that was removed: both halves of it were wrong in ways
+    # nobody could see - the window inferred from the count, the count stale
+    # across a compact - so a chip built from it was a chip built from a guess.
+    # Driving the real source keeps the assertion about the strip.
+    $chipCtxWas = $script:rowScreen["$($chipRow[0].Row.Id)"]
+    $null = Set-RowScreenSig -Id "$($chipRow[0].Row.Id)" -Shells 2 -Agents 1 -Effort 'xhigh' `
+                             -CtxTokens 184000 -CtxWindow 1000000
     try {
         Update-Chips $chipRow[0].Row -Force
         $chipText = @()
@@ -1486,6 +1495,12 @@ else {
                 Added = -1; Removed = -1; Ok = $true; TurnAt = ([datetime]::UtcNow.AddSeconds(-4))
             }
         }
+        # 🔴 THE SCREEN SOURCE HAS TO GO QUIET TOO. Effort, the shell and
+        # sub-agent counts and the context now come off the session's own line,
+        # so a strip built while that cache still holds the busy figures would
+        # keep showing them - and this assertion, which exists to prove the
+        # chips are conditional, would be proving nothing.
+        $null = $script:rowScreen.Remove("$($chipRow[0].Row.Id)")
         Update-Chips $chipRow[0].Row -Force
         $quiet = @()
         foreach ($chipEl in @($ui.PaneChips.Children)) {
@@ -1505,6 +1520,8 @@ else {
         } else { Pass 'a session with nothing running and nothing configured shows none of those chips' }
     } finally {
         ${function:Get-SRSessionVitals} = $chipOrigVitals
+        if ($chipCtxWas) { $script:rowScreen["$($chipRow[0].Row.Id)"] = $chipCtxWas }
+        else { $script:rowScreen.Remove("$($chipRow[0].Row.Id)") }
     }
 }
 

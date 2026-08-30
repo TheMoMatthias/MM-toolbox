@@ -1259,8 +1259,10 @@ function Build-Sessions {
             # transcript reader has to INFER the window from the token count, so
             # a 1M conversation under 200k was drawn against the wrong scale -
             # and after a compact its count is stale until the next reply.
-            $rowTok = $(if ($r.Sig) { [int]$r.Sig.Tokens } else { 0 })
-            $rowWin = $(if ($r.Sig -and [int]$r.Sig.Window -gt 0) { [int]$r.Sig.Window } else { 200000 })
+            # The bar the session prints, or no bar at all - see the note in
+            # Update-Chips. An inferred window drew the wrong scale for every 1M
+            # conversation until it passed 200k.
+            $rowTok = 0; $rowWin = 0
             if ($scr -and [int]$scr.CtxWindow -gt 0) { $rowTok = [int]$scr.CtxTokens; $rowWin = [int]$scr.CtxWindow }
             $rowFrac = $(if ($rowWin -gt 0) { [double]$rowTok / [double]$rowWin } else { 0.0 })
             $items.Add([PSCustomObject]@{
@@ -1988,6 +1990,37 @@ function Build-ReadDocument {
                 $tb.Margin = New-Object System.Windows.Thickness 0, 6, 0, 0
                 $null = $st.Children.Add($tb)
                 $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalGlass -Radius 10 -PadT 10 -PadB 10))
+            }
+            'asked' {
+                # 🔴 A QUESTION YOU ANSWERED, READ AS ONE. It used to arrive as
+                # a tool card whose argument was PowerShell's dump of the input
+                # object - "@{question=The pane can't beat the transcript..." -
+                # followed by a result that was one run-on line of quoted pairs
+                # with any option preview inlined behind pipe characters. Every
+                # part of that is machinery, and none of it is what you decided.
+                #
+                # The record carries the questions and the chosen answers as a
+                # map, so this draws exactly that: the question quietly, the
+                # answer in the hue the question panel uses, one under the next.
+                $st = New-Object System.Windows.Controls.StackPanel
+                $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText 'YOU ANSWERED') -Brush $Pal.Ask -Size 9.5 -Semi))
+                $first = $true
+                foreach ($line in @("$($t.Body)" -split "`n")) {
+                    if (-not "$line".Trim()) { continue }
+                    $bits = "$line" -split ([string][char]1), 2
+                    $qt = "$($bits[0])".Trim()
+                    $at = $(if ($bits.Count -gt 1) { "$($bits[1])".Trim() } else { '' })
+                    $qb = New-ReadText -Text $qt -Brush $Pal.TextMid -Size 12 -Wrap -Line 17
+                    $qb.Margin = New-Object System.Windows.Thickness 0, $(if ($first) { 9 } else { 13 }), 0, 0
+                    $null = $st.Children.Add($qb)
+                    $first = $false
+                    if ($at) {
+                        $ab = New-ReadText -Text $at -Brush $Pal.Ask -Size 13.5 -Semi -Wrap -Line 18
+                        $ab.Margin = New-Object System.Windows.Thickness 14, 3, 0, 0
+                        $null = $st.Children.Add($ab)
+                    }
+                }
+                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalFilm.Ask -Stroke $PalEdge.Ask -BW 1 -Radius 12 -PadT 11 -PadB 12 -Top 18 -Bottom 14))
             }
             'queued' {
                 $body = "$($t.Body)".Trim()
@@ -3054,18 +3087,26 @@ function Update-Chips { param($R, [switch]$Force)
     # the token count (a 1M session below 200k read as a 200k one) and the count
     # came from the last usage record (which a /compact leaves stale until the
     # next reply). The bar states both and the sweep already has it.
-    $ctxTok = [int]$v.Tokens
-    $ctxWin = [int]$v.Window
+    # 🔴 ONE SOURCE: THE BAR THE SESSION PRINTS. The transcript-derived pair is
+    # gone rather than kept as a fallback, and that is a deliberate trade. Both
+    # halves of it were wrong in ways nobody could see: the window was INFERRED
+    # from the count, so a 1M session under 200k was drawn against a 200k scale
+    # (measured: a bar reading 122k/1.0M shown as 61% instead of 12%), and the
+    # count went stale across a /compact until the next reply (measured: 123.5k
+    # in the terminal, 619k here). A figure that is confidently wrong is worse
+    # than an absent one, so a session whose screen cannot be read - a
+    # background agent has no console at all - now shows NO context chip rather
+    # than a plausible fiction.
     $csig = Get-RowScreenSig "$($R.Id)"
-    if ($csig -and [int]$csig.CtxWindow -gt 0) {
-        $ctxTok = [int]$csig.CtxTokens
-        $ctxWin = [int]$csig.CtxWindow
-    }
+    $ctxTok = -1; $ctxWin = -1
+    if ($csig -and [int]$csig.CtxWindow -gt 0) { $ctxTok = [int]$csig.CtxTokens; $ctxWin = [int]$csig.CtxWindow }
     $frac = 0.0
     if ($ctxWin -gt 0) { $frac = [double]$ctxTok / [double]$ctxWin }
-    $barFg = Get-CtxBrush $ctxTok
-    $ctx = ('{0} / {1}   {2}%' -f (Format-Kilo $ctxTok), (Format-Kilo $ctxWin), [int][math]::Round($frac * 100))
-    $null = $ui.PaneChips.Children.Add((New-Chip -Text $ctx -Fg $Pal.TextHigh -Bg $glass -Bar $frac -BarFg $barFg -Tip 'Context in use at its last reply. A 1M window is inferred from the usage, because the transcript does not record which one was selected.').Border)
+    $barFg = Get-CtxBrush $(if ($ctxTok -ge 0) { $ctxTok } else { 0 })
+    if ($ctxWin -gt 0) {
+        $ctx = ('{0} / {1}   {2}%' -f (Format-Kilo $ctxTok), (Format-Kilo $ctxWin), [int][math]::Round($frac * 100))
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text $ctx -Fg $Pal.TextHigh -Bg $glass -Bar $frac -BarFg $barFg -Tip 'Context in use, read off the line this session prints for itself - both the count and the window it is against').Border)
+    }
 
     if ($v.Branch) {
         $null = $ui.PaneChips.Children.Add((New-Chip -Text ([string][char]0x2387 + '  ' + $v.Branch) -Fg $Pal.TextMid -Bg $glass -Tip 'The branch this conversation is working on').Border)

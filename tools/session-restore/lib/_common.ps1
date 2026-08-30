@@ -3909,9 +3909,45 @@ function Get-SRTranscriptBlocks {
                     # as quoted at all: the order here is the whole point.
                     $arg = Compress-SRPath $arg
                     if ($arg.Length -gt 150) { $arg = $arg.Substring(0, 147) + [string][char]0x2026 }
+                    # 🔴 A QUESTION YOU ANSWERED IS NOT A TOOL CALL, and drawing
+                    # it as one is what made it unreadable. The argument slot got
+                    # PowerShell's stringification of the input object -
+                    # "@{question=The pane can't beat the transcript, which..." -
+                    # and the answer came back as one run-on line of quoted
+                    # pairs with any option preview inlined behind pipe
+                    # characters. Both are internals leaking onto a reading
+                    # surface. The record carries the questions and the answers
+                    # structurally, so the RESULT emits an 'asked' block and the
+                    # call itself is dropped rather than drawn twice.
+                    if ($name -eq 'AskUserQuestion') { continue }
                     $out.Add((New-Block 'tool' $name $arg ''))
                 }
                 'tool_result' {
+                    # 🔑 THE ANSWERED ROUND, STRUCTURED. toolUseResult carries
+                    # `answers` as a plain {question -> chosen} map, so nothing
+                    # has to be recovered from the sentence claude writes back
+                    # ("Your questions have been answered: ..."), which is where
+                    # the wall of quoted text came from. One line per question,
+                    # the two halves separated by U+0001 so neither can contain
+                    # the separator.
+                    $ans = $null
+                    if ($r.PSObject.Properties['toolUseResult'] -and $r.toolUseResult -and
+                        $r.toolUseResult.PSObject.Properties['answers'] -and $r.toolUseResult.answers) {
+                        $ans = $r.toolUseResult.answers
+                    }
+                    if ($ans) {
+                        $pairs = New-Object System.Collections.Generic.List[string]
+                        foreach ($qp in @($ans.PSObject.Properties)) {
+                            $qt = "$($qp.Name)".Trim()
+                            $at = "$($qp.Value)".Trim()
+                            if (-not $qt -and -not $at) { continue }
+                            $null = $pairs.Add($qt + [string][char]1 + $at)
+                        }
+                        if ($pairs.Count) {
+                            $out.Add((New-Block 'asked' 'you answered' ($pairs -join "`n") ("{0}" -f $pairs.Count)))
+                            continue
+                        }
+                    }
                     $s = ''
                     if ($b.content -is [string]) { $s = "$($b.content)" }
                     else {

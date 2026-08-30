@@ -1162,6 +1162,52 @@ foreach ($case in @(
     } else { Pass ("{0} {1} a turn you started" -f $case.n, $(if ($case.want) { 'is' } else { 'is not' })) }
 }
 
+# --- A QUESTION YOU ANSWERED ------------------------------------------------
+# 🔴 IT USED TO ARRIVE AS A TOOL CALL, which is what made it unreadable: the
+# argument slot got PowerShell's stringification of the input object
+# ("@{question=The pane can't beat the transcript, which...") and the answer
+# came back as one run-on line of quoted pairs with any option preview inlined
+# behind pipe characters. The record carries the questions and the chosen
+# answers as a MAP, so none of that has to be recovered from prose.
+Write-Host ''
+Write-Host '--- a question you answered ---'
+$askDir = Join-Path $SR_StateDir ('askblk-' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
+$null = New-Item -ItemType Directory -Path $askDir -Force
+$askJs = Join-Path $askDir 'a.jsonl'
+try {
+    $askRec = @(
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_ASK1","name":"AskUserQuestion","input":{"questions":[{"question":"Which way?","header":"Way","options":[]}]}}]}}',
+        ('{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_ASK1","content":"Your questions have been answered: \"Which way?\"=\"Left, firmly\". You can now continue."}]},' +
+         '"toolUseResult":{"answers":{"Which way?":"Left, firmly","And then?":"Stop"}}}')
+    ) -join "`n"
+    [System.IO.File]::WriteAllText($askJs, $askRec + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    $askGot = Get-SRTranscriptBlocks -JsonlPath $askJs -MaxRecords 60 -MaxTailBytes 60000
+    $askBlocks = @($askGot)
+    $asked = @($askBlocks | Where-Object { "$($_.Kind)" -eq 'asked' })
+    if (-not $asked.Count) { Fail 'an answered question produced no asked block' }
+    else {
+        Pass 'an answered question becomes its own block, not a tool call'
+        $pairs = @("$($asked[0].Body)" -split "`n" | Where-Object { $_.Trim() })
+        if ($pairs.Count -ne 2) { Fail "the block carries $($pairs.Count) question(s), the record has 2" }
+        else { Pass 'every question in the round is carried, with its answer' }
+        $one = "$($pairs[0])" -split ([string][char]1), 2
+        if ("$($one[0])" -ne 'Which way?' -or "$($one[1])" -ne 'Left, firmly') {
+            Fail ("the first pair reads '{0}' / '{1}'" -f $one[0], $one[1])
+        } else { Pass 'the question and the answer are kept apart, not run into one sentence' }
+    }
+    # 🪤 AND THE CALL ITSELF IS NOT DRAWN TWICE. The tool_use block was what
+    # rendered the "@{question=...}" dump; emitting the answer without dropping
+    # it would leave both on screen.
+    $askTool = @($askBlocks | Where-Object { "$($_.Head)" -eq 'AskUserQuestion' })
+    if ($askTool.Count) { Fail 'the AskUserQuestion call is still drawn as a tool block as well' }
+    else { Pass 'and the call it answers is not drawn beside it' }
+    if ("$($asked[0].Body)" -match 'have been answered') {
+        Fail 'the block is carrying the sentence claude writes back rather than the structured answers'
+    } else { Pass 'nothing is recovered from the prose - the map is the source' }
+} finally {
+    Remove-Item -LiteralPath $askDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # --- WHAT A SESSION SAYS ABOUT ITSELF ON ITS STATUS LINE -------------------
 # 🔴 The transcript CANNOT see a running background shell: a Bash call with
 # run_in_background gets its tool_result back immediately, carrying the shell
