@@ -4044,7 +4044,11 @@ $script:transcriptDirty = $false
 # stay on the one-second tick, because none of them is what you are watching
 # when you watch a session type.
 $script:writeTimer = New-Object System.Windows.Threading.DispatcherTimer
-$script:writeTimer.Interval = [TimeSpan]::FromMilliseconds(100)
+# 30 ms, not 100. The lane does nothing at all unless the watcher raised a
+# flag or a parse landed, so the interval is almost pure polling cost - but it
+# is also the LATENCY between work finishing and the pane showing it, and it
+# was contributing up to 100 ms of the select-to-readable round trip.
+$script:writeTimer.Interval = [TimeSpan]::FromMilliseconds(30)
 # A named function rather than an anonymous handler, so the suite can drive one
 # pass directly - the same reason Invoke-FollowTick is named. The defect this
 # lane introduced (filling in the follow stamp before the tick's first look, so

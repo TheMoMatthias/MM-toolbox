@@ -2623,11 +2623,106 @@ public static class SRConLite {
 }
 '@
 
+# ===========================================================================
+# THE SCREEN READER, COMPILED ONCE INSTEAD OF ON EVERY READ.
+#
+# 🔴 EVERY READ WAS COMPILING C#. The child wrote a .ps1, started powershell.exe
+# and ran Add-Type over the class below - measured at 560 ms for a read whose
+# actual work is about 10 ms. That cost is paid on the path that matters most:
+# pressing an answer re-reads the screen to find the cursor before a single key
+# leaves, so 560 ms sat between the click and the keystroke.
+#
+# The same source compiled to a small exe once runs in tens of milliseconds.
+# The C# is EXTRACTED from the fallback source rather than copied, so there is
+# exactly one definition of how a console is read - two would drift, and the one
+# that drifted would be the one nobody was looking at.
+#
+# 🪤 A PROCESS PER READ IS NOT THE WASTE; COMPILING IS. It still has to be a
+# separate process: a process can attach to only one console at a time, and this
+# one has its own.
+$script:SR_ScreenExe = $null
+
+function Get-SRScreenExe {
+    if ($script:SR_ScreenExe -and (Test-Path -LiteralPath $script:SR_ScreenExe)) { return $script:SR_ScreenExe }
+    try {
+        $src = "$script:SR_ScreenTypeSrc"
+        $a = $src.IndexOf('@"')
+        $b = $src.LastIndexOf('"@')
+        if ($a -lt 0 -or $b -le $a) { return $null }
+        $cs = $src.Substring($a + 2, $b - $a - 2)
+        $cs += @'
+
+public static class SRScreenMain {
+    public static int Main(string[] a) {
+        if (a.Length < 2) return 2;
+        uint pid;
+        if (!uint.TryParse(a[0], out pid)) return 2;
+        string t = SRConLite.Screen(pid);
+        System.IO.File.WriteAllText(a[1], t, new System.Text.UTF8Encoding(false));
+        return 0;
+    }
+}
+'@
+        # The hash is in the NAME, so an exe that exists is by definition built
+        # from the source in front of us - there is no staleness check to forget.
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        $hash = [BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($cs))).Replace('-', '').Substring(0, 8).ToLower()
+        $exe = Join-Path $SR_StateDir ('srscreen-' + $hash + '.exe')
+        if (Test-Path -LiteralPath $exe) { $script:SR_ScreenExe = $exe; return $exe }
+
+        $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+        if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
+        if (-not (Test-Path -LiteralPath $csc)) { return $null }
+
+        $csFile = Join-Path $SR_StateDir ('srscreen-' + $hash + '.cs')
+        [System.IO.File]::WriteAllText($csFile, $cs, (New-Object System.Text.UTF8Encoding($false)))
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $csc
+        $psi.Arguments = ('/nologo /optimize /target:exe /out:"{0}" "{1}"' -f $exe, $csFile)
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $cp = [System.Diagnostics.Process]::Start($psi)
+        $null = $cp.StandardOutput.ReadToEndAsync()
+        $null = $cp.StandardError.ReadToEndAsync()
+        if (-not $cp.WaitForExit(20000)) { try { $cp.Kill() } catch { } }
+        Remove-Item -LiteralPath $csFile -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $exe) {
+            Write-SRLog ('  screen reader compiled once: ' + (Split-Path -Leaf $exe))
+            $script:SR_ScreenExe = $exe
+            return $exe
+        }
+    } catch { }
+    return $null
+}
+
 function Get-SRScreenText {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
     if ($ProcessId -le 0) { return $null }
     if (-not (Test-Path -LiteralPath $SR_StateDir)) { return $null }
+
+    # The fast path. Falls through to the powershell child below if the exe
+    # cannot be built - a machine without csc still reads screens, slowly.
+    $exe = Get-SRScreenExe
+    if ($exe) {
+        $outE = Join-Path $SR_StateDir ('screen-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $exe
+            $psi.Arguments = ('{0} "{1}"' -f $ProcessId, $outE)
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $ep = [System.Diagnostics.Process]::Start($psi)
+            if (-not $ep.WaitForExit(6000)) { try { $ep.Kill() } catch { }; return $null }
+            if (-not (Test-Path -LiteralPath $outE)) { return $null }
+            $txtE = [System.IO.File]::ReadAllText($outE)
+            if (-not $txtE -or $txtE.StartsWith('!')) { return $null }
+            return $txtE
+        } catch { }
+        finally { Remove-Item -LiteralPath $outE -Force -ErrorAction SilentlyContinue }
+    }
     $tag = [Guid]::NewGuid().ToString('N').Substring(0, 8)
     $out = Join-Path $SR_StateDir ('screen-' + $tag + '.txt')
     $scr = Join-Path $SR_StateDir ('screen-' + $tag + '.ps1')

@@ -1614,13 +1614,14 @@ else {
         if ($ansBest -eq [double]::MaxValue) { Fail 'the screen could not be read at all, so answering cannot be timed' }
         else {
             Pass ("answering pays a {0:N0} ms screen read before the keys leave" -f $ansBest)
-            # Not a gesture budget - it is a child process by necessity - but it
-            # is the number the operator feels when they press an option, so it
-            # is held to something. Past a second it stops feeling like an answer
-            # and starts feeling like a submission.
-            if ($ansBest -gt 1000) {
-                Fail ("answering waits {0:N0} ms on a screen read before anything is sent" -f $ansBest)
-            } else { Pass 'the answer round trip stays under a second' }
+            # 🔴 250 ms, DOWN FROM A SECOND, BECAUSE IT NOW COSTS 66. The read
+            # was 560 ms while it compiled C# on every call; compiled once into
+            # an exe it is tens of milliseconds. A budget left at a second would
+            # have let that regress the whole way back without a word - the
+            # budget has to follow the measurement or it stops being one.
+            if ($ansBest -gt 250) {
+                Fail ("answering waits {0:N0} ms on a screen read - the reader is being compiled per call again" -f $ansBest)
+            } else { Pass 'the answer leaves in well under a quarter second' }
         }
 
         # 🪤 AND THE BUSY GATE, on the same live console. Without this the two
