@@ -1468,6 +1468,62 @@ else {
     } else { Pass "one tick later the strip is back, with $(@($ui.PaneChips.Children).Count) chips" }
 }
 
+# ===========================================================================
+Write-Host ''
+Write-Host '--- a session mid-turn is never asking you anything ---'
+# ===========================================================================
+# 🔴 THE QUESTION IS READ OFF THE SESSION'S SCREEN, and a screen mid-reply is
+# full of whatever is being written. Measured on a real session: a reply
+# containing "1. The failure is now a carried rule / 2. The registration commit
+# / 3. The lane is resumed" was read as a three-option menu and drawn as a
+# question, with the prose as its options - and nothing was selectable, because
+# nothing was a menu. Three paths could do it and only one had a guard.
+foreach ($busyCase in @(
+    @{ n = 'busy';  status = 'busy';  want = $false },
+    @{ n = 'idle';  status = 'idle';  want = $true })) {
+    $fakeRow = [PSCustomObject]@{ A = [PSCustomObject]@{ Pid = 4242; Status = $busyCase.status } }
+    $got = [bool](Test-AskAllowed $fakeRow)
+    if ($got -ne $busyCase.want) {
+        Fail ("a {0} session: asking allowed = {1}, expected {2}" -f $busyCase.n, $got, $busyCase.want)
+    } else { Pass ("a {0} session {1} have its screen read for a question" -f $busyCase.n, $(if ($busyCase.want) { 'may' } else { 'may not' })) }
+}
+if (Test-AskAllowed $null) { Fail 'a missing row still allows a screen read' }
+else { Pass 'nothing selected is never asking' }
+if (Test-AskAllowed ([PSCustomObject]@{ A = $null })) { Fail 'a conversation with no process still allows a screen read' }
+else { Pass 'a conversation that is not running is never asking' }
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- clicking a waiting conversation leaves it in NEEDS YOU ---'
+# ===========================================================================
+# 🪤 THE WATCHER BROKE THIS AND THE EXISTING ASSERTION DID NOT NOTICE. The
+# follow tick reads a null followStamp as "first look at what you just
+# selected" and refuses to call the difference growth. The 100 ms write lane
+# then started filling that stamp in before the tick ever ran, so the next tick
+# saw a changed stamp with firstLook false and moved the row - reported as
+# clicking V-INGEST in NEEDS YOU and watching it jump to WORKING. The other
+# assertion still passed because it tests growth AFTER a first look.
+Build-Sessions
+$needRow = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and $_.Row.Band -eq 'needs' })
+if (-not $needRow.Count) { Pass 'nothing is waiting on you right now, so there is nothing to click (not a failure)' }
+else {
+    $ui.SessionList.SelectedItem = $needRow[0]
+    $script:selId = $null
+    $script:followStamp = $null
+    Show-Selected
+    # The write lane fires before the one-second tick gets its first look.
+    $script:transcriptDirty = $true
+    Invoke-WriteLane
+    if ($null -ne $script:followStamp) {
+        Fail 'the write lane filled in the follow stamp before the tick had looked - a click will move the row'
+    } else { Pass 'the write lane leaves the first look to the tick' }
+    $bandWas = "$($needRow[0].Row.Band)"
+    Invoke-FollowTick
+    if ("$($needRow[0].Row.Band)" -ne $bandWas) {
+        Fail ("selecting a waiting conversation moved it from {0} to {1}" -f $bandWas, $needRow[0].Row.Band)
+    } else { Pass 'selecting a waiting conversation leaves it where you clicked it' }
+}
+
 Write-Host ''
 Write-Host '--- the skill picker ---'
 # ===========================================================================

@@ -1911,8 +1911,26 @@ function Build-ReadDocument {
 # retry, so the background probe does the reading and hands the result to
 # Show-Ask; Update-Ask is the foreground path, for the moment you select a
 # conversation and want an answer now.
+# 🔴 A CONVERSATION MID-TURN CANNOT BE ASKING YOU ANYTHING.
+#
+# The question is read off the session's SCREEN, and a screen mid-reply is full
+# of whatever claude is writing. Measured on millwright-strategy: a reply
+# containing a numbered list - "1. The failure is now a carried rule / 2. The
+# registration commit / 3. The lane is resumed" - was read as a three-option
+# menu and drawn as a question panel, with the prose as its options. Nothing was
+# selectable because nothing was a menu.
+#
+# The follow tick already refused to read a busy session (see its own guard);
+# Update-Ask and the background probe did not, so both paths could put a
+# fabricated question on screen. This is the one gate all three now pass.
+function Test-AskAllowed { param($R)
+    if (-not $R -or -not $R.A -or -not $R.A.Pid) { return $false }
+    if ("$($R.A.Status)" -eq 'busy') { return $false }
+    return $true
+}
+
 function Update-Ask { param($R)
-    if (-not $R -or -not $R.A -or -not $R.A.Pid) { Show-Ask $null; return }
+    if (-not (Test-AskAllowed $R)) { Show-Ask $null; return }
     $q = $null
     try { $q = Get-SRScreenQuestion -ProcessId ([int]$R.A.Pid) } catch { }
     Show-Ask $q
@@ -3824,7 +3842,12 @@ $script:transcriptDirty = $false
 # when you watch a session type.
 $script:writeTimer = New-Object System.Windows.Threading.DispatcherTimer
 $script:writeTimer.Interval = [TimeSpan]::FromMilliseconds(100)
-$script:writeTimer.Add_Tick({
+# A named function rather than an anonymous handler, so the suite can drive one
+# pass directly - the same reason Invoke-FollowTick is named. The defect this
+# lane introduced (filling in the follow stamp before the tick's first look, so
+# clicking a waiting conversation moved it) was invisible to any test that could
+# not call it.
+function Invoke-WriteLane {
     if (-not $script:transcriptDirty) { return }
     $script:transcriptDirty = $false
     if ($script:sheetDepth -gt 0) { return }
@@ -3835,13 +3858,27 @@ $script:writeTimer.Add_Tick({
         Update-SendState
         # Keep the polling tick from redoing this work a beat later: it compares
         # this stamp to decide whether anything moved.
-        $j = "$($it.Row.S.jsonl)"
-        if ($j -and (Test-Path -LiteralPath $j)) {
-            $fi = Get-Item -LiteralPath $j
-            $script:followStamp = ('{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks)
+        # 🔴 NEVER WHILE IT IS $null - THAT IS "THE TICK HAS NOT LOOKED YET".
+        #
+        # The follow tick reads a null stamp as "this is the first observation of
+        # a conversation you just selected" and refuses to call the difference
+        # growth; it is the guard that stops clicking a waiting session from
+        # moving it straight into WORKING. Writing a stamp here filled that null
+        # in before the tick ever ran, so the very next tick saw a changed stamp
+        # with firstLook false and moved the row - which is exactly what
+        # happened to V-INGEST: clicked in NEEDS YOU, gone to WORKING.
+        #
+        # This may only ever REFRESH a stamp the tick has already taken.
+        if ($null -ne $script:followStamp) {
+            $j = "$($it.Row.S.jsonl)"
+            if ($j -and (Test-Path -LiteralPath $j)) {
+                $fi = Get-Item -LiteralPath $j
+                $script:followStamp = ('{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks)
+            }
         }
     } catch { }
-})
+}
+$script:writeTimer.Add_Tick({ Invoke-WriteLane })
 $script:writeTimer.Start()
 
 # A NEW CONVERSATION IN ANOTHER WORKTREE - never this one moved. A claude
@@ -4750,7 +4787,14 @@ function Complete-LiveProbe {
     # still showing the same conversation - the selection can move while a probe
     # is in flight, and showing one session's menu under another's name would be
     # the worst possible bug in this window.
-    if ("$($res.AskFor)" -and "$($res.AskFor)" -eq "$($script:selId)") { Show-Ask $res.Ask }
+    # 🪤 THE SAME GATE THE FOREGROUND PATH USES. The probe reads the screen on a
+    # background thread and the session can have STARTED a reply between the
+    # read and here - so being handed a question is not evidence that one is
+    # still up, and a mid-turn screen is where the false menus come from.
+    if ("$($res.AskFor)" -and "$($res.AskFor)" -eq "$($script:selId)") {
+        $askRow = Get-SelectedRow
+        if (Test-AskAllowed $askRow) { Show-Ask $res.Ask } else { Show-Ask $null }
+    }
     $script:probeAt = Get-Date
 }
 
