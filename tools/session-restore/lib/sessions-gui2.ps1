@@ -3212,6 +3212,21 @@ function Start-NewSession { param($G)
         if (-not $wt) { $wt = 'session' }
         $flags.Add('--worktree'); $flags.Add($wt)
     }
+    # 🔴 THE SETTINGS OUTLIVE THIS RUN NOW. They were applied to the launched
+    # process and then forgotten, because a brand new conversation has no session
+    # id to write them against - so the same conversation came back at the next
+    # logon as default model, default permissions, remote on. The claim below is
+    # redeemed by the scan the moment the conversation first appears.
+    try {
+        Add-SRPrefClaim -Dir "$($G.Dir)" -Title "$($G.Name)" -Prefs @{
+            model          = "$($G.Model)"
+            effort         = "$($G.Effort)"
+            permissionMode = "$($G.Perm)"
+            remoteControl  = [bool]$G.Remote
+            hidden         = [bool]$G.Hidden
+        }
+    } catch { Write-SRLog ('  [skip] could not record the new session settings: ' + $_.Exception.Message) }
+
     try {
         $boot = New-SRBootScript -Dir $G.Dir -Title $G.Name `
                     -ClaudeArgs $flags.ToArray() -RemoteControl $G.Remote
@@ -3362,34 +3377,17 @@ $script:castTimer.Add_Tick({
 })
 
 $ui.Rescan.Add_Click({
-    # 🔴 A RESCAN USED TO THROW YOUR UNSAVED TICKS AWAY, SILENTLY.
-    # Update-SRRegistryCore reads the registry from DISK - not from $script:reg -
-    # adds what it discovers and saves. Anything ticked but not yet saved was
-    # never on disk, so the scan never saw it, and the Update-Model below then
-    # re-read the file and replaced the in-memory copy that held it. The live
-    # probe has guarded this since the day it was written ("NEVER OVERWRITE
-    # UNSAVED TICKS"); this path never did.
-    #
-    # Saving first is the right order rather than refusing: the ticks are what
-    # the operator meant, and a scan should build on them.
-    if ($script:dirty) {
-        try { Save-SRRegistry -Registry $script:reg; $script:dirty = $false }
-        catch {
-            Set-Status ('not rescanned - your unsaved ticks could not be written first, and a rescan would discard them: ' +
-                $_.Exception.Message) 'bad'
-            return
-        }
-    }
-    Set-Status 'rescanning...'
-    # 🪤 AND IT SAID 'rescanned' EITHER WAY. The failure went into a bare
-    # catch and the status line reported success, so a scan that could not read
-    # the registry looked exactly like one that had just refreshed everything.
-    $why = $null
-    try { $null = Update-SRRegistry -Config $script:cfg -Quiet }
-    catch { $why = "$($_.Exception.Message)" ; Write-SRLog ('  [FAIL] rescan: ' + $why) }
+    # The order that matters - save unsaved ticks, THEN scan, and refuse if that
+    # save fails - lives in Invoke-SRRescan so it can be tested in a sandbox
+    # rather than against the operator's real registry. See the note there.
+    if ($script:dirty) { Set-Status 'saving your ticks, then rescanning...' } else { Set-Status 'rescanning...' }
+    $r = Invoke-SRRescan -Registry $script:reg -Config $script:cfg -Dirty ([bool]$script:dirty) -Quiet
+    if ($r.Saved) { $script:dirty = $false }
     Update-Model; Update-Surface
-    if ($why) { Set-Status ('the rescan failed - the list is unchanged: ' + $why) 'bad' }
-    else { Set-Status 'rescanned' 'ok' }
+    if (-not $r.Scanned) {
+        Write-SRLog ('  [FAIL] rescan: ' + $r.Why)
+        Set-Status ('not rescanned - ' + $r.Why) 'bad'
+    } else { Set-Status 'rescanned' 'ok' }
 })
 
 # ===========================================================================

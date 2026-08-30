@@ -720,6 +720,119 @@ function Update-SRRegistry {
     return (Invoke-SRWithRegistryLock -Body { Update-SRRegistryCore -Config $Config -Quiet:$Quiet })
 }
 
+# 🔴 A SCAN READS THE REGISTRY FROM DISK, so anything ticked but not yet
+# saved is invisible to it - and the caller then re-reads the file it just wrote,
+# replacing the in-memory copy that held those ticks. Pressing Rescan with
+# unsaved work threw it away with nothing said.
+#
+# The order lives HERE rather than in the window's click handler so it can be
+# tested at all: a test of the handler would have to run a real scan against the
+# operator's real registry, which is precisely the accident that destroyed it on
+# 2026-08-30. In a sandbox this is provable; in the handler it was not.
+#
+# 🪤 SAVE FIRST, AND REFUSE IF THAT FAILS. Discarding the ticks is the one
+# outcome that must not happen quietly, so a failed save stops the scan rather
+# than letting it proceed over the top.
+# ===========================================================================
+# SETTINGS FOR A CONVERSATION THAT DOES NOT EXIST YET
+#
+# 🔴 A BRAND NEW CONVERSATION HAS NO SESSION ID. claude generates one on its
+# first message, so the New session dialog cannot write its settings against
+# anything - and it did not try, which meant the model, effort, permission mode,
+# tools and hidden flag chosen in that dialog applied to THAT RUN and were then
+# forgotten. Harmless while the logon restore ignored settings too; from
+# 2026-08-30 it honours them, so the dialog now promises something it was not
+# keeping: a session spawned as opus/plan came back at the next logon as default.
+#
+# A CLAIM is that promise, written down: "the next conversation to appear in
+# this directory under this title gets these settings". The scan redeems it when
+# it first sees a matching new session.
+#
+# 🪤 SINGLE USE, AND IT EXPIRES. Matching on directory + title is a heuristic -
+# two sessions spawned with one name in one folder would both match - so a claim
+# is removed the moment it is used, and ignored after an hour. The failure it can
+# still produce is "the settings landed on the wrong one of two identically
+# named conversations spawned within the hour", which is recoverable in the
+# Settings panel; the failure it replaces is "they landed nowhere, silently".
+$SR_ClaimsPath = Join-Path $SR_StateDir 'pending-prefs.json'
+$SR_ClaimMaxAgeMinutes = 60
+
+function Get-SRPrefClaims {
+    if (-not (Test-Path -LiteralPath $SR_ClaimsPath)) { return @() }
+    try { $all = @(Get-Content -LiteralPath $SR_ClaimsPath -Raw | ConvertFrom-Json) } catch { return @() }
+    $cut = (Get-Date).AddMinutes(-$SR_ClaimMaxAgeMinutes)
+    return @($all | Where-Object {
+        $t = [datetime]0
+        try { $t = [datetime]$_.at } catch { }
+        $t -gt $cut
+    })
+}
+
+function Add-SRPrefClaim {
+    param(
+        [Parameter(Mandatory)][string]$Dir,
+        [Parameter(Mandatory)][string]$Title,
+        [Parameter(Mandatory)][hashtable]$Prefs
+    )
+    $keep = @(Get-SRPrefClaims)
+    $keep += [PSCustomObject]@{
+        dir = "$Dir"; title = "$Title"; at = (Get-Date).ToString('o'); prefs = [PSCustomObject]$Prefs
+    }
+    try {
+        if (-not (Test-Path -LiteralPath $SR_StateDir)) { $null = New-Item -ItemType Directory -Path $SR_StateDir -Force }
+        ($keep | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $SR_ClaimsPath -Encoding utf8
+    } catch { Write-SRLog ('  [skip] could not record the new session''s settings: ' + $_.Exception.Message) }
+}
+
+# Redeem the claim for a session the scan has just discovered. Returns $true if
+# one was applied, so the caller can say so.
+function Resolve-SRPrefClaim {
+    param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)][string]$Dir, [Parameter(Mandatory)][string]$Title)
+    $claims = @(Get-SRPrefClaims)
+    if (-not $claims.Count) { return $false }
+    # 🪤 NORMALISE THE SEPARATOR, DO NOT TrimEnd TWO CHARACTERS. `TrimEnd('\','/')`
+    # has to bind to the char[] overload and PowerShell will not convert two
+    # single-character strings to it - and if either literal loses its backslash
+    # on the way in, the empty string it leaves behind cannot convert to a char
+    # at all. The failure surfaces as a MethodException nowhere near the cause.
+    $norm = { param($x) ("$x" -replace '\\', '/').TrimEnd('/') }
+    $wantDir = & $norm $Dir
+    $hit = @($claims | Where-Object {
+        (& $norm $_.dir) -ieq $wantDir -and "$($_.title)" -ieq "$Title"
+    })[0]
+    if (-not $hit) { return $false }
+    foreach ($pp in @($hit.prefs.PSObject.Properties)) {
+        Set-SRSessionPref $Session $pp.Name $pp.Value
+    }
+    # Single use: drop it whether or not the settings were all applicable.
+    $rest = @($claims | Where-Object { -not ($_.at -eq $hit.at -and "$($_.dir)" -eq "$($hit.dir)" -and "$($_.title)" -eq "$($hit.title)") })
+    try {
+        if ($rest.Count) { ($rest | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $SR_ClaimsPath -Encoding utf8 }
+        elseif (Test-Path -LiteralPath $SR_ClaimsPath) { Remove-Item -LiteralPath $SR_ClaimsPath -Force }
+    } catch { }
+    Write-SRLog ("  [ok]   applied the settings chosen when '{0}' was created" -f $Title)
+    return $true
+}
+
+function Invoke-SRRescan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Registry,
+        [Parameter(Mandatory)]$Config,
+        # The window's $script:dirty - whether $Registry holds unsaved changes.
+        [bool]$Dirty,
+        [switch]$Quiet
+    )
+    $out = [PSCustomObject]@{ Saved = $false; Scanned = $false; Why = '' }
+    if ($Dirty) {
+        try { Save-SRRegistry -Registry $Registry; $out.Saved = $true }
+        catch { $out.Why = "unsaved ticks could not be written first: $($_.Exception.Message)"; return $out }
+    }
+    try { $null = Update-SRRegistry -Config $Config -Quiet:$Quiet; $out.Scanned = $true }
+    catch { $out.Why = "$($_.Exception.Message)" }
+    return $out
+}
+
 function Update-SRRegistryCore {
     param([Parameter(Mandatory)]$Config, [switch]$Quiet)
 
@@ -954,7 +1067,7 @@ function Update-SRRegistryCore {
             }
             # New conversations start auto-managed and unticked; the roll below
             # decides, so the rule lives in exactly one place.
-            $dir.sessions += [PSCustomObject]@{
+            $newRow = [PSCustomObject]@{
                 sessionId  = $r.SessionId
                 title      = $r.Title
                 # claude's own name for the conversation, or $null. Never merged
@@ -976,6 +1089,19 @@ function Update-SRRegistryCore {
                 lane       = $r.Lane
                 worktree   = $r.Worktree
             }
+            # 🔴 REDEEM THE SETTINGS CHOSEN WHEN THIS CONVERSATION WAS CREATED.
+            # The New session dialog could not write them - there was no session
+            # id yet - so it left a claim naming the directory and the title.
+            # This is the first moment the conversation exists to attach them to.
+            # A title claude generated itself is matched too, because a session
+            # spawned without a name arrives carrying autoTitle rather than title.
+            try {
+                $claimed = Resolve-SRPrefClaim -Session $newRow -Dir "$($r.Cwd)" -Title "$($r.Title)"
+                if (-not $claimed -and "$($r.AutoTitle)") {
+                    $null = Resolve-SRPrefClaim -Session $newRow -Dir "$($r.Cwd)" -Title "$($r.AutoTitle)"
+                }
+            } catch { Write-SRLog ('  [skip] pending settings: ' + $_.Exception.Message) }
+            $dir.sessions += $newRow
             $newSessions++
         }
 

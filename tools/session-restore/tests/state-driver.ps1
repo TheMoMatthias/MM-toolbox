@@ -816,6 +816,136 @@ Remove-Item -LiteralPath $sandRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- settings chosen for a conversation that does not exist yet ---'
+# ===========================================================================
+# 🔴 A BRAND NEW CONVERSATION HAS NO SESSION ID, so the New session dialog
+# had nothing to write its settings against and simply forgot them. That was
+# harmless while the logon restore ignored settings too; since it honours them,
+# a session spawned as opus/plan came back at the next logon as default. A claim
+# is that promise written down, redeemed when the scan first sees the session.
+$cdir = Join-Path $SR_StateDir ('claim-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$null = New-Item -ItemType Directory -Path $cdir -Force
+$null = New-Item -ItemType Directory -Path (Join-Path $cdir '.state') -Force
+Copy-Item -LiteralPath (Join-Path $SR_LibDir '_common.ps1') -Destination (Join-Path $cdir '_common.ps1')
+$cfgSrc3 = Join-Path (Split-Path -Parent $SR_LibDir) 'session-restore.config.json'
+if (Test-Path -LiteralPath $cfgSrc3) { Copy-Item -LiteralPath $cfgSrc3 -Destination $cdir }
+try {
+    $cbody = @'
+. (Join-Path $PSScriptRoot '_common.ps1')
+Add-SRPrefClaim -Dir 'C:/proj' -Title 'NEW-ONE' -Prefs @{ model='opus'; permissionMode='plan'; remoteControl=$false }
+'CLAIMS_AFTER_ADD=' + (@(Get-SRPrefClaims).Count)
+
+# The scan discovering that conversation for the first time.
+$row = [PSCustomObject]@{ sessionId='zzz'; title='NEW-ONE'; enabled=$false }
+'REDEEMED=' + (Resolve-SRPrefClaim -Session $row -Dir 'C:/proj' -Title 'NEW-ONE')
+'MODEL=' + (Get-SRSessionPref $row 'model')
+'PERM=' + (Get-SRSessionPref $row 'permissionMode')
+'REMOTE_WANTED=' + (Test-SRRemoteWanted $row)
+'CLAIMS_AFTER_USE=' + (@(Get-SRPrefClaims).Count)
+
+# Single use: a second conversation with the same name must NOT inherit them.
+$row2 = [PSCustomObject]@{ sessionId='yyy'; title='NEW-ONE'; enabled=$false }
+'SECOND=' + (Resolve-SRPrefClaim -Session $row2 -Dir 'C:/proj' -Title 'NEW-ONE')
+
+# A claim for a different directory must not match.
+Add-SRPrefClaim -Dir 'C:/other' -Title 'NEW-ONE' -Prefs @{ model='haiku' }
+$row3 = [PSCustomObject]@{ sessionId='xxx'; title='NEW-ONE'; enabled=$false }
+'WRONG_DIR=' + (Resolve-SRPrefClaim -Session $row3 -Dir 'C:/proj' -Title 'NEW-ONE')
+
+# And an old claim expires rather than attaching to something much later.
+$stale = @([PSCustomObject]@{ dir='C:/proj'; title='OLD'; at=(Get-Date).AddHours(-3).ToString('o'); prefs=[PSCustomObject]@{ model='opus' } })
+($stale | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $SR_ClaimsPath -Encoding utf8
+'STALE_VISIBLE=' + (@(Get-SRPrefClaims).Count)
+'@
+    Set-Content -LiteralPath (Join-Path $cdir 'scenario.ps1') -Value $cbody -Encoding utf8
+    $co = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $cdir 'scenario.ps1') 2>&1 |
+            ForEach-Object { "$_" })
+    function Has { param($v) return ($co -contains $v) }
+    if (-not (Has 'REDEEMED=True')) { Fail ('the claim was not redeemed: ' + (($co | Select-Object -Last 6) -join ' | ')) }
+    elseif (-not ((Has 'MODEL=opus') -and (Has 'PERM=plan'))) { Fail 'the claim was redeemed but the settings did not land' }
+    elseif (Has 'REMOTE_WANTED=True') { Fail 'Remote Control was turned off at spawn and did not carry through' }
+    else { Pass 'settings chosen at spawn land on the conversation when the scan first sees it' }
+    if (-not (Has 'CLAIMS_AFTER_USE=0')) { Fail 'the claim was not consumed - it would attach again' }
+    elseif (Has 'SECOND=True') { Fail 'a second conversation with the same name inherited the settings' }
+    else { Pass 'a claim is single use, so a later namesake does not inherit it' }
+    if (Has 'WRONG_DIR=True') { Fail 'a claim matched a conversation in a different directory' }
+    else { Pass 'a claim does not match across directories' }
+    if (-not (Has 'STALE_VISIBLE=0')) { Fail 'a three-hour-old claim is still live - it could attach to anything' }
+    else { Pass 'a claim expires rather than waiting indefinitely' }
+} finally { Remove-Item -LiteralPath $cdir -Recurse -Force -ErrorAction SilentlyContinue }
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- a rescan must not discard unsaved ticks ---'
+# ===========================================================================
+# 🔴 A SCAN READS THE REGISTRY FROM DISK. Anything ticked but not yet saved
+# was never on disk, so the scan could not see it, and the caller then re-read
+# the file it had just written - replacing the in-memory copy that held those
+# ticks. Pressing Rescan with unsaved work threw it away with nothing said.
+#
+# 🪤 SANDBOXED CHILD, for the same reason as the two-window test: this runs a
+# REAL scan, and a scan against the operator's own registry is exactly the
+# accident that destroyed it. The child gets its own root and never learns where
+# the real one is.
+$rdir = Join-Path $SR_StateDir ('rescan-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$null = New-Item -ItemType Directory -Path $rdir -Force
+$null = New-Item -ItemType Directory -Path (Join-Path $rdir '.state') -Force
+Copy-Item -LiteralPath (Join-Path $SR_LibDir '_common.ps1') -Destination (Join-Path $rdir '_common.ps1')
+$cfgSrc2 = Join-Path (Split-Path -Parent $SR_LibDir) 'session-restore.config.json'
+if (Test-Path -LiteralPath $cfgSrc2) { Copy-Item -LiteralPath $cfgSrc2 -Destination $rdir }
+try {
+    $body = @'
+. (Join-Path $PSScriptRoot '_common.ps1')
+$seed = [PSCustomObject]@{ version = 2; lastScan = $null; directories = @(
+    [PSCustomObject]@{ path = 'C:/rescan-probe'; enabled = $true; missing = $false; sessions = @(
+        [PSCustomObject]@{ sessionId = 'aaa'; title = 'A'; enabled = $false; lastActive = (Get-Date).ToString('o') }) } ) }
+Save-SRRegistry -Registry $seed
+
+# The window's state: a tick made in memory and NOT yet saved.
+$reg = Get-SRRegistry
+$reg.directories[0].sessions[0].enabled = $true
+
+$r = Invoke-SRRescan -Registry $reg -Config (Get-SRConfig) -Dirty $true -Quiet
+'SAVED=' + $r.Saved
+'SCANNED=' + $r.Scanned
+$after = Get-SRRegistry
+$keep = @($after.directories | Where-Object { "$($_.path)" -eq 'C:/rescan-probe' })
+'TICK_SURVIVED=' + [bool](@($keep[0].sessions | Where-Object { $_.sessionId -eq 'aaa' })[0].enabled)
+'@
+    Set-Content -LiteralPath (Join-Path $rdir 'scenario.ps1') -Value $body -Encoding utf8
+    $out = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $rdir 'scenario.ps1') 2>&1 |
+             ForEach-Object { "$_" })
+    if ($out -notcontains 'SAVED=True') {
+        Fail ('the rescan did not save the unsaved ticks first: ' + (($out | Select-Object -Last 4) -join ' | '))
+    } elseif ($out -notcontains 'TICK_SURVIVED=True') {
+        Fail 'a rescan discarded a tick that had not been saved yet'
+    } else { Pass 'a rescan saves unsaved ticks first, and they survive it' }
+
+    # 🪤 AND A FAILED SAVE MUST STOP THE SCAN, not let it run over the top.
+    # Nothing to point at but the contract, so it is asserted on the shape: a
+    # refusal reports Saved false, Scanned false, and says why.
+    $body2 = @'
+. (Join-Path $PSScriptRoot '_common.ps1')
+$reg = Get-SRRegistry
+# A stale stamp makes the save refuse - the two-window guard - which is the
+# cheapest honest way to make the save fail.
+Set-SRRegistryStamp 'definitely-not-the-current-stamp'
+[System.IO.File]::AppendAllText($SR_RegistryPath, ' ')   # move the file on
+$r = Invoke-SRRescan -Registry $reg -Config (Get-SRConfig) -Dirty $true -Quiet
+'SAVED=' + $r.Saved
+'SCANNED=' + $r.Scanned
+'WHY=' + [bool]("$($r.Why)".Trim())
+'@
+    Set-Content -LiteralPath (Join-Path $rdir 'scenario2.ps1') -Value $body2 -Encoding utf8
+    $out2 = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $rdir 'scenario2.ps1') 2>&1 |
+              ForEach-Object { "$_" })
+    if ($out2 -contains 'SCANNED=True') { Fail 'the save failed and the rescan ran anyway - it would discard the ticks' }
+    elseif ($out2 -notcontains 'WHY=True') { Fail 'the rescan refused without saying why' }
+    else { Pass 'a failed save stops the rescan, and it says why' }
+} finally { Remove-Item -LiteralPath $rdir -Recurse -Force -ErrorAction SilentlyContinue }
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the parser, against transcripts that are not well formed ---'
 # ===========================================================================
 # 🪤 THE MALFORMED CASE IS THE NORMAL CASE HERE. Get-SRLastSaid seeks
