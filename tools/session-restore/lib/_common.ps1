@@ -3062,6 +3062,9 @@ function Read-SRScreenVitals { param([string]$ScreenText)
         # What the session says about the turn it is on, and how hard it is
         # thinking. -1 / '' mean the screen did not say.
         Effort = ''; SawEffort = $false; TurnSecs = -1; TurnDone = $false; SawTurn = $false
+        # What its own bar says about the context - the count AND the window,
+        # both of which the transcript can only guess at.
+        CtxTokens = -1; CtxWindow = -1; SawCtx = $false
     }
     if (-not $ScreenText) { return $v }
 
@@ -3167,6 +3170,56 @@ function Read-SRScreenVitals { param([string]$ScreenText)
     # "thinking" at all.
     $e = [regex]::Match($ScreenText, '(?i)\bwith\s+(\w+)\s+effort\b')
     if ($e.Success) { $v.Effort = $e.Groups[1].Value.ToLower(); $v.SawEffort = $true; $v.Ok = $true }
+
+    # =====================================================================
+    # THE CONTEXT, OFF THE SESSION'S OWN BAR.
+    #
+    #   Model: Opus 5 | [████████░░░░] 638k/1.0M (64%) | ⎇ main | (+0,-0)
+    #
+    # 🔴 BOTH NUMBERS WERE DERIVED AND BOTH COULD BE WRONG:
+    #
+    # THE WINDOW was inferred - "1M if the model id says 1m, or if the count
+    # has already passed 200k" - because the id does not record which window
+    # was selected. So a 1M session below 200k was read as a 200k one, and a
+    # session at 122k showed 61% where its own bar said 12%. Measured on a live
+    # session whose bar read "122k / 1.0M" while the tool said 121,724/200,000.
+    #
+    # THE COUNT came from the last usage record, and after a /compact the
+    # terminal's bar drops IMMEDIATELY while the transcript carries no new
+    # record until the next reply - so the tool kept showing the pre-compact
+    # figure, which is how a session reading 123.5k in its terminal appeared
+    # here as 619k.
+    #
+    # The bar states both. Reading it settles both, and it follows a compact
+    # within one sweep instead of waiting for the next assistant turn.
+    $c = [regex]::Match($ScreenText, '(?m)^\s*Model:.*?\]\s*([\d.,]+)\s*([kKmM]?)\s*/\s*([\d.,]+)\s*([kKmM]?)')
+    if ($c.Success) {
+        $num = {
+            param([string]$Digits, [string]$Unit)
+            # The bar writes 638k, 1.0M, 0. Strip thousands separators, keep one
+            # decimal point, then scale.
+            $d = "$Digits".Replace(',', '.')
+            $dot = $d.LastIndexOf('.')
+            if ($dot -ge 0 -and ($d.Length - $dot - 1) -eq 3) { $d = $d.Remove($dot, 1) }
+            $val = 0.0
+            if (-not [double]::TryParse($d, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$val)) { return -1 }
+            switch ("$Unit".ToLower()) {
+                'k' { return [int][Math]::Round($val * 1000) }
+                'm' { return [int][Math]::Round($val * 1000000) }
+                default { return [int][Math]::Round($val) }
+            }
+        }
+        $tk = & $num $c.Groups[1].Value $c.Groups[2].Value
+        $wn = & $num $c.Groups[3].Value $c.Groups[4].Value
+        # A window is one of the two claude offers; anything else means the bar
+        # was misread and neither figure can be trusted.
+        if ($tk -ge 0 -and $wn -gt 0 -and $tk -le $wn) {
+            $v.CtxTokens = $tk
+            $v.CtxWindow = $wn
+            $v.SawCtx = $true
+            $v.Ok = $true
+        }
+    }
     return $v
 }
 

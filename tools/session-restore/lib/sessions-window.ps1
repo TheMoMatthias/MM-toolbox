@@ -127,7 +127,6 @@ foreach ($n in @(
     'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear','RailSearch','RailSort','RailOnlyLive',
     'ListPane','ListSplit','ListCaption','ListSort','ListSearch','ListCount','SessionList',
     'AskTabs','AskFreeBox','AskFree','AskFreeSend','AskFreeLabel','AskReview',
-    'LiveBox','LiveText','LiveHead','LiveDot',
     'OutputPane','PaneName','PaneState','PaneStateDot','PaneGoTo','PaneRelaunch','PaneSettings',
     'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
@@ -1256,6 +1255,14 @@ function Build-Sessions {
             $rowShells = $(if ($scr) { [int]$scr.Shells } else { 0 })
             $rowAgents = $(if ($r.Sig) { [int]$r.Sig.Agents } else { 0 })
             if ($scr -and [int]$scr.Agents -ge 0) { $rowAgents = [int]$scr.Agents }
+            # The context, from the session's own bar where we have it. The
+            # transcript reader has to INFER the window from the token count, so
+            # a 1M conversation under 200k was drawn against the wrong scale -
+            # and after a compact its count is stale until the next reply.
+            $rowTok = $(if ($r.Sig) { [int]$r.Sig.Tokens } else { 0 })
+            $rowWin = $(if ($r.Sig -and [int]$r.Sig.Window -gt 0) { [int]$r.Sig.Window } else { 200000 })
+            if ($scr -and [int]$scr.CtxWindow -gt 0) { $rowTok = [int]$scr.CtxTokens; $rowWin = [int]$scr.CtxWindow }
+            $rowFrac = $(if ($rowWin -gt 0) { [double]$rowTok / [double]$rowWin } else { 0.0 })
             $items.Add([PSCustomObject]@{
                 Kind = 'session'; Id = $r.Id; Row = $r
                 BandVis = $V_Hide; RowVis = $V_Show
@@ -1273,13 +1280,12 @@ function Build-Sessions {
                 # context bar appears once a conversation is past half its
                 # window, and the sub-agent dot only while one is actually out.
                 # A quiet row looks exactly as it did before.
-                CtxVis = $(if ($r.Sig -and $r.Sig.Frac -gt 0.5) { $V_Show } else { $V_Hide })
-                CtxWidth = $(if ($r.Sig) { [Math]::Max(2.0, 34.0 * [Math]::Min(1.0, $r.Sig.Frac)) } else { 0.0 })
+                CtxVis = $(if ($rowFrac -gt 0.5) { $V_Show } else { $V_Hide })
+                CtxWidth = [Math]::Max(2.0, 34.0 * [Math]::Min(1.0, $rowFrac))
                 # Green, amber, red - on the token count, not on the fraction.
                 # See Get-CtxBrush: 85% of a 200k window and 85% of a 1M window
                 # are not the same situation and must not be the same colour.
-                CtxBrush = [System.Windows.Media.Brush]$(
-                    if ($r.Sig) { Get-CtxBrush ([int]$r.Sig.Tokens) } else { $Pal.Ok })
+                CtxBrush = [System.Windows.Media.Brush](Get-CtxBrush $rowTok)
                 # 🔴 SHAPE FIRST, HUE SECOND. A sub-agent is a ROUND amber dot -
                 # another mind working on your behalf. A background shell is a
                 # SQUARE violet mark - machinery still running. They answer
@@ -2761,6 +2767,9 @@ function Complete-DocParse {
 # the expensive half can move threads and this half - which cannot, because WPF
 # objects have thread affinity - stays here and stays inside budget.
 function Set-ReadDocument { param($Blocks, [bool]$Truncated = $false)
+    # A rebuilt document has no live block in it, so the handle to the old one is
+    # a reference into a document nobody is showing any more.
+    $script:liveBlock = $null
     $doc = Build-ReadDocument -Blocks $Blocks -Truncated $Truncated
     if ($doc -isnot [System.Windows.Documents.FlowDocument]) {
         throw ('Build-ReadDocument returned {0}, not a FlowDocument - something in it emitted to the pipeline' -f $doc.GetType().Name)
@@ -3041,10 +3050,21 @@ function Update-Chips { param($R, [switch]$Force)
     $glass = $PalGlass
     $null = $ui.PaneChips.Children.Add((New-Chip -Text (Get-ShortModel $v.Model) -Fg $Pal.TextHigh -Bg $glass -Dot $Pal.In -Tip 'The model this conversation is actually replying with').Border)
 
+    # 🔑 THE SESSION'S OWN BAR WINS, both numbers. The window was inferred from
+    # the token count (a 1M session below 200k read as a 200k one) and the count
+    # came from the last usage record (which a /compact leaves stale until the
+    # next reply). The bar states both and the sweep already has it.
+    $ctxTok = [int]$v.Tokens
+    $ctxWin = [int]$v.Window
+    $csig = Get-RowScreenSig "$($R.Id)"
+    if ($csig -and [int]$csig.CtxWindow -gt 0) {
+        $ctxTok = [int]$csig.CtxTokens
+        $ctxWin = [int]$csig.CtxWindow
+    }
     $frac = 0.0
-    if ($v.Window -gt 0) { $frac = [double]$v.Tokens / [double]$v.Window }
-    $barFg = Get-CtxBrush ([int]$v.Tokens)
-    $ctx = ('{0} / {1}   {2}%' -f (Format-Kilo $v.Tokens), (Format-Kilo $v.Window), [int][math]::Round($frac * 100))
+    if ($ctxWin -gt 0) { $frac = [double]$ctxTok / [double]$ctxWin }
+    $barFg = Get-CtxBrush $ctxTok
+    $ctx = ('{0} / {1}   {2}%' -f (Format-Kilo $ctxTok), (Format-Kilo $ctxWin), [int][math]::Round($frac * 100))
     $null = $ui.PaneChips.Children.Add((New-Chip -Text $ctx -Fg $Pal.TextHigh -Bg $glass -Bar $frac -BarFg $barFg -Tip 'Context in use at its last reply. A 1M window is inferred from the usage, because the transcript does not record which one was selected.').Border)
 
     if ($v.Branch) {
@@ -4558,7 +4578,8 @@ $script:rowScreen = @{}
 $SR_RowScreenTTL = 45
 
 function Set-RowScreenSig {
-    param([string]$Id, [int]$Shells, [int]$Agents, [string]$Effort = '', [int]$TurnSecs = -1, [bool]$TurnDone = $false)
+    param([string]$Id, [int]$Shells, [int]$Agents, [string]$Effort = '', [int]$TurnSecs = -1, [bool]$TurnDone = $false,
+          [int]$CtxTokens = -1, [int]$CtxWindow = -1)
     if (-not $Id) { return $false }
     $was = $script:rowScreen[$Id]
     # Only the two MARKS decide whether the list needs redrawing; the clock and
@@ -4566,9 +4587,14 @@ function Set-RowScreenSig {
     # every row once a second because a timer moved would be the opposite of
     # what the sweep is for.
     $changed = (-not $was) -or ([int]$was.Shells -ne $Shells) -or ([int]$was.Agents -ne $Agents)
+    # 🪤 The context figures move constantly, so they are deliberately NOT part
+    # of what decides a redraw - the bar is repainted by the strip's own tick and
+    # by the row build that any other change triggers. Redrawing every row
+    # because a token count ticked would undo the whole point of the sweep.
     $script:rowScreen[$Id] = @{
         At = (Get-Date); Shells = $Shells; Agents = $Agents
         Effort = "$Effort"; TurnSecs = $TurnSecs; TurnDone = $TurnDone
+        CtxTokens = $CtxTokens; CtxWindow = $CtxWindow
     }
     return $changed
 }
@@ -4634,6 +4660,8 @@ $script:SweepJob = {
                 Effort   = $(if ($v.SawEffort) { "$($v.Effort)" } else { '' })
                 TurnSecs = $(if ($v.SawTurn) { [int]$v.TurnSecs } else { -1 })
                 TurnDone = [bool]$v.TurnDone
+                CtxTokens = $(if ($v.SawCtx) { [int]$v.CtxTokens } else { -1 })
+                CtxWindow = $(if ($v.SawCtx) { [int]$v.CtxWindow } else { -1 })
             }
         }
     } catch { }
@@ -4700,7 +4728,8 @@ function Complete-VitalsSweep {
         # ages out on its own if the reads keep failing.
         if (-not $got) { continue }
         if (Set-RowScreenSig -Id "$($row.Id)" -Shells ([int]$got.Shells) -Agents ([int]$got.Agents) `
-                             -Effort "$($got.Effort)" -TurnSecs ([int]$got.TurnSecs) -TurnDone ([bool]$got.TurnDone)) {
+                             -Effort "$($got.Effort)" -TurnSecs ([int]$got.TurnSecs) -TurnDone ([bool]$got.TurnDone) `
+                             -CtxTokens ([int]$got.CtxTokens) -CtxWindow ([int]$got.CtxWindow)) {
             $changed = $true
         }
 
@@ -4776,8 +4805,8 @@ function Start-LiveTail {
     $row = Get-SelectedRow
     if (-not $row -or -not $row.A -or -not $row.A.Pid -or "$($row.A.Status)" -ne 'busy' -or
         ($row.A.Kind -and "$($row.A.Kind)" -ne 'interactive')) {
-        # Not working: the record is authoritative again, so the strip goes.
-        if ($ui.LiveBox.Visibility -ne $V_Hide) { $ui.LiveBox.Visibility = $V_Hide; $ui.LiveText.Text = '' }
+        # Not working: the record is authoritative again, so the live block goes.
+        Set-LiveBlock ''
         $script:tailAt = Get-Date
         return
     }
@@ -4819,9 +4848,49 @@ function Complete-LiveTail {
     if ("$($script:tailFor)" -ne "$($script:selId)") { return }
     $txt = ''
     if ($res) { $txt = "$($res.Text)" }
-    if (-not $txt) { $ui.LiveBox.Visibility = $V_Hide; $ui.LiveText.Text = ''; return }
-    if ("$($ui.LiveText.Text)" -ne $txt) { $ui.LiveText.Text = $txt }
-    $ui.LiveBox.Visibility = $V_Show
+    Set-LiveBlock $txt
+}
+
+# ===========================================================================
+# THE LIVE OUTPUT GOES INTO THE DOCUMENT, NOT BESIDE IT.
+#
+# 🔴 ONE CONVERSATION, SHOWN ONCE. This first arrived as its own panel under
+# the reading pane, and the operator's answer was immediate and right: that is
+# the same session twice on one surface. What the record has caught up with, and
+# what it has not, are not two things to read - they are the same conversation,
+# and the newest part of it simply happens to come from a different place.
+#
+# So it is appended to the END of the document as one block and replaced in
+# place. The whole document is NOT rebuilt: that costs 64-140 ms and would run
+# twice a second on the UI thread to move a few lines.
+$script:liveBlock = $null
+
+function Set-LiveBlock { param([string]$Text)
+    $doc = $ui.PaneDoc.Document
+    if (-not $doc) { $script:liveBlock = $null; return }
+    # Always drop the previous one first - it is a replacement, not a log.
+    if ($script:liveBlock) {
+        try { if ($doc.Blocks.Contains($script:liveBlock)) { $null = $doc.Blocks.Remove($script:liveBlock) } } catch { }
+        $script:liveBlock = $null
+    }
+    if (-not "$Text".Trim()) { return }
+    $st = New-Object System.Windows.Controls.StackPanel
+    $cap = New-Object System.Windows.Controls.StackPanel
+    $cap.Orientation = 'Horizontal'
+    $dot = New-Object System.Windows.Shapes.Ellipse
+    $dot.Width = 6; $dot.Height = 6
+    $dot.Fill = $Pal.Ok
+    $dot.VerticalAlignment = 'Center'
+    $dot.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
+    $null = $cap.Children.Add($dot)
+    $null = $cap.Children.Add((New-ReadText -Text (Get-TrackedText 'HAPPENING NOW') -Brush $Pal.TextLow -Size 9.5 -Semi))
+    $cap.Margin = New-Object System.Windows.Thickness 0, 0, 0, 8
+    $null = $st.Children.Add($cap)
+    $tb = New-ReadText -Text $Text -Brush $Pal.TextMid -Size 12 -Mono -Wrap -Line 17
+    $null = $st.Children.Add($tb)
+    $blk = New-ReadCard -Child $st -Bg $PalGlass -Stroke $PalHair -BW 1 -Radius 12 -PadT 11 -PadB 12
+    $doc.Blocks.Add($blk)
+    $script:liveBlock = $blk
 }
 
 function Stop-LiveTail {

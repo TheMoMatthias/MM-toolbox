@@ -506,6 +506,46 @@ try {
     # =====================================================================
     Write-Host ''
     Write-Host '--- the live tail, off a real working screen ---'
+    # =====================================================================
+    # THE CONTEXT, OFF THE SESSION'S OWN BAR.
+    #
+    # 🔴 BOTH NUMBERS WERE DERIVED AND BOTH COULD BE WRONG. The WINDOW was
+    # inferred from the token count - "1M if it has already passed 200k" -
+    # because the model id does not record which one was selected, so a 1M
+    # session below 200k was drawn against a 200k scale: measured on a live
+    # session whose own bar read "122k / 1.0M" while the tool said
+    # 121,724/200,000, showing 61% where the session showed 12%. And the COUNT
+    # came from the last usage record, which a /compact leaves stale until the
+    # next reply - a session reading 123.5k in its terminal appeared here as
+    # 619k. The bar states both.
+    # =====================================================================
+    $ctxCases = @(
+        @{ n = 'a 1M session below 200k - the case the inference got wrong'
+           t = 'Model: Opus 5 | [' + ('#' * 4) + '] 122k/1.0M (12%) | main'
+           tok = 122000; win = 1000000 },
+        @{ n = 'a full-looking 1M session'
+           t = 'Model: Opus 5 | [' + ('#' * 20) + '] 638k/1.0M (64%) | main'
+           tok = 638000; win = 1000000 },
+        @{ n = 'a 200k session'
+           t = 'Model: Opus 5 | [' + ('#' * 8) + '] 119k/200k (60%) | main'
+           tok = 119000; win = 200000 },
+        @{ n = 'a session that has just started'
+           t = 'Model: Opus 5 | [' + ('#' * 2) + '] 0/1.0M (0%) | main'
+           tok = 0; win = 1000000 }
+    )
+    foreach ($cs in $ctxCases) {
+        $cv = Read-SRScreenVitals -ScreenText $cs.t
+        if (-not $cv.SawCtx) { Fail ("{0}: nothing was read off the bar" -f $cs.n) }
+        elseif ([int]$cv.CtxTokens -ne $cs.tok -or [int]$cv.CtxWindow -ne $cs.win) {
+            Fail ("{0}: read {1:N0}/{2:N0}, expected {3:N0}/{4:N0}" -f $cs.n, $cv.CtxTokens, $cv.CtxWindow, $cs.tok, $cs.win)
+        } else { Pass $cs.n }
+    }
+    # The inverse: a screen with no bar reports nothing rather than zero, or
+    # every reading above would pass on a reader that answers for anything.
+    $noBar = Read-SRScreenVitals -ScreenText "just some conversation about 640k of something`n"
+    if ($noBar.SawCtx) { Fail ("prose was read as a context bar: {0}/{1}" -f $noBar.CtxTokens, $noBar.CtxWindow) }
+    else { Pass 'a screen with no bar on it reports no context, rather than zero' }
+
     # 🔴 THE COMPARISON ITSELF, FIRST. String.StartsWith(string) is
     # CULTURE-SENSITIVE by default and folds unrelated symbols together:
     # ("· Sauteing").StartsWith("⏵") is True under this culture. Every reader
