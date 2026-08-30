@@ -311,6 +311,23 @@ function Get-SRWorktreeInfo {
     if ($script:SR_WtCache.ContainsKey($key)) { return $script:SR_WtCache[$key] }
 
     $info = [PSCustomObject]@{ RepoRoot = $Path; Lane = 'main'; Worktree = $null }
+
+    # 🔴 A MALFORMED PATH MAKES Test-Path THROW A NON-TERMINATING ERROR, which
+    # the catch below does NOT intercept - so every scan wrote a red
+    # "Illegal characters in path" to the error stream and carried on. Observed
+    # for real on 2026-08-30, from a registry row whose path had picked up a tab.
+    # One bad row is enough to make a scan's output unreadable, and unreadable
+    # output is where genuine failures go to hide.
+    #
+    # 🪤 The check is here rather than -ErrorAction on each call: an unusable
+    # path is not a worktree and is not a repo, so there is nothing further to
+    # ask about it, and the default answer above is already the right one.
+    if ([string]::IsNullOrWhiteSpace($Path) -or
+        $Path.IndexOfAny([System.IO.Path]::GetInvalidPathChars()) -ge 0) {
+        $script:SR_WtCache[$key] = $info
+        return $info
+    }
+
     try {
         $dotGit = Join-Path $Path '.git'
         if (Test-Path -LiteralPath $dotGit -PathType Leaf) {
