@@ -2248,6 +2248,31 @@ function Invoke-SRAnswerOnScreen {
         # read before the TUI has repainted the highlight, and the answer is
         # whatever was highlighted when it arrived.
         Start-Sleep -Milliseconds 250
+
+        # 🔴 LOOK BEFORE COMMITTING. Everything above refuses rather than
+        # guesses - no cursor, no arrows - and then the commit itself rested on a
+        # 250 ms sleep, which is hoping rather than knowing. The screen is read
+        # once more and ENTER is only sent if the highlight is actually on the
+        # option that was asked for. This closes the window between the first
+        # read and the keystroke: the session can finish its turn, the operator
+        # can arrow manually, or the TUI can simply be slower than the sleep, and
+        # in every one of those cases the old code committed whatever happened to
+        # be highlighted. Answering the WRONG question is the failure this whole
+        # function is written to avoid.
+        $after = Get-SRScreenQuestion -ProcessId $ProcessId
+        if (-not $after) {
+            return 'it stopped asking while the answer was being typed - nothing was sent'
+        }
+        if ($after.CursorAt -lt 0) {
+            return 'lost track of which option is highlighted - nothing was sent'
+        }
+        if ([int]$after.CursorAt -ne $Index) {
+            # 🪤 DO NOT NUDGE AND RETRY. A second correction races the same way
+            # and can walk the cursor further; refusing leaves the menu exactly as
+            # the operator can see it, which is recoverable in the terminal.
+            return ("the highlight moved while answering (it is on option {0}, not {1}) - nothing was sent" -f `
+                    ([int]$after.CursorAt + 1), ($Index + 1))
+        }
     }
     $n = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@(0x0D))          # VK_RETURN
     if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
