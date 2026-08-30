@@ -40,6 +40,31 @@ if ($env:SR_SHOT_SHEET) {
     $ui.Sheet.Visibility = $V_Show
 }
 
+# 🪤 THE PINNED QUESTION IS ONLY ON SCREEN WHILE A LIVE CONSOLE IS SITTING ON A
+# MENU, so a shot taken normally almost never catches the one panel every answer
+# goes through. Dressed here from a fabricated question - the same shape
+# Get-SRScreenQuestion returns - so a change to it can be looked at on demand
+# rather than waited for.
+if ($env:SR_SHOT_ASK) {
+    Show-Ask ([PSCustomObject]@{
+        Header   = 'it is asking'
+        Question = 'I8 has two clauses left unscoped or unbuilt. Which do I take now?'
+        Options  = @(
+            'Backfill: route the 9 tools through the door (Recommended)',
+            'C2-on-merits - the last unscoped clause',
+            'Discharge the A7 half formally first',
+            'Type something.')
+        Details  = @(
+            'The A7 half is done and dischargeable; what remains is the nine tools/backfill_*.py named in ref.plane that still bypass the harness door. Real engineering rather than measurement.',
+            'The only clause nobody has looked at. check_c2_create_delete.py exists and C2 is currently failing on main for another lane, so I would be scoping a check that is already red.',
+            'Write the 16/0 measurement into the DONE-WHEN as a discharged sub-clause, so the row stops implying the whole Backfill clause is open. Ten minutes.',
+            '')
+        Footer   = 'Nothing is sent until you pick one.'
+        Multi    = $false
+        Screen   = ''
+    })
+}
+
 $window.Width = $W; $window.Height = $H
 $root = $window.Content
 # 🔴 DO NOT PAINT THE GROUND ONTO THE CONTENT. The app is an inset card with the
