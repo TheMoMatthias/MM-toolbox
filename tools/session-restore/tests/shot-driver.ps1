@@ -46,23 +46,16 @@ if ($env:SR_SHOT_SHEET) {
 # Get-SRScreenQuestion returns - so a change to it can be looked at on demand
 # rather than waited for.
 if ($env:SR_SHOT_ASK) {
-    Show-Ask ([PSCustomObject]@{
-        Header   = 'it is asking'
-        Question = 'I8 has two clauses left unscoped or unbuilt. Which do I take now?'
-        Options  = @(
-            'Backfill: route the 9 tools through the door (Recommended)',
-            'C2-on-merits - the last unscoped clause',
-            'Discharge the A7 half formally first',
-            'Type something.')
-        Details  = @(
-            'The A7 half is done and dischargeable; what remains is the nine tools/backfill_*.py named in ref.plane that still bypass the harness door. Real engineering rather than measurement.',
-            'The only clause nobody has looked at. check_c2_create_delete.py exists and C2 is currently failing on main for another lane, so I would be scoping a check that is already red.',
-            'Write the 16/0 measurement into the DONE-WHEN as a discharged sub-clause, so the row stops implying the whole Backfill clause is open. Ten minutes.',
-            '')
-        Footer   = 'Nothing is sent until you pick one.'
-        Multi    = $false
-        Screen   = ''
-    })
+    # 🔴 A REAL ROUND, OFF A REAL SCREEN. This used to hand Show-Ask a question
+    # written here to suit the panel - which drew a picture of a surface that
+    # did not exist, including 'Type something.' as an ordinary fourth option,
+    # the exact thing that turned out to decline the whole round. The fixture is
+    # one of the screens captured off a live menu on 2026-08-30, so what this
+    # draws is what the operator will actually see.
+    $askShot = Join-Path $SR_Root 'tests\screens\round-single-answered.txt'
+    if (Test-Path -LiteralPath $askShot) {
+        Show-Ask (Invoke-SRParseScreenQuestion -Text ([System.IO.File]::ReadAllText($askShot)))
+    }
 }
 
 # 🪤 THE VITALS STRIP IS FILLED BY THE ONE-SECOND TICK, NOT BY THE CLICK - that

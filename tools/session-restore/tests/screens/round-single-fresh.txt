@@ -1,0 +1,50 @@
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+ ▐▛███▛█   Claude Code v2.1.251
+▝▜██████▀  Haiku 4.5 · Claude Max
+  ▝▝ ▝▝    ~\AppData\Local\Temp\claude\C--Users-mauri-Documents-MM-toolbox-tools-session-restore\444f91ed-5a95-4157…
+
+
+❯ This is a UI rendering test and nothing else. Do not explore, do not read files, do not run commands, and skip any
+  grill or scope gate - it does not apply. Your ONLY action is to call the AskUserQuestion tool exactly once, with
+  these three questions in one call, then stop and wait.
+
+  Question 1: header Alpha, question Which
+
+● I need the complete question details to call the tool. You've specified Question 1 with header "Alpha" and question
+  text "Which", but I'm missing:
+
+  - The full question text for all three questions
+  - The options/selectable answers for each question
+  - The multiSelect setting (true or false) for each
+  - The full details for Questions 2 and 3
+
+  Could you provide the complete question specifications so I can make the AskUserQuestion call?
+
+✻ Crunched for 6s · done 7:16 PM
+
+❯ UI rendering test only. Do not explore, read files, or run commands, and skip any gate. Your only action: call
+  AskUserQuestion exactly once with three questions in one call, then stop and wait. Q1 header Alpha, question Which
+  alpha do you want, multiSelect false, options Alpha one (the first alpha), Alpha two (the second alpha), Alpha three
+  (the third alpha). Q2 header Beta, question Which betas apply, multiSelect TRUE, options Beta one (the first beta),
+  Beta two (the second beta), Beta three (the third beta), Beta four (the fourth beta). Q3 header Gamma, question Which
+  gamma is right, multiSelect false, options Gamma one (the first gamma), Gamma two (the second gamma). Call the tool
+  now.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Alpha  ☐ Beta  ☐ Gamma  ✔ Submit  →
+
+Which alpha do you want
+
+❯ 1. Alpha one
+     the first alpha
+  2. Alpha two
+     the second alpha
+  3. Alpha three
+     the third alpha
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+

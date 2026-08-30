@@ -126,6 +126,7 @@ foreach ($n in @(
     'ModeWork','ModeManage','Broadcast',
     'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear','RailSearch','RailSort','RailOnlyLive',
     'ListPane','ListSplit','ListCaption','ListSort','ListSearch','ListCount','SessionList',
+    'AskTabs','AskFreeBox','AskFree','AskFreeSend','AskFreeLabel','AskReview',
     'OutputPane','PaneName','PaneState','PaneStateDot','PaneGoTo','PaneRelaunch','PaneSettings',
     'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
@@ -2015,9 +2016,71 @@ function Update-Ask { param($R)
     Show-Ask $q
 }
 
+# ===========================================================================
+# THE ROUND, DRAWN THE WAY THE TERMINAL DRAWS IT.
+#
+# 🔑 The terminal's bar is `<-  [ ] Alpha  [x] Beta  (v) Submit  ->`, and the two
+# arrows are the whole navigation: LEFT and RIGHT step between questions.
+#
+# 🪤 WHICH TAB IS ACTIVE IS NOT IN THE TEXT, and it is not guessed at here. The
+# terminal marks it with colour, and the screen reader takes CHARACTERS off the
+# console buffer (ReadConsoleOutputCharacterW) - attributes never reach us. So
+# the chips report STATE, which the boxes do carry, and the two arrow buttons
+# carry the MOVEMENT, which needs a direction and not a position. That is also
+# exactly the pair the terminal itself offers; inventing a highlight we cannot
+# read would be the one thing this relay refuses to do.
+function New-AskTabChip {
+    param([string]$Label, [bool]$Answered)
+    $bd = New-Object System.Windows.Controls.Border
+    $bd.Background = $PalGlass
+    $bd.CornerRadius = New-Object System.Windows.CornerRadius 5
+    $bd.Padding = New-Object System.Windows.Thickness 8, 2, 9, 3
+    $bd.Margin = New-Object System.Windows.Thickness 0, 0, 6, 5
+    $bd.ToolTip = $(if ($Answered) { "'$Label' has been answered - step back to it to see or change your answer" }
+                    else { "'$Label' has not been answered yet" })
+    $sp = New-Object System.Windows.Controls.StackPanel
+    $sp.Orientation = 'Horizontal'
+    $mark = New-Object System.Windows.Controls.TextBlock
+    # The terminal's own two states, in this window's type: a ring until it is
+    # answered, a tick once it is.
+    $mark.Text = $(if ($Answered) { [string][char]0x2714 } else { [string][char]0x25CB })
+    $mark.Foreground = $(if ($Answered) { $Pal.Ask } else { $window.FindResource('TextLow') })
+    $mark.FontSize = 10.5
+    $mark.FontFamily = $script:UiFace
+    $mark.VerticalAlignment = 'Center'
+    $mark.Margin = New-Object System.Windows.Thickness 0, 0, 6, 0
+    $null = $sp.Children.Add($mark)
+    $t = New-Object System.Windows.Controls.TextBlock
+    $t.Text = $Label
+    $t.FontSize = 10.5
+    $t.FontFamily = $script:UiFace
+    $t.VerticalAlignment = 'Center'
+    $t.Foreground = $(if ($Answered) { $window.FindResource('TextMid') } else { $window.FindResource('TextLow') })
+    $null = $sp.Children.Add($t)
+    $bd.Child = $sp
+    return $bd
+}
+
+function New-AskArrow {
+    param([string]$Glyph, [int]$Delta, [string]$Tip)
+    $b = New-Object System.Windows.Controls.Button
+    $b.Style = $window.FindResource('BtnSlim')
+    $b.Content = $Glyph
+    $b.Margin = New-Object System.Windows.Thickness 0, 0, 8, 5
+    $b.Tag = $Delta
+    $b.ToolTip = $Tip
+    $b.Add_Click({ param($s, $e) Invoke-AskMove ([int]$s.Tag) })
+    return $b
+}
+
 function Show-Ask { param($q)
     $ui.AskBox.Visibility = $V_Hide
     $ui.AskOptions.ItemsSource = $null
+    $ui.AskTabs.ItemsSource = $null
+    $ui.AskTabs.Visibility = $V_Hide
+    $ui.AskFreeBox.Visibility = $V_Hide
+    $ui.AskReview.ItemsSource = $null
+    $ui.AskReview.Visibility = $V_Hide
     # 🔴 CLEARED ON EVERY PATH. It used to be set only after the early return, so
     # selecting a conversation that was not running left the PREVIOUS one's
     # question in it - and the answer record then filed another conversation's
@@ -2029,6 +2092,66 @@ function Show-Ask { param($q)
     $ui.AskHeader.Text = $(if ("$($q.Header)") { "$($q.Header)".ToUpper() } else { 'IT IS ASKING' })
     $ui.AskText.Text   = "$($q.Question)"
 
+    # 🪤 READ THE ROUND FIELDS DEFENSIVELY, because not every question HAS them.
+    # Only the screen parser fills these in; Get-SRPendingQuestion builds a
+    # question out of the transcript and knows nothing about tabs or ticks, and a
+    # test builds one by hand. On a PSCustomObject a missing property reads as
+    # $null, and [int]$null is 0 - so "which option did you choose" silently
+    # became "the first one" and every transcript-derived question drew a tick it
+    # had no business drawing. Absent means -1 here, and -1 means nobody knows.
+    $askInt = {
+        param($Obj, [string]$Name, [int]$Fallback)
+        if ($Obj -and $Obj.PSObject.Properties[$Name] -and $null -ne $Obj.$Name) { return [int]$Obj.$Name }
+        return $Fallback
+    }
+    $chosenAt = & $askInt $q 'ChosenAt' -1
+    $freeAt   = & $askInt $q 'FreeAt'   -1
+    $realCnt  = & $askInt $q 'RealCount' 0
+
+    # ---- the round, when this question is one of several ----------------
+    $tabs = @()
+    if ($q.PSObject.Properties['Tabs']) { $tabs = @($q.Tabs) }
+    if ($tabs.Count -ge 2) {
+        $strip = New-Object System.Collections.Generic.List[object]
+        $strip.Add((New-AskArrow -Glyph ([string][char]0x2039) -Delta -1 -Tip 'Back to the previous question - your answer to it is shown as you left it'))
+        foreach ($t in $tabs) { $strip.Add((New-AskTabChip -Label "$($t.Label)" -Answered ([bool]$t.Answered))) }
+        $strip.Add((New-AskArrow -Glyph ([string][char]0x203A) -Delta 1 -Tip 'On to the next question'))
+        $ui.AskTabs.ItemsSource = $strip.ToArray()
+        $ui.AskTabs.Visibility = $V_Show
+    }
+
+    # ---- the review, on the round's last tab -----------------------------
+    if ($q.PSObject.Properties['Review'] -and $q.Review) {
+        $rows = New-Object System.Collections.Generic.List[object]
+        foreach ($a in @($q.Review.Answers)) {
+            $bd = New-Object System.Windows.Controls.Border
+            $bd.Margin = New-Object System.Windows.Thickness 0, 0, 0, 8
+            $sp2 = New-Object System.Windows.Controls.StackPanel
+            $qt = New-Object System.Windows.Controls.TextBlock
+            $qt.Text = "$($a.Question)"
+            $qt.TextWrapping = 'Wrap'
+            $qt.FontSize = 12
+            $qt.Foreground = $window.FindResource('TextMid')
+            $qt.FontFamily = $script:UiFace
+            $null = $sp2.Children.Add($qt)
+            $at2 = New-Object System.Windows.Controls.TextBlock
+            $at2.Text = "$($a.Answer)"
+            $at2.TextWrapping = 'Wrap'
+            $at2.FontSize = 13.5
+            $at2.FontWeight = $FW_Semi
+            $at2.Foreground = $Pal.Ask
+            $at2.FontFamily = $script:UiFace
+            $at2.Margin = New-Object System.Windows.Thickness 0, 2, 0, 0
+            $null = $sp2.Children.Add($at2)
+            $bd.Child = $sp2
+            $rows.Add($bd)
+        }
+        if ($rows.Count) {
+            $ui.AskReview.ItemsSource = $rows.ToArray()
+            $ui.AskReview.Visibility = $V_Show
+        }
+    }
+
     # AN OPTION IS A LABEL AND ITS REASONING, and the reasoning is why you would
     # pick it. Each row carries both: the label on top, what claude wrote
     # underneath it, in the same order it was drawn on screen.
@@ -2039,9 +2162,26 @@ function Show-Ask { param($q)
     # characters of a wrapping sentence, and on a four-line option it ended up
     # nowhere near the option it numbered.
     $details = @($q.Details)
+    # 🔴 THE TWO ROWS THE TUI ADDS ARE NOT OPTIONS, and drawing them as buttons
+    # was a live hazard: ENTER on an empty "Type something" DECLINES THE WHOLE
+    # ROUND, measured twice. RealCount is everything before that row; the editor
+    # gets a text box of its own below, and "Chat about this" is not offered at
+    # all - it cancels the question, which is not something to reach for by
+    # mistake from a list of answers.
+    $real = @($q.Options)
+    $shown = $realCnt
+    if ($shown -gt 0 -and $shown -lt $real.Count) { $real = @($real[0..($shown - 1)]) }
+    $ticked = @{}
+    # 🪤 Same trap as ChosenAt: @($null) is a ONE-element array holding $null, and
+    # [int]$null is 0 - so a question with no Ticked property marked option 1 as
+    # already ticked. Only iterate what is actually there.
+    if ($q.PSObject.Properties['Ticked'] -and $null -ne $q.Ticked) {
+        foreach ($t in @($q.Ticked)) { if ($null -ne $t) { $ticked[[int]$t] = $true } }
+    }
+    $chosen = $chosenAt
     $btns = New-Object System.Collections.Generic.List[object]
     $n = 0
-    foreach ($o in @($q.Options)) {
+    foreach ($o in $real) {
         $b = New-Object System.Windows.Controls.Button
         $b.Style = $window.FindResource('BtnOption')
         $b.HorizontalContentAlignment = 'Stretch'
@@ -2062,7 +2202,13 @@ function Show-Ask { param($q)
         $badge.VerticalAlignment = 'Top'
         $badge.Margin = New-Object System.Windows.Thickness 0, 1, 13, 0
         $bt = New-Object System.Windows.Controls.TextBlock
-        $bt.Text = "$($n + 1)"
+        # 🔑 WHAT YOU ALREADY CHOSE, IN THE BADGE. Coming back to an answered
+        # question, the terminal redraws the chosen row with a trailing tick and
+        # a ticked multi-select box with "[✔]" - so the badge that normally
+        # carries the key you would press carries the tick instead. It is the
+        # same slot, saying the same thing the terminal says in the same place.
+        $isOn = $(if ($q.Multi) { [bool]$ticked[$n] } else { $n -eq $chosen })
+        $bt.Text = $(if ($isOn) { [string][char]0x2714 } else { "$($n + 1)" })
         $bt.Foreground = $Pal.Ask
         $bt.FontSize = 11.5
         $bt.FontWeight = $FW_Semi
@@ -2117,8 +2263,25 @@ function Show-Ask { param($q)
         $ui.AskFooter.Visibility = $V_Hide
     }
 
+    # ---- answering in your own words -------------------------------------
+    # 🔑 PREFILLED WITH WHAT IS ALREADY IN THE ROW. Come back to a question you
+    # answered in your own words and the terminal redraws the row holding that
+    # text; this box shows the same thing, so what you typed is visible rather
+    # than something you have to remember. That was the operator's actual ask.
+    if ($freeAt -ge 0) {
+        $ui.AskFree.Text = "$($q.FreeText)"
+        $ui.AskFreeLabel.Text = $(if ("$($q.FreeText)" -and $chosenAt -eq $freeAt) {
+                'YOUR ANSWER, IN YOUR OWN WORDS'
+            } elseif ("$($q.FreeText)") { 'TYPED, NOT YET SENT' }
+            else { 'OR ANSWER IN YOUR OWN WORDS' })
+        $ui.AskFreeBox.Visibility = $V_Show
+    }
+
     if ($q.Multi) {
-        $ui.AskNote.Text = 'Several answers. Ticking is wired on an INFERRED reading of the menu footer, and every send is recorded to .state so a wrong reading leaves evidence.'
+        $ui.AskNote.Text = 'Several answers - pick every one that applies, then Submit. Measured against a real round on 2026-08-30: ENTER toggles a box, and every send is recorded to .state.'
+        $ui.AskNote.Visibility = $V_Show
+    } elseif ($chosenAt -ge 0) {
+        $ui.AskNote.Text = 'You have answered this one - the tick shows what you chose. Picking another replaces it.'
         $ui.AskNote.Visibility = $V_Show
     } else {
         $ui.AskNote.Visibility = $V_Hide
@@ -2227,15 +2390,78 @@ function Invoke-Answer { param([int]$Index)
     try { $why = Send-SRQuestionAnswer -SessionId $r.Id -Index $Index } catch { $why = $_.Exception.Message }
     if ($why) { Set-Status $why 'bad' } else {
         Set-Status 'answered' 'ok'
-        $ui.AskBox.Visibility = $V_Hide
-        $script:lastAsk = $null
-        Move-RowToWorking $r
+        # 🔑 A ROUND DOES NOT END WITH ONE ANSWER. Measured: answering a
+        # single-select AUTO-ADVANCES the terminal to the next question, so
+        # closing the panel here left the operator staring at a session that was
+        # still waiting on them with nothing on screen to say so. Re-read: if
+        # another question came up, draw it; only a menu that has actually gone
+        # closes the panel and sends the row back to working.
+        $seen = $null
+        try { $seen = Get-SRScreenQuestion -ProcessId $procId } catch { }
+        if ($seen) { Show-Ask $seen } else {
+            $ui.AskBox.Visibility = $V_Hide
+            $script:lastAsk = $null
+            Move-RowToWorking $r
+        }
     }
 
     # The AFTER shot is the evidence, and it is taken on a background thread so
     # it costs the operator nothing. It is still the same measurement: what the
     # screen said once the keys had landed.
     Start-AnswerRecord -SessionId $r.Id -Pid_ $procId -Index $Index -Question $script:lastAsk -Why "$why"
+}
+
+# ===========================================================================
+# STEPPING THROUGH THE ROUND.
+#
+# 🔑 The panel does not hold a copy of the round and page through it. It moves
+# the REAL menu with the same LEFT/RIGHT keys a person would press, then re-reads
+# the screen and redraws from what came back. So what you see is what the
+# terminal is showing - there is no second model of the round that can drift out
+# of step with it, which is the whole reason this window reads screens at all.
+function Invoke-AskMove { param([int]$Delta)
+    $it = $ui.SessionList.SelectedItem
+    if (-not $it -or $it.Kind -ne 'session') { return }
+    $r = $it.Row
+    if (-not $r.A -or -not $r.A.Pid) { Set-Status 'that conversation is not running any more' 'warn'; return }
+    Set-Status $(if ($Delta -lt 0) { 'going back...' } else { 'going on...' })
+    $why = $null
+    try { $why = Invoke-SRRoundMove -ProcessId ([int]$r.A.Pid) -Delta $Delta } catch { $why = $_.Exception.Message }
+    if ($why) { Set-Status $why 'warn' } else { Set-Status '' }
+    # Redraw from the screen either way: a refused move still leaves the menu
+    # somewhere, and the panel must show where.
+    $seen = $null
+    try { $seen = Get-SRScreenQuestion -ProcessId ([int]$r.A.Pid) } catch { }
+    if ($seen) { Show-Ask $seen }
+}
+
+# 🔴 THE ONE ORDER THAT CANNOT DECLINE THE ROUND. Text first, screen re-read to
+# confirm the row is holding it, and only then ENTER - because ENTER on an empty
+# editor row throws the whole round away. Invoke-SRAnswerTypedOnScreen enforces
+# it; this only refuses to call it with nothing.
+function Invoke-AskTyped {
+    $it = $ui.SessionList.SelectedItem
+    if (-not $it -or $it.Kind -ne 'session') { return }
+    $r = $it.Row
+    if (-not $r.A -or -not $r.A.Pid) { Set-Status 'that conversation is not running any more' 'warn'; return }
+    $txt = "$($ui.AskFree.Text)".Trim()
+    if (-not $txt) { Set-Status 'type an answer first - sending an empty one would decline the question' 'warn'; return }
+    Set-Status 'typing your answer in...'
+    $procId = [int]$r.A.Pid
+    $why = $null
+    try { $why = Invoke-SRAnswerTypedOnScreen -ProcessId $procId -Text $txt -Who "$($r.Id)" } catch { $why = $_.Exception.Message }
+    if ($why) { Set-Status $why 'bad'; return }
+    Set-Status 'answered in your own words' 'ok'
+    $ui.AskFree.Text = ''
+    # A round has more questions after this one, so the panel redraws rather than
+    # closing: the terminal has already moved on to the next tab.
+    $seen = $null
+    try { $seen = Get-SRScreenQuestion -ProcessId $procId } catch { }
+    if ($seen) { Show-Ask $seen } else {
+        $ui.AskBox.Visibility = $V_Hide
+        $script:lastAsk = $null
+        Move-RowToWorking $r
+    }
 }
 
 # ===========================================================================
@@ -3752,6 +3978,15 @@ function Complete-Skill {
 
 $ui.SendBox.Add_TextChanged({ Update-SendState; Update-SkillPop })
 $ui.SendBtn.Add_Click({ Invoke-Send })
+
+# Answering a question in your own words. Enter sends it, the same key that
+# commits it in the terminal - but only through Invoke-AskTyped, which will not
+# send an empty one.
+$ui.AskFreeSend.Add_Click({ Invoke-AskTyped })
+$ui.AskFree.Add_PreviewKeyDown({
+    param($sender, $e)
+    if ($e.Key -eq 'Return') { Invoke-AskTyped; $e.Handled = $true }
+})
 $ui.SkillList.Add_MouseLeftButtonUp({ $null = Complete-Skill; $null = $ui.SendBox.Focus() })
 
 # 🪤 PreviewKeyDown, not KeyDown. The arrow keys and Enter have to be taken

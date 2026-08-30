@@ -2433,24 +2433,23 @@ function Invoke-SRAnswerOnScreen {
 # ---------------------------------------------------------------------------
 # SEVERAL ANSWERS AT ONCE.
 #
-# 🔒 NOT WIRED TO ANYTHING THAT CAN REACH A LIVE SESSION, and that is deliberate.
-# The SHAPE of a multi-select menu is measured -- captured off a real one on
-# 2026-08-26: ASCII "[ ]" boxes on every option, the same U+276F cursor, an
-# unnumbered navigable Submit row under the last option, and a footer reading
-# "Enter to select". The BEHAVIOUR is not. That footer READS as "Enter acts on
-# the highlighted row: toggle on an option, commit on Submit", and reading is
-# not measuring. An attempt to measure it by driving this tool's own session was
-# refused by the permission classifier, which is the right call for a background
-# process synthesising keystrokes into a live claude.
+# ✅ THE PREMISE IS NOW MEASURED, and it was right. This carried a standing note
+# saying the SHAPE of a multi-select was captured but the BEHAVIOUR was only
+# READ off the footer -- "Enter to select" reads as "toggle on an option, commit
+# on Submit" -- and that reading is not measuring. It asked for one observation.
 #
-# So this exists, is tested against a replica built from the real capture, and is
-# called by NOTHING in the GUI. What the replica proves is the NAVIGATION -- that
-# Submit is found by reading the cursor rather than by counting rows, that the
-# options asked for are the ones toggled, and that an option already ticked is
-# left alone rather than turned off again. What it cannot prove is the premise.
+# Taken 2026-08-30 against a real round in a sandboxed session:
+#   - SPACE on a "[ ]" row does NOTHING. The highlight moves, the box does not.
+#   - ENTER on it toggles: the row becomes "[U+2714]" and the question's tab on
+#     the round's bar flips from an empty box to a crossed one.
+#   - ENTER on a row already ticked turns it back OFF, which is why Ticked is
+#     parsed and why an already-ticked option is left alone.
+#   - The commit row reads "Next" while questions follow it and "Submit" only on
+#     the last question. Matching 'Submit' alone found no row on any but the
+#     final multi-select - a bug this note's own confidence had hidden.
 #
-# TO FINISH IT: confirm what ENTER does to a real multi-select menu. One
-# observation is enough.
+# So ENTER was the correct guess and this is no longer a guess. The captures are
+# in tests\screens\ and the parser is asserted against them.
 # ---------------------------------------------------------------------------
 function Invoke-SRAnswerMultiOnScreen {
     [CmdletBinding()]
@@ -2523,6 +2522,124 @@ function Invoke-SRAnswerMultiOnScreen {
     $r = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@(0x0D))
     if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
     Write-SRLog ("  [ok]   answered {0} with {1} of {2} option(s) ticked, then Submit" -f $Who, $Indexes.Count, $final.Options.Count)
+    return $null
+}
+
+# ---------------------------------------------------------------------------
+# MOVING BETWEEN THE QUESTIONS OF ONE ROUND.
+#
+# 🔑 LEFT AND RIGHT WALK THE TAB BAR, measured 2026-08-30. A batched
+# AskUserQuestion draws one tab per question plus a Submit tab; RIGHT goes to the
+# next, LEFT to the previous, and answering a single-select AUTO-ADVANCES on its
+# own. UP and DOWN stay what they always were - the option cursor.
+#
+# 🪤 THE EDITOR ROW EATS THE ARROWS. While "Type something" holds text, LEFT and
+# RIGHT move the caret inside it instead of changing tab: measured by sending
+# RIGHT with text in the row and reading back a screen that had not changed at
+# all. So this refuses from there rather than sending a key that does nothing and
+# reporting success.
+function Invoke-SRRoundMove {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$ProcessId,
+        # -1 for the previous question, +1 for the next. Larger steps are allowed
+        # and are taken one at a time, each one verified.
+        [Parameter(Mandatory)][int]$Delta,
+        [int]$MaxMoves = 8
+    )
+    if ($ProcessId -le 0) { return 'there is no console to answer in' }
+    if ($Delta -eq 0) { return $null }
+    $seen = Get-SRScreenQuestion -ProcessId $ProcessId
+    if (-not $seen) { return 'cannot see a question on that session''s screen' }
+    if (@($seen.Tabs).Count -lt 2) { return 'that question is on its own - there is nothing to go back to' }
+    if ($seen.FreeAt -ge 0 -and "$($seen.FreeText)") {
+        return 'finish or clear what you typed first - the arrows move the caret while that row holds text'
+    }
+    $vk = $(if ($Delta -gt 0) { [uint16]0x27 } else { [uint16]0x25 })     # VK_RIGHT / VK_LEFT
+    $steps = [Math]::Min([Math]::Abs($Delta), $MaxMoves)
+    for ($i = 0; $i -lt $steps; $i++) {
+        $was = "$($seen.Question)"
+        $r = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@($vk))
+        if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
+        Start-Sleep -Milliseconds 220
+        # 🔴 VERIFIED BY WHAT IS DRAWN, not by the key having been sent. The tab
+        # bar does not say which tab is active - the question underneath it does -
+        # so a move is only a move if the question changed.
+        $now = Get-SRScreenQuestion -ProcessId $ProcessId
+        if (-not $now) { return 'the round went away mid-move' }
+        if ("$($now.Question)" -eq $was) {
+            return 'that is as far as the round goes in that direction'
+        }
+        $seen = $now
+    }
+    return $null
+}
+
+# ---------------------------------------------------------------------------
+# ANSWERING IN YOUR OWN WORDS.
+#
+# 🔑 "Type something" IS AN INLINE EDITOR, NOT A DOOR. Measured 2026-08-30:
+# highlight the row and type, and the row text is REPLACED by what you type
+# ("3. my own words here"); the footer gains "ctrl+g to edit in Notepad" while it
+# holds the highlight. There is no field to open first.
+#
+# 🔴 ENTER ON AN EMPTY EDITOR ROW DECLINES THE WHOLE ROUND. Measured twice, both
+# times by accident, and both times the session recorded "User declined to answer
+# questions" and threw the round away. So text is sent FIRST and the screen is
+# re-read to confirm the row is holding it before ENTER is ever sent. That order
+# is the whole safety of this function.
+function Invoke-SRAnswerTypedOnScreen {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$ProcessId,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [string]$Who = '',
+        [int]$MaxMoves = 24
+    )
+    if ($ProcessId -le 0) { return 'there is no console to answer in' }
+    if (-not "$Text".Trim()) { return 'there is nothing to send - an empty answer would decline the question' }
+    if ("$Text" -match '[\r\n]') { return 'a typed answer has to be one line' }
+
+    $seen = Get-SRScreenQuestion -ProcessId $ProcessId
+    if (-not $seen) { return 'cannot see a question on that session''s screen - answer it in the terminal' }
+    if ($seen.FreeAt -lt 0) { return 'that question has no row to type into' }
+    if ($seen.CursorAt -lt 0) { return 'cannot tell which option is highlighted - answer it in the terminal' }
+
+    # Walk to the editor row the same way the multi path walks to Submit: one key
+    # at a time, re-reading, never a burst against a repainting TUI.
+    for ($i = 0; $i -lt $MaxMoves; $i++) {
+        $now = Get-SRScreenQuestion -ProcessId $ProcessId
+        if (-not $now) { return 'the menu went away mid-answer' }
+        if ($now.CursorAt -lt 0) { return 'lost sight of the highlight mid-answer' }
+        if ([int]$now.CursorAt -eq [int]$now.FreeAt) { break }
+        $vk = $(if ([int]$now.FreeAt -gt [int]$now.CursorAt) { [uint16]0x28 } else { [uint16]0x26 })
+        $r = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@($vk))
+        if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
+        Start-Sleep -Milliseconds 180
+    }
+    $atRow = Get-SRScreenQuestion -ProcessId $ProcessId
+    if (-not $atRow) { return 'the menu went away mid-answer' }
+    if ([int]$atRow.CursorAt -ne [int]$atRow.FreeAt) { return 'could not get the highlight onto the row to type in' }
+
+    # Characters only. enter=$false is the point of this call.
+    $n = [SRCon]::Send([uint32]$ProcessId, $Text, $false)
+    if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
+    Start-Sleep -Milliseconds 300
+
+    # 🔒 THE ROW MUST BE HOLDING IT. Committing on faith is exactly the failure
+    # this guards: an ENTER that lands on a row the text never reached declines
+    # the round instead of answering it.
+    $ready = Get-SRScreenQuestion -ProcessId $ProcessId
+    if (-not $ready) { return 'the menu went away before the answer could be committed' }
+    if ($ready.FreeAt -lt 0 -or -not "$($ready.FreeText)") {
+        return 'what was typed did not reach that row - nothing was committed'
+    }
+    if ("$($ready.FreeText)".Trim() -ne "$Text".Trim()) {
+        return ("the row is holding '{0}' rather than what was sent - nothing was committed" -f $ready.FreeText)
+    }
+    $r = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@(0x0D))
+    if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
+    Write-SRLog ("  [ok]   answered {0} in its own words: '{1}'" -f $Who, $Text)
     return $null
 }
 # THE QUESTION AS IT IS ON SCREEN, which is the only place a PENDING one exists.
@@ -2864,6 +2981,9 @@ function Invoke-SRParseScreenQuestion {
     # Multi-select state, filled in as the options are read.
     $isMulti = $false
     $ticked = New-Object System.Collections.Generic.List[object]
+    # Which option already carries the answered tick, on a question you have come
+    # back to. -1 while nothing on screen says one was chosen.
+    $chosenAt = -1
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $ln = $lines[$i]
         # '  2. BRAVO' or '<cursor> 1. ALPHA'. The label runs to the end of the line;
@@ -2898,6 +3018,17 @@ function Invoke-SRParseScreenQuestion {
             $isMulti = $true
             if ("$($bm.Groups[1].Value)".Trim()) { $null = $ticked.Add($opts.Count) }
             $label = $bm.Groups[2].Value.Trim()
+        }
+        # 🔑 A REVISITED ANSWER CARRIES A TRAILING TICK, captured 2026-08-30 off a
+        # real round: answer question 1, arrow back to it, and the row reads
+        # "2. Alpha two U+2714". That is the ONLY way the screen says what you
+        # already chose, and it is how a free-text answer shows itself too -
+        # "3. my own words here U+2714". Stripped from the label for the same
+        # reason the box is: the tick is state, not part of the option.
+        $tm = [regex]::Match($label, '^(.*?)\s*' + [regex]::Escape([string][char]0x2714) + '$')
+        if ($tm.Success) {
+            $label = $tm.Groups[1].Value.Trim()
+            $chosenAt = $opts.Count
         }
         $null = $optLine.Add($i)
         $null = $opts.Add($label)
@@ -2962,7 +3093,12 @@ function Invoke-SRParseScreenQuestion {
         for ($i = $firstIdx; $i -lt $lines.Count; $i++) {
             $onIt = ($lines[$i] -match [regex]::Escape($cursor))
             $bare = ($lines[$i] -replace [regex]::Escape($cursor), '').Trim()
-            if ($bare -ne 'Submit') { continue }
+            # 🔑 'Next' OR 'Submit', AND THE WORD DEPENDS ON POSITION IN THE ROUND.
+            # Captured 2026-08-30: the same multi-select row reads "Next" while
+            # questions follow it and "Submit" when it is the last one. Matching
+            # only 'Submit' found no row at all on every multi-select but the
+            # final one - which is most of them.
+            if ($bare -ne 'Submit' -and $bare -ne 'Next') { continue }
             # It is one stop past the last option, because it is navigable.
             $submitAt = $opts.Count
             # AND IT CAN HOLD THE CURSOR. A menu whose highlight is already on
@@ -2975,6 +3111,101 @@ function Invoke-SRParseScreenQuestion {
         }
     }
 
+    # =====================================================================
+    # THE ROUND, WHICH THIS PARSER USED TO BE BLIND TO.
+    #
+    # 🔑 A BATCHED AskUserQuestion DRAWS A TAB BAR, captured off a real round
+    # 2026-08-30:
+    #
+    #     <-  [ ] Alpha  [x] Beta  [ ] Gamma  (tick) Submit  ->
+    #
+    # One tab per question, named by that question's HEADER, an empty box while
+    # it is unanswered and a crossed one once it is. The window only ever showed
+    # the one question on screen, so a three-question round looked like a
+    # one-question round that kept changing its mind.
+    #
+    # 🪤 The boxes are U+2610 / U+2612 and the submit mark is U+2714 - which is
+    # also the tick a chosen option carries, so the Submit tab has to be
+    # recognised by its LABEL and not by its mark.
+    # =====================================================================
+    $boxEmpty = [string][char]0x2610
+    $boxFull  = [string][char]0x2612
+    $tick     = [string][char]0x2714
+    $tabs = New-Object System.Collections.Generic.List[object]
+    $tabAt = -1
+    $header = ''
+    for ($i = 0; $i -lt $lines.Count -and $i -lt $firstIdx; $i++) {
+        $raw = "$($lines[$i])"
+        if ($raw -notmatch ($boxEmpty + '|' + $boxFull)) { continue }
+        foreach ($tm2 in [regex]::Matches($raw, '(' + $boxEmpty + '|' + $boxFull + ')\s*([^\s]+(?:\s[^\s' + $boxEmpty + $boxFull + $tick + ']*?)*?)\s{2,}')) {
+            $null = $tabs.Add([PSCustomObject]@{
+                Label    = $tm2.Groups[2].Value.Trim()
+                Answered = ($tm2.Groups[1].Value -eq $boxFull)
+            })
+        }
+        if ($tabs.Count) { break }
+    }
+    # WHICH TAB YOU ARE ON is not marked on the bar - it is the question drawn
+    # underneath it. The header of the active tab is therefore read from the
+    # round only when the question text matches nothing, so the tab list stays
+    # the addressing and the question stays the content.
+
+    # 🔑 THE TWO ROWS THAT ARE NOT OPTIONS. The TUI appends 'Type something.' and
+    # 'Chat about this' to every menu; neither is in the transcript and neither
+    # behaves like an option. Type-something is an INLINE EDITOR - typing while
+    # it is highlighted replaces the row text - and ENTER on it while EMPTY
+    # DECLINES THE WHOLE ROUND, measured twice by accident during the capture.
+    # A window that offered them as ordinary buttons was one click from throwing
+    # the operator's question away.
+    $freeAt = -1; $chatAt = -1; $freeText = ''
+    for ($k = 0; $k -lt $opts.Count; $k++) {
+        $lab = "$($opts[$k])"
+        if ($lab -eq 'Chat about this') { $chatAt = $k; continue }
+        # 'Type something.' on a single-select, 'Type something' on a multi. Once
+        # anything has been typed the row IS that text, so the placeholder is
+        # gone - which is why the row is found by POSITION as well as by name.
+        if ($lab -eq 'Type something.' -or $lab -eq 'Type something') { $freeAt = $k; continue }
+    }
+    # The editor row sits immediately before 'Chat about this'. When it no longer
+    # says "Type something" it is because it now holds what was typed into it.
+    if ($freeAt -lt 0 -and $chatAt -gt 0) {
+        $freeAt = $chatAt - 1
+        $freeText = "$($opts[$freeAt])"
+    }
+
+    # 🔑 THE SUBMIT TAB IS A REVIEW, and it is the one screen that says how the
+    # whole round has been answered. Captured verbatim:
+    #
+    #     Review your answers
+    #     (warning) You have not answered all questions
+    #      (dot) Which alpha do you want
+    #        ->  Alpha three
+    #      (dot) Which betas apply
+    #        ->  Beta three, Beta one
+    #
+    # A multi-select answer arrives as one comma-joined line, which is what the
+    # menu itself shows - it is not re-split here, because splitting on a comma
+    # would cut an answer that contains one.
+    $review = $null
+    if ($txt -match 'Review your answers') {
+        $arrow = [string][char]0x2192
+        $rDot  = [string][char]0x25CF
+        $pairs = New-Object System.Collections.Generic.List[object]
+        $pendQ = ''
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $t = "$($lines[$i])".Trim()
+            if ($t.StartsWith($rDot)) { $pendQ = $t.Substring(1).Trim(); continue }
+            if ($t.StartsWith($arrow) -and $pendQ) {
+                $null = $pairs.Add([PSCustomObject]@{ Question = $pendQ; Answer = $t.Substring(1).Trim() })
+                $pendQ = ''
+            }
+        }
+        $review = [PSCustomObject]@{
+            Answers  = $pairs.ToArray()
+            Complete = -not ($txt -match 'You have not answered all questions')
+        }
+    }
+
     # The question is the last line of prose above the first option. Box-drawing and
     # the header chips are furniture, not the question.
     $q = ''
@@ -2982,9 +3213,14 @@ function Invoke-SRParseScreenQuestion {
         $cand = ($lines[$i] -replace '^[\s' + [regex]::Escape([string][char]0x2502) + ']+', '').Trim()
         if (-not $cand) { continue }
         if ($cand -match '^[' + [regex]::Escape('-=_' + [string][char]0x2500 + [string][char]0x2502) + ']+$') { continue }
+        # The tab bar is furniture too, and it is the line immediately above the
+        # question on a one-line question - so without this the round's own
+        # navigation would be read as the thing it is asking.
+        if ($cand -match ($boxEmpty + '|' + $boxFull)) { continue }
         $q = $cand
         break
     }
+    if (-not $header -and $tabs.Count -eq 1) { $header = "$($tabs[0].Label)" }
 
     return [PSCustomObject]@{
         Question = $q
@@ -3007,6 +3243,27 @@ function Invoke-SRParseScreenQuestion {
         Ticked   = $ticked.ToArray()
         # The cursor stop that commits, one past the last option, or -1.
         SubmitAt = $submitAt
+        # ---- the round this question belongs to -------------------------
+        # Every question in the batch, in tab order, each with whether it has
+        # been answered. Empty when the menu is a single question with no bar.
+        Tabs     = $tabs.ToArray()
+        # Which option already carries the answered tick, 0-based, or -1. On a
+        # question you have come back to this is what you chose last time - and
+        # on a free-text answer it is the row holding what you typed.
+        ChosenAt = $chosenAt
+        # The two rows the TUI adds that are NOT options. -1 when absent.
+        # 🔴 ENTER ON AN EMPTY FreeAt DECLINES THE WHOLE ROUND. Anything driving
+        # this menu must type first and only then commit.
+        FreeAt   = $freeAt
+        ChatAt   = $chatAt
+        # What is sitting in the editor row right now, '' when it still shows
+        # its placeholder.
+        FreeText = $freeText
+        # Set only on the Submit tab: every question in the round with the answer
+        # it currently holds, and whether the round is ready to go.
+        Review   = $review
+        # How many rows are real options - everything before the editor row.
+        RealCount = $(if ($freeAt -ge 0) { $freeAt } elseif ($chatAt -ge 0) { $chatAt } else { $opts.Count })
         Source   = 'screen'
     }
 }

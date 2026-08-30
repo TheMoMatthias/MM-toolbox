@@ -304,6 +304,118 @@ try {
         if ($vit7.Ok) { Fail "a menu with no status line still reported counts (shells=$($vit7.Shells))" }
         else { Pass 'a console with no status line reports nothing, not zero' }
     }
+
+    # =====================================================================
+    # A BATCHED ROUND, AGAINST SCREENS CAPTURED OFF THE REAL THING.
+    #
+    # 🔴 THESE ARE NOT SYNTHETIC. tests\screens\*.txt were captured on
+    # 2026-08-30 by spawning a sandboxed claude, asking it for a real
+    # multi-question round and driving the menu with keystrokes - one file per
+    # state the round can be in. The replica above proves the CHOREOGRAPHY can
+    # drive a console; these prove the PARSER reads what the terminal actually
+    # draws, which a replica built from my own understanding never could.
+    #
+    # Every claim here is a thing that was measured, and each one was wrong or
+    # missing in the parser before the capture.
+    # =====================================================================
+    Write-Host ''
+    Write-Host '--- a batched round, off screens captured from a real one ---'
+    $shots = Join-Path $SR_Root 'tests\screens'
+    function Get-Shot { param([string]$Name)
+        $p = Join-Path $shots $Name
+        if (-not (Test-Path -LiteralPath $p)) { return $null }
+        return (Invoke-SRParseScreenQuestion -Text ([System.IO.File]::ReadAllText($p)))
+    }
+
+    $sFresh = Get-Shot 'round-single-fresh.txt'
+    if (-not $sFresh) { Fail 'the captured single-select screen did not parse at all' }
+    else {
+        # The tab bar: one per question, named by its header, none answered yet.
+        $names = @(@($sFresh.Tabs) | ForEach-Object { "$($_.Label)" })
+        if (($names -join ',') -ne 'Alpha,Beta,Gamma') {
+            Fail "the round's tabs read '$($names -join ',')' - the bar names one tab per question"
+        } else { Pass 'the tab bar is read as three questions: Alpha, Beta, Gamma' }
+        if (@(@($sFresh.Tabs) | Where-Object { $_.Answered }).Count -ne 0) {
+            Fail 'a fresh round is reporting an answered question'
+        } else { Pass 'nothing is marked answered on a round nobody has touched' }
+        # 🔴 The two rows the TUI appends are NOT options. Offering them as
+        # buttons is how an empty Type-something gets an ENTER, which declines.
+        if ([int]$sFresh.RealCount -ne 3) { Fail "RealCount is $($sFresh.RealCount) - three of the five rows are the real options" }
+        else { Pass 'the three real options are told apart from the two rows the TUI adds' }
+        if ([int]$sFresh.FreeAt -ne 3 -or [int]$sFresh.ChatAt -ne 4) {
+            Fail "the editor row / chat row read as $($sFresh.FreeAt) / $($sFresh.ChatAt), expected 3 / 4"
+        } else { Pass 'the type-something and chat-about-this rows are found by position' }
+        if ([int]$sFresh.ChosenAt -ne -1) { Fail "an unanswered question claims option $($sFresh.ChosenAt) was chosen" }
+        else { Pass 'an unanswered question reports no choice, rather than the first one' }
+    }
+
+    # 🔑 A REVISITED ANSWER CARRIES A TRAILING TICK - the only way the screen
+    # says what you picked last time.
+    $sAns = Get-Shot 'round-single-answered.txt'
+    if (-not $sAns) { Fail 'the captured answered screen did not parse' }
+    else {
+        if ([int]$sAns.ChosenAt -ne 1) { Fail "the answered question reports choice $($sAns.ChosenAt), and the screen shows 'Alpha two'" }
+        else { Pass 'coming back to an answered question, the option you chose is read off the tick' }
+        if ("$(@($sAns.Options)[1])" -ne 'Alpha two') {
+            Fail "the chosen label reads '$(@($sAns.Options)[1])' - the tick is state and must not stay in the label"
+        } else { Pass 'the tick is stripped from the label it marks' }
+        $done = @(@($sAns.Tabs) | Where-Object { $_.Answered } | ForEach-Object { "$($_.Label)" })
+        if (($done -join ',') -ne 'Alpha,Beta') { Fail "the bar says '$($done -join ',')' are answered, expected Alpha,Beta" }
+        else { Pass 'the bar reports which questions are done and which are not' }
+    }
+
+    $mFresh = Get-Shot 'round-multi-fresh.txt'
+    $mTick  = Get-Shot 'round-multi-ticked.txt'
+    if (-not $mFresh -or -not $mTick) { Fail 'the captured multi-select screens did not parse' }
+    else {
+        if (-not $mFresh.Multi) { Fail 'a real multi-select was not read as one' }
+        else { Pass 'a real multi-select is recognised by its boxes' }
+        # 🔴 'Next', NOT 'Submit'. The commit row is called Next while questions
+        # follow it - so matching only 'Submit' found NO row on every
+        # multi-select but the last, which is most of them.
+        if ([int]$mFresh.SubmitAt -lt 0) { Fail "the commit row was not found - it reads 'Next' while questions follow" }
+        else { Pass "the commit row is found whether it says Next or Submit (at $($mFresh.SubmitAt))" }
+        if ((@($mTick.Ticked) -join ',') -ne '0,2') { Fail "the ticked boxes read '$(@($mTick.Ticked) -join ',')', the screen shows 1 and 3" }
+        else { Pass 'the boxes that are ticked are read back off the screen' }
+        if ((@($mFresh.Ticked) -join ',')) { Fail 'an untouched multi-select reports something already ticked' }
+        else { Pass 'and an untouched one reports none - so the reading can go both ways' }
+    }
+
+    # 🔑 THE EDITOR ROW, IN ITS THREE STATES. Typing REPLACES the row text, so
+    # "what is in the box" and "has it been committed" are different questions.
+    $fEmpty = Get-Shot 'round-free-empty.txt'
+    $fTyped = Get-Shot 'round-free-typed.txt'
+    $fDone  = Get-Shot 'round-free-committed.txt'
+    if (-not $fEmpty -or -not $fTyped -or -not $fDone) { Fail 'the captured free-text screens did not parse' }
+    else {
+        if ("$($fEmpty.FreeText)") { Fail "an untouched editor row reports '$($fEmpty.FreeText)' rather than nothing" }
+        else { Pass 'an editor row still showing its placeholder holds nothing' }
+        if ("$($fTyped.FreeText)" -ne 'my own words here') {
+            Fail "the typed row reads '$($fTyped.FreeText)' - typing replaces the row text in place"
+        } else { Pass "what was typed is read back off the row: 'my own words here'" }
+        # Typed but NOT committed: the text is there and no tick is.
+        if ([int]$fTyped.ChosenAt -ne -1) { Fail 'text typed but not committed is being reported as the answer' }
+        else { Pass 'typed-but-not-sent is told apart from answered' }
+        if ("$($fDone.FreeText)" -ne 'my own words here' -or [int]$fDone.ChosenAt -ne [int]$fDone.FreeAt) {
+            Fail "a committed typed answer reads text='$($fDone.FreeText)' chosen=$($fDone.ChosenAt) free=$($fDone.FreeAt)"
+        } else { Pass 'a committed typed answer is read back as both the text and the choice' }
+    }
+
+    # 🔑 THE SUBMIT TAB IS A REVIEW of the whole round - the one screen that
+    # says how every question currently stands.
+    $rev = Get-Shot 'round-review.txt'
+    if (-not $rev) { Fail 'the captured review screen did not parse' }
+    elseif (-not $rev.Review) { Fail 'the review screen was not recognised as one' }
+    else {
+        if (@($rev.Review.Answers).Count -ne 2) { Fail "the review lists $(@($rev.Review.Answers).Count) answer(s), the screen shows 2" }
+        else { Pass 'the review lists every question that has been answered' }
+        $multiAns = @(@($rev.Review.Answers) | Where-Object { $_.Question -like 'Which betas*' })
+        if (-not $multiAns.Count -or "$($multiAns[0].Answer)" -ne 'Beta three, Beta one') {
+            Fail "the multi-select answer reads '$(if ($multiAns.Count) { $multiAns[0].Answer })', the screen shows 'Beta three, Beta one'"
+        } else { Pass 'a multi-select answer keeps the comma-joined form the menu shows' }
+        if ($rev.Review.Complete) { Fail 'a round with an unanswered question is reported ready to submit' }
+        else { Pass 'and it says the round is not finished, because one question is still open' }
+    }
 } finally {
     foreach ($p in $started) {
         try { if (-not $p.HasExited) { $p.Kill() } } catch { }

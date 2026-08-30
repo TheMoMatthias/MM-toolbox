@@ -1480,11 +1480,73 @@
                  scrolls at all. -->
             <ScrollViewer MaxHeight="380" VerticalScrollBarVisibility="Auto">
               <StackPanel>
+                <!-- ================== THE ROUND ==================
+                     🔑 A BATCHED QUESTION IS A ROUND, AND THE TERMINAL DRAWS IT
+                     AS A TAB BAR. Captured off a real one 2026-08-30:
+
+                         <-  [ ] Alpha  [x] Beta  [ ] Gamma  (v) Submit  ->
+
+                     One tab per question named by its header, an empty box while
+                     unanswered and a crossed one once answered. This window used
+                     to show only the question currently on screen, so a
+                     three-question round looked like one question that kept
+                     changing - you could not tell how many were coming, which
+                     you had done, or get back to one you wanted to change.
+
+                     The chips ARE the navigation, exactly as they are in the
+                     terminal: clicking one walks the round to it with the same
+                     left/right keys a person would press.
+                     ================================================ -->
+                <ItemsControl x:Name="AskTabs" Margin="0,0,0,12" Visibility="Collapsed">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                </ItemsControl>
                 <TextBlock x:Name="AskHeader" Style="{StaticResource Caption}" Text="" Margin="0,0,0,7"
                            Foreground="{StaticResource HueAsk}"/>
                 <TextBlock x:Name="AskText" Style="{StaticResource Body}" Text="" TextWrapping="Wrap"
                            FontSize="17" FontWeight="SemiBold" Foreground="{StaticResource TextMax}"/>
                 <ItemsControl x:Name="AskOptions" Margin="0,14,0,0"/>
+
+                <!-- ================== IN YOUR OWN WORDS ==================
+                     🔴 THE TERMINAL'S "Type something" ROW IS AN INLINE EDITOR,
+                     and pressing ENTER on it while it is EMPTY DECLINES THE
+                     WHOLE ROUND - measured twice, both times by accident. It was
+                     being drawn here as an ordinary numbered option, so the
+                     window was one click away from throwing a question the
+                     operator was in the middle of answering.
+
+                     It gets a real text box instead: type, then Send. Nothing is
+                     committed until there is something to commit, which is the
+                     one order that cannot decline the round by mistake.
+                     ======================================================= -->
+                <Border x:Name="AskFreeBox" Visibility="Collapsed" Margin="0,4,0,0"
+                        Background="{StaticResource PanelHi}" CornerRadius="8"
+                        BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                        Padding="12,10,12,11">
+                  <StackPanel>
+                    <TextBlock x:Name="AskFreeLabel" Style="{StaticResource Caption}" Text="IN YOUR OWN WORDS"
+                               Margin="0,0,0,7"/>
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                      </Grid.ColumnDefinitions>
+                      <TextBox x:Name="AskFree" Grid.Column="0" Style="{StaticResource Search}"
+                               Tag="Answer in your own words" AcceptsReturn="False" Margin="0,0,8,0"
+                               AutomationProperties.Name="answer this question in your own words"/>
+                      <Button x:Name="AskFreeSend" Grid.Column="1" Content="Send"
+                              Style="{StaticResource BtnSlim}"
+                              ToolTip="Type your answer into this question in the terminal and commit it"/>
+                    </Grid>
+                  </StackPanel>
+                </Border>
+
+                <!-- The Submit tab is a review of the whole round: every question
+                     with the answer it currently holds. It is the one screen that
+                     shows how everything has been answered. -->
+                <ItemsControl x:Name="AskReview" Margin="0,4,0,0" Visibility="Collapsed"/>
+
                 <!-- The note that qualifies the WHOLE question. Below the
                      buttons, because that is where it was written. -->
                 <TextBlock x:Name="AskFooter" Style="{StaticResource Dim}" Text="" TextWrapping="Wrap"

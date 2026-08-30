@@ -1226,6 +1226,114 @@ else { Pass 'nothing to ask clears the panel and the record together' }
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the panel drawing a real batched round ---'
+# ===========================================================================
+# 🔴 DRIVEN BY SCREENS CAPTURED OFF A REAL ROUND, not by a question built here
+# to suit the panel. tests\screens\*.txt came off a sandboxed claude on
+# 2026-08-30, one file per state. What the parser makes of them is asserted in
+# the relay suite; this asserts what the PANEL makes of the parse.
+$shotDir = Join-Path $SR_Root 'tests\screens'
+function Get-AskShot { param([string]$Name)
+    $p = Join-Path $shotDir $Name
+    if (-not (Test-Path -LiteralPath $p)) { return $null }
+    return (Invoke-SRParseScreenQuestion -Text ([System.IO.File]::ReadAllText($p)))
+}
+
+$roundFresh = Get-AskShot 'round-single-fresh.txt'
+if (-not $roundFresh) { Fail 'the captured round did not parse, so the panel cannot be driven by it' }
+else {
+    Show-Ask $roundFresh
+    # The strip: two arrows plus one chip per question.
+    if ($ui.AskTabs.Visibility -ne $V_Show) { Fail 'a three-question round draws no tab strip' }
+    else {
+        $strip = @($ui.AskTabs.ItemsSource)
+        if ($strip.Count -ne 5) { Fail "the strip has $($strip.Count) items - two arrows and three questions" }
+        else { Pass 'a batched round draws a strip: back, one chip per question, on' }
+        # 🔑 THE ARROWS ARE THE NAVIGATION, and they carry a DIRECTION rather
+        # than a position - which is deliberate: the terminal marks the active
+        # tab with colour, and the screen reader takes characters only.
+        if ([int]$strip[0].Tag -ne -1 -or [int]$strip[$strip.Count - 1].Tag -ne 1) {
+            Fail 'the two arrows do not carry back and forward'
+        } else { Pass 'the arrows step the round back and forward, one question at a time' }
+    }
+    # 🔴 THE ROWS THE TUI ADDS ARE NOT BUTTONS. This is the hazard: ENTER on an
+    # empty "Type something" DECLINES THE WHOLE ROUND, and it was being drawn as
+    # option 4 of 5.
+    $rBtns = @($ui.AskOptions.ItemsSource)
+    if ($rBtns.Count -ne 3) { Fail "the panel drew $($rBtns.Count) option buttons - only the three real options may be buttons" }
+    else { Pass 'type-something and chat-about-this are not offered as options to click' }
+    $rLabels = @($rBtns | ForEach-Object { "$(@(@($_.Content.Children)[1].Children)[0].Text)" })
+    if ($rLabels -contains 'Type something.' -or $rLabels -contains 'Chat about this') {
+        Fail "a TUI row reached the buttons: $($rLabels -join ', ')"
+    } else { Pass 'and neither of them is reachable by mistake from the option list' }
+    # The editor gets a box of its own instead.
+    if ($ui.AskFreeBox.Visibility -ne $V_Show) { Fail 'the question offers no way to answer in your own words' }
+    elseif ("$($ui.AskFree.Text)") { Fail "the box is prefilled with '$($ui.AskFree.Text)' on a fresh question" }
+    else { Pass 'answering in your own words gets a text box, empty until you type in it' }
+}
+
+# 🔑 WHAT YOU ALREADY CHOSE, on a question you have come back to.
+$roundAns = Get-AskShot 'round-single-answered.txt'
+if ($roundAns) {
+    Show-Ask $roundAns
+    $aBtns = @($ui.AskOptions.ItemsSource)
+    $aBadge = @($aBtns | ForEach-Object { "$(@($_.Content.Children)[0].Child.Text)".Trim() })
+    if (($aBadge -join ',') -ne "1,$([char]0x2714),3") {
+        Fail "the badges read '$($aBadge -join ',')' - the one you chose carries a tick where its number was"
+    } else { Pass 'revisiting an answered question, the option you chose is marked' }
+    $doneTabs = @(@($ui.AskTabs.ItemsSource) | Where-Object { $_ -is [System.Windows.Controls.Border] })
+    if ($doneTabs.Count -ne 3) { Fail "the strip drew $($doneTabs.Count) chips for a three-question round" }
+    else { Pass 'the strip still names every question in the round' }
+}
+
+# 🔑 THE TEXT YOU TYPED, shown rather than remembered - the operator's own ask.
+$roundTyped = Get-AskShot 'round-free-committed.txt'
+if ($roundTyped) {
+    Show-Ask $roundTyped
+    if ("$($ui.AskFree.Text)" -ne 'my own words here') {
+        Fail "the box shows '$($ui.AskFree.Text)' - it must show what was typed into that question"
+    } else { Pass 'coming back to a question you answered in your own words, your words are there' }
+    if ("$($ui.AskFreeLabel.Text)" -notlike '*YOUR OWN WORDS*') {
+        Fail "the label reads '$($ui.AskFreeLabel.Text)'"
+    } else { Pass 'and it says that is your answer, not a draft' }
+}
+
+# The inverse: text typed but never committed must NOT read as the answer.
+$roundDraft = Get-AskShot 'round-free-typed.txt'
+if ($roundDraft) {
+    Show-Ask $roundDraft
+    if ("$($ui.AskFreeLabel.Text)" -ne 'TYPED, NOT YET SENT') {
+        Fail "an uncommitted draft is labelled '$($ui.AskFreeLabel.Text)'"
+    } else { Pass 'text typed but not sent is labelled as a draft, not as the answer' }
+}
+
+# 🔑 THE REVIEW - how the whole round currently stands.
+$roundRev = Get-AskShot 'round-review.txt'
+if ($roundRev) {
+    Show-Ask $roundRev
+    if ($ui.AskReview.Visibility -ne $V_Show) { Fail 'the review tab shows no answers' }
+    else {
+        $revRows = @($ui.AskReview.ItemsSource)
+        if ($revRows.Count -ne 2) { Fail "the review drew $($revRows.Count) row(s), the screen carries 2" }
+        else { Pass 'the review shows every question with the answer it holds' }
+        $revText = @($revRows | ForEach-Object { "$(@($_.Child.Children)[1].Text)" })
+        if ($revText -notcontains 'Beta three, Beta one') {
+            Fail "the review answers read '$($revText -join ' | ')'"
+        } else { Pass 'including a multi-select answer, in the form the menu shows it' }
+    }
+}
+
+# And a plain single question draws none of it - or every assertion above would
+# pass on a panel that shows the round furniture unconditionally.
+Show-Ask $bare
+if ($ui.AskTabs.Visibility -ne $V_Hide) { Fail 'a question on its own still draws a round strip' }
+elseif ($ui.AskFreeBox.Visibility -ne $V_Hide) { Fail 'a question with no editor row still offers one' }
+elseif ($ui.AskReview.Visibility -ne $V_Hide) { Fail 'a question that is not a review still draws one' }
+else { Pass 'a single question draws no strip, no editor and no review' }
+Show-Ask $null
+
+# ===========================================================================
+Write-Host ''
 # ===========================================================================
 Write-Host ''
 Write-Host '--- the vitals strip, and the clock that must stay cheap ---'

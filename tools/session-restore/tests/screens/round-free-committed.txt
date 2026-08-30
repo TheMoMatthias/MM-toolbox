@@ -1,0 +1,50 @@
+  Could you provide the complete question specifications so I can make the AskUserQuestion call?
+
+✻ Crunched for 6s · done 7:16 PM
+
+❯ UI rendering test only. Do not explore, read files, or run commands, and skip any gate. Your only action: call
+  AskUserQuestion exactly once with three questions in one call, then stop and wait. Q1 header Alpha, question Which
+  alpha do you want, multiSelect false, options Alpha one (the first alpha), Alpha two (the second alpha), Alpha three
+  (the third alpha). Q2 header Beta, question Which betas apply, multiSelect TRUE, options Beta one (the first beta),
+  Beta two (the second beta), Beta three (the third beta), Beta four (the fourth beta). Q3 header Gamma, question Which
+  gamma is right, multiSelect false, options Gamma one (the first gamma), Gamma two (the second gamma). Call the tool
+  now.
+
+● User declined to answer questions
+  ⎿  · Which alpha do you want (Alpha one / Alpha two / Alpha three)
+     · Which betas apply (Beta one / Beta two / Beta three / Beta four)
+     · Which gamma is right (Gamma one / Gamma two)
+
+✻ Sautéed for 6s · done 7:21 PM
+
+❯ Same UI rendering test again. Call AskUserQuestion exactly once with two questions, then stop. Q1 header Delta,
+  question Which delta do you want, multiSelect false, options Delta one (the first delta), Delta two (the second
+  delta). Q2 header Epsilon, question Which epsilons apply, multiSelect TRUE, options Eps one (the first eps), Eps two
+  (the second eps), Eps three (the third eps). Call the tool now, no preamble.
+
+● User declined to answer questions
+  ⎿  · Which delta do you want (Delta one / Delta two)
+     · Which epsilons apply (Eps one / Eps two / Eps three)
+
+✻ Baked for 3s · done 7:23 PM
+
+❯ Once more. Call AskUserQuestion exactly once with two questions, then stop. Q1 header Zeta, question Which zeta do
+  you want, multiSelect false, options Zeta one (the first zeta), Zeta two (the second zeta). Q2 header Eta, question
+  Which etas apply, multiSelect TRUE, options Eta one (the first eta), Eta two (the second eta). Call the tool now, no
+  preamble.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Zeta  ☐ Eta  ✔ Submit  →
+
+Which zeta do you want
+
+❯ 1. Zeta one
+     the first zeta
+  2. Zeta two
+     the second zeta
+  3. my own words here ✔
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+
+
