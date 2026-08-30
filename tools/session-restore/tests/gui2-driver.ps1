@@ -1596,6 +1596,33 @@ else {
             # would only teach us to ignore a red.
         }
 
+        # 🔴 WHAT ANSWERING ACTUALLY COSTS, and it is not a gesture budget.
+        # Pressing an option calls Send-SRQuestionAnswer, which reads the
+        # session's SCREEN again to find the cursor before it sends a single
+        # key - a child process with a three-second budget. The button returns
+        # instantly; the answer does not leave until that read comes back, and
+        # nothing measured it. Timed here as the read alone, because sending
+        # keys into a console is the one thing this suite may never do.
+        $ansBest = [double]::MaxValue
+        foreach ($ap in 1..5) {
+            $asw = [Diagnostics.Stopwatch]::StartNew()
+            $atxt = Get-SRScreenText -ProcessId $askProc.Id
+            if ($atxt) { $null = Invoke-SRParseScreenQuestion -Text $atxt }
+            $asw.Stop()
+            if ($atxt -and $asw.Elapsed.TotalMilliseconds -lt $ansBest) { $ansBest = $asw.Elapsed.TotalMilliseconds }
+        }
+        if ($ansBest -eq [double]::MaxValue) { Fail 'the screen could not be read at all, so answering cannot be timed' }
+        else {
+            Pass ("answering pays a {0:N0} ms screen read before the keys leave" -f $ansBest)
+            # Not a gesture budget - it is a child process by necessity - but it
+            # is the number the operator feels when they press an option, so it
+            # is held to something. Past a second it stops feeling like an answer
+            # and starts feeling like a submission.
+            if ($ansBest -gt 1000) {
+                Fail ("answering waits {0:N0} ms on a screen read before anything is sent" -f $ansBest)
+            } else { Pass 'the answer round trip stays under a second' }
+        }
+
         # 🪤 AND THE BUSY GATE, on the same live console. Without this the two
         # assertions above would pass on a probe that reads any session at all,
         # which is exactly the defect that drew a numbered list as a menu.
@@ -1763,6 +1790,78 @@ else {
 }
 $ui.ModeWork.IsChecked = $true
 Set-Surface 'work'
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- end to end: how long until you SEE something ---'
+# ===========================================================================
+# 🔴 THE GESTURE BUDGET IS NOT THE WHOLE ANSWER. Selecting a conversation
+# returns in 16 ms, but what the operator asked was "how long until I can read
+# it" - and the parse moved off-thread precisely so the click could return
+# before the document existed. That makes the honest number the round trip:
+# click, parse, build, on screen. Same for a session writing a line.
+Build-Sessions
+$e2eRows = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and "$($_.Row.S.jsonl)" -and (Test-Path -LiteralPath "$($_.Row.S.jsonl)") })
+if ($e2eRows.Count -lt 2) { Note 'not enough conversations with transcripts to time the round trip' }
+else {
+    # SELECT -> READABLE. Driven exactly as the window does it: Show-Selected
+    # kicks the parse, the 100ms lane collects it and builds the document.
+    $e2eBest = [double]::MaxValue
+    foreach ($pass in 1..7) {
+        $pick = $e2eRows[$pass % $e2eRows.Count]
+        $script:selId = $null
+        $ui.PaneDoc.Document = $null
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $ui.SessionList.SelectedItem = $pick
+        Show-Selected
+        while ($sw.Elapsed.TotalSeconds -lt 10 -and -not $ui.PaneDoc.Document) {
+            Start-Sleep -Milliseconds 5
+            $null = Complete-DocParse
+        }
+        $sw.Stop()
+        if ($ui.PaneDoc.Document -and $sw.Elapsed.TotalMilliseconds -lt $e2eBest) { $e2eBest = $sw.Elapsed.TotalMilliseconds }
+    }
+    if ($e2eBest -eq [double]::MaxValue) { Fail 'selecting a conversation never produced a document' }
+    elseif ($e2eBest -gt 400) { Fail ("a conversation takes {0:N0} ms to become readable - that is a wait, not a load" -f $e2eBest) }
+    else { Pass ("select to readable: {0:N0} ms" -f $e2eBest) }
+
+    # A SESSION WRITES -> YOU SEE IT. The watcher raises an event, the lane
+    # redraws. This is the number behind "I want to see what is happening".
+    $liveFile = "$($e2eRows[0].Row.S.jsonl)"
+    $ui.SessionList.SelectedItem = $e2eRows[0]
+    $script:selId = $null
+    Show-Selected
+    Start-TranscriptWatch $liveFile
+    $null = @(Get-Event -SourceIdentifier 'SRTranscript' -ErrorAction SilentlyContinue |
+              ForEach-Object { Remove-Event -EventIdentifier $_.EventIdentifier -ErrorAction SilentlyContinue })
+    $script:transcriptDirty = $false
+    # 🪤 APPENDED TO A COPY, NEVER TO THE OPERATOR'S OWN TRANSCRIPT. Writing a
+    # line into a live conversation's file to time a redraw would corrupt the
+    # record the whole tool reads.
+    $watchCopy = Join-Path $SR_StateDir ('e2e-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.jsonl')
+    try {
+        Copy-Item -LiteralPath $liveFile -Destination $watchCopy -Force
+        Start-TranscriptWatch $watchCopy
+        $wrote = [Diagnostics.Stopwatch]::StartNew()
+        [System.IO.File]::AppendAllText($watchCopy, "{}`n", (New-Object System.Text.UTF8Encoding($false)))
+        $saw = $false
+        while ($wrote.Elapsed.TotalSeconds -lt 8 -and -not $saw) {
+            Start-Sleep -Milliseconds 5
+            foreach ($ev2 in @(Get-Event -SourceIdentifier 'SRTranscript' -ErrorAction SilentlyContinue)) {
+                Remove-Event -EventIdentifier $ev2.EventIdentifier -ErrorAction SilentlyContinue
+                $saw = $true
+            }
+        }
+        $wrote.Stop()
+        if (-not $saw) { Fail 'a session writing a line never reached the pane - it is on the 1s backstop' }
+        elseif ($wrote.Elapsed.TotalMilliseconds -gt 700) {
+            Fail ("a written line takes {0:N0} ms to reach the pane" -f $wrote.Elapsed.TotalMilliseconds)
+        } else { Pass ("a session writes to being on screen: {0:N0} ms" -f $wrote.Elapsed.TotalMilliseconds) }
+    } finally {
+        Stop-TranscriptWatch
+        Remove-Item -LiteralPath $watchCopy -Force -ErrorAction SilentlyContinue
+    }
+}
 
 Write-Host ''
 Write-Host '--- the skill picker ---'

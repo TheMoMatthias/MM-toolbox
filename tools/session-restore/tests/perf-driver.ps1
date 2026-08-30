@@ -331,6 +331,13 @@ $COVERAGE = @{
     'RelaunchSessions' = 'Get-TickedPlan'
     'OpenNotRunning'   = 'open everything not running (up to the launch)'
     # Excused, with what is measured in their place.
+    # 🔴 THE MOST CONSEQUENTIAL CONTROL IN THE WINDOW, and it was outside this
+    # check until the pattern was widened to see buttons built in code. Pressing
+    # an option sends a decision into a live session, and it cannot be run here
+    # for exactly that reason - but what it WAITS on is measured: gui2 times the
+    # screen read Send-SRQuestionAnswer performs to find the cursor before a
+    # single key leaves, against a real console.
+    'Invoke-Answer'    = 'EXCUSED: sends a decision into a live session. gui2 times the screen read it waits on.'
     'SendBtn'          = 'EXCUSED: types into a live session. Its gesture is a string trim; the relay suite covers the send itself.'
     'PaneCompact'      = 'EXCUSED: types /compact into a live session. Same path as SendBtn.'
     'CastSend'         = 'EXCUSED: types into every ticked session at once.'
@@ -344,6 +351,16 @@ $COVERAGE = @{
 $srcTxt = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-window.ps1') -Raw -Encoding UTF8
 $wired = @([regex]::Matches($srcTxt, '(?m)^\$ui\.([A-Za-z]+)\.Add_(?:Click|SelectionChanged|TextChanged|KeyDown|Checked|MouseDoubleClick)') |
            ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+# 🔴 CONTROLS BUILT IN CODE COUNT TOO, and the pattern above cannot see them.
+# The answer buttons in the question panel are created per option and wired with
+# `$b.Add_Click({ Invoke-Answer ... })` - so the most consequential control in
+# the whole window, the one that sends a decision into a live session, was
+# outside a coverage check that reported "30 wired controls" and sounded
+# complete. Any handler naming a function is picked up by what it CALLS.
+foreach ($m in [regex]::Matches($srcTxt, '\$\w+\.Add_Click\(\{\s*param\([^)]*\)\s*([A-Z][\w-]+)')) {
+    $wired += $m.Groups[1].Value
+}
+$wired = @($wired | Sort-Object -Unique)
 $unmeasured = @($wired | Where-Object { -not $COVERAGE.ContainsKey($_) })
 if ($unmeasured.Count) {
     Fail ("{0} control(s) the operator can press have no timing at all: {1}" -f $unmeasured.Count, ($unmeasured -join ', '))
