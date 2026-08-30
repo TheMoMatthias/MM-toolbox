@@ -2770,7 +2770,34 @@ function Get-SRScreenExe {
         $cs += @'
 
 public static class SRScreenMain {
+    // 🔴 MANY CONSOLES, ONE PROCESS. A process can only be attached to one
+    // console AT A TIME, which is not the same as only one console EVER:
+    // Screen() frees before it attaches and again on the way out, so the same
+    // process can walk a list of them. Spawning one child per session put the
+    // process-creation cost in front of every read - measured at a 129 ms
+    // median where the reading itself is about 30.
+    //
+    //   SRScreenMain <pid> <out>            one console, as before
+    //   SRScreenMain -batch <out> <pid...>  each one in turn, into one file
+    //
+    // The batch file is split on a sentinel that cannot occur in console text:
+    // U+0001, the pid, U+0001, newline.
     public static int Main(string[] a) {
+        if (a.Length >= 3 && a[0] == "-batch") {
+            System.Text.StringBuilder all = new System.Text.StringBuilder();
+            for (int i = 2; i < a.Length; i++) {
+                uint one;
+                if (!uint.TryParse(a[i], out one)) continue;
+                all.Append((char)1).Append(a[i]).Append((char)1).Append((char)10);
+                // A console that has gone away must not stop the ones after it -
+                // its own error text is written in its place and the walk goes on.
+                string got;
+                try { got = SRConLite.Screen(one); } catch (System.Exception e) { got = "!ex " + e.Message; }
+                all.Append(got).Append((char)10);
+            }
+            System.IO.File.WriteAllText(a[1], all.ToString(), new System.Text.UTF8Encoding(false));
+            return 0;
+        }
         if (a.Length < 2) return 2;
         uint pid;
         if (!uint.TryParse(a[0], out pid)) return 2;
@@ -2812,6 +2839,62 @@ public static class SRScreenMain {
         }
     } catch { }
     return $null
+}
+
+# ===========================================================================
+# EVERY LIVE SESSION'S SCREEN, IN ONE CHILD PROCESS.
+#
+# 🔴 THE SPAWN IS THE COST, NOT THE READING. Measured 2026-08-30 across the
+# operator's 13 live sessions: a 129 ms median per read, of which the console
+# work is about 30 - the rest is starting a process. Thirteen of those is 1.8
+# seconds, which is why a mark that says "this session has a shell running" took
+# so long to appear that it read as not working at all.
+#
+# One child walks the whole list, because a process can only be attached to one
+# console AT A TIME, which is not the same as only one EVER. Screen() frees
+# before and after each attach, so re-attaching is exactly what it is built for.
+#
+# Returns a hashtable of pid -> screen text. A console that could not be read is
+# simply absent, never an empty string: unread and empty are different answers
+# and the callers depend on the difference.
+function Get-SRScreenTextMany {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int[]]$ProcessIds, [int]$TimeoutMs = 20000)
+    $out = @{}
+    $ids = @(@($ProcessIds) | Where-Object { [int]$_ -gt 0 } | Sort-Object -Unique)
+    if (-not $ids.Count) { return $out }
+    if (-not (Test-Path -LiteralPath $SR_StateDir)) { return $out }
+    $exe = Get-SRScreenExe
+    # 🪤 NO SILENT FALLBACK TO A LOOP. Without the exe the one-at-a-time reader
+    # is still there and still correct - the caller asks for it by name. Quietly
+    # doing thirteen spawns from inside "read them all at once" would hide the
+    # very cost this exists to remove.
+    if (-not $exe) { return $out }
+    $outE = Join-Path $SR_StateDir ('screens-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = ('-batch "{0}" {1}' -f $outE, ($ids -join ' '))
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $ep = [System.Diagnostics.Process]::Start($psi)
+        if (-not $ep.WaitForExit($TimeoutMs)) { try { $ep.Kill() } catch { }; return $out }
+        if (-not (Test-Path -LiteralPath $outE)) { return $out }
+        $all = [System.IO.File]::ReadAllText($outE)
+        if (-not $all) { return $out }
+        $sep = [string][char]1
+        # Split on the sentinel pairs: <1>pid<1>\n<screen>
+        $parts = [regex]::Matches($all, ($sep + '(\d+)' + $sep + "`n"))
+        for ($i = 0; $i -lt $parts.Count; $i++) {
+            $from = $parts[$i].Index + $parts[$i].Length
+            $to = $(if ($i + 1 -lt $parts.Count) { $parts[$i + 1].Index } else { $all.Length })
+            $body = $all.Substring($from, $to - $from)
+            if (-not $body -or $body.StartsWith('!')) { continue }
+            $out[[int]$parts[$i].Groups[1].Value] = $body
+        }
+        return $out
+    } catch { return $out }
+    finally { Remove-Item -LiteralPath $outE -Force -ErrorAction SilentlyContinue }
 }
 
 function Get-SRScreenText {

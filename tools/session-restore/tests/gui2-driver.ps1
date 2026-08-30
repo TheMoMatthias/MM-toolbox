@@ -1814,6 +1814,50 @@ else {
             } else { Pass 'a launched background shell leaves nothing outstanding in the transcript - the row cannot learn it there' }
         } finally { Remove-Item -LiteralPath $bgFile -Force -ErrorAction SilentlyContinue }
 
+        # ===================================================================
+        # 🔴 AND IT HAS TO ARRIVE FAST, ACROSS EVERY LIVE SESSION AT ONCE.
+        # Filing the marks was a second duty on the quiet check, which takes ONE
+        # session per pass and gives "is it asking?" first refusal - so on a busy
+        # machine it never ran, and when it did a new shell could be a quarter of
+        # a minute late. Reported as the marks never appearing, which is what
+        # "eventually" looks like. The sweep reads every console in one child.
+        # ===================================================================
+        $swPids = @()
+        foreach ($mr in $script:model) {
+            if ($mr.Live -and $mr.A -and $mr.A.Pid -and (-not $mr.A.Kind -or "$($mr.A.Kind)" -eq 'interactive')) {
+                $swPids += [int]$mr.A.Pid
+            }
+        }
+        if (-not $swPids.Count) { Note 'no live session to sweep - the batch read cannot be timed here' }
+        else {
+            $swBest = [double]::MaxValue
+            $swGot = $null
+            foreach ($swTry in 1..3) {
+                $swSw = [Diagnostics.Stopwatch]::StartNew()
+                $swRes = Get-SRScreenTextMany -ProcessIds $swPids
+                $swSw.Stop()
+                if ($swSw.Elapsed.TotalMilliseconds -lt $swBest) { $swBest = $swSw.Elapsed.TotalMilliseconds; $swGot = $swRes }
+            }
+            if (-not $swGot -or $swGot.Count -lt 1) {
+                Fail 'the batched read returned no screens at all'
+            } else {
+                Pass ("one child read {0} of {1} live console(s) in {2:N0} ms" -f $swGot.Count, $swPids.Count, $swBest)
+                # 🪤 THE BUDGET IS PER SWEEP, NOT PER CONSOLE, which is the whole
+                # point of batching. A regression to one spawn per session shows
+                # up here as roughly 130 ms x the session count.
+                $swBudget = 250 + (60 * $swPids.Count)
+                if ($swBest -gt $swBudget) {
+                    Fail ("the sweep took {0:N0} ms for {1} session(s), over its {2} ms budget - is it spawning a child each?" -f $swBest, $swPids.Count, $swBudget)
+                } else { Pass ("the whole board refreshes inside its {0} ms budget" -f $swBudget) }
+                # Every pid asked for is a pid answered for, or the marks would
+                # silently stop at whichever session failed to read.
+                $swMissing = @($swPids | Where-Object { -not $swGot.ContainsKey($_) })
+                if ($swMissing.Count) {
+                    Note ("{0} console(s) could not be read this pass" -f $swMissing.Count)
+                } else { Pass 'every live console answered in the one pass' }
+            }
+        }
+
         $sigId = "$($probeItem.Row.Id)"
         $sigWas = $script:rowScreen[$sigId]
         try {

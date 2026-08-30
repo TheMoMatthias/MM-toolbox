@@ -4365,8 +4365,11 @@ $script:quietAt = $null
 # the line does not always name at all - and the transcript CAN see those - so
 # silence there means "ask the transcript" instead.
 $script:rowScreen = @{}
-$SR_RowScreenTTL = 45      # seconds a filed count is still worth drawing
-$SR_RowScreenAge = 20      # seconds before a live session is worth re-reading
+# Seconds a filed count is still worth drawing. Comfortably longer than the
+# sweep's own cadence, so an entry only ages out when the sweeps have actually
+# stopped landing - a count that old describes a session that has since done
+# anything at all.
+$SR_RowScreenTTL = 45
 
 function Set-RowScreenSig { param([string]$Id, [int]$Shells, [int]$Agents)
     if (-not $Id) { return $false }
@@ -4384,6 +4387,118 @@ function Get-RowScreenSig { param([string]$Id)
     # anything at all. Past its life it is not evidence and must not draw.
     if (((Get-Date) - $v.At).TotalSeconds -gt $SR_RowScreenTTL) { return $null }
     return $v
+}
+
+# ===========================================================================
+# WHAT EVERY LIVE SESSION HAS RUNNING, IN ONE PASS.
+#
+# 🔴 THE MARKS WERE NOT SLOW, THEY WERE STARVED. Filing them was a second duty
+# bolted onto the quiet check, which picks ONE session per pass and gives the
+# "is it asking?" question first refusal. On a machine with a dozen working
+# sessions that question always had a candidate, so the refresh never ran; when
+# it did run it was one session per second behind a ten-second cooldown, so a
+# shell that started now could take a quarter of a minute to show up. The
+# operator reported it as the marks not appearing at all, which is what
+# "eventually" looks like from the outside.
+#
+# 🔑 THE SPAWN WAS THE COST, NOT THE READING. 129 ms median per console, of
+# which about 30 is console work and the rest is starting a process. One child
+# reading all thirteen: 287 ms, measured against 2,332 one at a time - 8.1x. So
+# the whole board refreshes in one pass rather than being rationed.
+$script:sweepPs = $null
+$script:sweepRs = $null
+$script:sweepHandle = $null
+$script:sweepFor = @()
+$script:sweepAt = $null
+$SR_SweepEvery = 2500      # ms between sweeps, once one has finished
+
+$script:SweepJob = {
+    . (Join-Path $SRHere '_common.ps1')
+    $out = @{}
+    try {
+        $screens = Get-SRScreenTextMany -ProcessIds ([int[]]$SRSweep.Pids)
+        foreach ($k in $screens.Keys) {
+            $v = Read-SRScreenVitals -ScreenText $screens[$k]
+            # Same two defaults the single reader uses, and for the same reason:
+            # a line that printed no shell count IS zero, and one that named no
+            # sub-agents means "ask the transcript" rather than "there are none".
+            $out[[int]$k] = @{
+                Shells = [int]$v.Shells
+                Agents = $(if ($v.SawAgents) { [int]$v.Agents } else { -1 })
+            }
+        }
+    } catch { }
+    $out
+}
+
+function Start-VitalsSweep {
+    if ($script:sweepPs) { return }
+    if ($script:sweepAt -and ((Get-Date) - $script:sweepAt).TotalMilliseconds -lt $SR_SweepEvery) { return }
+    $pids = New-Object System.Collections.Generic.List[object]
+    $ids  = New-Object System.Collections.Generic.List[object]
+    foreach ($r in $script:model) {
+        if (-not $r.Live -or -not $r.A -or -not $r.A.Pid) { continue }
+        if ($r.A.Kind -and "$($r.A.Kind)" -ne 'interactive') { continue }
+        $null = $pids.Add([int]$r.A.Pid)
+        $null = $ids.Add([PSCustomObject]@{ Id = "$($r.Id)"; Pid = [int]$r.A.Pid })
+    }
+    if (-not $pids.Count) { $script:sweepAt = Get-Date; return }
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'MTA'
+        $rs.ThreadOptions = 'ReuseThread'
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        $rs.SessionStateProxy.SetVariable('SRSweep', @{ Pids = $pids.ToArray() })
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript($script:SweepJob)
+        $script:sweepRs = $rs
+        $script:sweepPs = $ps
+        $script:sweepHandle = $ps.BeginInvoke()
+        $script:sweepFor = $ids.ToArray()
+        $script:sweepAt = Get-Date
+    } catch { $script:sweepPs = $null }
+}
+
+function Complete-VitalsSweep {
+    if (-not $script:sweepPs -or -not $script:sweepHandle) { return $false }
+    if (-not $script:sweepHandle.IsCompleted) {
+        # Bounded like every other child in this window: one that never answers
+        # must not wedge the lane that collects it.
+        if ($script:sweepAt -and ((Get-Date) - $script:sweepAt).TotalSeconds -gt 30) {
+            try { $script:sweepPs.Stop(); $script:sweepPs.Dispose() } catch { }
+            try { $script:sweepRs.Close(); $script:sweepRs.Dispose() } catch { }
+            $script:sweepPs = $null; $script:sweepRs = $null; $script:sweepHandle = $null
+            Write-SRLog '  [warn] the vitals sweep did not answer in 30s - abandoned'
+        }
+        return $false
+    }
+    $res = $null
+    try { $res = @($script:sweepPs.EndInvoke($script:sweepHandle))[0] } catch { }
+    try { $script:sweepPs.Dispose(); $script:sweepRs.Close(); $script:sweepRs.Dispose() } catch { }
+    $script:sweepPs = $null; $script:sweepRs = $null; $script:sweepHandle = $null
+    $script:sweepAt = Get-Date
+    if (-not $res) { return $false }
+    $changed = $false
+    foreach ($row in @($script:sweepFor)) {
+        $got = $res[[int]$row.Pid]
+        # 🪤 A CONSOLE THAT COULD NOT BE READ FILES NOTHING. Absent is not zero,
+        # and writing a zero here would clear a mark on no evidence - the entry
+        # ages out on its own if the reads keep failing.
+        if (-not $got) { continue }
+        if (Set-RowScreenSig -Id "$($row.Id)" -Shells ([int]$got.Shells) -Agents ([int]$got.Agents)) {
+            $changed = $true
+        }
+    }
+    return $changed
+}
+
+function Stop-VitalsSweep {
+    if (-not $script:sweepPs) { return }
+    try { $script:sweepPs.Stop(); $script:sweepPs.Dispose() } catch { }
+    try { $script:sweepRs.Close(); $script:sweepRs.Dispose() } catch { }
+    $script:sweepPs = $null; $script:sweepRs = $null; $script:sweepHandle = $null
 }
 
 $script:QuietJob = {
@@ -4420,25 +4535,13 @@ function Start-QuietCheck {
         $pick = $r
         break
     }
-    # 🔴 SECOND CHOICE, AND ONLY WHEN THE FIRST FOUND NOBODY. Asking whether a
-    # session has stopped and put a menu up is the urgent question and keeps
-    # first refusal; refreshing what a session has RUNNING is the patient one,
-    # so it fills the passes the urgent question does not want. It is also the
-    # only way the marks reach a session that is not in WORKING - a shell
-    # outlives the turn that started it, and a conversation waiting on you with
-    # a build still going is exactly the row that has to say so.
-    if (-not $pick) {
-        foreach ($r in $script:model) {
-            if (-not $r.Live -or -not $r.A -or -not $r.A.Pid) { continue }
-            $key = "$($r.Id)"
-            $last = $script:quietChecked[$key]
-            if ($last -and ($now - $last).TotalSeconds -lt 10) { continue }
-            $sig = $script:rowScreen[$key]
-            if ($sig -and ($now - $sig.At).TotalSeconds -lt $SR_RowScreenAge) { continue }
-            $pick = $r
-            break
-        }
-    }
+    # 🪤 THIS USED TO TAKE A SECOND PASS OVER EVERY LIVE SESSION to refresh what
+    # each had running, and it was the wrong place for it twice over: the ask
+    # check has first refusal, so on a busy machine the refresh never ran at all,
+    # and even when it did, one session per second meant a shell mark could be
+    # thirteen seconds late. Start-VitalsSweep reads every console in ONE child
+    # process instead - 287 ms for thirteen, measured - and this went back to
+    # doing the one thing it is good at.
     if (-not $pick) { return }
     $script:quietChecked["$($pick.Id)"] = $now
     try {
@@ -4593,6 +4696,12 @@ function Invoke-WriteLane {
             $script:quietAt = Get-Date
             try { Start-QuietCheck } catch { }
         }
+        # 🔑 AND WHAT EVERY LIVE SESSION HAS RUNNING, in one child process rather
+        # than one session per second. The first sweep goes out as soon as the
+        # model exists, so the marks are up within a few hundred milliseconds of
+        # the window opening instead of trickling in over a quarter of a minute.
+        try { if (Complete-VitalsSweep) { Build-Sessions } } catch { }
+        try { Start-VitalsSweep } catch { }
     }
     # Returns whether it actually redrew. The tick discards it; the suite needs
     # it, because the flag is consumed in the same call that sets it and there
@@ -5743,6 +5852,10 @@ $window.Add_Closed({
     try { if ($script:probePs) { $script:probePs.Stop() } } catch { }
     try { if ($script:probePs) { $script:probePs.Dispose() } } catch { }
     try { if ($script:probeRs) { $script:probeRs.Close(); $script:probeRs.Dispose() } } catch { }
+    # The sweep runs every 2.5 s and takes about 0.3, so a close lands on one in
+    # flight far more often than it lands on the probe - and it holds a thread
+    # and a child process of its own.
+    try { Stop-VitalsSweep } catch { }
 })
 
 $null = $window.ShowDialog()
