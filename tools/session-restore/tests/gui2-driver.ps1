@@ -1865,7 +1865,32 @@ else {
                 $swPids += [int]$mr.A.Pid
             }
         }
-        if (-not $swPids.Count) { Note 'no live session to sweep - the batch read cannot be timed here' }
+        # ===================================================================
+    # 🔴 GREEN, AMBER, RED - ON TOKENS, NOT ON THE FRACTION. The thresholds
+    # were fractions of the window, so the same colour described two
+    # completely different situations: 85% of a 200k window is 170k and
+    # comfortable; 85% of a 1M window is 850k and nearly out. Named
+    # boundaries now, asserted either side of each.
+    # ===================================================================
+    $ctxCases = @(
+        @{ T = 0;       Want = 'Ok';   Why = 'an empty context' },
+        @{ T = 199999;  Want = 'Ok';   Why = 'just under 200k' },
+        @{ T = 200001;  Want = 'Warn'; Why = 'just over 200k' },
+        @{ T = 599999;  Want = 'Warn'; Why = 'just under 600k' },
+        @{ T = 600001;  Want = 'Bad';  Why = 'just over 600k' },
+        @{ T = 990000;  Want = 'Bad';  Why = 'nearly a full 1M window' }
+    )
+    $ctxBad = 0
+    foreach ($cc in $ctxCases) {
+        $got = Get-CtxBrush ([int]$cc.T)
+        if (-not [Object]::ReferenceEquals($got, $Pal[$cc.Want])) {
+            Fail ("{0} ({1:N0} tokens) is not {2}" -f $cc.Why, $cc.T, $cc.Want)
+            $ctxBad++
+        }
+    }
+    if (-not $ctxBad) { Pass 'the context bar runs green to amber at 200k and amber to red at 600k' }
+
+    if (-not $swPids.Count) { Note 'no live session to sweep - the batch read cannot be timed here' }
         else {
             $swBest = [double]::MaxValue
             $swGot = $null

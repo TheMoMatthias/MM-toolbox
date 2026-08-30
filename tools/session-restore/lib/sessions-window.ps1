@@ -1274,10 +1274,11 @@ function Build-Sessions {
                 # A quiet row looks exactly as it did before.
                 CtxVis = $(if ($r.Sig -and $r.Sig.Frac -gt 0.5) { $V_Show } else { $V_Hide })
                 CtxWidth = $(if ($r.Sig) { [Math]::Max(2.0, 34.0 * [Math]::Min(1.0, $r.Sig.Frac)) } else { 0.0 })
+                # Green, amber, red - on the token count, not on the fraction.
+                # See Get-CtxBrush: 85% of a 200k window and 85% of a 1M window
+                # are not the same situation and must not be the same colour.
                 CtxBrush = [System.Windows.Media.Brush]$(
-                    if ($r.Sig -and $r.Sig.Frac -gt 0.85) { $Pal.Bad }
-                    elseif ($r.Sig -and $r.Sig.Frac -gt 0.7) { $Pal.Warn }
-                    else { $Pal.Ask })
+                    if ($r.Sig) { Get-CtxBrush ([int]$r.Sig.Tokens) } else { $Pal.Ok })
                 # 🔴 SHAPE FIRST, HUE SECOND. A sub-agent is a ROUND amber dot -
                 # another mind working on your behalf. A background shell is a
                 # SQUARE violet mark - machinery still running. They answer
@@ -1368,6 +1369,25 @@ $Pal = @{
     Bad        = $window.FindResource('HueBad')
     Ask        = $window.FindResource('HueAsk')
     Warn       = $window.FindResource('HueWarn')
+    Ok         = $window.FindResource('HueOk')
+}
+
+# ===========================================================================
+# HOW FULL IS TOO FULL, IN TOKENS RATHER THAN IN PERCENT.
+#
+# 🔴 THE THRESHOLDS ARE ABSOLUTE ON PURPOSE. They used to be fractions of the
+# window - amber past 60%, red past 85% - which means the same bar colour
+# describes two completely different situations: 85% of a 200k window is 170k
+# and perfectly comfortable, while 85% of a 1M window is 850k and nearly out.
+# What actually matters is how many tokens are in there, so that is what is
+# measured. Green below 200k, amber past it, red past 600k.
+$SR_CtxWarnTokens = 200000
+$SR_CtxBadTokens  = 600000
+
+function Get-CtxBrush { param([int]$Tokens)
+    if ($Tokens -gt $SR_CtxBadTokens)  { return $Pal.Bad }
+    if ($Tokens -gt $SR_CtxWarnTokens) { return $Pal.Warn }
+    return $Pal.Ok
 }
 
 # Translucent grounds, derived rather than declared: six hues times three
@@ -2955,9 +2975,7 @@ function Update-Chips { param($R, [switch]$Force)
 
     $frac = 0.0
     if ($v.Window -gt 0) { $frac = [double]$v.Tokens / [double]$v.Window }
-    $barFg = $Pal.Ask
-    if ($frac -gt 0.60) { $barFg = $Pal.Warn }
-    if ($frac -gt 0.85) { $barFg = $Pal.Bad }
+    $barFg = Get-CtxBrush ([int]$v.Tokens)
     $ctx = ('{0} / {1}   {2}%' -f (Format-Kilo $v.Tokens), (Format-Kilo $v.Window), [int][math]::Round($frac * 100))
     $null = $ui.PaneChips.Children.Add((New-Chip -Text $ctx -Fg $Pal.TextHigh -Bg $glass -Bar $frac -BarFg $barFg -Tip 'Context in use at its last reply. A 1M window is inferred from the usage, because the transcript does not record which one was selected.').Border)
 

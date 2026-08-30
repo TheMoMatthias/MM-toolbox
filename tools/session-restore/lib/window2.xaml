@@ -136,6 +136,10 @@
     <SolidColorBrush x:Key="HueBad"   Color="#FF7A8A"/>   <!-- a call that failed -->
     <SolidColorBrush x:Key="HueAsk"   Color="#5EEAD4"/>   <!-- a question waiting on you -->
     <SolidColorBrush x:Key="HueWarn"  Color="#FFD166"/>
+    <!-- A context window with room left. Its own green rather than the teal
+         HueAsk, which already means "a question is waiting on you" - a bar that
+         borrowed it would have said that on every healthy session. -->
+    <SolidColorBrush x:Key="HueOk"    Color="#5FD68A"/>
 
     <SolidColorBrush x:Key="HueOutWash"  Color="#FFB86B" Opacity="0.13"/>
     <SolidColorBrush x:Key="HueToolWash" Color="#A78BFA" Opacity="0.15"/>
