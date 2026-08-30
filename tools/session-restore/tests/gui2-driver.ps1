@@ -672,7 +672,7 @@ else {
     $ui.SessionList.SelectedItem = $sessions[1]
     $perf['select another (cold)']        = Ms { Show-Selected }
     $perf['re-select the same one']       = Ms { Show-Selected }
-    $perf['re-render the transcript']     = Ms { Update-Document }
+    $perf['re-render the transcript']     = Ms { Update-Document -Wait }
     # The sub-steps of a cold selection, so the next stall is aimed at rather
     # than guessed. Show-Selected is: Update-Document, Move-ToBottom,
     # Show-Ask, a probe kick and Update-SendState.
@@ -690,9 +690,9 @@ else {
     $tailWas = $script:tailBytes
     $optWas = $true
     $script:tailBytes = 98304
-    $perf['  ...at a 96 KB tail']  = Ms { Update-Document }
+    $perf['  ...at a 96 KB tail']  = Ms { Update-Document -Wait }
     $script:tailBytes = 262144
-    $perf['  ...at a 256 KB tail'] = Ms { Update-Document }
+    $perf['  ...at a 256 KB tail'] = Ms { Update-Document -Wait }
     $script:tailBytes = $tailWas
     foreach ($k in $perf.Keys) { Note ("  {0,-30} {1,7:N1} ms" -f $k, $perf[$k]) }
 

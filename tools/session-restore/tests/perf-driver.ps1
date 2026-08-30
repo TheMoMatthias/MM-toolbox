@@ -26,25 +26,51 @@ $fails = 0
 function Fail { param($m) Write-Host "  FAIL  $m" -ForegroundColor Red; $script:fails++ }
 function Note { param($m) Write-Host "        $m" -ForegroundColor DarkGray }
 
-# Median of N, not a single sample: one GC or one antivirus scan makes a single
-# measurement worthless, and the whole point here is a number worth acting on.
+# 🔴 THE MINIMUM OF N, NOT THE MEDIAN. This measured the median of 3, and on this
+# machine that measures the LOAD, not the code: Build-Sessions read 207 ms and
+# then 1,436 ms twenty minutes apart with the source untouched, because sixteen
+# of the operator's own conversations were running. A median moves with every one
+# of them.
+#
+# The fastest run is the only sample where the code got the CPU it asked for;
+# everything above it is contention. That is the number you can act on, it is
+# reproducible on a busy machine, and it can only ever UNDER-report a problem -
+# if the best of seven is still over budget, the code is genuinely too slow.
+#
+# The spread is reported alongside it, because a huge gap between best and worst
+# is itself a finding: it means the operation is fighting something.
 function Bench {
-    param([string]$Name, [scriptblock]$Do, [string]$Class = 'QUICK', [int]$Runs = 3)
+    param([string]$Name, [scriptblock]$Do, [string]$Class = 'QUICK', [int]$Runs = 7)
     $ms = New-Object System.Collections.Generic.List[double]
+    $threw = ''
     for ($i = 0; $i -lt $Runs; $i++) {
         $sw = [Diagnostics.Stopwatch]::StartNew()
-        try { & $Do | Out-Null } catch { Note ("  ! $Name threw: " + $_.Exception.Message) }
+        try { & $Do | Out-Null } catch { $threw = "$($_.Exception.Message)" }
         $sw.Stop()
         $ms.Add($sw.Elapsed.TotalMilliseconds)
     }
     $sorted = @($ms | Sort-Object)
-    $med = $sorted[[int]($sorted.Count / 2)]
-    $script:Results.Add([PSCustomObject]@{ Name = $Name; Ms = $med; Class = $Class })
-    return $med
+    $best = $sorted[0]
+    $worst = $sorted[$sorted.Count - 1]
+    # 🔴 AN OPERATION THAT THREW HAS NO TIMING, IT HAS AN ERROR - and this used to
+    # report one as the other. Compress-ToolRuns was renamed out of the window
+    # months of edits ago and lives only in the orphaned old file; the bench kept
+    # calling it, the exception was swallowed into a note, and the 92 ms cost of
+    # THROWING SEVEN TIMES was printed in the table as a performance figure. A
+    # benchmark that measures its own failures is worse than no benchmark.
+    $script:Results.Add([PSCustomObject]@{ Name = $Name; Ms = $best; Worst = $worst; Class = $Class; Threw = $threw })
+    return $best
 }
 $script:Results = New-Object System.Collections.Generic.List[object]
 
-$LIMITS = @{ 'INSTANT' = 50.0; 'QUICK' = 250.0; 'SLOW' = 1000.0; 'STALL' = 100000.0 }
+# GESTURE is the class with teeth. Everything the operator can DO - a click, a
+# keystroke, a tab, a button - must return inside 50 ms, because that is the
+# contract: no gesture ever waits for work. Anything that reads disk or spawns a
+# process belongs off the interaction path, and is measured under the classes
+# below as a warning only, since a scan takes the time a scan takes.
+$LIMITS = @{ 'GESTURE' = 50.0; 'INSTANT' = 50.0; 'QUICK' = 250.0; 'SLOW' = 1000.0; 'STALL' = 100000.0 }
+
+
 
 Update-Model
 Note "$($script:model.Count) conversations across $(@($script:dirs).Count) projects"
@@ -86,13 +112,13 @@ $null = Bench 'Invoke-FastPass (every 6 s)' { Invoke-FastPass } 'QUICK'
 Write-Host ''
 Write-Host '--- drawing the three lists ---'
 # ---------------------------------------------------------------------------
-$null = Bench 'Build-Sessions' { Build-Sessions } 'QUICK'
-$null = Bench 'Build-Rail' { Build-Rail } 'QUICK'
-$null = Bench 'Build-Manager' { Build-Manager } 'QUICK'
-$null = Bench 'Set-Surface manage' { Set-Surface 'manage' } 'QUICK'
-$null = Bench 'Set-Surface work' { Set-Surface 'work' } 'QUICK'
+$null = Bench 'Build-Sessions' { Build-Sessions } 'GESTURE'
+$null = Bench 'Build-Rail' { Build-Rail } 'GESTURE'
+$null = Bench 'Build-Manager' { Build-Manager } 'GESTURE'
+$null = Bench 'Set-Surface manage' { Set-Surface 'manage' } 'GESTURE'
+$null = Bench 'Set-Surface work' { Set-Surface 'work' } 'GESTURE'
 $null = Bench 'Set-Breakpoint' { Set-Breakpoint } 'INSTANT'
-$null = Bench 'Update-Surface' { Update-Surface } 'QUICK'
+$null = Bench 'Update-Surface' { Update-Surface } 'GESTURE'
 
 # ---------------------------------------------------------------------------
 Write-Host ''
@@ -101,45 +127,45 @@ Write-Host '--- searching, sorting and filtering ---'
 # 🪤 Each of these is a KEYSTROKE, debounced but still on the UI thread.
 $null = Bench 'search: header box (both panes)' {
     $ui.Search.Text = 'kernel'; Build-Rail; Build-Sessions
-} 'QUICK'
+} 'GESTURE'
 $ui.Search.Text = ''
-$null = Bench 'search: rail box only' { $ui.RailSearch.Text = 'algo'; Build-Rail } 'QUICK'
+$null = Bench 'search: rail box only' { $ui.RailSearch.Text = 'algo'; Build-Rail } 'GESTURE'
 $ui.RailSearch.Text = ''; Build-Rail
-$null = Bench 'search: sessions box only' { $ui.ListSearch.Text = 'ker'; Build-Sessions } 'QUICK'
+$null = Bench 'search: sessions box only' { $ui.ListSearch.Text = 'ker'; Build-Sessions } 'GESTURE'
 $ui.ListSearch.Text = ''; Build-Sessions
 
 foreach ($k in @('recent', 'name', 'project')) {
     $script:listSort = $k
-    $null = Bench "sort sessions: $k" { Build-Sessions } 'QUICK'
+    $null = Bench "sort sessions: $k" { Build-Sessions } 'GESTURE'
 }
 $script:listSort = 'recent'
 foreach ($k in @('recent', 'name', 'waiting', 'busiest')) {
     $script:railSort = $k
-    $null = Bench "sort rail: $k" { Build-Rail } 'QUICK'
+    $null = Bench "sort rail: $k" { Build-Rail } 'GESTURE'
 }
 $script:railSort = 'recent'
 $mgrSortWas = $script:mgrSort; $mgrDescWas = $script:mgrDesc
 foreach ($k in @('logon', 'name', 'lane', 'said', 'age')) {
     $script:mgrSort = $k
-    $null = Bench "sort manager: $k" { Build-Manager } 'QUICK'
+    $null = Bench "sort manager: $k" { Build-Manager } 'GESTURE'
 }
 $script:mgrSort = $mgrSortWas; $script:mgrDesc = $mgrDescWas
 $mgrFilterWas = $script:mgrFilter
 foreach ($k in @('all', 'ticked', 'running', 'needs')) {
     $script:mgrFilter = $k
-    $null = Bench "filter manager: $k" { Build-Manager } 'QUICK'
+    $null = Bench "filter manager: $k" { Build-Manager } 'GESTURE'
 }
 $script:mgrFilter = $mgrFilterWas
 $bandKeys = @($script:Bands | ForEach-Object { $_.Key })
 $script:bandPick = $bandKeys[0]
-$null = Bench 'filter sessions by band' { Build-Sessions } 'QUICK'
+$null = Bench 'filter sessions by band' { Build-Sessions } 'GESTURE'
 $script:bandPick = $null
 $script:railOnlyLive = $true
-$null = Bench 'filter rail to running only' { Build-Rail } 'QUICK'
+$null = Bench 'filter rail to running only' { Build-Rail } 'GESTURE'
 $script:railOnlyLive = $false
 $railPickWas = $script:railPick
 $script:railPick = "$(@($script:dirs)[0].path)"
-$null = Bench 'filter sessions by project (rail pick)' { Build-Sessions } 'QUICK'
+$null = Bench 'filter sessions by project (rail pick)' { Build-Sessions } 'GESTURE'
 $script:railPick = $railPickWas
 Build-Rail; Build-Sessions
 
@@ -157,40 +183,42 @@ else {
         $script:selId = $null
         $ui.SessionList.SelectedItem = $sessions[1]
         Show-Selected
-    } 'QUICK'
+    } 'GESTURE'
     $null = Bench 'select the same one again (warm)' { Show-Selected } 'INSTANT'
     $jp = "$($sessions[1].Row.S.jsonl)"
     $null = Bench 'parse the transcript tail' {
         $script:__b = Get-SRTranscriptBlocks -JsonlPath $jp -MaxRecords 220 -MaxTailBytes $script:tailBytes
     } 'QUICK'
-    $null = Bench 'compress runs of tool calls' { Compress-ToolRuns $script:__b } 'INSTANT'
-    $null = Bench 'build the FlowDocument' { Build-ReadDocument -Blocks $script:__b -Truncated $false } 'QUICK'
-    $null = Bench 'Update-Document (parse + build + set)' { Update-Document } 'QUICK'
+    $null = Bench 'fold runs of tool calls into turns' { Get-ReadTurns $script:__b } 'GESTURE'
+    $null = Bench 'build the FlowDocument' { Build-ReadDocument -Blocks $script:__b -Truncated $false } 'GESTURE'
+    $null = Bench 'Update-Document (the gesture - kicks the parse)' { Update-Document } 'GESTURE'
+    $null = Bench 'Update-Document -Wait (parse + build inline)' { Update-Document -Wait } 'QUICK'
     $null = Bench 'Move-ToBottom' { Move-ToBottom } 'INSTANT'
     $null = Bench 'Test-AtBottom' { Test-AtBottom } 'INSTANT'
     $null = Bench 'Update-SendState' { Update-SendState } 'INSTANT'
     # 'load earlier' doubles the window - the one deliberate expensive gesture.
     $tw = $script:tailBytes
     $script:tailBytes = $tw * 2
-    $null = Bench 'load earlier (double the tail)' { Update-Document } 'SLOW'
+    $null = Bench 'load earlier (double the tail)' { Update-Document } 'GESTURE'
+    $null = Bench 'load earlier, rendered inline' { Update-Document -Wait } 'SLOW'
     $script:tailBytes = $tw
-    Update-Document
+    Update-Document -Wait
 }
 
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host '--- the panels ---'
 # ---------------------------------------------------------------------------
-$null = Bench 'open the settings panel' { Show-Settings } 'QUICK'
+$null = Bench 'open the settings panel' { Show-Settings } 'GESTURE'
 $null = Bench 'close the settings panel' { Hide-Settings } 'INSTANT'
-$null = Bench 'build the settings dropdowns' { Build-SettingDrops } 'QUICK'
+$null = Bench 'build the settings dropdowns' { Build-SettingDrops } 'GESTURE'
 $null = Bench 'permission note' { Update-PermNote } 'INSTANT'
-$null = Bench 'open send-to-many' { Show-Cast } 'QUICK'
-$null = Bench 'build the send-to-many list' { Build-Cast } 'QUICK'
+$null = Bench 'open send-to-many' { Show-Cast } 'GESTURE'
+$null = Bench 'build the send-to-many list' { Build-Cast } 'GESTURE'
 Hide-Cast
 $null = Bench 'read the skills off disk' { Get-SRSkills } 'SLOW' 1
 $ui.SendBox.Text = '/re'
-$null = Bench 'filter the skill picker' { Update-SkillPop } 'QUICK'
+$null = Bench 'filter the skill picker' { Update-SkillPop } 'GESTURE'
 $ui.SendBox.Text = ''
 Close-SkillPop
 $fake = [PSCustomObject]@{
@@ -205,7 +233,7 @@ Show-Ask $null
 Write-Host ''
 Write-Host '--- the logon plan, and what the buttons WOULD do ---'
 # ---------------------------------------------------------------------------
-$null = Bench 'Get-TickedPlan' { Get-TickedPlan } 'QUICK'
+$null = Bench 'Get-TickedPlan' { Get-TickedPlan } 'GESTURE'
 $null = Bench 'Limit-ToCap' { Limit-ToCap @($script:model.ToArray()) } 'INSTANT'
 $null = Bench 'Get-SelectedRow' { Get-SelectedRow } 'INSTANT'
 $row0 = @($script:model.ToArray())[0]
@@ -253,12 +281,45 @@ if ($over.Count) {
     }
 } else { Write-Host '  everything is inside its class budget' -ForegroundColor Green }
 
-# 🔴 ONLY A STALL FAILS. Everything else is reported and left to judgement -
-# see the note at the top about benchmarks that cry wolf.
-$stalls = @($script:Results | Where-Object { $_.Ms -ge 1000 -and $_.Class -ne 'SLOW' -and $_.Class -ne 'STALL' })
+# 🔴 A GESTURE OVER BUDGET IS A FAILURE, NOT A NOTE.
+#
+# This used to fail only on an outright stall and warn about everything else,
+# and that is how a 1,191 ms click nearly shipped: it was in the table, in
+# yellow, and read past. The contract is that nothing the operator DOES waits
+# for work, so the things they do are a hard gate and the background stays a
+# report. Best-of-seven is what makes that safe on a loaded machine - the number
+# being tested is the one where the code got the CPU, so a red here is the code.
 Write-Host ''
+$brokeIt = @($script:Results | Where-Object { $_.Threw })
+foreach ($b in $brokeIt) { Fail ("{0} THREW - it has no timing, it has an error: {1}" -f $b.Name, $b.Threw) }
+$slowGestures = @($script:Results | Where-Object { -not $_.Threw -and $_.Class -eq 'GESTURE' -and $_.Ms -gt $LIMITS['GESTURE'] })
+# 🔴 A VIOLATION HAS TO BE STABLE TO COUNT. Measured across five runs of this
+# suite as the machine got busier, 'build the FlowDocument' read 19.6, 29.3,
+# 40.4, 49.9 and 78.8 ms on IDENTICAL source - so a single over-budget reading
+# is not evidence about the code. When the best and worst of seven runs differ
+# by more than 2.5x the operation was contending for the machine and its best
+# sample cannot be trusted either; that is reported, loudly, but it does not
+# fail the suite. A stable number over budget is the code, and that does.
+foreach ($g in $slowGestures) {
+    $spread = 99.0
+    if ($g.Ms -gt 0) { $spread = $g.Worst / $g.Ms }
+    if ($spread -gt 2.5) {
+        Write-Host ("  NOISY {0} read {1:N0} ms best / {2:N0} ms worst - over budget, but this machine is contending" -f $g.Name, $g.Ms, $g.Worst) -ForegroundColor Yellow
+    } else {
+        Fail ("{0} takes {1:N0} ms at its FASTEST and only {2:N0} ms at its worst - that is the code, not the machine" -f $g.Name, $g.Ms, $g.Worst)
+    }
+}
+$stalls = @($script:Results | Where-Object { $_.Ms -ge 1000 -and $_.Class -ne 'SLOW' -and $_.Class -ne 'STALL' -and $_.Class -ne 'GESTURE' })
 if ($stalls.Count) {
     foreach ($s in $stalls) { Fail ("{0} takes {1:N0} ms - the window is visibly frozen for that long" -f $s.Name, $s.Ms) }
+}
+# A wide spread is not a failure but it IS a finding: it means the operation is
+# contending with something rather than simply costing what it costs.
+$jumpy = @($script:Results | Where-Object { $_.Worst -gt ($_.Ms * 8) -and $_.Worst -gt 200 })
+if ($jumpy.Count) {
+    Write-Host ''
+    Write-Host '  operations whose worst run was 8x their best - contention, not cost:' -ForegroundColor DarkGray
+    foreach ($j in $jumpy) { Note ("{0,8:N0} ms best / {1,8:N0} ms worst   {2}" -f $j.Ms, $j.Worst, $j.Name) }
 }
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
 Write-Host 'nothing on the surface stalls the window' -ForegroundColor Green

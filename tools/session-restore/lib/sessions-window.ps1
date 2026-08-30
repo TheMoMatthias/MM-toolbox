@@ -382,10 +382,11 @@ $script:mgrSort = 'age'
 $script:mgrDesc = $true
 $script:MgrKeys = @{
     'logon' = { param($r) $(if ([bool]$r.S.enabled) { 1 } else { 0 }) }
-    'name'  = { param($r) (Get-Title $r.S $r.D).Text.ToLower() }
-    'lane'  = { param($r) (Get-LaneLabel $r (Get-Title $r.S $r.D).Text).ToLower() }
+    'name'  = { param($r) "$($r.T.Text)".ToLower() }
+    'lane'  = { param($r) (Get-LaneLabel $r "$($r.T.Text)").ToLower() }
     'said'  = { param($r) "$($r.Said.Said)".Trim().ToLower() }
-    'age'   = { param($r) try { ([datetime]$r.S.lastActive).Ticks } catch { 0L } }
+    # Already parsed once per pass and carried on the row; see Build-Manager.
+    'age'   = { param($r) $r.At }
 }
 
 # 🔴 THE FILTER IS APPLIED BEFORE THE PROJECT COUNTS ARE TAKEN, so a project
@@ -425,6 +426,7 @@ function Sort-ManagerRows { param($Rows)
 
 function Build-Manager {
     $cut = (Get-Date).AddDays(-7)
+    $cutTicks = $cut.Ticks
     $items = New-Object System.Collections.Generic.List[object]
     $older = 0
 
@@ -434,17 +436,24 @@ function Build-Manager {
         if (-not $byProj.ContainsKey($k)) { $byProj[$k] = New-Object System.Collections.Generic.List[object] }
         $byProj[$k].Add($r)
     }
+    # 🔴 $r.At, NOT [datetime]$r.S.lastActive. Update-Model already parses
+    # lastActive ONCE and carries it as ticks for exactly this reason, and this
+    # sort re-parsed the string for all 202 conversations on every build - then
+    # the window filter below did it again. Measured: Build-Manager 41.5 ms, and
+    # the sorts and filters that call it 42-52 ms, over the 50 ms a gesture is
+    # allowed. Parsing a date is not the work; doing it twice per row per
+    # keystroke is.
     $order = @($byProj.Keys | Sort-Object {
-        $newest = [datetime]0
-        foreach ($x in $byProj[$_]) { try { $t = [datetime]$x.S.lastActive; if ($t -gt $newest) { $newest = $t } } catch { } }
-        - $newest.Ticks
+        $newest = 0L
+        foreach ($x in $byProj[$_]) { if ($x.At -gt $newest) { $newest = $x.At } }
+        - $newest
     })
 
     foreach ($k in $order) {
         $kids = @(Sort-ManagerRows (Select-ManagerRows $byProj[$k]))
         $inWindow = @($kids | Where-Object {
             if ($script:showOlder) { return $true }
-            try { return ([datetime]$_.S.lastActive -gt $cut) } catch { return $false }
+            return ($_.At -gt $cutTicks)
         })
         $older += ($kids.Count - $inWindow.Count)
         if (-not $inWindow.Count) { continue }
@@ -473,7 +482,7 @@ function Build-Manager {
         if ($shut) { continue }
 
         foreach ($r in $inWindow) {
-            $t = Get-Title $r.S $r.D
+            $t = $r.T
             $saidText = ''
             if ($r.Said -and "$($r.Said.Said)".Trim()) { $saidText = ("$($r.Said.Said)".Trim() -replace '\s+', ' ') }
             $items.Add([PSCustomObject]@{
@@ -490,7 +499,7 @@ function Build-Manager {
                 # spending a column saying the same word twice.
                 Lane = (Get-LaneLabel $r $t.Text)
                 Said = $saidText
-                Age  = (Get-Age $r.S.lastActive)
+                Age  = (Get-AgeTicks $r.At)
                 # The tick is a FILLED SQUARE or an empty one - a shape, not a
                 # colour, so it survives everything the accents do not.
                 TickBg = $(if ([bool]$r.S.enabled) { $window.FindResource('TextMax') } else { [System.Windows.Media.Brushes]::Transparent })
@@ -692,6 +701,13 @@ function Get-AgeLabel { param([long]$Delta)
     return ([string][int]($s / 86400) + 'd')
 }
 
+# Ticks in, no parse. Get-Age still takes a string for the callers that only
+# have one; this is for the two list builders, which have $r.At already.
+function Get-AgeTicks { param([long]$Ticks)
+    if ($Ticks -le 0) { return '' }
+    return (Get-AgeLabel ([DateTime]::Now.Ticks - $Ticks))
+}
+
 function Get-Age { param($When)
     if (-not $When) { return '' }
     $t = 0L
@@ -806,6 +822,13 @@ function Update-Model {
                 # Filled below, once the project labels exist. See the note there.
                 Hay = ''; HayProj = ''
                 At = $at; Warm = ($at -gt $warmCut)
+                # 🔴 THE TITLE, COMPUTED ONCE PER PASS. It depends only on S and D,
+                # neither of which changes between builds, and it was being
+                # recomputed for every row by every list build AND by two of the
+                # manager's sort keys - which is why 'sort manager: name' and
+                # 'sort manager: lane' were the last two gestures over 50 ms.
+                # Same reasoning as At above.
+                T = (Get-Title $s $d)
             })
         }
     }
@@ -1148,7 +1171,7 @@ function Build-Sessions {
         # the counts beside them are the reason to switch in the first place.
         if ($script:bandPick -and $script:bandPick -ne $b.Key) { continue }
         foreach ($r in $inBand) {
-            $t = Get-Title $r.S $r.D
+            $t = $r.T
             $saidText = ''
             if ($r.Said -and "$($r.Said.Said)".Trim()) { $saidText = ("$($r.Said.Said)".Trim() -replace '\s+', ' ') }
             elseif ($r.Conv -and "$($r.Conv.Detail)") { $saidText = "$($r.Conv.Detail)" }
@@ -1160,7 +1183,7 @@ function Build-Sessions {
                 Name = $t.Text
                 NameWeight = $(if ($b.Key -eq 'needs') { 'SemiBold' } else { 'Normal' })
                 NameStyle  = $(if ($t.Derived) { 'Italic' } else { 'Normal' })
-                Age  = (Get-Age $r.S.lastActive)
+                Age  = (Get-AgeTicks $r.At)
                 Said = $saidText
                 BarOpacity = $(if ($b.Key -eq 'quiet') { 0.25 } else { 0.85 })
                 # 🔴 TWO MARKS, AND ONLY WHEN THEY MEAN SOMETHING. This list was
@@ -2235,7 +2258,7 @@ function Invoke-Compact {
 # ===========================================================================
 # Selection, and following the selected transcript
 # ===========================================================================
-function Update-Document {
+function Update-Document { param([switch]$Wait)
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
     $r = $it.Row
@@ -2246,11 +2269,111 @@ function Update-Document {
         $ui.PaneEmpty.Visibility = $V_Show
         return
     }
-    $truncated = $false
-    try { $truncated = ((Get-Item -LiteralPath $j).Length -gt $script:tailBytes) } catch { }
-    $blocks = @()
-    try { $blocks = Get-SRTranscriptBlocks -JsonlPath $j -MaxRecords 220 -MaxTailBytes $script:tailBytes } catch { }
-    $doc = Build-ReadDocument -Blocks $blocks -Truncated $truncated
+    # 🔴 THE PARSE IS NOT DONE HERE ANY MORE. Measured best-of-seven:
+    # Get-SRTranscriptBlocks over a 96 KB tail is ~37 ms and building the
+    # FlowDocument another ~20 ms, so this function cost 56 ms on the UI thread
+    # and the click that calls it 54 ms - both over the 50 ms a gesture is
+    # allowed. 'Load earlier' doubles the tail and cost 108 ms.
+    #
+    # The parse now runs in a runspace and the document is built when it lands.
+    # Building WPF objects has to stay on this thread - they have thread
+    # affinity - but 20 ms is inside budget, and the pane keeps showing the
+    # previous document until the new one is ready, which is what it looked
+    # like anyway.
+    # -Wait parses inline and renders before returning. The window never uses
+    # it; a test, a screenshot or anything that needs the document to EXIST on
+    # the next line does. Without this an async render is untestable, and the
+    # first thing an untestable render does is stop rendering.
+    if ($Wait) {
+        $blocks = @()
+        $trunc = $false
+        try { $trunc = ((Get-Item -LiteralPath $j).Length -gt $script:tailBytes) } catch { }
+        try { $blocks = Get-SRTranscriptBlocks -JsonlPath $j -MaxRecords 220 -MaxTailBytes $script:tailBytes } catch { }
+        Set-ReadDocument -Blocks $blocks -Truncated $trunc
+        return
+    }
+    Start-DocParse -Path $j
+    return
+}
+
+# The parse, off the UI thread. Keyed by path AND tail size so 'load earlier'
+# supersedes the read it is widening rather than racing it.
+$script:docPs = $null
+$script:docRs = $null
+$script:docHandle = $null
+$script:docFor = ''
+$script:docTrunc = $false
+$script:docToBottom = $false
+
+$script:DocJob = {
+    . (Join-Path $SRHere '_common.ps1')
+    $out = @{ Blocks = @() }
+    try {
+        $out.Blocks = @(Get-SRTranscriptBlocks -JsonlPath $SRDoc.Path -MaxRecords 220 -MaxTailBytes $SRDoc.Tail)
+    } catch { }
+    $out
+}
+
+function Start-DocParse { param([string]$Path)
+    $key = ('{0}|{1}' -f $Path.ToLower(), $script:tailBytes)
+    # 🪤 Abandoned, not queued. Clicking through four conversations must render
+    # the FOURTH, and a queue renders all four in order with the last one last -
+    # which looks identical until the transcripts are large.
+    if ($script:docPs) {
+        try { $script:docPs.Stop(); $script:docPs.Dispose() } catch { }
+        try { $script:docRs.Close(); $script:docRs.Dispose() } catch { }
+        $script:docPs = $null; $script:docRs = $null; $script:docHandle = $null
+    }
+    $script:docTrunc = $false
+    try { $script:docTrunc = ((Get-Item -LiteralPath $Path).Length -gt $script:tailBytes) } catch { }
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'MTA'
+        $rs.ThreadOptions = 'ReuseThread'
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        $rs.SessionStateProxy.SetVariable('SRDoc', @{ Path = $Path; Tail = $script:tailBytes })
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript($script:DocJob)
+        $script:docRs = $rs
+        $script:docPs = $ps
+        $script:docHandle = $ps.BeginInvoke()
+        $script:docFor = $key
+    } catch {
+        # 🪤 A FALLBACK THAT STILL RENDERS. If a runspace will not open, reading
+        # on this thread is slow but correct; showing nothing would not be.
+        Write-SRLog ('  [skip] parsing off-thread failed, reading inline: ' + $_.Exception.Message)
+        $script:docPs = $null
+        $blocks = @()
+        try { $blocks = Get-SRTranscriptBlocks -JsonlPath $Path -MaxRecords 220 -MaxTailBytes $script:tailBytes } catch { }
+        Set-ReadDocument -Blocks $blocks -Truncated $script:docTrunc
+    }
+}
+
+function Complete-DocParse {
+    if (-not $script:docPs -or -not $script:docHandle) { return $false }
+    if (-not $script:docHandle.IsCompleted) { return $false }
+    $res = $null
+    try { $res = @($script:docPs.EndInvoke($script:docHandle))[0] } catch { }
+    try { $script:docPs.Dispose(); $script:docRs.Close(); $script:docRs.Dispose() } catch { }
+    $script:docPs = $null; $script:docRs = $null; $script:docHandle = $null
+    if (-not $res) { return $false }
+    # The selection may have moved while the parse was out; a transcript belongs
+    # to the conversation it was read from.
+    $it = $ui.SessionList.SelectedItem
+    if (-not $it -or $it.Kind -ne 'session') { return $false }
+    $now = ('{0}|{1}' -f "$($it.Row.S.jsonl)".ToLower(), $script:tailBytes)
+    if ($now -ne $script:docFor) { return $false }
+    Set-ReadDocument -Blocks $res.Blocks -Truncated $script:docTrunc
+    return $true
+}
+
+# Building the document and putting it on screen. Separated from the parse so
+# the expensive half can move threads and this half - which cannot, because WPF
+# objects have thread affinity - stays here and stays inside budget.
+function Set-ReadDocument { param($Blocks, [bool]$Truncated = $false)
+    $doc = Build-ReadDocument -Blocks $Blocks -Truncated $Truncated
     if ($doc -isnot [System.Windows.Documents.FlowDocument]) {
         throw ('Build-ReadDocument returned {0}, not a FlowDocument - something in it emitted to the pipeline' -f $doc.GetType().Name)
     }
@@ -2265,6 +2388,7 @@ function Update-Document {
     # Whether we were at the bottom has to be sampled BEFORE the document is
     # replaced, because replacing it resets the extent and the answer with it.
     $stick = Test-AtBottom
+    if ($script:docToBottom) { $stick = $true; $script:docToBottom = $false }
     $ui.PaneDoc.Document = $doc
     $ui.PaneEmpty.Visibility = $V_Hide
     if ($stick) { Move-ToBottom }
@@ -2587,7 +2711,7 @@ function Show-Selected { param([switch]$Force)
     $same = ($script:selId -eq $it.Id)
     $script:selId = $it.Id
     $r = $it.Row
-    $t = Get-Title $r.S $r.D
+    $t = $r.T
     $ui.PaneName.Text = $t.Text
     $b = @($script:Bands | Where-Object { $_.Key -eq "$($r.Band)" })
     $ui.PaneStateDot.Background = $(if ($b.Count) { $window.FindResource($b[0].Acc) } else { $window.FindResource('AccIdle') })
@@ -2610,11 +2734,11 @@ function Show-Selected { param([switch]$Force)
     # 'load earlier' on every forced refresh - the exact defect the $same guard
     # above was added to fix, reintroduced one line below it.
     if (-not $same) { $script:tailBytes = $script:TailBase }
+    # A DIFFERENT conversation always opens at its newest line. The parse is
+    # off-thread now, so the document does not exist on the next line - the
+    # intent is carried and honoured by whoever builds it.
+    if (-not $same) { $script:docToBottom = $true }
     Update-Document
-    # A DIFFERENT conversation always opens at its newest line. Update-Document
-    # only STICKS to the bottom - and "were we at the bottom" was answered about
-    # the conversation you just left, which says nothing about this one.
-    if (-not $same) { Move-ToBottom }
     if (-not $same) {
         # 🔴 THE CONSOLE READ IS NOT DONE HERE ANY MORE. Update-Ask calls
         # Get-SRScreenQuestion, which spawns a child process with a 3-SECOND
@@ -3897,6 +4021,9 @@ function Invoke-WriteLane {
             try { Start-AskProbe (Get-SelectedRow) } catch { }
         }
         try { Complete-AskProbe } catch { }
+        # A transcript parse that has landed becomes the document here, on the
+        # lane, so the gesture that asked for it never waited.
+        try { $null = Complete-DocParse } catch { }
     }
     # Drain whatever the watcher queued. Several writes between two ticks are
     # one redraw, which is the point of collecting rather than handling.

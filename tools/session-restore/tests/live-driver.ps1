@@ -100,7 +100,7 @@ try {
         $sv.ScrollToEnd(); $window.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
         if (-not (Test-AtBottom)) { Fail 'scrolled to the end and it does not believe it is at the end' }
         else { Pass 'at the newest line, it knows it' }
-        Update-Document
+        Update-Document -Wait
         $window.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
         Start-Sleep -Milliseconds 200
         $window.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
@@ -109,7 +109,7 @@ try {
 
         $sv.ScrollToVerticalOffset(0)
         $window.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
-        Update-Document
+        Update-Document -Wait
         $window.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
         Start-Sleep -Milliseconds 200
         $window.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
