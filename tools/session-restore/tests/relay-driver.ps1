@@ -90,10 +90,24 @@ function Wait-ForMenu {
     # A test that passes on an idle machine and fails on a working one is a test
     # about the machine.
     param([int]$ProcessId, [int]$TimeoutMs = 45000)
+    # 🔴 STABLE, NOT MERELY PRESENT. This returned the instant TWO options
+    # parsed - and a console paints a menu a line at a time, so it handed back
+    # half-drawn screens. That produced failures that looked like defects in the
+    # thing under test and were nothing of the kind: "expected 5 options ... got
+    # 4", and "Submit read as stop -1" on a menu whose Submit row had simply not
+    # been written yet. Both passed on a re-run, which is the signature.
+    #
+    # Two consecutive reads agreeing on the option count is the cheap fix. A
+    # menu that is still painting changes between them; one that has finished
+    # does not.
     $stop = (Get-Date).AddMilliseconds($TimeoutMs)
+    $lastCount = -1
     while ((Get-Date) -lt $stop) {
         $seen = Get-SRScreenQuestion -ProcessId $ProcessId
-        if ($seen -and $seen.Options.Count -ge 2) { return $seen }
+        if ($seen -and $seen.Options.Count -ge 2) {
+            if ($seen.Options.Count -eq $lastCount) { return $seen }
+            $lastCount = $seen.Options.Count
+        }
         Start-Sleep -Milliseconds 250
     }
     return $null
@@ -289,6 +303,25 @@ try {
             if (-not $vit.SawShells) { Fail 'the line printed a shell count and SawShells is false' }
             elseif ($vit.SawAgents) { Fail 'no agent count was printed and SawAgents says one was' }
             else { Pass 'the reader says which of the two figures the line carried' }
+
+            # 🔴 AND THE CONVERSATION MAY NOT ANSWER FOR THE STATUS LINE. This
+            # read the WHOLE buffer for "N shells", so a session whose visible
+            # text was ABOUT shells reported 2,100 of them in the register. The
+            # same screen with a sentence pasted above it must still read 2.
+            $poisoned = ("we measured 2100 shells and 47 agents in that run" + "`n" + $screen6)
+            $vitP = Read-SRScreenVitals -ScreenText $poisoned
+            if ([int]$vitP.Shells -ne 2) {
+                Fail "prose above the status line was read as $($vitP.Shells) shell(s)"
+            } else { Pass 'prose that talks about shells is not read as a shell count' }
+            if ($vitP.SawAgents) { Fail "prose was read as $($vitP.Agents) agent(s)" }
+            else { Pass 'and the same for sub-agents' }
+
+            # 🪤 A COUNT THE LINE CANNOT MEAN. Even on the status line, a figure
+            # in the thousands is evidence of a misread rather than a fleet of
+            # shells - drawing it would be worse than drawing nothing.
+            $silly = Read-SRScreenVitals -ScreenText (([string][char]0x23F5) * 2 + ' auto mode on ' + [string][char]0x00B7 + ' 2100 shells')
+            if ($silly.SawShells) { Fail "an absurd count of $($silly.Shells) was accepted" }
+            else { Pass 'an impossible shell count is refused rather than drawn' }
         }
     }
 

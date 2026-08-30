@@ -2809,8 +2809,15 @@ public static class SRScreenMain {
 '@
         # The hash is in the NAME, so an exe that exists is by definition built
         # from the source in front of us - there is no staleness check to forget.
+        #
+        # 🪤 THE BUILD FLAGS ARE PART OF WHAT IT WAS BUILT FROM. Hashing only the
+        # C# meant changing /target:exe to /target:winexe produced the SAME name,
+        # so the console-subsystem exe already on disk would have been reused
+        # for good and the fix would have shipped doing nothing. Whatever decides
+        # the output has to decide the name.
+        $cscArgs = '/nologo /optimize /target:winexe'
         $md5 = [System.Security.Cryptography.MD5]::Create()
-        $hash = [BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($cs))).Replace('-', '').Substring(0, 8).ToLower()
+        $hash = [BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($cs + "`n" + $cscArgs))).Replace('-', '').Substring(0, 8).ToLower()
         $exe = Join-Path $SR_StateDir ('srscreen-' + $hash + '.exe')
         if (Test-Path -LiteralPath $exe) { $script:SR_ScreenExe = $exe; return $exe }
 
@@ -2822,7 +2829,22 @@ public static class SRScreenMain {
         [System.IO.File]::WriteAllText($csFile, $cs, (New-Object System.Text.UTF8Encoding($false)))
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $csc
-        $psi.Arguments = ('/nologo /optimize /target:exe /out:"{0}" "{1}"' -f $exe, $csFile)
+        # 🔴 winexe, NOT exe. A CONSOLE-subsystem process gets a console from
+        # Windows whether it wants one or not, and CreateNoWindow only hides the
+        # WINDOW - a conhost.exe still spawns, and this one then calls
+        # FreeConsole/AttachConsole/FreeConsole, which can leave it consoleless
+        # and let the next write allocate a fresh, VISIBLE one. Caught by
+        # watching every process that appears while the tool starts:
+        #
+        #     +0.8s  conhost.exe  pid 15304  parent srscreen-f68b06a3.exe
+        #
+        # which is the "background shell opening up" the operator sees on launch.
+        # Sessions.exe was given /target:winexe for exactly this reason and the
+        # app suite asserts it; its own helper was left as a console app, and
+        # nothing was watching the helper. AttachConsole works perfectly well
+        # from a GUI-subsystem process - reading somebody else's console never
+        # needed one of our own.
+        $psi.Arguments = ('{0} /out:"{1}" "{2}"' -f $cscArgs, $exe, $csFile)
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
         $psi.RedirectStandardOutput = $true
@@ -2996,12 +3018,45 @@ function Read-SRScreenVitals { param([string]$ScreenText)
         Effort = ''; SawEffort = $false; TurnSecs = -1; TurnDone = $false; SawTurn = $false
     }
     if (-not $ScreenText) { return $v }
-    $m = [regex]::Match($ScreenText, '(\d+)\s+shells?\b')
-    if ($m.Success) { $v.Shells = [int]$m.Groups[1].Value; $v.Ok = $true; $v.SawShells = $true }
-    # "<- for agents" carries no number and means none are out; a count only
-    # appears when there is one, so a bare mention must not be read as a hit.
-    $m = [regex]::Match($ScreenText, '(\d+)\s+(?:sub-?)?agents?\b')
-    if ($m.Success) { $v.Agents = [int]$m.Groups[1].Value; $v.Ok = $true; $v.SawAgents = $true }
+
+    # 🔴 THE STATUS LINE, NOT THE WHOLE SCREEN. These two patterns used to run
+    # over the entire buffer - which is the CONVERSATION as well as the status
+    # line - so any prose that happened to say "2100 shells" was read as a shell
+    # count. The operator saw a session reporting 2,100 background shells, and
+    # it was a session whose visible text was about shells.
+    #
+    # The status line is the one claude draws for itself, and it is the only
+    # place either count is authoritative:
+    #
+    #     >> auto mode on . 1 shell . <- for agents . 1 feedback draft
+    #     || manual mode on
+    #
+    # It begins with U+23F5 (twice) or U+23F8 and sits at the foot of the
+    # buffer. Nothing above it may answer for it - a conversation can say
+    # anything at all, which is the whole reason this is scoped.
+    $play  = [string][char]0x23F5
+    $pause = [string][char]0x23F8
+    $statusLines = New-Object System.Collections.Generic.List[string]
+    $tail = @(@("$ScreenText" -split "`n" | Where-Object { "$_".Trim() }) | Select-Object -Last 6)
+    foreach ($ln in $tail) {
+        $t = "$ln".Trim()
+        if ($t.StartsWith($play) -or $t.StartsWith($pause)) { $null = $statusLines.Add($t) }
+    }
+    $status = ($statusLines -join ' ')
+
+    if ($status) {
+        $m = [regex]::Match($status, '(\d+)\s+shells?\b')
+        if ($m.Success) { $v.Shells = [int]$m.Groups[1].Value; $v.Ok = $true; $v.SawShells = $true }
+        # "<- for agents" carries no number and means none are out; a count only
+        # appears when there is one, so a bare mention must not be read as a hit.
+        $m = [regex]::Match($status, '(\d+)\s+(?:sub-?)?agents?\b')
+        if ($m.Success) { $v.Agents = [int]$m.Groups[1].Value; $v.Ok = $true; $v.SawAgents = $true }
+        # 🪤 A COUNT THE STATUS LINE CANNOT MEAN. It is a handful of shells, not
+        # thousands; a number this size is evidence the line was misread, and
+        # drawing it would be worse than drawing nothing.
+        if ($v.Shells -gt 99) { $v.Shells = 0; $v.SawShells = $false }
+        if ($v.Agents -gt 99) { $v.Agents = 0; $v.SawAgents = $false }
+    }
 
     # =====================================================================
     # THE TURN CLOCK AND THE EFFORT, OFF THE SPINNER LINE.

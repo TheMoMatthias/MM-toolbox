@@ -298,6 +298,53 @@ try {
         exit 2
     }
 
+    # ========================================================================
+    # 🔴 THE HELPER MUST NOT BRING A CONSOLE EITHER. Sessions.exe is built
+    # /target:winexe and this suite has always asserted it gets no console. Its
+    # screen reader was left as /target:exe - a CONSOLE-subsystem program - and
+    # Windows gives one of those a conhost whether it wants it or not;
+    # CreateNoWindow hides the window, not the console. Watching every process
+    # that appeared while the tool started caught it:
+    #
+    #     +0.8s  conhost.exe  pid 15304  parent srscreen-f68b06a3.exe
+    #
+    # which is the "background shell opening up" the operator reported on
+    # launch. Nothing was watching the helper, only the app.
+    #
+    # 🪤 The name carries a hash of what it was built from, and that hash now
+    # includes the BUILD FLAGS - hashing only the C# gave the same name to a
+    # console build and a windows build, so the old exe would have been reused
+    # for ever and this fix would have shipped doing nothing.
+    # ========================================================================
+    # 🪤 THIS DRIVER RUNS STANDALONE - no harness, no library. Everything else
+    # here is about the exe on disk, so it never needed _common.ps1; reaching
+    # for Get-SRScreenExe without it is how this suite first went red on a
+    # missing function rather than on the thing under test.
+    $rdExe = $null
+    try {
+        . (Join-Path $tool 'lib\_common.ps1')
+        $rdExe = Get-SRScreenExe
+    } catch { Note ("could not build the screen reader here: " + $_.Exception.Message) }
+    if (-not $rdExe) { Note 'the screen reader could not be built here - no csc?' }
+    else {
+        $sub = 0
+        try {
+            $bytes = [System.IO.File]::ReadAllBytes($rdExe)
+            # PE: e_lfanew at 0x3C, then "PE\0\0", the COFF header (20 bytes),
+            # and the Subsystem word 68 bytes into the optional header.
+            $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+            $sub = [BitConverter]::ToUInt16($bytes, $pe + 4 + 20 + 68)
+        } catch { }
+        # 2 = IMAGE_SUBSYSTEM_WINDOWS_GUI, 3 = ..._WINDOWS_CUI (a console app).
+        if ($sub -eq 3) {
+            Fail ("the screen reader is a console program ({0}) - Windows will give it a conhost on every read" -f (Split-Path -Leaf $rdExe))
+        } elseif ($sub -eq 2) {
+            Pass ("the screen reader is a windows program, so it brings no console: {0}" -f (Split-Path -Leaf $rdExe))
+        } else {
+            Fail ("could not read the subsystem out of {0} (got {1})" -f (Split-Path -Leaf $rdExe), $sub)
+        }
+    }
+
     # --- 4, 5. it launches, alone -------------------------------------------
     $before = Get-Hash $registry
 

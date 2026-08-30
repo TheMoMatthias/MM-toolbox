@@ -299,6 +299,32 @@ if ($LASTEXITCODE -ne 0) {
     throw "csc.exe failed with exit code $LASTEXITCODE"
 }
 
+# ===========================================================================
+# THE SCREEN READER, BUILT HERE RATHER THAN ON FIRST USE.
+#
+# 🔴 IT COMPILES ITSELF THE FIRST TIME IT IS NEEDED, and csc.exe is a console
+# program: launching the tool for the first time after any change to the reader
+# spawned a visible csc window. Watching every process that appeared during a
+# launch caught it at +0.6s, parented to Sessions.exe, with its own conhost a
+# tenth of a second later - the "background shell opening up" the operator
+# reported. It is once per change rather than every launch, which is exactly
+# what makes it easy to miss and annoying to meet.
+#
+# Building it alongside the exe means the running tool always finds one already
+# there. Its name carries a hash of the source AND the build flags, so this
+# cannot go stale: a changed reader simply gets a different name and is rebuilt.
+try {
+    . (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib\_common.ps1')
+    $rd = Get-SRScreenExe
+    if ($rd -and -not $Quiet) {
+        Write-Host ("  screen reader  ->  {0}" -f (Split-Path -Leaf $rd)) -ForegroundColor DarkGray
+    } elseif (-not $rd) {
+        Write-Host "  [warn] the screen reader could not be prebuilt - it will compile on first use" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host ("  [warn] the screen reader could not be prebuilt: " + $_.Exception.Message) -ForegroundColor Yellow
+}
+
 if (-not $Quiet) {
     $kb = [Math]::Round((Get-Item -LiteralPath $exeOut).Length / 1KB, 1)
     Write-Host ""

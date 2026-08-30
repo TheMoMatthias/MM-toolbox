@@ -125,7 +125,19 @@ function Show-Menu {
     # console rather than against a string in a fixture.
     if ($StatusLine) {
         Write-Host ''
-        Write-Host $StatusLine
+        # 🔴 PAINTED WITH THE REAL MARKER. The reader no longer scans the whole
+        # buffer for "N shells" - it scans the STATUS LINE, because a session
+        # whose conversation was about shells got read as having 2,100 of them.
+        # A status line is recognised by the glyph claude starts it with, so a
+        # replica painting an ASCII stand-in would no longer be a replica of one.
+        #
+        # The caller still passes plain ASCII (">> auto mode on ...") because an
+        # argument makes several hops through Start-Process and PS 5.1's ANSI
+        # reading of .ps1 files; the glyph is written HERE, from a code point,
+        # where neither can touch it. The stand-in prefix is stripped first.
+        $marker = ([string][char]0x23F5) * 2
+        $body = "$StatusLine" -replace '^\s*[^\w]+\s*', ''
+        Write-Host ($marker + ' ' + $body)
     }
 }
 
