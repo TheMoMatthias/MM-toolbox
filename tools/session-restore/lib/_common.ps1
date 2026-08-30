@@ -162,7 +162,12 @@ function Set-SRIncludeWorktrees {
 
 function Get-SRConfig {
     if (-not (Test-Path -LiteralPath $SR_ConfigPath)) { throw "config not found: $SR_ConfigPath" }
-    $c = Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json
+    # 🪤 SAY WHAT TO DO ABOUT IT. Get-SRRegistry has caught its own parse
+    # failure and named the fix since it was written; this threw ConvertFrom-Json's
+    # own message, which names a character offset and no file. The config is the
+    # one of the two that gets hand-edited, so it is the likelier to be broken.
+    try { $c = Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json }
+    catch { throw "config is unreadable ($SR_ConfigPath): $($_.Exception.Message). Fix the JSON, or delete the file to get the defaults back." }
 
     # Defaults for keys added after a config was first written, so an older config
     # keeps working instead of silently behaving as if the value were zero.
@@ -184,6 +189,47 @@ function Get-SRConfig {
         if ($null -eq $c.PSObject.Properties[$kv.k]) {
             $c | Add-Member -NotePropertyName $kv.k -NotePropertyValue $kv.v -Force
         }
+    }
+
+    # 🔴 A DEFAULT FILLED IN A MISSING KEY AND NOTHING CHECKED A PRESENT ONE.
+    # Measured 2026-08-30 against a hand-edited config:
+    #   maxSessions: 0 / -5 / null  -> NO CAP AT ALL. Every ticked conversation
+    #     opens, which with 31 ticked is 31 tabs. The cap exists precisely so a
+    #     repo with sixteen live conversations does not open sixteen.
+    #   maxSessions: "twelve"       -> [int] threw at restore-sessions.ps1:167,
+    #     unguarded, and the WHOLE logon restore died. Nothing came back, at the
+    #     one moment nobody is watching.
+    # A safety limit that a typo disables is not a safety limit. Anything absent,
+    # unparseable or out of range falls back to its default and SAYS SO - the log
+    # is the only place an unattended logon can report anything.
+    foreach ($kv in @(
+        @{ k = 'recencyDays';          v = 14;   min = 1;   max = 3650 },
+        @{ k = 'listDays';             v = 7;    min = 1;   max = 3650 },
+        @{ k = 'sessionWindowDays';    v = 3;    min = 1;   max = 3650 },
+        @{ k = 'autoTickPerDirectory'; v = 3;    min = 1;   max = 1000 },
+        @{ k = 'autoTickPerWorktree';  v = 3;    min = 1;   max = 1000 },
+        @{ k = 'registryWindowDays';   v = 30;   min = 1;   max = 3650 },
+        @{ k = 'maxSessions';          v = 12;   min = 1;   max = 1000 }
+    )) {
+        $raw = $c.($kv.k)
+        $n = $null
+        try { if ($null -ne $raw -and "$raw".Trim()) { $n = [int]$raw } } catch { $n = $null }
+        # 🪤 TOO LARGE IS INTENT; TOO SMALL OR NOT A NUMBER IS A MISTAKE.
+        # Someone who writes 999999 means "as many as you can" and handing them
+        # the default 12 ignores what they asked for - so that clamps to the
+        # ceiling. Nothing sensible is meant by a cap of 0 or -5, and both used to
+        # mean NO CAP, so those take the default instead of clamping to 1 and
+        # opening a single conversation.
+        if ($null -eq $n) {
+            Write-SRLog ("  [warn] config {0} is '{1}', which is not a whole number; using {2}" -f $kv.k, "$raw", $kv.v)
+            $c.($kv.k) = $kv.v
+        } elseif ($n -lt $kv.min) {
+            Write-SRLog ("  [warn] config {0} is {1}, which is not a usable value; using {2}" -f $kv.k, $n, $kv.v)
+            $c.($kv.k) = $kv.v
+        } elseif ($n -gt $kv.max) {
+            Write-SRLog ("  [warn] config {0} is {1}, above the {2} ceiling; using {2}" -f $kv.k, $n, $kv.max)
+            $c.($kv.k) = $kv.max
+        } else { $c.($kv.k) = $n }
     }
     return $c
 }

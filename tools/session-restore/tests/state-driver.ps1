@@ -816,6 +816,49 @@ Remove-Item -LiteralPath $sandRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- a typo in the config must not disable a safety limit ---'
+# ===========================================================================
+# 🔴 maxSessions IS THE CAP THAT STOPS A LOGON OPENING EVERY TICKED
+# CONVERSATION AT ONCE. Measured 2026-08-30 on a hand-edited config: 0, -5 and
+# null all produced NO CAP - `if ($cap -gt 0)` simply stopped being true - and a
+# quoted "twelve" threw out of [int] at restore-sessions.ps1:167, unguarded,
+# killing the whole logon restore. A safety limit a typo can disable is not one.
+$cfgWas = $SR_ConfigPath
+try {
+    foreach ($case in @(
+        @{ V = '0';          W = 12;   N = 'zero'          },
+        @{ V = '-5';         W = 12;   N = 'negative'      },
+        @{ V = '"twelve"';   W = 12;   N = 'a quoted word' },
+        @{ V = 'null';       W = 12;   N = 'null'          },
+        @{ V = '999999';     W = 1000; N = 'far too large' },
+        @{ V = '6';          W = 6;    N = 'a real value'  }
+    )) {
+        $tmpCfg = Join-Path $SR_StateDir ('cfg-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+        Set-Content -LiteralPath $tmpCfg -Value ('{ "maxSessions": ' + $case.V + ' }') -Encoding utf8
+        $script:SR_ConfigPath = $tmpCfg
+        $got = $null
+        try { $got = [int](Get-SRConfig).maxSessions } catch { }
+        Remove-Item -LiteralPath $tmpCfg -Force -ErrorAction SilentlyContinue
+        if ($got -ne $case.W) { Fail ("maxSessions $($case.N) gave [$got], expected $($case.W)") }
+        elseif ($got -le 0)   { Fail ("maxSessions $($case.N) left the cap disabled") }
+        else { Pass ("maxSessions $($case.N) -> $got, so the cap still holds") }
+    }
+
+    # 🪤 AND AN UNREADABLE CONFIG MUST SAY WHAT TO DO. It threw
+    # ConvertFrom-Json's own message, which names a character offset and no file.
+    $badCfg = Join-Path $SR_StateDir ('cfgbad-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+    Set-Content -LiteralPath $badCfg -Value '{ not json' -Encoding utf8
+    $script:SR_ConfigPath = $badCfg
+    $msg = ''
+    try { $null = Get-SRConfig } catch { $msg = "$($_.Exception.Message)" }
+    Remove-Item -LiteralPath $badCfg -Force -ErrorAction SilentlyContinue
+    if ($msg -notmatch 'unreadable' -or $msg -notmatch 'delete') {
+        Fail "an unreadable config says [$msg] - it does not name the file or the fix"
+    } else { Pass 'an unreadable config names the file and what to do about it' }
+} finally { $script:SR_ConfigPath = $cfgWas }
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- settings chosen for a conversation that does not exist yet ---'
 # ===========================================================================
 # 🔴 A BRAND NEW CONVERSATION HAS NO SESSION ID, so the New session dialog
