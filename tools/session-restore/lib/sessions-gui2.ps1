@@ -3362,10 +3362,34 @@ $script:castTimer.Add_Tick({
 })
 
 $ui.Rescan.Add_Click({
+    # 🔴 A RESCAN USED TO THROW YOUR UNSAVED TICKS AWAY, SILENTLY.
+    # Update-SRRegistryCore reads the registry from DISK - not from $script:reg -
+    # adds what it discovers and saves. Anything ticked but not yet saved was
+    # never on disk, so the scan never saw it, and the Update-Model below then
+    # re-read the file and replaced the in-memory copy that held it. The live
+    # probe has guarded this since the day it was written ("NEVER OVERWRITE
+    # UNSAVED TICKS"); this path never did.
+    #
+    # Saving first is the right order rather than refusing: the ticks are what
+    # the operator meant, and a scan should build on them.
+    if ($script:dirty) {
+        try { Save-SRRegistry -Registry $script:reg; $script:dirty = $false }
+        catch {
+            Set-Status ('not rescanned - your unsaved ticks could not be written first, and a rescan would discard them: ' +
+                $_.Exception.Message) 'bad'
+            return
+        }
+    }
     Set-Status 'rescanning...'
-    try { $null = Update-SRRegistry -Config $script:cfg -Quiet } catch { }
+    # 🪤 AND IT SAID 'rescanned' EITHER WAY. The failure went into a bare
+    # catch and the status line reported success, so a scan that could not read
+    # the registry looked exactly like one that had just refreshed everything.
+    $why = $null
+    try { $null = Update-SRRegistry -Config $script:cfg -Quiet }
+    catch { $why = "$($_.Exception.Message)" ; Write-SRLog ('  [FAIL] rescan: ' + $why) }
     Update-Model; Update-Surface
-    Set-Status 'rescanned' 'ok'
+    if ($why) { Set-Status ('the rescan failed - the list is unchanged: ' + $why) 'bad' }
+    else { Set-Status 'rescanned' 'ok' }
 })
 
 # ===========================================================================

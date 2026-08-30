@@ -816,6 +816,59 @@ Remove-Item -LiteralPath $sandRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the parser, against transcripts that are not well formed ---'
+# ===========================================================================
+# 🪤 THE MALFORMED CASE IS THE NORMAL CASE HERE. Get-SRLastSaid seeks
+# BACKWARDS a fixed number of bytes, so the first line it sees is almost always a
+# FRAGMENT of a record - and the file is being appended to by another process
+# while it reads, so the last line is regularly half-written. Neither is an edge
+# case; both happen on every read of a busy conversation.
+#
+# These also cover the escalation added on 2026-08-30, which widens the window
+# when the tail is all tool traffic. A wrong answer here is silent: the manager
+# just shows a blank, or worse, the wrong line.
+$pdir = Join-Path $SR_StateDir ('parse-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$null = New-Item -ItemType Directory -Path $pdir -Force
+try {
+    $gd = '{"type":"assistant","timestamp":"2026-08-30T10:00:00Z","message":{"content":[{"type":"text","text":"REAL PROSE"}]}}'
+    $tl = '{"type":"assistant","timestamp":"2026-08-30T10:00:01Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo hi"}}]}}'
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $cases = @(
+        @{ N = 'a tail that starts mid-record'; T = ('ext":"cut record"}]}}' + "`n" + $gd);            W = 'REAL PROSE' },
+        @{ N = 'a half-written last line';      T = ($gd + "`n" + '{"type":"assist');                  W = 'REAL PROSE' },
+        @{ N = 'a BOM in the middle';           T = ($gd + "`n" + [char]0xFEFF + $tl);                  W = 'REAL PROSE' },
+        @{ N = 'CRLF line endings';             T = ($gd + "`r`n" + $tl + "`r`n");                     W = 'REAL PROSE' },
+        @{ N = 'the newest line wins';          T = ($gd + "`n" + ($gd -replace 'REAL PROSE','NEWEST')); W = 'NEWEST' },
+        @{ N = 'a user turn is not what it said'; T = ($gd + "`n" + '{"type":"user","message":{"content":[{"type":"text","text":"I TYPED THIS"}]}}'); W = 'REAL PROSE' },
+        @{ N = 'nothing but tool traffic';      T = (($tl + "`n") * 40);                                W = '' },
+        @{ N = 'not JSON at all';               T = "hello`nworld";                                     W = '' },
+        @{ N = 'an empty file';                 T = '';                                                 W = '' }
+    )
+    foreach ($c in $cases) {
+        $fp = Join-Path $pdir ((($c.N) -replace '[^A-Za-z]', '_') + '.jsonl')
+        [System.IO.File]::WriteAllText($fp, [string]$c.T, $utf8)
+        $r = $null
+        try { $r = Get-SRLastSaid -JsonlPath $fp } catch { Fail ("$($c.N) THREW: " + $_.Exception.Message); continue }
+        $got = "$($r.Said)".Trim()
+        if ($got -ne $c.W) { Fail ("$($c.N): said [$got], expected [$($c.W)]") }
+        else { Pass ("$($c.N) -> " + $(if ($got) { "[$got]" } else { 'nothing, correctly' })) }
+    }
+
+    # 🔴 THE PENDING TOOL MUST BE THE CURRENT ONE. The escalation reaches
+    # further back on a miss, so it can see an OLDER tool_use - reporting a
+    # conversation as running something it finished minutes ago.
+    $fp = Join-Path $pdir 'pending.jsonl'
+    [System.IO.File]::WriteAllText($fp,
+        ('{"type":"assistant","message":{"content":[{"type":"tool_use","name":"OLD","input":{"command":"old"}}]}}' + "`n" +
+         $gd + "`n" +
+         '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"CURRENT","input":{"command":"now"}}]}}'), $utf8)
+    $r = Get-SRLastSaid -JsonlPath $fp
+    if ("$($r.Pending)" -notlike 'CURRENT*') { Fail "the pending tool is [$($r.Pending)], not the current one" }
+    else { Pass 'the pending tool is the current one, not an older one further back' }
+} finally { Remove-Item -LiteralPath $pdir -Recurse -Force -ErrorAction SilentlyContinue }
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the logon restore honours per-session settings ---'
 # ===========================================================================
 # 🔴 THE ONE PATH THAT RUNS WHILE NOBODY IS WATCHING WAS THE ONE IGNORING
