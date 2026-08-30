@@ -35,7 +35,7 @@ through the named instances above. Do not "fix" the default — check
 
 ## How the window loads it
 
-`sessions-gui2.ps1` builds the family from this directory at startup and replaces
+`sessions-window.ps1` builds the family from this directory at startup and replaces
 the `FontText` / `FontDisplay` / `FontSmall` resources with it. If the file is
 missing or unreadable the window keeps the Segoe UI Variable stack the markup
 declares, so a deleted font degrades to the old look rather than to Arial — and the

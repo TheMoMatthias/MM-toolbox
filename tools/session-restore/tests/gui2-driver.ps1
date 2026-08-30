@@ -1,5 +1,5 @@
 # ===========================================================================
-# THE SHIPPED WINDOW (lib\sessions-gui2.ps1), built and never shown.
+# THE SHIPPED WINDOW (lib\sessions-window.ps1), built and never shown.
 #
 # 🔴 THIS IS THE ONLY SUITE THAT TESTS WHAT ACTUALLY OPENS. headless, inbox and
 # keys drive lib\sessions-gui.ps1, the RETIRED window, and their green says
@@ -536,7 +536,7 @@ Write-Host '--- no timer tick may take the window down ---'
 # 🪤 This reads the SOURCE rather than firing the ticks, because a tick that
 # throws in a test would take the test host down with it - which is the whole
 # point being asserted.
-$guiSrc = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-gui2.ps1') -Raw -Encoding UTF8
+$guiSrc = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-window.ps1') -Raw -Encoding UTF8
 $bareTicks = @()
 $tickNames = @('followTimer', 'searchTimer', 'launchTimer', 'castTimer', 'fastTimer', 'liveTimer', 'pollTimer')
 $checked = 0
@@ -764,7 +764,7 @@ Pass 'the right-click menu, its items, separators and tooltips are all templated
 
 # And nothing may reach for a MessageBox again - that was the whole point of
 # the sheet, and it is the easiest thing to reintroduce by habit.
-$guiCode = @(Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-gui2.ps1') -Encoding UTF8 |
+$guiCode = @(Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-window.ps1') -Encoding UTF8 |
              ForEach-Object { ($_ -replace '(?<!`)#.*$', '') } | Where-Object { $_.Trim() })
 $boxes = @($guiCode | Where-Object { $_ -match 'MessageBox' })
 if ($boxes.Count) { Fail "a stock MessageBox is back: $($boxes[0].Trim())" }
@@ -1053,10 +1053,47 @@ else {
     $noAcc = @($tiles | Where-Object { -not $_.Accent })
     if ($noAcc.Count) { Fail "$($noAcc.Count) tile(s) have no identity colour at all" }
     else {
+        # 🪤 THIS USED TO DEMAND SIX DISTINCT COLOURS ACROSS THE TILES ON SCREEN,
+        # AND THAT IS NOT SOMETHING THE DESIGN PROMISES. The wheel has twelve
+        # slots dealt by sorted index, so with twenty-seven projects two of them
+        # WILL share a colour - the deliberate trade recorded in
+        # Get-ProjectAccent, taken because a guaranteed spread beats a
+        # probabilistic one. Which projects the rail happens to show is live
+        # data, so the old assertion went red the first time two tiles twelve
+        # apart appeared together, having said nothing about the code.
+        #
+        # What the design DOES promise, and what is checked here: the twelve
+        # slots are twelve different colours, and names close enough to be
+        # confused never land on the same one.
+        $ring = @()
+        foreach ($k in @($script:accentOrder | Select-Object -First 12)) {
+            $ring += "$((Get-ProjectAccent $k).Color)"
+        }
+        $ringUniq = @($ring | Sort-Object -Unique)
+        if ($ring.Count -and $ringUniq.Count -ne $ring.Count) {
+            Fail "the wheel yields only $($ringUniq.Count) colours for $($ring.Count) slots - two slots are the same colour"
+        } else { Pass "$($ringUniq.Count) distinct colours across the $($ring.Count) wheel slots" }
+
+        # Two tiles may share a colour ONLY by wrapping the twelve-slot wheel.
+        # Anything else - two projects at adjacent indices drawing the same
+        # colour - would mean the dealing broke, and that is what this catches.
+        # Counting distinct colours cannot tell the two apart, which is why the
+        # expected number is DERIVED from the slots rather than assumed to be
+        # the number of tiles.
+        $all = @($script:accentOrder)
+        $slots = @()
+        foreach ($t in $tiles) {
+            $at = [array]::IndexOf($all, "$($t.Path)".ToLower())
+            if ($at -lt 0) { $at = 0 }
+            $slots += ($at % 12)
+        }
         $cols = @($tiles | ForEach-Object { "$($_.Accent.Color)" })
         $uniq = @($cols | Sort-Object -Unique)
-        if ($uniq.Count -lt [math]::Min(6, $tiles.Count)) {
-            Fail "only $($uniq.Count) distinct colours across $($tiles.Count) projects - identity collides"
+        $wantUniq = @($slots | Sort-Object -Unique).Count
+        if ($uniq.Count -ne $wantUniq) {
+            Fail "$($tiles.Count) projects occupy $wantUniq wheel slots but draw $($uniq.Count) colours - the dealing is broken"
+        } elseif ($uniq.Count -lt $tiles.Count) {
+            Pass "$($uniq.Count) colours for $($tiles.Count) projects - $($tiles.Count - $uniq.Count) wrapped the twelve-slot wheel, as designed"
         } else { Pass "$($uniq.Count) distinct identity colours across $($tiles.Count) projects" }
     }
     # 🔴 AND IT MUST ACTUALLY BE ON SCREEN. The colours were right, distinct
@@ -1134,20 +1171,35 @@ Show-Ask $fake
 $btns = @($ui.AskOptions.ItemsSource)
 if ($btns.Count -ne 3) { Fail "the panel built $($btns.Count) buttons for 3 options" }
 else {
-    # An option's button is a StackPanel: the label, then the reasoning under it.
+    # An option's button is a Grid: the number in its own badge column, then a
+    # stack holding the label and the reasoning under it.
+    #
+    # 🪤 THE NUMBER MOVED, AND IT STILL HAS TO BE THERE. It used to be the first
+    # two characters of the label ("1.  Add the allow rule"); it is now a badge
+    # in its own column, because it is the key the operator PRESSES and inline
+    # it drifted away from the option it numbered on any option that wrapped.
+    # The guarantee is unchanged and so is this test's job - only where it looks
+    # changed. Reading the label alone would now pass a panel that numbers
+    # nothing at all.
     $withProse = 0
     $labels = @()
+    $badges = @()
     foreach ($b in $btns) {
-        $kids = @($b.Content.Children)
+        $cells = @($b.Content.Children)
+        $badges += "$($cells[0].Child.Text)".Trim()
+        $kids = @($cells[1].Children)
         $labels += "$($kids[0].Text)"
         if ($kids.Count -ge 2 -and "$($kids[1].Text)".Trim()) { $withProse++ }
     }
     if ($withProse -ne 2) {
         Fail "$withProse of the 3 options carry their reasoning underneath - two were given some"
     } else { Pass 'each option shows the reasoning written under it, and the one without stays bare' }
-    if ("$($labels[0])" -notlike '1.*Add the allow rule*') {
-        Fail "the first option reads '$($labels[0])' - it must keep claude's own numbering"
-    } else { Pass 'the options keep the numbers the operator will actually type' }
+    if ("$($labels[0])" -ne 'Add the allow rule') {
+        Fail "the first option reads '$($labels[0])' - it must carry claude's own words"
+    } else { Pass "the options carry claude's own words, unprefixed" }
+    if (($badges -join ',') -ne '1,2,3') {
+        Fail "the badges read '$($badges -join ',')' - they must be the numbers the operator will type, in order"
+    } else { Pass 'each option is numbered with the key that answers it' }
 }
 if ($ui.AskFooter.Visibility -ne $V_Show -or "$($ui.AskFooter.Text)" -ne 'Enter to confirm - Esc to go back') {
     Fail 'the footer that qualifies the whole question is not shown'
@@ -1161,7 +1213,7 @@ $bare = [PSCustomObject]@{
 }
 Show-Ask $bare
 if ($ui.AskFooter.Visibility -ne $V_Hide) { Fail 'the footer stays up for a question that has none' }
-elseif (@(@($ui.AskOptions.ItemsSource)[0].Content.Children).Count -ne 1) {
+elseif (@(@(@($ui.AskOptions.ItemsSource)[0].Content.Children)[1].Children).Count -ne 1) {
     Fail 'an option with no reasoning still draws a second line'
 } else { Pass 'a question with neither shows neither' }
 
@@ -1173,6 +1225,46 @@ elseif ($script:lastAsk) { Fail 'the previous question is still on record after 
 else { Pass 'nothing to ask clears the panel and the record together' }
 
 # ===========================================================================
+Write-Host ''
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the vitals strip, and the clock that must stay cheap ---'
+# ===========================================================================
+Build-Sessions
+$chipRow = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })
+if (-not $chipRow.Count) { Fail 'no session to read vitals for' }
+else {
+    $ui.SessionList.SelectedItem = $chipRow[0]
+    Update-Chips $chipRow[0].Row -Force
+    $chipKids = @($ui.PaneChips.Children)
+    if ($chipKids.Count -lt 2) {
+        Fail "the strip drew $($chipKids.Count) chip(s) - model and context are unconditional"
+    } else { Pass "$($chipKids.Count) chips: the strip is reading the transcript, not a placeholder" }
+
+    # 🔴 THE PER-SECOND PATH MUST NOT READ THE TRANSCRIPT. Step-ChipClock runs
+    # on the one-second follow tick. It used to call Get-SRSessionVitals, whose
+    # cache is keyed on the file's size and mtime - and a LIVE session, the only
+    # kind whose clock you watch, changes both constantly. So it missed the
+    # cache every tick and re-parsed up to 600 KB through ConvertFrom-Json on
+    # the UI thread, once a second, to advance a number it already had.
+    #
+    # Timing is the assertion because "did it open the file" is not observable
+    # from here. A parse costs hundreds of milliseconds; a subtraction costs
+    # microseconds. Fifty of them under 60 ms cannot be a parse, and the moment
+    # anyone reintroduces one this goes red by two orders of magnitude.
+    $clockMs = Ms { for ($ci = 0; $ci -lt 50; $ci++) { Step-ChipClock } }
+    if ($clockMs -gt 60) {
+        Fail ("50 clock ticks cost {0:N0} ms - it is re-reading the transcript, not doing arithmetic" -f $clockMs)
+    } else { Pass ("50 clock ticks cost {0:N1} ms - arithmetic only" -f $clockMs) }
+
+    # And the inverse, so the assertion above cannot pass by finding nothing:
+    # the real read over the same conversation must be MEASURABLY dearer.
+    $readMs = Ms { Update-Chips $chipRow[0].Row -Force }
+    if ($readMs -le ($clockMs / 50)) {
+        Fail ("a full vitals read cost {0:N1} ms, no more than one clock tick - the timing check above proves nothing" -f $readMs)
+    } else { Pass ("a full read costs {0:N1} ms against {1:N2} ms a tick, so the cheap path is really the cheap one" -f $readMs, ($clockMs / 50)) }
+}
+
 Write-Host ''
 Write-Host '--- the skill picker ---'
 # ===========================================================================
@@ -1290,7 +1382,7 @@ Write-Host '--- the window asks in its own voice ---'
 # '--remote-control' inside a COMMENT and would have passed however the code
 # behaved. Every line here is stripped of comments first, and the grep is proved
 # capable of finding something before its silence is trusted.
-$src = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-gui2.ps1') -Encoding UTF8
+$src = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-window.ps1') -Encoding UTF8
 $code = @($src | ForEach-Object { ($_ -replace '(?<!`)#.*$', '') } | Where-Object { $_.Trim() })
 $stock = @($code | Where-Object { $_ -match 'MessageBox' })
 $mine  = @($code | Where-Object { $_ -match 'Show-Sheet' })

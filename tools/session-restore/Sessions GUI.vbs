@@ -29,10 +29,10 @@ Set shell = CreateObject("WScript.Shell")
 
 ' Resolve next to this file, so the folder can be moved or renamed freely.
 here = fso.GetParentFolderName(WScript.ScriptFullName)
-ps1  = fso.BuildPath(fso.BuildPath(here, "lib"), "sessions-gui2.ps1")
+ps1  = fso.BuildPath(fso.BuildPath(here, "lib"), "sessions-window.ps1")
 
 If Not fso.FileExists(ps1) Then
-    MsgBox "lib\sessions-gui2.ps1 is missing beside this launcher." & vbCrLf & vbCrLf & _
+    MsgBox "lib\sessions-window.ps1 is missing beside this launcher." & vbCrLf & vbCrLf & _
            "Looked in:" & vbCrLf & here, vbExclamation, "Claude sessions"
     WScript.Quit 1
 End If

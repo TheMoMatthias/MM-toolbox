@@ -62,7 +62,7 @@ function ccs {
     if ($args.Count) {
         Write-Warning "ccs takes no arguments now - the window does the ticking. Ignoring: $($args -join ' ')"
     }
-    $gui = Join-Path $Global:MMSessionRestoreRoot 'sessions-gui2.ps1'
+    $gui = Join-Path $Global:MMSessionRestoreRoot 'sessions-window.ps1'
     # -STA because WPF requires it, Start-Process because the window should not
     # hold the shell you launched it from.
     Start-Process powershell.exe -ArgumentList @(

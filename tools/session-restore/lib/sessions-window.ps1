@@ -56,7 +56,7 @@ $here = $PSScriptRoot
 if (-not $here -and $MyInvocation.MyCommand.Path) { $here = Split-Path -Parent $MyInvocation.MyCommand.Path }
 if (-not $here) { $here = (Get-Location).Path }
 
-$selfPath = Join-Path $here 'sessions-gui2.ps1'
+$selfPath = Join-Path $here 'sessions-window.ps1'
 $xamlPath = Join-Path $here 'window2.xaml'
 
 # ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ foreach ($n in @(
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
     'SetToolsFold','SetAllow','SetDeny',
     'CastBox','CastWho','CastList','CastText','CastCancel','CastSend',
-    'PaneDoc','PaneEmpty','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
+    'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneWorktree','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions',
@@ -879,19 +879,26 @@ function Get-ProjectAccent { param([string]$Path)
     # \U0001fa64 The muddy band around 55-85 (olive/khaki) is simply not on the wheel,
     # rather than skipped arithmetically: at this saturation those hues go
     # grey-brown and stop reading as identity at all.
+    # AND THEN THEY WERE TOO DARK TO READ AS COLOUR. The spread is right - it is
+    # why twenty-seven projects are still tellable apart - but at S 0.38-0.58 on
+    # a #0F0F11 ground these arrived as grey with a suggestion of hue in it,
+    # reported as "the colors for the projects seem a little bit dark". Same
+    # twelve hues, same dealt-by-index slot; saturation and lightness raised
+    # until they are actually colours. Nothing about the DISTINCTNESS argument
+    # above changes - only how much of each hue survives the ground.
     $wheel = @(
-        @(206, 0.52, 0.64),   # azure
-        @(  8, 0.55, 0.66),   # coral
-        @(150, 0.44, 0.62),   # jade
-        @(276, 0.44, 0.70),   # violet
-        @( 34, 0.58, 0.62),   # amber
-        @(188, 0.46, 0.60),   # teal
-        @(330, 0.46, 0.70),   # rose
-        @(102, 0.40, 0.62),   # moss
-        @(248, 0.46, 0.72),   # indigo
-        @( 18, 0.48, 0.60),   # rust
-        @(168, 0.42, 0.66),   # spring
-        @(300, 0.38, 0.68)    # magenta
+        @(206, 0.88, 0.68),   # azure
+        @(  8, 0.86, 0.70),   # coral
+        @(150, 0.72, 0.62),   # jade
+        @(276, 0.80, 0.74),   # violet
+        @( 34, 0.92, 0.64),   # amber
+        @(188, 0.78, 0.62),   # teal
+        @(330, 0.82, 0.72),   # rose
+        @(102, 0.66, 0.62),   # moss
+        @(248, 0.82, 0.76),   # indigo
+        @( 18, 0.84, 0.64),   # rust
+        @(168, 0.72, 0.66),   # spring
+        @(300, 0.70, 0.72)    # magenta
     )
     # 🪤 AND HASH-MOD-WHEEL WAS STILL NOT ENOUGH: FNV's low bits are weak, and
     # `% 12` off them gave FOUR distinct colours across SEVEN projects - worse
@@ -1189,7 +1196,39 @@ $Pal = @{
     TextMid    = $window.FindResource('TextMid')
     TextLow    = $window.FindResource('TextLow')
     TextDim    = $window.FindResource('AccQuiet')
+    In         = $window.FindResource('HueIn')
+    Out        = $window.FindResource('HueOut')
+    Tool       = $window.FindResource('HueTool')
+    Bad        = $window.FindResource('HueBad')
+    Ask        = $window.FindResource('HueAsk')
+    Warn       = $window.FindResource('HueWarn')
 }
+
+# Translucent grounds, derived rather than declared: six hues times three
+# strengths is eighteen resources nobody would keep in step by hand.
+#
+# A BRUSH IS CLONED BEFORE ITS OPACITY IS TOUCHED. The resource brushes are
+# shared by everything in the window that names them, so setting .Opacity on one
+# would dim every other use of it - and a frozen brush throws instead.
+function New-SRTint { param($Brush, [double]$Alpha)
+    $c = $Brush.Color
+    $c.A = [byte][math]::Round(255 * $Alpha)
+    $b = New-Object System.Windows.Media.SolidColorBrush $c
+    $b.Freeze()
+    return $b
+}
+$PalWash = @{}   # 10% - a ground you notice
+$PalFilm = @{}   #  5% - a ground you do not
+$PalEdge = @{}   # 34% - a stroke
+foreach ($hueKey in @('In', 'Out', 'Tool', 'Bad', 'Ask', 'Warn')) {
+    $PalWash[$hueKey] = New-SRTint $Pal[$hueKey] 0.10
+    $PalFilm[$hueKey] = New-SRTint $Pal[$hueKey] 0.05
+    $PalEdge[$hueKey] = New-SRTint $Pal[$hueKey] 0.34
+}
+$PalGlass   = New-SRTint $Pal.TextMax 0.035
+$PalGlassHi = New-SRTint $Pal.TextMax 0.055
+$PalHair    = New-SRTint $Pal.TextMax 0.07
+$PalSunk    = New-SRTint $Pal.Ink 0.55
 # ===========================================================================
 # THE TYPEFACE, LOADED FROM A FILE BESIDE THIS SCRIPT.
 #
@@ -1246,6 +1285,27 @@ function Install-SRTypeface {
 }
 $script:hasManrope = Install-SRTypeface
 
+# ===========================================================================
+# HOW GLYPHS ARE ANTIALIASED - the one look in this window the operator sets.
+#
+# window2.xaml pins Grayscale, with a reasoned comment: ClearType tints the edge
+# of every stem red or blue, and on a near-black ground that fringe is visible.
+# Against that, ClearType is what a browser uses, and the same words really do
+# come out crisper in a web page than here.
+#
+# 🔴 A SCREENSHOT CANNOT SETTLE IT. RenderTargetBitmap always composites
+# greyscale, so every shot this repo takes renders "ClearType" as greyscale -
+# measured, see tests\type-driver.ps1, where both ClearType rows come out
+# identical to their greyscale twins. Only a monitor can answer it, so the
+# answer belongs to the person at one. Flip `textRendering` in the config
+# between `grayscale` and `cleartype` and look.
+try {
+    if ((Get-SRConfig).textRendering -eq 'cleartype') {
+        [System.Windows.Media.TextOptions]::SetTextRenderingMode($window, 'ClearType')
+        Write-SRLog '  text rendering: ClearType (set in the config)'
+    }
+} catch { }
+
 # The faces the TRANSCRIPT is drawn in - the biggest block of text in the window.
 # Resolved AFTER the typeface is installed, or the document would keep the system
 # face while everything around it changed.
@@ -1282,109 +1342,291 @@ function New-ReadRun {
     return $r
 }
 
+# ===========================================================================
+# THE READING SURFACE.
+#
+# Chosen from six drawn against a real conversation (tests\design-driver.ps1,
+# `run-tests.ps1 -Only design`). The complaint it answers was "very dense and
+# really hard to read - you are flooded with a lot of text", and the diagnosis
+# was that almost none of the flood is prose:
+#
+#   measured across six transcripts - text 50, thinking 84, tool_use 129,
+#   tool_result 130. Tool traffic outnumbers prose FIVE TO ONE.
+#
+# So three things do the work, and only the third is decoration:
+#
+#   1. A MEASURE. Set across a 927px pane, a line runs to about 120 characters
+#      and the eye loses the start of the next one. Capped near 70, computed
+#      from the live pane width so it stays a measure and not a fixed indent.
+#   2. THE MACHINERY IS FOLDED. A run of calls becomes one line naming what ran.
+#      Three positions - folded, full, hidden - because "what is it doing right
+#      now" and "let me read this reply" want different answers, and only the
+#      operator knows which they are doing. Remembered in the config.
+#   3. Type, not chrome. One rule and one tracked label per turn; hue names the
+#      speaker. No cards around prose - a card per turn spends the vertical
+#      space this whole exercise exists to reclaim.
+# ===========================================================================
+
+# WPF HAS NO LETTER-SPACING, at all, on any text primitive. Tracking a small
+# uppercase caption is the single move that makes it read as a label rather
+# than as shouting, so it is built by hand out of thin spaces.
+function Get-TrackedText { param([string]$Text)
+    if (-not $Text) { return '' }
+    return (($Text.ToCharArray() | ForEach-Object { [string]$_ }) -join ([string][char]0x2009))
+}
+
+# A ROUNDED, PADDED SURFACE INSIDE A FLOWDOCUMENT.
+#
+# Paragraph.Background paints a HARD RECTANGLE and Paragraph has no CornerRadius
+# at all. That is the whole reason the old code blocks were square slabs sitting
+# inside a card with a 12px radius - reported as the text "not looking clean and
+# rounded off", which sounded like a font problem and was a layout one. A Border
+# inside a BlockUIContainer is the only way to get a rounded, padded,
+# translucent block in flowed text.
+#
+# The container's own Margin does the spacing, not the Border's, or the two
+# stack and every block drifts further right than the one above it.
+function New-ReadCard {
+    param($Child, $Bg, $Stroke, [double]$Radius = 12, [double]$BW = 0,
+          [double]$PadL = 16, [double]$PadT = 12, [double]$PadR = 16, [double]$PadB = 12,
+          [double]$Left = 0, [double]$Top = 10, [double]$Bottom = 10)
+    $bd = New-Object System.Windows.Controls.Border
+    if ($Bg) { $bd.Background = $Bg }
+    if ($Stroke -and $BW -gt 0) {
+        $bd.BorderBrush = $Stroke
+        $bd.BorderThickness = New-Object System.Windows.Thickness $BW
+    }
+    $bd.CornerRadius = New-Object System.Windows.CornerRadius $Radius
+    $bd.Padding = New-Object System.Windows.Thickness $PadL, $PadT, $PadR, $PadB
+    $bd.SnapsToDevicePixels = $true
+    $bd.Child = $Child
+    $c = New-Object System.Windows.Documents.BlockUIContainer $bd
+    $c.Margin = New-Object System.Windows.Thickness $Left, $Top, 0, $Bottom
+    return $c
+}
+
+function New-ReadText {
+    param([string]$Text, $Brush, [double]$Size = 13, [switch]$Mono, [switch]$Semi,
+          [switch]$Wrap, [double]$Line = 0)
+    $t = New-Object System.Windows.Controls.TextBlock
+    $t.Text = $Text
+    if ($Brush) { $t.Foreground = $Brush }
+    $t.FontSize = $Size
+    if ($Mono) { $t.FontFamily = $script:MonoFace } else { $t.FontFamily = $script:UiFace }
+    if ($Semi) { $t.FontWeight = $FW_Semi }
+    if ($Wrap) { $t.TextWrapping = 'Wrap' }
+    else { $t.TextWrapping = 'NoWrap'; $t.TextTrimming = 'CharacterEllipsis' }
+    if ($Line -gt 0) { $t.LineHeight = $Line; $t.LineStackingStrategy = 'BlockLineHeight' }
+    return $t
+}
+
 # Markdown, but only the parts that change how a line READS: fenced code, a
 # heading, a bullet, and inline `code`. Anything more would be a markdown
 # engine, which is not what this needs to be.
 function Add-ReadProse {
-    param($Doc, [string]$Text, $Brush)
-    $lines = @($Text -replace "`r", '' -split "`n")
+    param($Doc, [string]$Text, $Brush, [double]$Size = 16, [double]$Line = 28,
+          $CodeBg, $CodeStroke, [double]$Indent = 0)
+    if (-not $CodeBg) { $CodeBg = $PalGlassHi }
+    $lines = @((Remove-SRAnsi $Text) -replace "`r", '' -split "`n")
     $i = 0
     while ($i -lt $lines.Count) {
         $ln = $lines[$i]
-        if ($ln.TrimStart().StartsWith('```')) {
+        if ($ln.TrimStart().StartsWith('``' + '`')) {
             $code = New-Object System.Collections.Generic.List[string]
             $i++
-            while ($i -lt $lines.Count -and -not $lines[$i].TrimStart().StartsWith('```')) { $code.Add($lines[$i]); $i++ }
+            while ($i -lt $lines.Count -and -not $lines[$i].TrimStart().StartsWith('``' + '`')) { $code.Add($lines[$i]); $i++ }
             $i++
-            $p = New-Object System.Windows.Documents.Paragraph
-            $p.Margin = New-Object System.Windows.Thickness 0, 6, 0, 6
-            $p.Padding = New-Object System.Windows.Thickness 12, 8, 12, 8
-            $p.Background = $Pal.Raised
-            $p.BorderBrush = $Pal.HairlineHi
-            $p.BorderThickness = New-Object System.Windows.Thickness 2, 0, 0, 0
-            $p.Inlines.Add((New-ReadRun -Text ($code -join "`n") -Brush $Pal.TextHigh -Size 13 -Mono))
-            $Doc.Blocks.Add($p)
+            $tb = New-ReadText -Text (($code -join "`n").TrimEnd()) -Brush $Pal.TextHigh -Size ($Size - 2.5) -Mono -Wrap -Line ($Size + 5)
+            $bw = 0; if ($CodeStroke) { $bw = 1 }
+            $Doc.Blocks.Add((New-ReadCard -Child $tb -Bg $CodeBg -Stroke $CodeStroke -BW $bw -Radius 10 -Left $Indent -Top 12 -Bottom 12))
             continue
         }
         $p = New-Object System.Windows.Documents.Paragraph
-        $p.Margin = New-Object System.Windows.Thickness 0, 3, 0, 3
-        $p.LineHeight = 23
+        $p.Margin = New-Object System.Windows.Thickness $Indent, 3, 0, 3
+        $p.LineHeight = $Line
         $p.LineStackingStrategy = 'BlockLineHeight'
-        $body = $ln; $size = 15; $weight = 'Normal'; $indent = 0
-        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = 17 }
-        elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [char]0x2022 + '  ' + $Matches[1]; $indent = 14 }
-        elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.  ' + $Matches[2]; $indent = 14 }
-        if ($indent) { $p.Margin = New-Object System.Windows.Thickness $indent, 2, 0, 2 }
+        $body = $ln; $size = $Size; $weight = 'Normal'; $bump = 0
+        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = $Size + 2 }
+        elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [string][char]0x2022 + '   ' + $Matches[1]; $bump = 18 }
+        elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.   ' + $Matches[2]; $bump = 18 }
+        if ($bump) { $p.Margin = New-Object System.Windows.Thickness ($Indent + $bump), 2, 0, 2 }
         $rest = $body
         while ($rest -match '^(.*?)(`([^`]+)`|\*\*([^*]+)\*\*)(.*)$') {
             $before = $Matches[1]; $codeTxt = $Matches[3]; $boldTxt = $Matches[4]; $rest = $Matches[5]
             if ($before)  { $p.Inlines.Add((New-ReadRun -Text $before -Brush $Brush -Size $size -Weight $weight)) }
-            if ($codeTxt) { $p.Inlines.Add((New-ReadRun -Text $codeTxt -Brush $Pal.TextMax -Size ($size - 1) -Mono)) }
+            if ($codeTxt) { $p.Inlines.Add((New-ReadRun -Text $codeTxt -Brush $Pal.TextMax -Size ($size - 1.5) -Mono)) }
             elseif ($boldTxt) { $p.Inlines.Add((New-ReadRun -Text $boldTxt -Brush $Pal.TextMax -Size $size -Weight 'SemiBold')) }
         }
         if ($rest) { $p.Inlines.Add((New-ReadRun -Text $rest -Brush $Brush -Size $size -Weight $weight)) }
-        if ($p.Inlines.Count -eq 0) { $p.Inlines.Add((New-ReadRun -Text ' ' -Brush $Brush -Size $size)) }
+        # An empty source line is a paragraph break, and it is set SMALL: at the
+        # full body size a blank line between two paragraphs is 28px of nothing
+        # and the reply looks double-spaced.
+        if ($p.Inlines.Count -eq 0) { $p.Inlines.Add((New-ReadRun -Text ' ' -Brush $Brush -Size ($Size * 0.4))) }
         $Doc.Blocks.Add($p)
         $i++
     }
 }
 
-# 🔴 TOOL TRAFFIC OUTNUMBERS PROSE FIVE TO ONE. Measured across six transcripts:
-# text 50, thinking 84, tool_use 129, tool_result 130. A RUN of them becomes ONE
-# line saying how many and naming the last, because the question a reader has
-# about a wall of tool calls is "how much of this is there, and where does the
-# conversation start again". Two or fewer are left alone: two lines are cheaper
-# to read than a summary of two lines.
-function Compress-ToolRuns { param($Blocks)
+# TURNS, NOT BLOCKS, AND THE RESULT BELONGS TO ITS CALL.
+#
+# Two things this fixes, both of which were on screen:
+#
+#   A single reply arrives as SEVERAL text blocks whenever thinking or a tool
+#   call sits between them, and the old renderer named the speaker over each -
+#   so CLAUDE printed three times down one screen with two sentences under
+#   each. It read as a stutter and it spent the vertical space this redesign
+#   exists to reclaim.
+#
+#   A tool_result was rendered as a sibling of its tool_use rather than as its
+#   answer, so a folded run could count seven calls and then show a loose
+#   result underneath belonging to none of them. Results are paired here, once.
+function Get-ReadTurns { param($Blocks)
     $out = New-Object System.Collections.Generic.List[object]
     $arr = @($Blocks)
     $i = 0
     while ($i -lt $arr.Count) {
-        if ($arr[$i].Kind -ne 'tool' -and $arr[$i].Kind -ne 'result') { $out.Add($arr[$i]); $i++; continue }
-        $j = $i; $calls = 0; $lastHead = ''
-        while ($j -lt $arr.Count -and ($arr[$j].Kind -eq 'tool' -or $arr[$j].Kind -eq 'result')) {
-            if ($arr[$j].Kind -eq 'tool') { $calls++; $lastHead = "$($arr[$j].Head)" }
-            $j++
+        $b = $arr[$i]
+        if ($b.Kind -ne 'tool' -and $b.Kind -ne 'result') {
+            $prev = $null
+            if ($out.Count) { $prev = $out[$out.Count - 1] }
+            if ($prev -and $prev.Kind -eq "$($b.Kind)" -and ($b.Kind -eq 'you' -or $b.Kind -eq 'said')) {
+                $prev.Body = ($prev.Body.TrimEnd() + "`n`n" + "$($b.Body)".TrimStart())
+            } else {
+                $out.Add([PSCustomObject]@{ Kind = "$($b.Kind)"; Body = "$($b.Body)"; Calls = $null })
+            }
+            $i++
+            continue
         }
-        if ($calls -le 2) { for ($k = $i; $k -lt $j; $k++) { $out.Add($arr[$k]) } }
-        else {
-            $out.Add([PSCustomObject]@{ Kind = 'tools'; Head = "$calls tool calls"
-                                        Body = $(if ($lastHead) { "last: $lastHead" } else { '' }); Meta = '' })
+        $calls = New-Object System.Collections.Generic.List[object]
+        while ($i -lt $arr.Count -and ($arr[$i].Kind -eq 'tool' -or $arr[$i].Kind -eq 'result')) {
+            if ($arr[$i].Kind -eq 'tool') {
+                $calls.Add([PSCustomObject]@{ Name = "$($arr[$i].Head)"; Arg = "$($arr[$i].Body)"; Res = ''; Bad = $false })
+            } elseif ($calls.Count) {
+                $last = $calls[$calls.Count - 1]
+                if (-not $last.Res) {
+                    $one = "$(@("$($arr[$i].Body)" -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1))"
+                    if ($one.Length -gt 130) { $one = $one.Substring(0, 127) + [string][char]0x2026 }
+                    $last.Res = $one
+                    $last.Bad = ("$($arr[$i].Head)" -eq 'failed')
+                }
+            }
+            $i++
         }
-        $i = $j
+        # .ToArray(), NEVER the List. @($someList) over a List[object] throws
+        # "Argument types do not match" in PS 5.1, and PowerShell reports it
+        # against whatever OUTER assignment started the chain - so the pane goes
+        # blank and the error names a line four calls away. This codebase has
+        # shipped that bug more than once; it cost six blank renders while this
+        # very surface was being designed.
+        if ($calls.Count) { $out.Add([PSCustomObject]@{ Kind = 'run'; Body = ''; Calls = $calls.ToArray() }) }
     }
-    # 🪤 A PLAIN ARRAY, never comma-wrapped. Wrapping makes @(f) at every call
-    # site a ONE-element array holding everything, and for an empty result a
-    # single empty array - so "nothing to render" becomes one phantom row. This
-    # codebase has shipped that bug six times.
+    # A plain array, never comma-wrapped: wrapping makes @(f) a one-element
+    # array holding everything, and an empty result becomes one phantom row.
     return $out.ToArray()
+}
+
+function Get-RunSummary { param($Calls)
+    $names = @(@($Calls) | ForEach-Object { $_.Name } | Select-Object -Unique)
+    $shown = @($names | Select-Object -First 3)
+    $tail = ''
+    if ($names.Count -gt $shown.Count) { $tail = '  +' + ($names.Count - $shown.Count) }
+    $n = @($Calls).Count
+    $word = 'steps'
+    if ($n -eq 1) { $word = 'step' }
+    return ('{0} {1}     {2}{3}' -f $n, $word, ($shown -join ('  ' + [string][char]0x00B7 + '  ')), $tail)
+}
+
+# THE MEASURE, from the LIVE pane width.
+#
+# It has to be recomputed, not stored: a fixed right padding is correct at one
+# window size and wrong at every other, and this window is resizable and has
+# adaptive breakpoints that change the pane width without the window moving.
+# FlowDocument has no max-width, so the right PagePadding is the only lever -
+# which is why it is arithmetic here rather than a property.
+$script:ReadMeasureChars = 70
+function Set-ReadMeasure { param($Doc, [double]$Size = 16, [double]$PadL = 44)
+    $avail = 0.0
+    try { $avail = [double]$ui.PaneDoc.ActualWidth } catch { }
+    if ($avail -lt 200) { $avail = 900.0 }
+    # 0.52em per character is Manrope's measured average advance for prose at
+    # these sizes; it does not need to be exact, only stable.
+    $target = $script:ReadMeasureChars * $Size * 0.52
+    $right = [Math]::Max(40.0, $avail - $PadL - $target)
+    $Doc.PagePadding = New-Object System.Windows.Thickness $PadL, 24, $right, 34
+}
+
+function Add-ReadRule { param($Doc, $Brush, [double]$Top = 26, [double]$Bottom = 0, [double]$Height = 1)
+    $r = New-Object System.Windows.Shapes.Rectangle
+    $r.Height = $Height
+    $r.Fill = $Brush
+    $r.HorizontalAlignment = 'Stretch'
+    $c = New-Object System.Windows.Documents.BlockUIContainer $r
+    $c.Margin = New-Object System.Windows.Thickness 0, $Top, 0, $Bottom
+    $Doc.Blocks.Add($c)
+}
+
+function Add-ReadLabel {
+    param($Doc, [string]$Text, $Brush, [string]$Trailing = '', $TrailBrush,
+          [double]$Size = 10, [double]$Top = 12, [double]$Bottom = 9)
+    $p = New-Object System.Windows.Documents.Paragraph
+    $p.Margin = New-Object System.Windows.Thickness 0, $Top, 0, $Bottom
+    $p.Inlines.Add((New-ReadRun -Text (Get-TrackedText $Text.ToUpper()) -Brush $Brush -Size $Size -Weight 'SemiBold'))
+    if ($Trailing) {
+        $p.Inlines.Add((New-ReadRun -Text ('          ' + $Trailing) -Brush $TrailBrush -Size ($Size + 0.5)))
+    }
+    $Doc.Blocks.Add($p)
+}
+
+# Which of the three positions the pane is in. Read once from the config and
+# then owned by the window, so the toggle is instant and the write is a side
+# effect rather than something the render path waits on.
+$script:toolView = 'folded'
+try {
+    $tv = "$((Get-SRConfig).transcriptTools)".Trim().ToLower()
+    if ($SR_ToolViews -contains $tv) { $script:toolView = $tv }
+} catch { }
+
+function Get-ToolViewLabel {
+    switch ($script:toolView) {
+        'full'   { return 'Steps: full' }
+        'hidden' { return 'Steps: hidden' }
+        default  { return 'Steps: folded' }
+    }
 }
 
 function Build-ReadDocument {
     param($Blocks, [bool]$Truncated = $false)
     $doc = New-Object System.Windows.Documents.FlowDocument
     $doc.FontFamily  = $script:UiFace
-    # 🔴 TRANSPARENT, NOT Ink. The document was painting the GROUND colour -
-    # the near-black the window shows *around* its cards - inside an output pane
+    # TRANSPARENT, NOT Ink. The document was painting the GROUND colour - the
+    # near-black the window shows *around* its cards - inside an output pane
     # that is painted Panel and has a 12px corner radius. The result was a
     # darker square slab filling the rounded card, with the radius visible only
     # at the very corners: the operator's "it doesn't look rounded off". Letting
     # the card show through is the fix, and it costs nothing.
     $doc.Background  = [System.Windows.Media.Brushes]::Transparent
     $doc.Foreground  = $Pal.TextHigh
-    $doc.PagePadding = New-Object System.Windows.Thickness 26, 18, 26, 26
     $doc.ColumnWidth = [double]::PositiveInfinity
-    # 🪤 OPTIMAL PARAGRAPH IS WPF'S GOOD LINE BREAKER (Knuth-Plass): it looks
-    # at the whole paragraph rather than greedily filling each line, which is
-    # the difference between even ragged edges and the lumpy ones that read as
-    # "not clean". Off by default, and it was left off. Hyphenation stays off -
+    # OPTIMAL PARAGRAPH IS WPF'S GOOD LINE BREAKER (Knuth-Plass): it looks at
+    # the whole paragraph rather than greedily filling each line, which is the
+    # difference between even ragged edges and the lumpy ones that read as "not
+    # clean". Off by default, and it was left off. Hyphenation stays off -
     # hyphenated prose in a terminal-adjacent surface reads worse, not better.
     $doc.IsOptimalParagraphEnabled = $true
     $doc.IsHyphenationEnabled = $false
+    # 🔴 RAGGED RIGHT, AND FLOWDOCUMENT DOES NOT DEFAULT TO IT. TextAlignment
+    # defaults to JUSTIFY, which nothing in this tool ever asked for: with a
+    # 70-character measure and hyphenation deliberately off, justification has
+    # only the word spaces to stretch, so it opens visible rivers down the
+    # paragraph and every line gets a different word gap. That unevenness is a
+    # large part of what reads as the text "not being smooth" - and it is not
+    # antialiasing, which is where the eye goes looking for it first.
+    $doc.TextAlignment = 'Left'
+    Set-ReadMeasure -Doc $doc -Size 16 -PadL 44
 
     if (-not @($Blocks).Count) {
         $p = New-Object System.Windows.Documents.Paragraph
-        $p.Inlines.Add((New-ReadRun -Text 'Nothing readable in this transcript yet.' -Brush $Pal.TextMid -Size 13))
+        $p.Inlines.Add((New-ReadRun -Text 'Nothing readable in this transcript yet.' -Brush $Pal.TextMid -Size 14))
         $doc.Blocks.Add($p)
         return $doc
     }
@@ -1393,89 +1635,80 @@ function Build-ReadDocument {
     # conversation reads as the whole of a short one.
     if ($Truncated) {
         $p = New-Object System.Windows.Documents.Paragraph
-        $p.Margin = New-Object System.Windows.Thickness 0, 0, 0, 10
-        $p.Inlines.Add((New-ReadRun -Text ('showing the last {0} KB of a longer conversation - press L to load earlier' -f [int]($script:tailBytes / 1KB)) -Brush $Pal.TextDim -Size 11 -Italic))
+        $p.Margin = New-Object System.Windows.Thickness 0, 0, 0, 6
+        $p.Inlines.Add((New-ReadRun -Text ('showing the last {0} KB of a longer conversation - press L to load earlier' -f [int]($script:tailBytes / 1KB)) -Brush $Pal.TextDim -Size 11.5 -Italic))
         $doc.Blocks.Add($p)
     }
 
-    foreach ($b in @(Compress-ToolRuns $Blocks)) {
-        switch ($b.Kind) {
+    $hidden = 0
+    foreach ($t in @(Get-ReadTurns $Blocks)) {
+        switch ($t.Kind) {
             'you' {
-                $s = New-Object System.Windows.Documents.Section
-                $s.Margin = New-Object System.Windows.Thickness 0, 12, 0, 6
-                $s.Padding = New-Object System.Windows.Thickness 12, 2, 0, 2
-                $s.BorderBrush = $Pal.TextMax
-                $s.BorderThickness = New-Object System.Windows.Thickness 2, 0, 0, 0
-                $lab = New-Object System.Windows.Documents.Paragraph
-                $lab.Margin = New-Object System.Windows.Thickness 0, 0, 0, 3
-                $lab.Inlines.Add((New-ReadRun -Text 'YOU' -Brush $Pal.TextMax -Size 10.5 -Weight 'SemiBold'))
-                $s.Blocks.Add($lab)
+                Add-ReadRule -Doc $doc -Brush $PalEdge.Out -Height 2
+                $trail = ''
+                if ($hidden -gt 0) { $trail = "$hidden steps hidden"; $hidden = 0 }
+                Add-ReadLabel -Doc $doc -Text 'you said' -Brush $Pal.Out -Trailing $trail -TrailBrush $Pal.TextLow
                 $inner = New-Object System.Windows.Documents.FlowDocument
-                Add-ReadProse -Doc $inner -Text $b.Body -Brush $Pal.TextMax
+                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextMax -CodeBg $PalFilm.Out
                 # Blocks is a live collection: moving them while enumerating it
                 # silently drops every second one, hence the @() snapshot. And
                 # $null = on Remove is not tidiness - it returns a BOOL, and an
                 # uncaptured value would be emitted, so the function would return
                 # an array of $true with the document buried inside it.
-                foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $s.Blocks.Add($blk) }
-                $doc.Blocks.Add($s)
+                foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
             }
             'said' {
-                $lab = New-Object System.Windows.Documents.Paragraph
-                $lab.Margin = New-Object System.Windows.Thickness 0, 14, 0, 4
-                $lab.Inlines.Add((New-ReadRun -Text 'CLAUDE' -Brush $Pal.TextLow -Size 10.5 -Weight 'SemiBold'))
-                $doc.Blocks.Add($lab)
+                Add-ReadRule -Doc $doc -Brush $PalHair
+                $trail = ''
+                if ($hidden -gt 0) { $trail = "$hidden steps hidden"; $hidden = 0 }
+                Add-ReadLabel -Doc $doc -Text 'claude' -Brush $Pal.In -Trailing $trail -TrailBrush $Pal.TextLow
                 $inner = New-Object System.Windows.Documents.FlowDocument
-                Add-ReadProse -Doc $inner -Text $b.Body -Brush $Pal.TextHigh
+                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextHigh -CodeBg $PalGlassHi
                 foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
             }
             'thinking' {
-                $head = @($b.Body -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 2) -join ' '
-                if ($head.Length -gt 170) { $head = $head.Substring(0, 167) + '...' }
+                if ($script:toolView -eq 'hidden') { break }
+                $head = @("$($t.Body)" -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1) -join ' '
+                if ($head.Length -gt 150) { $head = $head.Substring(0, 147) + [string][char]0x2026 }
                 $p = New-Object System.Windows.Documents.Paragraph
-                $p.Margin = New-Object System.Windows.Thickness 18, 3, 0, 6
-                $p.Inlines.Add((New-ReadRun -Text 'thinking   ' -Brush $Pal.TextDim -Size 11.5 -Weight 'SemiBold'))
-                $p.Inlines.Add((New-ReadRun -Text $head -Brush $Pal.TextDim -Size 13 -Italic))
+                $p.Margin = New-Object System.Windows.Thickness 0, 10, 0, 4
+                $p.Inlines.Add((New-ReadRun -Text 'thinking   ' -Brush $Pal.TextLow -Size 11 -Weight 'SemiBold'))
+                $p.Inlines.Add((New-ReadRun -Text $head -Brush $Pal.TextLow -Size 13 -Italic))
                 $doc.Blocks.Add($p)
             }
-            'tool' {
-                # 🔴 CONTAINED, AND AT A READABLE SIZE. This was a raw inline run
-                # at 11.5px with no ground under it, and when the rest of the
-                # window's scale went up it did not - so the transcript kept the
-                # cramped monospace density that reads as a console log rather
-                # than as a document with code in it. Same treatment as a fenced
-                # code block, because that is what it is.
-                $p = New-Object System.Windows.Documents.Paragraph
-                $p.Margin = New-Object System.Windows.Thickness 0, 3, 0, 3
-                $p.Padding = New-Object System.Windows.Thickness 12, 7, 12, 7
-                $p.Background = $Pal.Raised
-                $p.BorderBrush = $Pal.HairlineHi
-                $p.BorderThickness = New-Object System.Windows.Thickness 2, 0, 0, 0
-                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextMid -Size 12.5 -Weight 'SemiBold' -Mono))
-                $p.Inlines.Add((New-ReadRun -Text (Compress-SRPath $b.Body) -Brush $Pal.TextHigh -Size 12.5 -Mono))
-                $doc.Blocks.Add($p)
-            }
-            'tools' {
-                # The summary of a RUN of calls. Quieter than a single call on
-                # purpose - it is a count, not content.
-                $p = New-Object System.Windows.Documents.Paragraph
-                $p.Margin = New-Object System.Windows.Thickness 0, 4, 0, 4
-                $p.Padding = New-Object System.Windows.Thickness 12, 6, 12, 6
-                $p.Background = $Pal.Raised
-                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextMid -Size 12 -Weight 'SemiBold'))
-                $p.Inlines.Add((New-ReadRun -Text (Compress-SRPath $b.Body) -Brush $Pal.TextDim -Size 12 -Mono))
-                $doc.Blocks.Add($p)
-            }
-            'result' {
-                $first = "$(@($b.Body -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1))"
-                if ($first.Length -gt 150) { $first = $first.Substring(0, 147) + [string][char]0x2026 }
-                # It belongs to the call above it, so it is indented under that
-                # block rather than given a ground of its own.
-                $p = New-Object System.Windows.Documents.Paragraph
-                $p.Margin = New-Object System.Windows.Thickness 14, 1, 0, 6
-                $p.Inlines.Add((New-ReadRun -Text ($b.Head + '   ') -Brush $Pal.TextDim -Size 12 -Weight 'SemiBold' -Mono))
-                $p.Inlines.Add((New-ReadRun -Text (Compress-SRPath $first) -Brush $Pal.TextDim -Size 12 -Mono))
-                $doc.Blocks.Add($p)
+            'run' {
+                if ($script:toolView -eq 'hidden') { $hidden += @($t.Calls).Count; break }
+
+                $st = New-Object System.Windows.Controls.StackPanel
+                $cap = New-Object System.Windows.Controls.StackPanel
+                $cap.Orientation = 'Horizontal'
+                $null = $cap.Children.Add((New-ReadText -Text ([string][char]0x25B8 + '   ') -Brush $Pal.Tool -Size 11 -Semi))
+                $null = $cap.Children.Add((New-ReadText -Text (Get-TrackedText (Get-RunSummary $t.Calls)) -Brush $Pal.Tool -Size 9.5 -Semi))
+                $null = $st.Children.Add($cap)
+
+                if ($script:toolView -eq 'full') {
+                    $cap.Margin = New-Object System.Windows.Thickness 0, 0, 0, 10
+                    $shown = 0
+                    foreach ($c in @($t.Calls)) {
+                        if ($shown -ge 6) { break }
+                        $shown++
+                        $ln = New-Object System.Windows.Controls.StackPanel
+                        $ln.Margin = New-Object System.Windows.Thickness 0, 0, 0, 7
+                        $fg = $Pal.TextHigh
+                        if ($c.Bad) { $fg = $Pal.Bad }
+                        $null = $ln.Children.Add((New-ReadText -Text ($c.Name + '   ' + (Compress-SRPath $c.Arg)) -Brush $fg -Size 12.5 -Mono))
+                        if ($c.Res) {
+                            $r = New-ReadText -Text (Compress-SRPath $c.Res) -Brush $Pal.TextLow -Size 12 -Mono
+                            $r.Margin = New-Object System.Windows.Thickness 18, 3, 0, 0
+                            $null = $ln.Children.Add($r)
+                        }
+                        $null = $st.Children.Add($ln)
+                    }
+                    if (@($t.Calls).Count -gt $shown) {
+                        $null = $st.Children.Add((New-ReadText -Text ('and {0} more' -f (@($t.Calls).Count - $shown)) -Brush $Pal.TextLow -Size 11.5 -Mono))
+                    }
+                }
+                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalGlass -Stroke $PalHair -BW 1 -Radius 12 -PadT 11 -PadB 10))
             }
         }
     }
@@ -1519,17 +1752,60 @@ function Show-Ask { param($q)
     $ui.AskText.Text   = "$($q.Question)"
 
     # AN OPTION IS A LABEL AND ITS REASONING, and the reasoning is why you would
-    # pick it. Each button carries both: the label on top, what claude wrote
-    # underneath it below, in the same order it was drawn on screen.
+    # pick it. Each row carries both: the label on top, what claude wrote
+    # underneath it, in the same order it was drawn on screen.
+    #
+    # 🔴 A NUMBERED BADGE, NOT "1." IN THE LABEL. The number is how you answer -
+    # it is the key you press - so it is a control, and it belongs in its own
+    # column where the eye can run down it. Inline it was just the first two
+    # characters of a wrapping sentence, and on a four-line option it ended up
+    # nowhere near the option it numbered.
     $details = @($q.Details)
     $btns = New-Object System.Collections.Generic.List[object]
     $n = 0
     foreach ($o in @($q.Options)) {
+        $b = New-Object System.Windows.Controls.Button
+        $b.Style = $window.FindResource('BtnOption')
+        $b.HorizontalContentAlignment = 'Stretch'
+        $b.Margin = New-Object System.Windows.Thickness 0, 0, 0, 7
+        $b.Tag = $n
+
+        $g = New-Object System.Windows.Controls.Grid
+        $cBadge = New-Object System.Windows.Controls.ColumnDefinition
+        $cBadge.Width = New-Object System.Windows.GridLength 0, 'Auto'
+        $cBody = New-Object System.Windows.Controls.ColumnDefinition
+        $g.ColumnDefinitions.Add($cBadge)
+        $g.ColumnDefinitions.Add($cBody)
+
+        $badge = New-Object System.Windows.Controls.Border
+        $badge.Width = 22; $badge.Height = 22
+        $badge.CornerRadius = New-Object System.Windows.CornerRadius 11
+        $badge.Background = $PalWash.Ask
+        $badge.VerticalAlignment = 'Top'
+        $badge.Margin = New-Object System.Windows.Thickness 0, 1, 13, 0
+        $bt = New-Object System.Windows.Controls.TextBlock
+        $bt.Text = "$($n + 1)"
+        $bt.Foreground = $Pal.Ask
+        $bt.FontSize = 11.5
+        $bt.FontWeight = $FW_Semi
+        $bt.FontFamily = $script:UiFace
+        $bt.HorizontalAlignment = 'Center'
+        $bt.VerticalAlignment = 'Center'
+        $badge.Child = $bt
+        [System.Windows.Controls.Grid]::SetColumn($badge, 0)
+        $null = $g.Children.Add($badge)
+
         $stack = New-Object System.Windows.Controls.StackPanel
+        [System.Windows.Controls.Grid]::SetColumn($stack, 1)
         $lab = New-Object System.Windows.Controls.TextBlock
-        $lab.Text = ('{0}.  {1}' -f ($n + 1), $o)
+        $lab.Text = "$o"
         $lab.TextWrapping = 'Wrap'
-        $lab.FontWeight = 'SemiBold'
+        $lab.FontSize = 13.5
+        $lab.FontWeight = $FW_Semi
+        # The first option is the one claude put first, and on a recommended
+        # menu that is the recommendation. It is tinted, not bolder: this panel
+        # already has one weight doing work.
+        $lab.Foreground = $(if ($n -eq 0) { $Pal.Ask } else { $window.FindResource('TextMax') })
         $null = $stack.Children.Add($lab)
 
         $d = $(if ($n -lt $details.Count) { "$($details[$n])".Trim() } else { '' })
@@ -1537,18 +1813,16 @@ function Show-Ask { param($q)
             $sub = New-Object System.Windows.Controls.TextBlock
             $sub.Text = $d
             $sub.TextWrapping = 'Wrap'
-            $sub.Margin = New-Object System.Windows.Thickness 0, 3, 0, 0
+            $sub.Margin = New-Object System.Windows.Thickness 0, 4, 0, 0
             $sub.Foreground = $window.FindResource('TextMid')
             $sub.FontSize = 12
+            $sub.LineHeight = 18
+            $sub.LineStackingStrategy = 'BlockLineHeight'
             $null = $stack.Children.Add($sub)
         }
+        $null = $g.Children.Add($stack)
 
-        $b = New-Object System.Windows.Controls.Button
-        $b.Content = $stack
-        $b.Style = $window.FindResource('Btn')
-        $b.Margin = New-Object System.Windows.Thickness 0, 0, 0, 6
-        $b.HorizontalContentAlignment = 'Left'
-        $b.Tag = $n
+        $b.Content = $g
         $b.Add_Click({ param($s, $e) Invoke-Answer ([int]$s.Tag) })
         $btns.Add($b)
         $n++
@@ -1828,6 +2102,233 @@ function Move-ToBottom {
 #
 # -Force is for the caller that knows the CONTENT moved even though the
 # selection did not - the periodic refresh.
+# ===========================================================================
+# THE VITALS STRIP.
+#
+# What the terminal's own status line shows, for the conversation on screen:
+#
+#   Model: Opus 5 | [####------] 184k/1.0M (18%) | main | (+166,-66)
+#
+# plus the two things the terminal does not show and this window can - whether
+# Remote Control is on, and what is running RIGHT NOW (background shells,
+# sub-agents). Get-SRSessionVitals reads all of it off the transcript; only the
+# +N -N costs a subprocess, and that answer is cached for 20 seconds.
+#
+# 🪤 REBUILT ONLY WHEN SOMETHING CHANGES. This is refreshed on the one-second
+# follow tick, and throwing away ten Borders a second to redraw the same ten
+# would put a permanent load on the UI thread for nothing. The strip carries a
+# fingerprint of everything except the clock; the clock is a TextBlock this
+# keeps a handle on and writes directly.
+# ===========================================================================
+$script:chipStamp = ''
+$script:chipClock = $null
+# The last vitals actually read. The clock ticks off THIS rather than off the
+# transcript - see Step-ChipClock.
+$script:chipVitals = $null
+
+function Get-ShortModel { param([string]$Model)
+    if (-not $Model) { return 'model unknown' }
+    $s = $Model -replace '^claude-', '' -replace '-\d{8}$', ''
+    $s = $s -replace '\[1m\]', ' 1M'
+    return ($s -replace '-', ' ')
+}
+
+function Format-Kilo { param([int]$N)
+    if ($N -ge 1000000) { return ('{0:0.0}M' -f ($N / 1000000.0)) }
+    if ($N -ge 1000) { return ('{0}k' -f [int][math]::Round($N / 1000.0)) }
+    return "$N"
+}
+
+function Format-Clock { param([double]$Seconds)
+    if ($Seconds -le 0) { return '' }
+    if ($Seconds -lt 60) { return ('{0}s' -f [int]$Seconds) }
+    $m = [int][math]::Floor($Seconds / 60)
+    $s = [int][math]::Floor($Seconds - $m * 60)
+    if ($m -lt 60) { return ('{0}m {1}s' -f $m, $s) }
+    $h = [int][math]::Floor($m / 60)
+    return ('{0}h {1}m' -f $h, ($m - $h * 60))
+}
+
+function New-Chip {
+    param([string]$Text, $Fg, $Bg, $Stroke, $Dot, [double]$Bar = -1, $BarFg, [string]$Tip)
+    $bd = New-Object System.Windows.Controls.Border
+    if ($Bg) { $bd.Background = $Bg }
+    if ($Stroke) { $bd.BorderBrush = $Stroke; $bd.BorderThickness = New-Object System.Windows.Thickness 1 }
+    $bd.CornerRadius = New-Object System.Windows.CornerRadius 7
+    $bd.Padding = New-Object System.Windows.Thickness 9, 4, 10, 5
+    $bd.Margin = New-Object System.Windows.Thickness 0, 0, 7, 5
+    if ($Tip) { $bd.ToolTip = $Tip }
+    $sp = New-Object System.Windows.Controls.StackPanel
+    $sp.Orientation = 'Horizontal'
+    if ($Dot) {
+        $d = New-Object System.Windows.Controls.Border
+        $d.Width = 6; $d.Height = 6
+        $d.CornerRadius = New-Object System.Windows.CornerRadius 3
+        $d.Background = $Dot
+        $d.VerticalAlignment = 'Center'
+        $d.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
+        $null = $sp.Children.Add($d)
+    }
+    if ($Bar -ge 0) {
+        $track = New-Object System.Windows.Controls.Border
+        $track.Width = 46; $track.Height = 5
+        $track.CornerRadius = New-Object System.Windows.CornerRadius 3
+        $track.Background = $PalSunk
+        $track.VerticalAlignment = 'Center'
+        $track.HorizontalAlignment = 'Left'
+        $track.Margin = New-Object System.Windows.Thickness 0, 0, 8, 0
+        $fill = New-Object System.Windows.Controls.Border
+        $fill.Height = 5
+        $fill.Width = [Math]::Max(2.0, 46.0 * [Math]::Min(1.0, $Bar))
+        $fill.CornerRadius = New-Object System.Windows.CornerRadius 3
+        $fill.Background = $BarFg
+        $fill.HorizontalAlignment = 'Left'
+        $track.Child = $fill
+        $null = $sp.Children.Add($track)
+    }
+    $tb = New-Object System.Windows.Controls.TextBlock
+    $tb.Text = $Text
+    $tb.Foreground = $Fg
+    $tb.FontSize = 11.5
+    $tb.FontWeight = $FW_Semi
+    $tb.FontFamily = $script:UiFace
+    $null = $sp.Children.Add($tb)
+    $bd.Child = $sp
+    return @{ Border = $bd; Text = $tb }
+}
+
+function Update-Chips { param($R, [switch]$Force)
+    if (-not $R) { $ui.PaneChips.Children.Clear(); $script:chipStamp = ''; $script:chipClock = $null; $script:chipVitals = $null; return }
+    $v = $null
+    try {
+        $v = Get-SRSessionVitals -JsonlPath "$($R.S.jsonl)" -Session $R.S -WorkDir "$($R.D.path)"
+    } catch { }
+    if (-not $v -or -not $v.Ok) {
+        $ui.PaneChips.Children.Clear(); $script:chipStamp = ''; $script:chipClock = $null; $script:chipVitals = $null; return
+    }
+    $script:chipVitals = $v
+
+    # Everything except the clock. If none of it moved, only the clock is
+    # rewritten - which is one property set rather than ten object graphs.
+    $stamp = '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}' -f $v.Model, $v.Tokens, $v.Window, $v.Branch,
+             $v.Shells, $v.Agents, $v.Remote, $v.Mode, $v.Effort, $v.Added, $v.Removed
+    if (-not $Force -and $stamp -eq $script:chipStamp) { Update-ChipClock $v; return }
+    $script:chipStamp = $stamp
+    $script:chipClock = $null
+    $ui.PaneChips.Children.Clear()
+
+    $glass = $PalGlass
+    $null = $ui.PaneChips.Children.Add((New-Chip -Text (Get-ShortModel $v.Model) -Fg $Pal.TextHigh -Bg $glass -Dot $Pal.In -Tip 'The model this conversation is actually replying with').Border)
+
+    $frac = 0.0
+    if ($v.Window -gt 0) { $frac = [double]$v.Tokens / [double]$v.Window }
+    $barFg = $Pal.Ask
+    if ($frac -gt 0.60) { $barFg = $Pal.Warn }
+    if ($frac -gt 0.85) { $barFg = $Pal.Bad }
+    $ctx = ('{0} / {1}   {2}%' -f (Format-Kilo $v.Tokens), (Format-Kilo $v.Window), [int][math]::Round($frac * 100))
+    $null = $ui.PaneChips.Children.Add((New-Chip -Text $ctx -Fg $Pal.TextHigh -Bg $glass -Bar $frac -BarFg $barFg -Tip 'Context in use at its last reply. A 1M window is inferred from the usage, because the transcript does not record which one was selected.').Border)
+
+    if ($v.Branch) {
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text ([string][char]0x2387 + '  ' + $v.Branch) -Fg $Pal.TextMid -Bg $glass -Tip 'The branch this conversation is working on').Border)
+    }
+    # (+166,-66). Two colours rather than one grey string, because the question
+    # is "how much is uncommitted" and the halves mean opposite things.
+    if ($v.Added -ge 0) {
+        $bd = New-Object System.Windows.Controls.Border
+        $bd.Background = $glass
+        $bd.CornerRadius = New-Object System.Windows.CornerRadius 7
+        $bd.Padding = New-Object System.Windows.Thickness 9, 4, 10, 5
+        $bd.Margin = New-Object System.Windows.Thickness 0, 0, 7, 5
+        $bd.ToolTip = 'The working tree against HEAD'
+        $sp = New-Object System.Windows.Controls.StackPanel
+        $sp.Orientation = 'Horizontal'
+        foreach ($part in @(@(('+' + $v.Added), $Pal.Ask), @(('   ' + [string][char]0x2212 + $v.Removed), $Pal.Bad))) {
+            $t = New-Object System.Windows.Controls.TextBlock
+            $t.Text = $part[0]; $t.Foreground = $part[1]
+            $t.FontSize = 11.5; $t.FontWeight = $FW_Semi; $t.FontFamily = $script:UiFace
+            $null = $sp.Children.Add($t)
+        }
+        $bd.Child = $sp
+        $null = $ui.PaneChips.Children.Add($bd)
+    }
+    if ($v.Remote) {
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text 'remote control' -Fg $Pal.Ask -Bg $PalWash.Ask -Stroke $PalEdge.Ask -Dot $Pal.Ask -Tip 'This conversation can be driven from the Claude app').Border)
+    }
+    if ($v.Mode) {
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text (($v.Mode -creplace '([a-z])([A-Z])', '$1 $2').ToLower()) -Fg $Pal.Warn -Bg $PalWash.Warn -Stroke $PalEdge.Warn -Tip 'The permission mode it was launched with').Border)
+    }
+    if ($v.Effort) {
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text ($v.Effort + ' effort') -Fg $Pal.TextMid -Bg $glass -Tip 'The thinking effort it was launched with').Border)
+    }
+    # 🪤 SHOWN ONLY WHEN THERE ARE SOME. A permanent "0 shells" is noise on a
+    # strip that is meant to be scanned: what is running is the signal, and its
+    # absence is the other half of that signal.
+    if ($v.Shells -gt 0) {
+        $w = 'shells'; if ($v.Shells -eq 1) { $w = 'shell' }
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text ('{0} {1}' -f $v.Shells, $w) -Fg $Pal.Tool -Bg $PalWash.Tool -Stroke $PalEdge.Tool -Dot $Pal.Tool -Tip 'Background shells started and not yet reported back').Border)
+    }
+    if ($v.Agents -gt 0) {
+        $w = 'sub-agents'; if ($v.Agents -eq 1) { $w = 'sub-agent' }
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text ('{0} {1}' -f $v.Agents, $w) -Fg $Pal.Out -Bg $PalWash.Out -Stroke $PalEdge.Out -Dot $Pal.Out -Tip 'Sub-agents started and not yet reported back').Border)
+    }
+
+    $clock = New-Chip -Text '' -Fg $Pal.TextLow -Bg $glass -Tip 'How long this turn has been running, and what it has written'
+    $script:chipClock = $clock.Text
+    $null = $ui.PaneChips.Children.Add($clock.Border)
+    Update-ChipClock $v
+}
+
+function Update-ChipClock { param($V)
+    if (-not $script:chipClock -or -not $V) { return }
+    # Recomputed from WHEN the turn started, never from the Elapsed the read
+    # returned - that number was true once and is a second staler on every tick.
+    $secs = $V.Elapsed
+    if ($V.TurnAt) { $secs = ([datetime]::UtcNow - $V.TurnAt).TotalSeconds }
+    $t = Format-Clock $secs
+    if (-not $t) { $script:chipClock.Text = ''; return }
+    if ($V.TurnTokens -gt 0) {
+        $t += '   ' + [string][char]0x00B7 + '   ' + [string][char]0x2193 + ' ' + (Format-Kilo $V.TurnTokens)
+    }
+    $script:chipClock.Text = $t
+}
+
+# 🔴 THE CLOCK MOVES ON ARITHMETIC, AND ON NOTHING ELSE. This ran once a second
+# and CALLED Get-SRSessionVitals, whose cache is keyed on the transcript's size
+# and mtime - which on the one kind of session whose clock you are watching, a
+# live one, changes every time it writes. So the cache missed every tick and the
+# window re-parsed up to 600 KB of JSONL through ConvertFrom-Json ON THE UI
+# THREAD, once a second, to advance a number it already had.
+#
+# The elapsed time is (now - the turn's start), and the turn's start is in the
+# vitals object the last real read produced. Nothing needs re-reading; only the
+# subtraction is per-tick. Update-Chips does the reading, on the tick that
+# notices the transcript actually grew.
+function Step-ChipClock {
+    if (-not $script:chipClock -or -not $script:chipVitals) { return }
+    try { Update-ChipClock $script:chipVitals } catch { }
+}
+
+# ===========================================================================
+# HOW MUCH OF THE MACHINERY THE PANE SHOWS.
+#
+# One button cycling three positions, because the answer changes with what the
+# operator is doing: reading a reply wants it folded, watching a run wants it
+# full, and writing wants it gone. Remembered in the config, so the choice
+# survives the window.
+# ===========================================================================
+function Step-ToolView {
+    $i = [array]::IndexOf($SR_ToolViews, $script:toolView)
+    if ($i -lt 0) { $i = 0 }
+    $script:toolView = $SR_ToolViews[($i + 1) % $SR_ToolViews.Count]
+    $ui.PaneTools.Content = Get-ToolViewLabel
+    # 🪤 The write is a SIDE EFFECT, never something the redraw waits on. A
+    # config that cannot be written must not stop the pane from redrawing - the
+    # setting is already live in this window either way.
+    try { Save-SRConfigValue -Name 'transcriptTools' -Value $script:toolView }
+    catch { Write-SRLog ('  [skip] could not remember the steps setting: ' + $_.Exception.Message) }
+    Show-Selected -Force
+}
+
 function Show-Selected { param([switch]$Force)
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
@@ -1840,6 +2341,7 @@ function Show-Selected { param([switch]$Force)
     $ui.PaneStateDot.Background = $(if ($b.Count) { $window.FindResource($b[0].Acc) } else { $window.FindResource('AccIdle') })
     $detail = $(if ($r.Conv -and "$($r.Conv.Detail)") { "$($r.Conv.Detail)" } else { 'no process is holding it' })
     $ui.PaneState.Text = ('{0}   |   {1}   |   {2}' -f $(if ($b.Count) { $b[0].Label } else { '' }), $detail, (Get-ProjectLabel "$($r.D.path)"))
+    try { Update-Chips $r } catch { }
 
     # Everything above is a few string assignments and is always safe to redo.
     # Everything below reads files and spawns a process.
@@ -1895,6 +2397,10 @@ $script:followTimer.Interval = [TimeSpan]::FromSeconds(1)
 function Invoke-FollowTick {
     # Nothing moves under an open sheet - see the gate on the model timers.
     if ($script:sheetDepth -gt 0) { return }
+    # The turn clock, BEFORE the early returns below. It has to move on a
+    # conversation whose transcript has not changed this second - which is every
+    # second of a long reply, and exactly when you are watching it.
+    try { Step-ChipClock } catch { }
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
     $r = $it.Row
@@ -1914,6 +2420,11 @@ function Invoke-FollowTick {
     $firstLook = ($null -eq $script:followStamp)
     $script:followStamp = $now
     try { Update-Document; Update-SendState } catch { }
+    # The vitals are re-read HERE and nowhere else on this tick: the transcript
+    # has demonstrably grown, so the context figure, the model, the sub-agent and
+    # shell counts can all have moved. On a quiet second nothing above this line
+    # runs, which is what keeps a per-second timer cheap.
+    try { Update-Chips $r } catch { }
     if ($firstLook) { return }
 
     # 🔴 A TRANSCRIPT THAT IS GROWING IS A SESSION THAT IS WORKING, and this
@@ -1952,6 +2463,21 @@ $script:followTimer.Add_Tick({
 $ui.ModeWork.Add_Checked({   Set-Surface 'work' })
 $ui.ModeManage.Add_Checked({ Set-Surface 'manage' })
 $window.Add_SizeChanged({ Set-Breakpoint })
+
+# THE MEASURE IS ARITHMETIC ON THE PANE WIDTH, so it is wrong the moment the
+# window is resized until the document is rebuilt. Rebuilding on every pixel of
+# a drag would be absurd; this waits for the drag to stop.
+$script:measureTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:measureTimer.Interval = [TimeSpan]::FromMilliseconds(240)
+$script:measureTimer.Add_Tick({
+    $script:measureTimer.Stop()
+    if ($script:sheetDepth -gt 0) { return }
+    try {
+        $doc = $ui.PaneDoc.Document
+        if ($doc) { Set-ReadMeasure -Doc $doc -Size 16 -PadL 44 }
+    } catch { }
+})
+$ui.PaneDoc.Add_SizeChanged({ $script:measureTimer.Stop(); $script:measureTimer.Start() })
 # 🔴 UNSAVED TICKS ARE LOST SILENTLY OTHERWISE. The ticks decide what comes back
 # at your next logon, and closing the window threw them away without a word -
 # which matters far more now that ticking is reachable at all.
@@ -2979,6 +3505,22 @@ Build-SettingDrops
 
 $ui.SetPerm.Add_SelectionChanged({ Update-PermNote })
 $ui.PaneSettings.Add_Click({ if ($ui.SettingsBox.Visibility -eq $V_Show) { Hide-Settings } else { Show-Settings } })
+
+$ui.PaneTools.Content = Get-ToolViewLabel
+$ui.PaneTools.Add_Click({ Step-ToolView })
+
+# A NEW CONVERSATION IN ANOTHER WORKTREE - never this one moved. A claude
+# conversation is bound to the directory it was started in and its transcript is
+# filed under that directory, so "switch this session to another worktree" is
+# not an operation that exists: what exists is starting a fresh one there. The
+# dialog opens on this project with the worktree box already ticked, so the
+# common case is two clicks, and every other launch setting stays available.
+$ui.PaneWorktree.Add_Click({
+    $r = Get-SelectedRow
+    $d = ''
+    if ($r -and $r.D) { $d = "$($r.D.path)" }
+    Show-Spawn -PresetDir $d -PresetWorktree
+})
 $ui.SetCancel.Add_Click({ Hide-Settings; Set-Status 'nothing changed' })
 
 $ui.SetApply.Add_Click({
@@ -3068,7 +3610,7 @@ function Get-SpawnDefaults {
     return $d
 }
 
-function Show-Spawn {
+function Show-Spawn { param([string]$PresetDir, [switch]$PresetWorktree)
     $xp = Join-Path $here 'spawn2.xaml'
     if (-not (Test-Path -LiteralPath $xp)) { Set-Status 'spawn2.xaml is missing from lib' 'bad'; return }
     $sp = $null
@@ -3134,6 +3676,15 @@ function Show-Spawn {
         $i.Content = (Get-ProjectLabel $p); $i.Tag = $p
         $dirs.Add($i)
     }
+    # A worktree started from the pane can be for a project that is not in the
+    # recent list at all. Adding it rather than letting Set-DropValue miss and
+    # leave the default selected, which would start the session somewhere else
+    # entirely without saying so.
+    if ($PresetDir -and -not $seen.ContainsKey($PresetDir)) {
+        $pi = New-Object System.Windows.Controls.ComboBoxItem
+        $pi.Content = (Get-ProjectLabel $PresetDir); $pi.Tag = $PresetDir
+        $dirs.Insert(0, $pi)
+    }
     $s.SpDir.ItemsSource = $dirs.ToArray()
 
     $def = Get-SpawnDefaults
@@ -3145,6 +3696,8 @@ function Show-Spawn {
     $s.SpHidden.IsChecked   = [bool]$def.Hidden
     $s.SpWorktree.IsChecked = [bool]$def.Worktree
     $s.SpName.Text = ''
+    if ($PresetDir) { Set-DropValue $s.SpDir $PresetDir }
+    if ($PresetWorktree) { $s.SpWorktree.IsChecked = $true }
 
     $refresh = {
         $dir = Get-DropValue $s.SpDir

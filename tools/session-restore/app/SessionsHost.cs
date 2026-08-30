@@ -3,7 +3,7 @@
 //
 // WHAT THIS IS NOT: a rewrite. Not one line of the ~10,000 lines of PowerShell
 // behind the window moved. This process opens a Windows PowerShell 5.1 runspace
-// IN ITSELF and runs lib\sessions-gui2.ps1 inside it, on this thread. The script
+// IN ITSELF and runs lib\sessions-window.ps1 inside it, on this thread. The script
 // sees the same $PSScriptRoot, dot-sources the same _common.ps1, and reads the
 // same window2.xaml as it does when you run it by hand. Every test driver still
 // drives the .ps1 files directly and is unaffected by this file existing.
@@ -108,7 +108,7 @@ namespace MMToolbox.SessionRestore
         // THE WINDOW. There is only one now: lib\sessions-gui.ps1 and the three
         // suites that drove it were deleted once tests\gui2-driver.ps1 covered
         // this one. Changing this line changes what the app opens.
-        private const string GuiScript = @"lib\sessions-gui2.ps1";
+        private const string GuiScript = @"lib\sessions-window.ps1";
         private const string RestoreScript = @"lib\restore-sessions.ps1";
 
         [STAThread]

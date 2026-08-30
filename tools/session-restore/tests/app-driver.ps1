@@ -16,7 +16,7 @@
       5. NO console is allocated for the window        (winexe, not exe)
       6. a SECOND launch does not open a second window (one registry, one view)
 
-    Plus the refusal: started where sessions-gui2.ps1 is not, it must exit 2 and
+    Plus the refusal: started where sessions-window.ps1 is not, it must exit 2 and
     say so in the log rather than sitting there having done nothing. That case
     is what proves the other assertions are capable of failing.
 
@@ -233,12 +233,12 @@ try {
     $r = Start-Process -FilePath $orphan -PassThru -Wait
     Remove-Item Env:\SR_GUI_NODIALOG -ErrorAction SilentlyContinue
 
-    if ($r.ExitCode -ne 2) { Fail "with no sessions-gui2.ps1 beside it the app exited $($r.ExitCode), expected 2" }
-    else { Pass 'refuses to start where sessions-gui2.ps1 is not, exit 2' }
+    if ($r.ExitCode -ne 2) { Fail "with no sessions-window.ps1 beside it the app exited $($r.ExitCode), expected 2" }
+    else { Pass 'refuses to start where sessions-window.ps1 is not, exit 2' }
 
     $orphanLog = Join-Path $sandbox '.state\restore.log'
     if ((Test-Path -LiteralPath $orphanLog) -and
-        ((Get-Content -LiteralPath $orphanLog -Raw) -match 'sessions-gui2\.ps1 is not next to')) {
+        ((Get-Content -LiteralPath $orphanLog -Raw) -match 'sessions-window\.ps1 is not next to')) {
         Pass 'and wrote the reason to .state\restore.log'
     } else { Fail 'the refusal left nothing in .state\restore.log' }
 

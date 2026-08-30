@@ -160,6 +160,28 @@ function Set-SRIncludeWorktrees {
     return $Value
 }
 
+# How much of the machinery the reading pane shows. Ordered, because the window
+# cycles through them on one button.
+$SR_ToolViews = @('folded', 'full', 'hidden')
+
+# ===========================================================================
+# HOW GLYPHS ARE ANTIALIASED. A setting rather than a decision, and this is the
+# one place in the tool where that is the honest answer.
+#
+# window2.xaml pins Grayscale with a reasoned comment: ClearType is SUBPIXEL
+# antialiasing, it tints the edge of every stem red or blue, and on a #0F1013
+# ground that fringe is visible. Against that, ClearType buys real horizontal
+# resolution and is what the browser uses - which is why the same text can look
+# crisper in a web page than in this window.
+#
+# 🔴 IT CANNOT BE SETTLED FROM A SCREENSHOT. RenderTargetBitmap - what every
+# shot in tests\ goes through - ALWAYS composites greyscale, so a captured
+# "ClearType" sample is greyscale wearing a label. Measured 2026-08-30: the four
+# way comparison in tests\type-driver.ps1 shows the two ClearType rows identical
+# to their greyscale twins, because they are. Only a real monitor can answer it,
+# so the choice belongs to whoever is looking at one.
+$SR_TextModes = @('grayscale', 'cleartype')
+
 function Get-SRConfig {
     if (-not (Test-Path -LiteralPath $SR_ConfigPath)) { throw "config not found: $SR_ConfigPath" }
     # 🪤 SAY WHAT TO DO ABOUT IT. Get-SRRegistry has caught its own parse
@@ -184,7 +206,14 @@ function Get-SRConfig {
         @{ k = 'autoTickPerWorktree';  v = 3  },
         @{ k = 'includeWorktrees';     v = $true },
         @{ k = 'registryWindowDays';   v = 30 },
-        @{ k = 'maxSessions';          v = 12 }
+        @{ k = 'maxSessions';          v = 12 },
+        # HOW MUCH OF THE MACHINERY THE READING PANE SHOWS. Measured across six
+        # transcripts: text 50, thinking 84, tool_use 129, tool_result 130 - tool
+        # traffic outnumbers prose five to one, and that ratio IS the wall of
+        # text. folded is the default because it keeps the count and the names
+        # (so you still know what ran) without the volume.
+        @{ k = 'transcriptTools';      v = 'folded' },
+        @{ k = 'textRendering';        v = 'grayscale' }
     )) {
         if ($null -eq $c.PSObject.Properties[$kv.k]) {
             $c | Add-Member -NotePropertyName $kv.k -NotePropertyValue $kv.v -Force
@@ -231,7 +260,50 @@ function Get-SRConfig {
             $c.($kv.k) = $kv.max
         } else { $c.($kv.k) = $n }
     }
+
+    # The one setting here that is a WORD rather than a number, and it earns the
+    # same treatment for the same reason: a typo must not silently mean
+    # something else. An unrecognised value falls back and says so in the log.
+    $tt = "$($c.transcriptTools)".Trim().ToLower()
+    if ($SR_ToolViews -notcontains $tt) {
+        if ($tt) { Write-SRLog ("  [warn] config transcriptTools is '{0}'; expected one of {1}. Using folded." -f $tt, ($SR_ToolViews -join ', ')) }
+        $tt = 'folded'
+    }
+    $c.transcriptTools = $tt
+
+    $tr = "$($c.textRendering)".Trim().ToLower()
+    if ($SR_TextModes -notcontains $tr) {
+        if ($tr) { Write-SRLog ("  [warn] config textRendering is '{0}'; expected one of {1}. Using grayscale." -f $tr, ($SR_TextModes -join ', ')) }
+        $tr = 'grayscale'
+    }
+    $c.textRendering = $tr
+
     return $c
+}
+
+# One key, written back without disturbing the rest of the file.
+#
+# 🪤 IT RE-READS FROM DISK RATHER THAN WRITING THE OBJECT Get-SRConfig RETURNED.
+# That object has every default filled in and every out-of-range value already
+# corrected, so writing it back would silently BAKE the corrections into the
+# operator's file - a config they had left mostly empty would come back with
+# nine keys they never set, and a value they had deliberately put out of range
+# would be quietly overwritten by ours. Only the key asked for changes.
+function Save-SRConfigValue { param([Parameter(Mandatory)][string]$Name, $Value)
+    $raw = $null
+    if (Test-Path -LiteralPath $SR_ConfigPath) {
+        try { $raw = Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json } catch { $raw = $null }
+    }
+    if (-not $raw) { $raw = New-Object PSObject }
+    if ($null -eq $raw.PSObject.Properties[$Name]) {
+        $raw | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+    } else { $raw.$Name = $Value }
+
+    $dir = Split-Path -Parent $SR_ConfigPath
+    $tmp = Join-Path $dir ('.config.{0}.tmp' -f ([guid]::NewGuid().ToString('N')))
+    $json = $raw | ConvertTo-Json -Depth 8
+    [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmp -Destination $SR_ConfigPath -Force
 }
 
 # ---------------------------------------------------------------------------
@@ -2883,6 +2955,37 @@ function Get-SRPendingQuestion {
 # ConvertFrom-Json costs ~17 ms a record, so this reads a bounded number of
 # records from the END rather than the whole file. A 6 MB transcript would
 # otherwise take a minute to open.
+# ===========================================================================
+# ANSI ESCAPES REACHED THE SCREEN, AND READ AS A BROKEN FONT.
+#
+# A tool_result carries whatever the child process wrote to its stdout, colour
+# codes included, and this parser passed it through untouched. A python log line
+# arrived in the reading pane as
+#
+#   [32m2026-08-30 11:03:23[0m | [1mINFO [0m | [36mdb.connection[0m
+#
+# which the operator reported as the text not looking clean - a typography
+# complaint about what was really unrendered control data. The ESC byte itself
+# draws as nothing, so only the bracket and the digits survive, and there is no
+# way to tell from the screen what went wrong.
+#
+# 🪤 The ESC is stripped WITH its sequence, never on its own: removing the ESC
+# and leaving "[32m" behind is the same defect with the evidence deleted.
+$SR_Esc = [string][char]27
+$SR_Bel = [string][char]7
+$script:SR_AnsiCsi = [regex]::new([regex]::Escape($SR_Esc) + '\[[0-9;?]*[ -/]*[@-~]')
+$script:SR_AnsiOsc = [regex]::new([regex]::Escape($SR_Esc) + '\][^' + [regex]::Escape($SR_Bel) + ']*' + [regex]::Escape($SR_Bel))
+$script:SR_AnsiCtl = [regex]::new('[\x00-\x08\x0B\x0C\x0E-\x1F]')
+
+function Remove-SRAnsi { param([string]$Text)
+    if (-not $Text) { return '' }
+    $t = $script:SR_AnsiCsi.Replace($Text, '')
+    $t = $script:SR_AnsiOsc.Replace($t, '')
+    # Tab and newline are kept: they are layout in a tool result, not control
+    # noise, and stripping them would run a table into one line.
+    return $script:SR_AnsiCtl.Replace($t, '')
+}
+
 function Get-SRTranscriptBlocks {
     [CmdletBinding()]
     param(
@@ -2980,7 +3083,9 @@ function Get-SRTranscriptBlocks {
                     else {
                         foreach ($c in @($b.content)) { if ($c.type -eq 'text') { $s += "$($c.text)" } }
                     }
-                    $s = "$s"
+                    # The ONE place a child process's raw stdout enters this
+                    # tool. Everything else here is JSON claude wrote.
+                    $s = Remove-SRAnsi "$s"
                     $n = @($s -split "`n").Count
                     $err = ($b.PSObject.Properties['is_error'] -and $b.is_error)
                     $out.Add((New-Block 'result' $(if ($err) { 'failed' } else { 'result' }) $s "$n lines"))
@@ -2989,6 +3094,242 @@ function Get-SRTranscriptBlocks {
         }
     }
     return ,@($out.ToArray())
+}
+
+# ===========================================================================
+# THE VITALS - what the terminal's own status line knows about a session.
+#
+#   Model: Opus 5 | [####------] 184k/1.0M (18%) | main | (+166,-66)
+#
+# Every figure here is already on disk; none of it needs claude to be asked.
+#   model, tokens   an assistant record's `message.model` and `message.usage`
+#   branch          `gitBranch`, on every record - no git call for this one
+#   sub-agents      a `Task` tool_use whose id no tool_result has quoted back
+#   shells          the same, for a Bash call with run_in_background
+#   remote, effort, permission mode   launch flags this tool already stores
+#   +N -N           the only one that costs a subprocess
+#
+# 🪤 READ OVER A TAIL. A sub-agent started before the tail window is not
+# counted, so this answers "what is running now" and NOT "what has ever run".
+# The chip means the former; do not re-point it at the latter without saying so
+# on screen.
+#
+# 🔴 CACHED ON THE FILE'S OWN STAMP, because this runs on a timer behind a
+# window that must stay responsive: an unchanged transcript is never re-parsed,
+# and the git call has a life of its own so a fast tick cannot spawn one.
+$script:SR_VitalCache = @{}
+$script:SR_DiffCache = @{}
+$SR_DiffMaxAgeSeconds = 20
+
+function New-SRVitals {
+    return [PSCustomObject]@{
+        Model = ''; Tokens = 0; Window = 200000; Branch = ''
+        Shells = 0; Agents = 0; Remote = $false
+        Effort = ''; Mode = ''; Elapsed = 0.0; TurnTokens = 0
+        Added = -1; Removed = -1; Ok = $false
+        # WHEN the turn started, not just how long ago that was. Elapsed is a
+        # snapshot and goes stale the instant it is returned; TurnAt lets a
+        # caller advance the clock without re-reading the transcript, which is
+        # the difference between a per-second subtraction and a per-second
+        # parse of half a megabyte.
+        TurnAt = $null
+    }
+}
+
+# 🔴 NEVER `& git` FROM THE WINDOW. Sessions.exe is a /target:winexe process
+# with NO console, and PowerShell's native-command path ALLOCATES ONE to run an
+# external program - a console window that flashes up behind the app, and an
+# `app` suite assertion that goes red on exactly this. Measured 2026-08-30: the
+# working-tree diff chip did it on every selection.
+#
+# Redirecting the streams through Process directly keeps the child headless.
+# 🪤 Read stdout to the END BEFORE WaitForExit. Waiting first deadlocks the
+# moment git writes more than a pipe buffer, which `git diff --shortstat`
+# will not but the next caller of this helper might.
+function Invoke-SRGitLine { param([string]$Path, [string[]]$Arguments, [int]$TimeoutMs = 4000)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'git'
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.WorkingDirectory = $Path
+    $all = @('--no-optional-locks') + @($Arguments)
+    $psi.Arguments = ($all | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+    $p = $null
+    try {
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $out = $p.StandardOutput.ReadToEnd()
+        $null = $p.StandardError.ReadToEnd()
+        if (-not $p.WaitForExit($TimeoutMs)) { try { $p.Kill() } catch { }; return '' }
+        return "$out"
+    } catch { return '' }
+    finally { if ($p) { try { $p.Dispose() } catch { } } }
+}
+
+function Get-SRWorkingDiff { param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
+    $key = $Path.ToLower()
+    $now = Get-Date
+    if ($script:SR_DiffCache.ContainsKey($key)) {
+        $hit = $script:SR_DiffCache[$key]
+        if (($now - $hit.At).TotalSeconds -lt $SR_DiffMaxAgeSeconds) { return $hit.Value }
+    }
+    $val = $null
+    try {
+        # --no-optional-locks (added by the helper) so this never fights a
+        # session mid-commit in the same tree, which is the common case here:
+        # the tree is BUSY, that is why it is on screen.
+        $raw = (Invoke-SRGitLine -Path $Path -Arguments @('diff', '--shortstat', 'HEAD')) -replace "[`r`n]+", ' '
+        $add = 0; $del = 0
+        if ($raw -match '(\d+) insertion') { $add = [int]$Matches[1] }
+        if ($raw -match '(\d+) deletion')  { $del = [int]$Matches[1] }
+        $val = [PSCustomObject]@{ Added = $add; Removed = $del }
+    } catch { }
+    $script:SR_DiffCache[$key] = @{ At = $now; Value = $val }
+    return $val
+}
+
+function Get-SRSessionVitals {
+    [CmdletBinding()]
+    param(
+        [string]$JsonlPath,
+        $Session,
+        [string]$WorkDir,
+        [int]$MaxTailBytes = 600000,
+        [switch]$NoDiff
+    )
+    $v = New-SRVitals
+
+    # The launch flags, through the accessors. A bare property read would report
+    # every unset session as no-remote: Test-SRRemoteWanted carries the
+    # default-on rule and this must not restate it.
+    if ($Session) {
+        $v.Effort = "$(Get-SRSessionPref $Session 'effort')".Trim()
+        $v.Mode   = "$(Get-SRSessionPref $Session 'permissionMode')".Trim()
+        try { $v.Remote = [bool](Test-SRRemoteWanted $Session) } catch { }
+    }
+    if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return $v }
+
+    $stamp = ''
+    try {
+        $fi = Get-Item -LiteralPath $JsonlPath
+        $stamp = '{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks
+    } catch { return $v }
+
+    $key = $JsonlPath.ToLower()
+    $parsed = $null
+    if ($script:SR_VitalCache.ContainsKey($key) -and $script:SR_VitalCache[$key].Stamp -eq $stamp) {
+        $parsed = $script:SR_VitalCache[$key].Value
+    }
+
+    if (-not $parsed) {
+        $text = ''
+        try {
+            $fs = [System.IO.File]::Open($JsonlPath, 'Open', 'Read', 'ReadWrite')
+            try {
+                $take = [int][Math]::Min($fi.Length, $MaxTailBytes)
+                $null = $fs.Seek(-$take, 'End')
+                $buf = New-Object byte[] $take
+                $read = $fs.Read($buf, 0, $take)
+                $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+            } finally { $fs.Dispose() }
+        } catch { return $v }
+
+        $lines = @($text -split "`n" | Where-Object { $_.Trim().StartsWith('{') })
+        if (-not $lines.Count) { return $v }
+
+        $parsed = [PSCustomObject]@{
+            Model = ''; Tokens = 0; Branch = ''; Shells = 0; Agents = 0
+            TurnTokens = 0; TurnAt = $null
+        }
+        $open = @{}
+        $turnAt = $null
+        $lastAt = $null
+        $turnOut = 0
+        foreach ($ln in $lines) {
+            $r = $null
+            try { $r = $ln | ConvertFrom-Json } catch { continue }
+            if ($r.PSObject.Properties['gitBranch'] -and "$($r.gitBranch)") { $parsed.Branch = "$($r.gitBranch)" }
+            if ($r.PSObject.Properties['timestamp'] -and "$($r.timestamp)") {
+                try {
+                    $ts = [datetime]::Parse("$($r.timestamp)", [System.Globalization.CultureInfo]::InvariantCulture,
+                                            [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                    $lastAt = $ts
+                    # A TURN STARTS WHEN YOU SPEAK. Everything after that is the
+                    # reply being composed, which is what the clock is timing.
+                    if ("$($r.type)" -eq 'user') { $turnAt = $ts; $turnOut = 0 }
+                } catch { }
+            }
+            $m = $r.message
+            if (-not $m) { continue }
+            if ($m.PSObject.Properties['model'] -and "$($m.model)") { $parsed.Model = "$($m.model)" }
+            if ($m.PSObject.Properties['usage'] -and $m.usage) {
+                $u = $m.usage
+                $tot = 0
+                foreach ($f in @('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')) {
+                    if ($u.PSObject.Properties[$f]) { $tot += [int]$u.$f }
+                }
+                if ($tot -gt 0) { $parsed.Tokens = $tot }
+                if ($u.PSObject.Properties['output_tokens']) { $turnOut += [int]$u.output_tokens }
+            }
+            foreach ($b in @($m.content)) {
+                if (-not $b -or -not $b.type) { continue }
+                if ($b.type -eq 'tool_use') {
+                    $nm = "$($b.name)"
+                    if ($nm -eq 'Task') { $open["$($b.id)"] = 'agent' }
+                    elseif ($nm -eq 'Bash' -and $b.input -and
+                            $b.input.PSObject.Properties['run_in_background'] -and $b.input.run_in_background) {
+                        $open["$($b.id)"] = 'shell'
+                    }
+                } elseif ($b.type -eq 'tool_result') {
+                    $id = "$($b.tool_use_id)"
+                    if ($id -and $open.ContainsKey($id)) { $null = $open.Remove($id) }
+                }
+            }
+        }
+        foreach ($k in @($open.Keys)) {
+            if ($open[$k] -eq 'agent') { $parsed.Agents++ } else { $parsed.Shells++ }
+        }
+        $parsed.TurnTokens = $turnOut
+        if ($turnAt) { $parsed.TurnAt = $turnAt } else { $parsed.TurnAt = $lastAt }
+        $script:SR_VitalCache[$key] = @{ Stamp = $stamp; Value = $parsed }
+    }
+
+    $v.Model = $parsed.Model
+    $v.Tokens = $parsed.Tokens
+    $v.Branch = $parsed.Branch
+    $v.Shells = $parsed.Shells
+    $v.Agents = $parsed.Agents
+    $v.TurnTokens = $parsed.TurnTokens
+    $v.TurnAt = $parsed.TurnAt
+    if ($parsed.TurnAt) { $v.Elapsed = ([datetime]::UtcNow - $parsed.TurnAt).TotalSeconds }
+
+    # 🔴 THE MODEL ID DOES NOT SAY WHICH WINDOW IT HAS. A 1M session writes
+    # itself down as plain "claude-opus-5" - the [1m] suffix is a launch-time
+    # selection and never reaches the transcript - so keying the window off the
+    # id reported a real 764k context as 380% of 200k. Observation settles it:
+    # a context that has exceeded the standard window IS proof of the larger one.
+    $v.Window = 200000
+    if ($v.Model -match '1m' -or $v.Tokens -gt 200000) { $v.Window = 1000000 }
+
+    if (-not $NoDiff -and $WorkDir) {
+        $d = Get-SRWorkingDiff -Path $WorkDir
+        if ($d) { $v.Added = $d.Added; $v.Removed = $d.Removed }
+        # 🪤 "HEAD" IS NOT A BRANCH NAME. Every worktree session in this registry
+        # records gitBranch=HEAD, because that is what claude writes for a
+        # detached checkout, and a chip reading "HEAD" says nothing. Ask git; if
+        # git says HEAD too, name the worktree, which IS where the work is.
+        if ((-not $v.Branch -or $v.Branch -eq 'HEAD') -and (Test-Path -LiteralPath $WorkDir)) {
+            try {
+                $bn = (Invoke-SRGitLine -Path $WorkDir -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')).Trim()
+                if ($bn -and $bn -ne 'HEAD') { $v.Branch = $bn }
+                else { $v.Branch = (Split-Path -Leaf $WorkDir) }
+            } catch { }
+        }
+    }
+    $v.Ok = $true
+    return $v
 }
 
 # --- what a conversation LAST SAID ------------------------------------------

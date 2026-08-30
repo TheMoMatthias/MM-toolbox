@@ -74,7 +74,7 @@ param(
     # `shot` is the odd one out: it draws the real window to PNG and asserts
     # almost nothing. It never runs in a full sweep -- only when asked for by
     # name -- because its output is something to LOOK at, not something to pass.
-    [ValidateSet('state', 'gui2', 'live', 'jump', 'relay', 'shot', 'perf', 'app')]
+    [ValidateSet('state', 'gui2', 'live', 'jump', 'relay', 'shot', 'design', 'type', 'perf', 'app')]
     [string]$Only,
     [switch]$NoGui,
 
@@ -91,7 +91,14 @@ param(
 
     # Render the window to this PNG, off-screen. Implies -Only shot; the suite
     # that used to honour it was retired with the window it drove.
-    [string]$Shot
+    [string]$Shot,
+
+    # Drive a CANDIDATE window script instead of the shipped one, by file name
+    # within lib\. Every gui suite splices from the live source, so this is the
+    # only way to put a rebuilt window under the suite before installing it -
+    # which matters when the file cannot be replaced yet, and matters generally
+    # for "does this build pass before I overwrite the one that works".
+    [string]$GuiFile = 'sessions-window.ps1'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -143,7 +150,7 @@ function New-CommonHarness {
 # shipped one - a green suite that describes a window nobody launches is worse
 # than no suite, because it reads as coverage.
 function New-GuiHarness {
-    param([string]$Driver, [string]$OutFile, [string]$Gui = 'sessions-gui2.ps1')
+    param([string]$Driver, [string]$OutFile, [string]$Gui = 'sessions-window.ps1')
 
     $src = @(Get-Content -LiteralPath (Join-Path $lib $Gui))
     $cut = -1
@@ -219,7 +226,7 @@ if (-not $Only -or $Only -eq 'state') {
 # what Sessions.exe launches. Same splice, aimed at the shipped script.
 if (-not $Only -or $Only -eq 'gui2') {
     Write-Host "`n=== gui2 (the shipped window, built and never shown) ===" -ForegroundColor Cyan
-    $h = New-GuiHarness -Driver 'gui2-driver.ps1' -OutFile 'gui2-test.ps1' -Gui 'sessions-gui2.ps1'
+    $h = New-GuiHarness -Driver 'gui2-driver.ps1' -OutFile 'gui2-test.ps1' -Gui $GuiFile
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
     $out | ForEach-Object { Write-Host $_ }
     Record 'gui2' $LASTEXITCODE @($out)
@@ -238,7 +245,7 @@ if (-not $Only -or $Only -eq 'live') {
     Write-Host "`n=== live (an HWND, unactivated and out of sight) ===" -ForegroundColor Cyan
     # -Place was declared and wired to nothing. This is the suite it was for.
     if ($Place) { $env:SR_PLACE = $Place } else { Remove-Item Env:\SR_PLACE -ErrorAction SilentlyContinue }
-    $h = New-GuiHarness -Driver 'live-driver.ps1' -OutFile 'live-test.ps1'
+    $h = New-GuiHarness -Driver 'live-driver.ps1' -OutFile 'live-test.ps1' -Gui $GuiFile
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
     $out | ForEach-Object { Write-Host $_ }
     Record 'live' $LASTEXITCODE @($out)
@@ -264,10 +271,35 @@ if ((-not $Only -or $Only -eq 'relay') -and -not $NoSteal) {
 if ($Only -eq 'shot' -or $Shot) {
     Write-Host "`n=== shot (the real window, drawn to PNG) ===" -ForegroundColor Cyan
     if ($Shot) { $env:SR_SHOT_OUT = $Shot }
-    $h = New-GuiHarness -Driver 'shot-driver.ps1' -OutFile 'shot-test.ps1'
+    $h = New-GuiHarness -Driver 'shot-driver.ps1' -OutFile 'shot-test.ps1' -Gui $GuiFile
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
     $out | ForEach-Object { Write-Host $_ }
     Record 'shot' $LASTEXITCODE @($out)
+}
+
+# --- design: competing designs for the reading surface, drawn to PNG ---------
+# BY NAME ONLY, like shot. It draws the SAME conversation under several
+# treatments of the transcript, the question panel and the header, so a design
+# choice can be made by looking at real content at real density instead of by
+# describing it. Nothing it draws is in lib\ - the variants live in the driver
+# until one is picked.
+if ($Only -eq 'design') {
+    Write-Host "`n=== design (competing reading surfaces, drawn to PNG) ===" -ForegroundColor Cyan
+    $h = New-GuiHarness -Driver 'design-driver.ps1' -OutFile 'design-test.ps1' -Gui $GuiFile
+    $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'design' $LASTEXITCODE @($out)
+}
+
+# --- type: the same words under four text-rendering settings ----------------
+# BY NAME ONLY. It asserts nothing - WPF text rendering is a look, and the only
+# honest way to choose is to see the shipped antialiasing magnified.
+if ($Only -eq 'type') {
+    Write-Host "`n=== type (four text-rendering settings, magnified) ===" -ForegroundColor Cyan
+    $h = New-GuiHarness -Driver 'type-driver.ps1' -OutFile 'type-test.ps1' -Gui $GuiFile
+    $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'type' $LASTEXITCODE @($out)
 }
 
 # --- perf: every operation the operator can cause, timed ---------------------
@@ -277,7 +309,7 @@ if ($Only -eq 'shot' -or $Shot) {
 # about benchmarks that cry wolf.
 if ($Only -eq 'perf') {
     Write-Host "`n=== perf (every operation, timed) ===" -ForegroundColor Cyan
-    $h = New-GuiHarness -Driver 'perf-driver.ps1' -OutFile 'perf-test.ps1'
+    $h = New-GuiHarness -Driver 'perf-driver.ps1' -OutFile 'perf-test.ps1' -Gui $GuiFile
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
     $out | ForEach-Object { Write-Host $_ }
     Record 'perf' $LASTEXITCODE @($out)

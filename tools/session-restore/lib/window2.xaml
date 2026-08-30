@@ -119,6 +119,28 @@
          signal. -->
     <SolidColorBrush x:Key="Focus"      Color="#8E939D"/>
 
+    <!-- ================== THE HUES ==================
+         The monochrome rule above is AMENDED, not abandoned. Hue now carries
+         exactly two things - WHO SPOKE and WHICH PROJECT - and nothing else.
+         State stays a luminance step, so a band still reads in greyscale, in a
+         screenshot and without colour vision; losing hue costs you the speaker
+         label's colour and nothing that decides what needs attention.
+
+         🪤 These do NOT compete with the band accents, because they never
+         appear in the same place: bands live in the rail and the list, hues
+         live inside the reading pane and on the project tiles.
+         ============================================== -->
+    <SolidColorBrush x:Key="HueIn"    Color="#7AA2FF"/>   <!-- came in  - claude speaking -->
+    <SolidColorBrush x:Key="HueOut"   Color="#FFB86B"/>   <!-- went out - you speaking -->
+    <SolidColorBrush x:Key="HueTool"  Color="#A78BFA"/>   <!-- the machinery between them -->
+    <SolidColorBrush x:Key="HueBad"   Color="#FF7A8A"/>   <!-- a call that failed -->
+    <SolidColorBrush x:Key="HueAsk"   Color="#5EEAD4"/>   <!-- a question waiting on you -->
+    <SolidColorBrush x:Key="HueWarn"  Color="#FFD166"/>
+
+    <SolidColorBrush x:Key="HueAskWash"  Color="#5EEAD4" Opacity="0.10"/>
+    <SolidColorBrush x:Key="HueAskFilm"  Color="#5EEAD4" Opacity="0.05"/>
+    <SolidColorBrush x:Key="HueAskEdge"  Color="#5EEAD4" Opacity="0.34"/>
+
     <!-- The bevel: a dark outer stroke with a light inner highlight, so a
          surface looks lit from above rather than outlined. One pair, used by
          every raised thing in the window. -->
@@ -518,6 +540,42 @@
               </Trigger>
               <Trigger Property="IsKeyboardFocused" Value="True">
                 <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Focus}"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.4"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- An answer to a question, not a control on a toolbar. It is a full-width
+         row carrying a label and the reasoning under it, so it needs a taller
+         ground, a left alignment and room for two lines of type - and it sits
+         INSIDE the question panel, so its ground is a step up from that panel
+         rather than the window's raised surface. -->
+    <Style x:Key="BtnOption" TargetType="Button">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
+      <Setter Property="Padding" Value="15,11,15,12"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" CornerRadius="11" Background="{StaticResource GlassMid}"
+                    BorderBrush="Transparent" BorderThickness="1"
+                    Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+              <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="{StaticResource GlassHi}"/>
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource HueAskEdge}"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource HueAsk}"/>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False">
                 <Setter Property="Opacity" Value="0.4"/>
@@ -1096,24 +1154,50 @@
           <Border Grid.Row="0" Background="{StaticResource Panel}"
                   BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="18,12,18,12">
             <Grid>
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
               </Grid.ColumnDefinitions>
-              <StackPanel Grid.Column="0" VerticalAlignment="Center">
+              <StackPanel Grid.Row="0" Grid.Column="0" VerticalAlignment="Center">
                 <TextBlock x:Name="PaneName" Style="{StaticResource H1}" Text="" TextTrimming="CharacterEllipsis"/>
                 <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
                   <Border x:Name="PaneStateDot" Width="7" Height="7" CornerRadius="4"
                           Background="{StaticResource AccIdle}" VerticalAlignment="Center" Margin="0,0,7,0"/>
                   <TextBlock x:Name="PaneState" Style="{StaticResource Dim}" Text=""/>
                 </StackPanel>
+                <!-- ================== THE VITALS ==================
+                     What the terminal's own status line shows, for the session
+                     you are looking at: which model, how much context it has
+                     spent, the branch, the working tree against HEAD, whether
+                     Remote Control is on, and what is running right now.
+
+                     Every figure is already on disk - `message.model` and
+                     `message.usage` on an assistant record, `gitBranch` on
+                     every record, a Task or background Bash whose result has
+                     not come back - so none of it costs a question to claude.
+                     Only the +N -N asks git, and that answer is cached.
+                     ================================================ -->
               </StackPanel>
-              <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+              <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top" Margin="0,2,0,0">
+                <Button x:Name="PaneTools" Content="Steps: folded" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                        ToolTip="How much of the machinery this pane shows - folded, full, or hidden. Remembered."/>
+                <Button x:Name="PaneWorktree" Content="New on worktree" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                        ToolTip="Start a fresh conversation in another worktree of this project"/>
                 <Button x:Name="PaneSettings" Content="Settings" Style="{StaticResource Btn}" Margin="0,0,8,0"
                         ToolTip="Name, model, effort, permissions, Remote Control, hidden"/>
                 <Button x:Name="PaneGoTo" Content="Go to terminal" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
                 <Button x:Name="PaneRelaunch" Content="Relaunch" Style="{StaticResource Btn}"/>
               </StackPanel>
+              <!-- 🪤 ITS OWN ROW, SPANNING BOTH COLUMNS. Inside the left column
+                   it only ever got the width the five buttons left over, so on
+                   a live session it wrapped onto two lines and the strip read
+                   as a stack rather than as a status line. Across the full
+                   header it is one line, which is what makes it scannable. -->
+              <WrapPanel x:Name="PaneChips" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,11,0,0"/>
             </Grid>
           </Border>
 
@@ -1264,18 +1348,23 @@
 
           <!-- PINNED, not inline. A question that scrolls away on a long
                conversation is a question you miss. -->
-          <!-- 🪤 A PANEL INSIDE THE CARD, not a slab across it. This had a hard
-               2px white rule spanning the full width and square corners, which
-               cut the output card in half - the one element loud enough to
-               undo the layering everything else had just gained. The signal is
-               kept, because a question you miss is the failure this panel
-               exists to prevent: it moves to a left accent bar, the same idiom
-               the band markers and the project tiles already use. -->
+          <!-- 🪤 A PANEL INSIDE THE CARD, not a slab across it, and NOT a bar
+               down its side. This was a hard 2px white rule across the full
+               width; that became a 3px white bar on the left, which the
+               operator disliked for the same reason the rule was wrong - it is
+               a hard, saturated edge in a window where nothing else has one,
+               and it reads as damage rather than as emphasis.
+               The signal survives without it: this panel is the only surface in
+               the pane with its own tinted ground and its own corner radius,
+               and the eyebrow above the question is the one place HueAsk
+               appears. A question you miss is the failure this panel exists to
+               prevent, and being the only teal thing on screen prevents it more
+               reliably than an edge does. -->
           <Border x:Name="AskBox" Grid.Row="2" Visibility="Collapsed"
-                  Background="{StaticResource PanelHi}" CornerRadius="10"
-                  Margin="12,0,12,12" SnapsToDevicePixels="True"
-                  BorderBrush="{StaticResource AccNeeds}" BorderThickness="3,0,0,0"
-                  Padding="18,14,18,14">
+                  Background="{StaticResource HueAskFilm}" CornerRadius="14"
+                  Margin="14,0,14,14" SnapsToDevicePixels="True"
+                  BorderBrush="{StaticResource HueAskEdge}" BorderThickness="1"
+                  Padding="22,18,22,18">
             <!-- A long question with a description under every option can run
                  past the bottom of the pane, and an option you cannot reach is
                  an option you cannot pick. Capped and scrollable; the cap is
@@ -1283,9 +1372,11 @@
                  scrolls at all. -->
             <ScrollViewer MaxHeight="380" VerticalScrollBarVisibility="Auto">
               <StackPanel>
-                <TextBlock x:Name="AskHeader" Style="{StaticResource Caption}" Text="" Margin="0,0,0,5"/>
-                <TextBlock x:Name="AskText" Style="{StaticResource Body}" Text="" TextWrapping="Wrap"/>
-                <ItemsControl x:Name="AskOptions" Margin="0,11,0,0"/>
+                <TextBlock x:Name="AskHeader" Style="{StaticResource Caption}" Text="" Margin="0,0,0,7"
+                           Foreground="{StaticResource HueAsk}"/>
+                <TextBlock x:Name="AskText" Style="{StaticResource Body}" Text="" TextWrapping="Wrap"
+                           FontSize="17" FontWeight="SemiBold" Foreground="{StaticResource TextMax}"/>
+                <ItemsControl x:Name="AskOptions" Margin="0,14,0,0"/>
                 <!-- The note that qualifies the WHOLE question. Below the
                      buttons, because that is where it was written. -->
                 <TextBlock x:Name="AskFooter" Style="{StaticResource Dim}" Text="" TextWrapping="Wrap"
