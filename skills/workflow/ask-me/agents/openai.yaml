@@ -1,0 +1,5 @@
+interface:
+  display_name: "Ask Me"
+  short_description: "Put the open decisions to me as questions, then act on the answers"
+policy:
+  allow_implicit_invocation: false
