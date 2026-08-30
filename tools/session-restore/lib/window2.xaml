@@ -137,6 +137,8 @@
     <SolidColorBrush x:Key="HueAsk"   Color="#5EEAD4"/>   <!-- a question waiting on you -->
     <SolidColorBrush x:Key="HueWarn"  Color="#FFD166"/>
 
+    <SolidColorBrush x:Key="HueOutWash"  Color="#FFB86B" Opacity="0.13"/>
+    <SolidColorBrush x:Key="CtxTrack"    Color="#000000" Opacity="0.38"/>
     <SolidColorBrush x:Key="HueAskWash"  Color="#5EEAD4" Opacity="0.10"/>
     <SolidColorBrush x:Key="HueAskFilm"  Color="#5EEAD4" Opacity="0.05"/>
     <SolidColorBrush x:Key="HueAskEdge"  Color="#5EEAD4" Opacity="0.34"/>
@@ -757,8 +759,14 @@
           </StackPanel>
         </Border>
 
-        <!-- a conversation -->
-        <Border Visibility="{Binding RowVis}" Padding="0,10,14,10">
+        <!-- a conversation
+             🔴 TWO MARKS, EARNED. The list was asked to get LESS dense, so
+             neither of these is on a row that has nothing to say: the context
+             bar appears once a conversation is past half its window, and the
+             sub-agent pill only while one is actually out. On a quiet morning
+             this row is exactly what it was before, which is the point - a
+             signal that is always on has spent density and bought nothing. -->
+        <Border Visibility="{Binding RowVis}" Padding="0,12,14,13">
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="3"/>
@@ -771,17 +779,46 @@
                   <ColumnDefinition Width="Auto"/>
                   <ColumnDefinition Width="*"/>
                   <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <Ellipse Grid.Column="0" Width="6" Height="6" Fill="{Binding Accent}"
                          Visibility="{Binding DotVis}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <TextBlock Grid.Column="1" Text="{Binding Name}" Style="{StaticResource Body}"
                            FontWeight="{Binding NameWeight}" FontStyle="{Binding NameStyle}"
                            Foreground="{StaticResource TextMax}" TextTrimming="CharacterEllipsis"/>
-                <TextBlock Grid.Column="2" Text="{Binding Age}" Style="{StaticResource Meta}"
-                           Margin="9,0,0,0" VerticalAlignment="Center"/>
+
+                <!-- a sub-agent is out -->
+                <Border Grid.Column="2" Visibility="{Binding AgentVis}" CornerRadius="7"
+                        Background="{StaticResource HueOutWash}" Padding="6,1,7,2"
+                        VerticalAlignment="Center" Margin="9,0,0,0"
+                        ToolTip="Sub-agents this conversation has out">
+                  <StackPanel Orientation="Horizontal">
+                    <Ellipse Width="5" Height="5" Fill="{StaticResource HueOut}"
+                             VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <TextBlock Text="{Binding AgentText}" Style="{StaticResource Meta}"
+                               Foreground="{StaticResource HueOut}" VerticalAlignment="Center"/>
+                  </StackPanel>
+                </Border>
+
+                <!-- how full its context is, once that is worth knowing -->
+                <Border Grid.Column="3" Visibility="{Binding CtxVis}" Width="34" Height="4"
+                        CornerRadius="2" Background="{StaticResource CtxTrack}"
+                        VerticalAlignment="Center" Margin="10,0,0,0"
+                        ToolTip="How much of its context window this conversation has used">
+                  <Border Height="4" CornerRadius="2" HorizontalAlignment="Left"
+                          Width="{Binding CtxWidth}" Background="{Binding CtxBrush}"/>
+                </Border>
+
+                <TextBlock Grid.Column="4" Text="{Binding Age}" Style="{StaticResource Meta}"
+                           Margin="10,0,0,0" VerticalAlignment="Center"/>
               </Grid>
+              <!-- The last thing it said. Given its own leading rather than the
+                   default, because at 13px with none it sat hard against the
+                   name above it and the two read as one block of text. -->
               <TextBlock Text="{Binding Said}" Style="{StaticResource Dim}"
-                         TextTrimming="CharacterEllipsis" Margin="0,3,0,0"/>
+                         TextTrimming="CharacterEllipsis" Margin="0,5,0,0"
+                         LineHeight="17" LineStackingStrategy="BlockLineHeight"/>
             </StackPanel>
           </Grid>
         </Border>

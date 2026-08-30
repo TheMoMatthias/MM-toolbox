@@ -782,6 +782,19 @@ function Update-Model {
             try { $at = ([datetime]$s.lastActive).Ticks } catch { }
             $rows.Add([PSCustomObject]@{
                 Id = $id; S = $s; D = $d; A = $a; Conv = $conv; Said = $line; Live = $live; Band = 'quiet'
+                # 🔴 READ HERE, NOT IN Build-Sessions. Build-Sessions runs on
+                # every keystroke in either filter box; this pass runs on a
+                # timer and already reads every transcript. Putting the row
+                # signals here costs the slow pass a little and the responsive
+                # one nothing - the opposite arrangement would put a file read
+                # per row behind every character typed.
+                #
+                # 🪤 AND ONLY FOR THE LIVE ONES. Reading all 202 took this pass
+                # from 978 ms to 1,578 ms and tripped its own budget, to put a
+                # context bar on conversations that finished days ago and whose
+                # bar cannot move again. The marks exist to triage what is
+                # RUNNING; the other 190 rows are answered by not asking.
+                Sig = $(if ($live) { try { Get-SRRowSignals "$($s.jsonl)" } catch { $null } } else { $null })
                 # Filled below, once the project labels exist. See the note there.
                 Hay = ''; HayProj = ''
                 At = $at; Warm = ($at -gt $warmCut)
@@ -1115,6 +1128,11 @@ function Build-Sessions {
             BandBg = [System.Windows.Media.Brush]$(if ($picked) { $window.FindResource('SelBg') } else { [System.Windows.Media.Brushes]::Transparent })
             BandHint = $(if ($picked) { 'only this' } else { '' })
             Name = ''; Age = ''; Said = ''; NameWeight = 'Normal'; NameStyle = 'Normal'; BarOpacity = 0.0
+            # A heading is not a session, but it goes through the same template,
+            # and a binding to a property that is not there is a silent error in
+            # the trace and an empty cell on screen. Named, so it is off.
+            CtxVis = $V_Hide; CtxWidth = 0.0; AgentVis = $V_Hide; AgentText = ''
+            CtxBrush = [System.Windows.Media.Brush][System.Windows.Media.Brushes]::Transparent
         })
         # 🔴 THE HEADINGS ALL STAY WHEN ONE IS PICKED. Hiding the others
         # would leave no way back except a control that is now off screen, and
@@ -1136,6 +1154,20 @@ function Build-Sessions {
                 Age  = (Get-Age $r.S.lastActive)
                 Said = $saidText
                 BarOpacity = $(if ($b.Key -eq 'quiet') { 0.25 } else { 0.85 })
+                # 🔴 TWO MARKS, AND ONLY WHEN THEY MEAN SOMETHING. This list was
+                # asked to get LESS dense, so a signal that is present on every
+                # row is a signal that has cost density and bought nothing: the
+                # context bar appears once a conversation is past half its
+                # window, and the sub-agent dot only while one is actually out.
+                # A quiet row looks exactly as it did before.
+                CtxVis = $(if ($r.Sig -and $r.Sig.Frac -gt 0.5) { $V_Show } else { $V_Hide })
+                CtxWidth = $(if ($r.Sig) { [Math]::Max(2.0, 34.0 * [Math]::Min(1.0, $r.Sig.Frac)) } else { 0.0 })
+                CtxBrush = [System.Windows.Media.Brush]$(
+                    if ($r.Sig -and $r.Sig.Frac -gt 0.85) { $Pal.Bad }
+                    elseif ($r.Sig -and $r.Sig.Frac -gt 0.7) { $Pal.Warn }
+                    else { $Pal.Ask })
+                AgentVis = $(if ($r.Sig -and $r.Sig.Agents -gt 0) { $V_Show } else { $V_Hide })
+                AgentText = $(if ($r.Sig -and $r.Sig.Agents -gt 0) { "$($r.Sig.Agents)" } else { '' })
             })
         }
     }
@@ -1492,7 +1524,10 @@ function Get-ReadTurns { param($Blocks)
             if ($prev -and $prev.Kind -eq "$($b.Kind)" -and ($b.Kind -eq 'you' -or $b.Kind -eq 'said')) {
                 $prev.Body = ($prev.Body.TrimEnd() + "`n`n" + "$($b.Body)".TrimStart())
             } else {
-                $out.Add([PSCustomObject]@{ Kind = "$($b.Kind)"; Body = "$($b.Body)"; Calls = $null })
+                # The turn is stamped with when it STARTED, not when it ended -
+                # merged blocks keep the first one's time, because that is the
+                # moment the reader is placing.
+                $out.Add([PSCustomObject]@{ Kind = "$($b.Kind)"; Body = "$($b.Body)"; Calls = $null; When = $b.When })
             }
             $i++
             continue
@@ -1565,12 +1600,33 @@ function Add-ReadRule { param($Doc, $Brush, [double]$Top = 26, [double]$Bottom =
     $Doc.Blocks.Add($c)
 }
 
+# WHEN A TURN HAPPENED. Nothing on this surface answered that: the sessions list
+# says how long ago a conversation last spoke, and inside it every turn looked
+# equally recent - so a reply from this morning and one from four minutes ago
+# read the same. Time of day alone while it is today, because that is the form
+# anyone reads without converting; the date appears only once it is needed.
+function Format-TurnTime { param($When)
+    if (-not $When) { return '' }
+    try {
+        $t = [datetime]$When
+        if ($t.Date -eq (Get-Date).Date) { return $t.ToString('HH:mm') }
+        if ($t.Date -eq (Get-Date).Date.AddDays(-1)) { return ('yesterday ' + $t.ToString('HH:mm')) }
+        return $t.ToString('d MMM HH:mm')
+    } catch { return '' }
+}
+
 function Add-ReadLabel {
-    param($Doc, [string]$Text, $Brush, [string]$Trailing = '', $TrailBrush,
+    param($Doc, [string]$Text, $Brush, [string]$Trailing = '', $TrailBrush, $When,
           [double]$Size = 10, [double]$Top = 12, [double]$Bottom = 9)
     $p = New-Object System.Windows.Documents.Paragraph
     $p.Margin = New-Object System.Windows.Thickness 0, $Top, 0, $Bottom
     $p.Inlines.Add((New-ReadRun -Text (Get-TrackedText $Text.ToUpper()) -Brush $Brush -Size $Size -Weight 'SemiBold'))
+    $stamp = Format-TurnTime $When
+    if ($stamp) {
+        # Dimmer than the speaker and not tracked: it is a reference you look up
+        # when you want it, never something that competes with who is talking.
+        $p.Inlines.Add((New-ReadRun -Text ('        ' + $stamp) -Brush $Pal.TextLow -Size ($Size + 0.5)))
+    }
     if ($Trailing) {
         $p.Inlines.Add((New-ReadRun -Text ('          ' + $Trailing) -Brush $TrailBrush -Size ($Size + 0.5)))
     }
@@ -1647,7 +1703,7 @@ function Build-ReadDocument {
                 Add-ReadRule -Doc $doc -Brush $PalEdge.Out -Height 2
                 $trail = ''
                 if ($hidden -gt 0) { $trail = "$hidden steps hidden"; $hidden = 0 }
-                Add-ReadLabel -Doc $doc -Text 'you said' -Brush $Pal.Out -Trailing $trail -TrailBrush $Pal.TextLow
+                Add-ReadLabel -Doc $doc -Text 'you said' -Brush $Pal.Out -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
                 Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextMax -CodeBg $PalFilm.Out
                 # Blocks is a live collection: moving them while enumerating it
@@ -1661,7 +1717,7 @@ function Build-ReadDocument {
                 Add-ReadRule -Doc $doc -Brush $PalHair
                 $trail = ''
                 if ($hidden -gt 0) { $trail = "$hidden steps hidden"; $hidden = 0 }
-                Add-ReadLabel -Doc $doc -Text 'claude' -Brush $Pal.In -Trailing $trail -TrailBrush $Pal.TextLow
+                Add-ReadLabel -Doc $doc -Text 'claude' -Brush $Pal.In -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
                 Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextHigh -CodeBg $PalGlassHi
                 foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
@@ -2133,9 +2189,20 @@ function Get-ShortModel { param([string]$Model)
     return ($s -replace '-', ' ')
 }
 
+# 🪤 A HALF THOUSAND IS INFORMATION BELOW 100k AND NOISE ABOVE IT. Rounding to
+# whole thousands turned a turn that had written 40,500 tokens into "40k", which
+# is the wrong number and the wrong precision - the terminal's own status line
+# says 40.5k. Above 100k the decimal buys nothing: 184.2k is not more useful
+# than 184k, and it makes the chip wider for no reason.
 function Format-Kilo { param([int]$N)
     if ($N -ge 1000000) { return ('{0:0.0}M' -f ($N / 1000000.0)) }
-    if ($N -ge 1000) { return ('{0}k' -f [int][math]::Round($N / 1000.0)) }
+    if ($N -ge 100000)  { return ('{0}k' -f [int][math]::Round($N / 1000.0)) }
+    if ($N -ge 1000) {
+        $k = [math]::Round($N / 1000.0, 1)
+        # 12.0k reads worse than 12k, so the decimal is dropped when it is zero.
+        if ($k -eq [math]::Floor($k)) { return ('{0}k' -f [int]$k) }
+        return ('{0:0.0}k' -f $k)
+    }
     return "$N"
 }
 
@@ -2341,7 +2408,13 @@ function Show-Selected { param([switch]$Force)
     $ui.PaneStateDot.Background = $(if ($b.Count) { $window.FindResource($b[0].Acc) } else { $window.FindResource('AccIdle') })
     $detail = $(if ($r.Conv -and "$($r.Conv.Detail)") { "$($r.Conv.Detail)" } else { 'no process is holding it' })
     $ui.PaneState.Text = ('{0}   |   {1}   |   {2}' -f $(if ($b.Count) { $b[0].Label } else { '' }), $detail, (Get-ProjectLabel "$($r.D.path)"))
-    try { Update-Chips $r } catch { }
+    # 🔴 NOT ON THE CLICK. Reading the vitals costs ~120 ms of JSONL parsing plus
+    # a git call, and selecting a conversation is the one interaction the
+    # operator has already reported as laggy. The strip is CLEARED here and
+    # filled by the follow tick within a second - exactly the arrangement the
+    # question panel already uses, and for the same reason. A strip that arrives
+    # a beat late is barely noticeable; a click that takes an extra beat is.
+    if (-not $same) { try { Update-Chips $null } catch { } }
 
     # Everything above is a few string assignments and is always safe to redo.
     # Everything below reads files and spawns a process.
@@ -2404,6 +2477,12 @@ function Invoke-FollowTick {
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
     $r = $it.Row
+    # 🪤 BEFORE the Live check, not after. Show-Selected clears the strip to keep
+    # the read off the click, so this is what puts it back - and a conversation
+    # that is NOT running still has a model, a context figure and a branch worth
+    # showing. Behind the Live return it would have filled for busy sessions
+    # only, and every idle one would have shown an empty header forever.
+    if (-not $script:chipVitals) { try { Update-Chips $r } catch { } }
     if (-not $r.Live) { return }
     $j = "$($r.S.jsonl)"
     if (-not $j -or -not (Test-Path -LiteralPath $j)) { return }

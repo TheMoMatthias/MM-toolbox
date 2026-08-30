@@ -1250,10 +1250,16 @@ else {
     #
     # Timing is the assertion because "did it open the file" is not observable
     # from here. A parse costs hundreds of milliseconds; a subtraction costs
-    # microseconds. Fifty of them under 60 ms cannot be a parse, and the moment
-    # anyone reintroduces one this goes red by two orders of magnitude.
+    # microseconds.
+    #
+    # 🪤 THE THRESHOLD IS 500 ms FOR FIFTY TICKS, NOT 60. At 60 it measured
+    # 12-24 ms with room to spare and STILL went red once on a loaded machine -
+    # a flaky assertion, which is worse than none because the next red gets
+    # assumed to be the same flake. The defect it guards costs 120 ms PER TICK,
+    # so fifty of them would be six seconds: 500 ms still catches it with more
+    # than a tenfold margin, and no amount of ordinary load reaches it.
     $clockMs = Ms { for ($ci = 0; $ci -lt 50; $ci++) { Step-ChipClock } }
-    if ($clockMs -gt 60) {
+    if ($clockMs -gt 500) {
         Fail ("50 clock ticks cost {0:N0} ms - it is re-reading the transcript, not doing arithmetic" -f $clockMs)
     } else { Pass ("50 clock ticks cost {0:N1} ms - arithmetic only" -f $clockMs) }
 
@@ -1276,18 +1282,190 @@ else {
     # deadlocks leaves its child running, and one that times out correctly kills
     # it. Timing alone would not - the first version returned promptly whenever
     # git happened to be fast, which was every time it was tried by hand.
-    $gitBefore = @(Get-Process git -ErrorAction SilentlyContinue).Count
+    # 🪤 OUR OWN CHILDREN, NOT EVERY git ON THE MACHINE. Counting them globally
+    # went red at 16 -> 17 while twelve of the operator's own conversations were
+    # running git of their own: a shared count cannot answer a question about
+    # one process, and a flaky assertion is worse than none because the next red
+    # gets waved through as the same noise. ParentProcessId makes it exact.
+    function Get-MyGit {
+        try { return @(Get-CimInstance Win32_Process -Filter "Name='git.exe'" -ErrorAction Stop |
+                       Where-Object { $_.ParentProcessId -eq $PID }).Count }
+        catch { return -1 }
+    }
+    $gitBefore = Get-MyGit
     $gitMs = Ms {
         for ($gi = 0; $gi -lt 4; $gi++) { $null = Get-SRWorkingDiff -Path (Split-Path -Parent $SR_LibDir) }
     }
     Start-Sleep -Milliseconds 400
-    $gitAfter = @(Get-Process git -ErrorAction SilentlyContinue).Count
-    if ($gitAfter -gt $gitBefore) {
-        Fail ("git processes went {0} -> {1} - a call is leaving its child behind" -f $gitBefore, $gitAfter)
-    } else { Pass ("4 working-tree reads in {0:N0} ms and no git process left behind" -f $gitMs) }
+    $gitAfter = Get-MyGit
+    if ($gitBefore -lt 0 -or $gitAfter -lt 0) {
+        Fail 'could not enumerate child processes, so the leak check proved nothing'
+    } elseif ($gitAfter -gt $gitBefore) {
+        Fail ("this process's own git children went {0} -> {1} - a call is leaving its child behind" -f $gitBefore, $gitAfter)
+    } else { Pass ("4 working-tree reads in {0:N0} ms and no git child left behind" -f $gitMs) }
     if ($gitMs -gt 12000) {
         Fail ("4 working-tree reads took {0:N0} ms - the timeout is not bounding them" -f $gitMs)
     } else { Pass ('the working-tree read is bounded') }
+
+    # 🔴 FOUR CHIPS THAT HAD NEVER ONCE RENDERED.
+    #
+    # shells, sub-agents, permission mode and effort are all CONDITIONAL - they
+    # appear only when there is something to say. Every conversation on this
+    # machine while the strip was being built had zero background shells, zero
+    # sub-agents and no per-session model settings, so all four paths shipped
+    # unexecuted and were reported as working on the strength of having been
+    # written. Written is not working.
+    #
+    # The vitals reader is replaced for the length of this check rather than
+    # waiting for a session to happen to be running a sub-agent: the thing under
+    # test is the STRIP, and making it depend on live state is what let these
+    # four go unseen in the first place.
+    $chipOrigVitals = ${function:Get-SRSessionVitals}
+    function Get-SRSessionVitals {
+        param([string]$JsonlPath, $Session, [string]$WorkDir, [int]$MaxTailBytes = 600000, [switch]$NoDiff)
+        return [PSCustomObject]@{
+            Model = 'claude-opus-5'; Tokens = 184000; Window = 1000000; Branch = 'feat/rails'
+            Shells = 2; Agents = 1; Remote = $true
+            Effort = 'xhigh'; Mode = 'acceptEdits'; Elapsed = 570.0; TurnTokens = 40500
+            Added = 166; Removed = 66; Ok = $true; TurnAt = ([datetime]::UtcNow.AddSeconds(-570))
+        }
+    }
+    try {
+        Update-Chips $chipRow[0].Row -Force
+        $chipText = @()
+        foreach ($chipEl in @($ui.PaneChips.Children)) {
+            $stackEl = $chipEl.Child
+            $words = @()
+            foreach ($kid in @($stackEl.Children)) {
+                if ($kid -is [System.Windows.Controls.TextBlock]) { $words += "$($kid.Text)" }
+            }
+            $chipText += ($words -join '')
+        }
+        $joined = ($chipText -join ' | ')
+        foreach ($want in @(
+            @('opus 5',        'the model it is replying with'),
+            @('184k / 1,0M',   'context against the window it actually has'),
+            @('feat/rails',    'the branch'),
+            @('+166',          'lines added in the working tree'),
+            @('66',            'lines removed'),
+            @('remote control','Remote Control is on'),
+            @('accept edits',  'the permission mode it was launched with'),
+            @('xhigh effort',  'the thinking effort'),
+            @('2 shells',      'background shells still running'),
+            @('1 sub-agent',   'a sub-agent still running'),
+            @('9m 30s',        'how long this turn has been going'),
+            # 🪤 The separator is the CULTURE'S, not a dot. This machine is
+            # de-DE and the string really is "40,5k"; hard-coding either form
+            # makes the suite pass on one machine and fail on another for a
+            # reason that has nothing to do with the code.
+            @(('40' + [cultureinfo]::CurrentCulture.NumberFormat.NumberDecimalSeparator + '5k'),
+                               'what the turn has written, to the half thousand')
+        )) {
+            if ($joined -notlike "*$($want[0])*") {
+                Fail ("the strip does not show {0} - expected '{1}' in: {2}" -f $want[1], $want[0], $joined)
+            } else { Pass ("the strip shows {0}" -f $want[1]) }
+        }
+
+        # And the inverse, or every assertion above would pass on a strip that
+        # simply prints everything it is ever handed. Nothing running, nothing
+        # configured: those four must go away again.
+        function Get-SRSessionVitals {
+            param([string]$JsonlPath, $Session, [string]$WorkDir, [int]$MaxTailBytes = 600000, [switch]$NoDiff)
+            return [PSCustomObject]@{
+                Model = 'claude-opus-5'; Tokens = 12000; Window = 200000; Branch = 'main'
+                Shells = 0; Agents = 0; Remote = $false
+                Effort = ''; Mode = ''; Elapsed = 4.0; TurnTokens = 0
+                Added = -1; Removed = -1; Ok = $true; TurnAt = ([datetime]::UtcNow.AddSeconds(-4))
+            }
+        }
+        Update-Chips $chipRow[0].Row -Force
+        $quiet = @()
+        foreach ($chipEl in @($ui.PaneChips.Children)) {
+            $words = @()
+            foreach ($kid in @($chipEl.Child.Children)) {
+                if ($kid -is [System.Windows.Controls.TextBlock]) { $words += "$($kid.Text)" }
+            }
+            $quiet += ($words -join '')
+        }
+        $quietJoined = ($quiet -join ' | ')
+        $leaked = @()
+        foreach ($gone in @('shell', 'sub-agent', 'effort', 'accept edits', 'remote control', '+')) {
+            if ($quietJoined -like "*$gone*") { $leaked += $gone }
+        }
+        if ($leaked.Count) {
+            Fail ("a quiet session still shows {0} - the chips are unconditional: {1}" -f ($leaked -join ', '), $quietJoined)
+        } else { Pass 'a session with nothing running and nothing configured shows none of those chips' }
+    } finally {
+        ${function:Get-SRSessionVitals} = $chipOrigVitals
+    }
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the two new buttons in the pane header ---'
+# ===========================================================================
+# Show-Spawn ends in ShowDialog and would park this harness forever, so what is
+# checked is everything up to the point of opening: that the button is there,
+# that something is wired to it, and that the dialog can actually take the
+# preset the handler passes. A handler calling Show-Spawn with a parameter it
+# does not have would throw only when pressed - on the operator's machine.
+if (-not $ui.PaneWorktree) { Fail 'there is no New on worktree button' }
+elseif (-not $ui.PaneTools) { Fail 'there is no Steps button' }
+else {
+    Pass 'both new header buttons exist'
+
+    $spawnParams = @((Get-Command Show-Spawn).Parameters.Keys)
+    $missing = @(@('PresetDir', 'PresetWorktree') | Where-Object { $spawnParams -notcontains $_ })
+    if ($missing.Count) {
+        Fail ("Show-Spawn has no {0} parameter - the worktree button would throw when pressed" -f ($missing -join ' or '))
+    } else { Pass 'the new-session dialog takes the project and the worktree tick the button passes it' }
+
+    $wireSrc = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-window.ps1') -Raw -Encoding UTF8
+    foreach ($wire in @(
+        @('$ui.PaneWorktree.Add_Click', 'the worktree button'),
+        @('$ui.PaneTools.Add_Click',    'the steps button'))) {
+        if ($wireSrc -notmatch [regex]::Escape($wire[0])) {
+            Fail ("{0} has nothing wired to it" -f $wire[1])
+        } else { Pass ("{0} is wired" -f $wire[1]) }
+    }
+
+    # The label has to agree with the setting, or the button lies about the
+    # state it is in - and it is the only thing on screen that reports it.
+    foreach ($view in @('folded', 'full', 'hidden')) {
+        $script:toolView = $view
+        $lbl = Get-ToolViewLabel
+        if ($lbl -notlike "*$view*") { Fail "with toolView '$view' the button reads '$lbl'" }
+        else { Pass "the steps button reads '$lbl' when the pane is $view" }
+    }
+    $script:toolView = 'folded'
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- selecting a conversation must not read its vitals ---'
+# ===========================================================================
+# 🔴 THE CLICK IS THE ONE INTERACTION ALREADY REPORTED AS LAGGY, and reading the
+# vitals costs ~120 ms of JSONL parsing plus a git call. Show-Selected clears
+# the strip; the one-second follow tick fills it. This asserts BOTH halves,
+# because either alone is a bug: clearing without filling leaves a permanently
+# empty header, and filling on the click is the cost this avoids.
+Build-Sessions
+$clickRows = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })
+if ($clickRows.Count -lt 2) { Fail 'need two conversations to test selecting between them' }
+else {
+    $ui.SessionList.SelectedItem = $clickRows[0]
+    $script:selId = $null
+    Show-Selected
+    if ($script:chipVitals) {
+        Fail 'selecting a conversation read its vitals - that is 120 ms and a git call on the click path'
+    } elseif (@($ui.PaneChips.Children).Count -ne 0) {
+        Fail "the strip kept $(@($ui.PaneChips.Children).Count) chip(s) from the conversation you just left"
+    } else { Pass 'the click clears the strip and reads nothing' }
+
+    Invoke-FollowTick
+    if (-not $script:chipVitals -or @($ui.PaneChips.Children).Count -eq 0) {
+        Fail 'and then nothing filled it - the header would stay empty forever'
+    } else { Pass "one tick later the strip is back, with $(@($ui.PaneChips.Children).Count) chips" }
 }
 
 Write-Host ''

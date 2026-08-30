@@ -3019,14 +3019,28 @@ function Get-SRTranscriptBlocks {
     if (-not $lines.Count) { return ,@($out.ToArray()) }
     $lines = @($lines[[Math]::Max(0, $lines.Count - $MaxRecords)..($lines.Count - 1)])
 
+    # 🪤 $recWhen IS READ OUT OF THE ENCLOSING SCOPE, deliberately. A function
+    # defined inside another runs in a child of its CALLER's scope, so the
+    # record's timestamp reaches every block without threading a parameter
+    # through six call sites - and without any of them being able to forget it.
+    $recWhen = $null
     function New-Block { param([string]$Kind, [string]$Head, [string]$Body, [string]$Meta)
-        return [PSCustomObject]@{ Kind = $Kind; Head = $Head; Body = $Body; Meta = $Meta }
+        return [PSCustomObject]@{ Kind = $Kind; Head = $Head; Body = $Body; Meta = $Meta; When = $recWhen }
     }
 
     foreach ($ln in $lines) {
         $r = $null
         try { $r = $ln | ConvertFrom-Json } catch { continue }
         if ($r.type -ne 'user' -and $r.type -ne 'assistant') { continue }
+        # WHEN it was said. Kept as LOCAL time because the only question anyone
+        # asks of it is "was that before or after I went to lunch".
+        $recWhen = $null
+        if ($r.PSObject.Properties['timestamp'] -and "$($r.timestamp)") {
+            try {
+                $recWhen = ([datetime]::Parse("$($r.timestamp)", [System.Globalization.CultureInfo]::InvariantCulture,
+                                              [System.Globalization.DateTimeStyles]::AdjustToUniversal)).ToLocalTime()
+            } catch { $recWhen = $null }
+        }
         $m = $r.message
         if (-not $m) { continue }
         $role = [string]$m.role
@@ -3224,6 +3238,82 @@ function Get-SRWorkingDiff { param([string]$Path)
     } catch { }
     $script:SR_DiffCache[$key] = @{ At = $now; Value = $val }
     return $val
+}
+
+# ===========================================================================
+# THE TWO SIGNALS A ROW CAN CARRY - how full its context is, and whether it has
+# a sub-agent out.
+#
+# 🔴 A SEPARATE, MUCH CHEAPER READER THAN Get-SRSessionVitals, and that is the
+# whole point. The full one costs 120 ms because it runs ConvertFrom-Json over
+# every line of a 600 KB tail; thirty-five rows of that is four seconds, on a
+# list that rebuilds whenever you type in the filter box. This reads a 48 KB
+# tail and runs three regexes over it - no JSON parsing at all - for the two
+# figures a ROW has room to show. The strip keeps the accurate reader, because
+# it answers for one conversation and can afford to.
+#
+# 🪤 Regex over JSON is normally a mistake. It is safe HERE because both shapes
+# are machine-written by one writer and neither value can contain a quote: a
+# token count is digits, and a tool id is [A-Za-z0-9_]. Anything looser - a
+# title, a path, anything a human typed - must go through the parser.
+$script:SR_SigCache = @{}
+$SR_SigTailBytes = 49152
+
+function Get-SRRowSignals { param([string]$JsonlPath)
+    $none = [PSCustomObject]@{ Tokens = 0; Window = 200000; Frac = 0.0; Agents = 0; Ok = $false }
+    if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return $none }
+    $stamp = ''
+    try {
+        $fi = Get-Item -LiteralPath $JsonlPath
+        $stamp = '{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks
+    } catch { return $none }
+    $key = $JsonlPath.ToLower()
+    if ($script:SR_SigCache.ContainsKey($key) -and $script:SR_SigCache[$key].Stamp -eq $stamp) {
+        return $script:SR_SigCache[$key].Value
+    }
+
+    $text = ''
+    try {
+        $fs = [System.IO.File]::Open($JsonlPath, 'Open', 'Read', 'ReadWrite')
+        try {
+            $take = [int][Math]::Min($fi.Length, $SR_SigTailBytes)
+            $null = $fs.Seek(-$take, 'End')
+            $buf = New-Object byte[] $take
+            $read = $fs.Read($buf, 0, $take)
+            $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        } finally { $fs.Dispose() }
+    } catch { return $none }
+
+    $tokens = 0
+    # The LAST usage object in the tail is the newest reply's, and its
+    # input + cache figures are what the context is currently holding.
+    $mm = [regex]::Matches($text, '"usage":\{[^}]*\}')
+    if ($mm.Count) {
+        $last = $mm[$mm.Count - 1].Value
+        foreach ($f in @('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')) {
+            $one = [regex]::Match($last, ('"{0}":(\d+)' -f $f))
+            if ($one.Success) { $tokens += [int]$one.Groups[1].Value }
+        }
+    }
+
+    # A sub-agent is out when a Task call's id has not been quoted back.
+    $started = @{}
+    foreach ($m in [regex]::Matches($text, '"id":"(toolu_[A-Za-z0-9_]+)","name":"Task"')) {
+        $started[$m.Groups[1].Value] = $true
+    }
+    foreach ($m in [regex]::Matches($text, '"tool_use_id":"(toolu_[A-Za-z0-9_]+)"')) {
+        if ($started.ContainsKey($m.Groups[1].Value)) { $null = $started.Remove($m.Groups[1].Value) }
+    }
+
+    $window = 200000
+    if ($tokens -gt 200000) { $window = 1000000 }
+    $v = [PSCustomObject]@{
+        Tokens = $tokens; Window = $window
+        Frac = $(if ($window -gt 0) { [double]$tokens / [double]$window } else { 0.0 })
+        Agents = $started.Count; Ok = ($tokens -gt 0 -or $started.Count -gt 0)
+    }
+    $script:SR_SigCache[$key] = @{ Stamp = $stamp; Value = $v }
+    return $v
 }
 
 function Get-SRSessionVitals {
