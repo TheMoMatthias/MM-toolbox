@@ -116,10 +116,10 @@
   "autoTickPerWorktree": 3,
   "includeWorktrees": true,
   "registryWindowDays": 30,
-  "maxSessions": 20,
+  "maxSessions": 30,
 
   "transcriptTools": "folded",
-  "textRendering": "grayscale",
+  "textRendering": "cleartype",
 
   "//panelScanMaxAgeSeconds": [
     "How fresh the registry has to be for the panel to skip its opening scan.",

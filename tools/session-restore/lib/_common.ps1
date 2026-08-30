@@ -3031,6 +3031,98 @@ function Get-SRTranscriptBlocks {
     foreach ($ln in $lines) {
         $r = $null
         try { $r = $ln | ConvertFrom-Json } catch { continue }
+        # 🔴 EVERYTHING THAT IS NOT A user OR assistant RECORD USED TO BE
+        # DROPPED ON THE FLOOR - and a great deal happens in those records. A
+        # compact writes a `system` record with subtype compact_boundary and
+        # then a summary; a hook writes its output as an `attachment` of type
+        # hook_success; a stop hook writes stop_hook_summary with what it ran
+        # and how long it took. None of it reached the pane, so the operator
+        # compacted a session and watched nothing happen.
+        if ("$($r.type)" -eq 'system') {
+            $sub = "$($r.subtype)"
+            # turn_duration is bookkeeping the window computes for itself and
+            # there are 68 of them in a busy tail; it would be the loudest thing
+            # in the pane and say the least.
+            if ($sub -eq 'turn_duration') { continue }
+            if ($sub -ne 'compact_boundary' -and $sub -ne 'stop_hook_summary') {
+                # away_summary, informational, bridge_status, local_command -
+                # every one of these carries `content` and every one of them is
+                # something the terminal PRINTS and this pane was swallowing.
+                $sc = Remove-SRAnsi "$($r.content)"
+                if ("$sc".Trim()) { $out.Add((New-Block 'system' ($sub -replace '_', ' ') $sc '')) }
+                continue
+            }
+            if ($sub -eq 'compact_boundary') {
+                $pre = ''
+                if ($r.PSObject.Properties['compactMetadata'] -and $r.compactMetadata) {
+                    $mdt = $r.compactMetadata
+                    if ($mdt.PSObject.Properties['preTokens']) { $pre = "$($mdt.preTokens) tokens summarised" }
+                    if ($mdt.PSObject.Properties['trigger'] -and "$($mdt.trigger)") {
+                        $pre = (($pre, "$($mdt.trigger)") | Where-Object { $_ }) -join '  -  '
+                    }
+                }
+                $out.Add((New-Block 'compact' 'compacted' $pre ''))
+            } elseif ($sub -eq 'stop_hook_summary') {
+                # Which hooks ran and what they cost. The one system record with
+                # a real answer in it rather than bookkeeping.
+                $names = @()
+                foreach ($h in @($r.hookInfos)) {
+                    if (-not $h) { continue }
+                    $ms = ''
+                    if ($h.PSObject.Properties['durationMs']) { $ms = (' {0:N1}s' -f ([double]$h.durationMs / 1000)) }
+                    $names += ("$($h.command)" + $ms)
+                }
+                $errs = @($r.hookErrors | Where-Object { "$_".Trim() })
+                $body = ($names -join '   ')
+                if ($errs.Count) { $body = (($body, ($errs -join '  ')) | Where-Object { $_ }) -join '   -   ' }
+                if ($body) { $out.Add((New-Block 'system' 'hooks' $body '')) }
+            }
+            continue
+        }
+        # A hook's own output. It rides on a record that carries no message at
+        # all, so it has to be caught before the message check below.
+        if ($r.PSObject.Properties['attachment'] -and $r.attachment) {
+            $at = "$($r.attachment.type)"
+            switch ($at) {
+                { $_ -eq 'hook_success' -or $_ -eq 'hook_system_message' } {
+                    $hk = "$($r.attachment.hookName)"
+                    if (-not $hk) { $hk = "$($r.attachment.hookEvent)" }
+                    if (-not $hk) { $hk = 'hook' }
+                    $txt = Remove-SRAnsi "$($r.attachment.content)"
+                    if ("$txt".Trim()) { $out.Add((New-Block 'hook' $hk $txt '')) }
+                }
+                { $_ -eq 'file' -or $_ -eq 'edited_text_file' } {
+                    # The "Read <file> (N lines)" list the terminal prints after
+                    # a compact. Only the NAME and the size are wanted - the
+                    # attachment carries the entire file, and putting that in the
+                    # pane would bury the conversation it belongs to.
+                    $fn = "$($r.attachment.filename)"
+                    if (-not $fn -and $r.attachment.content -and $r.attachment.content.file) {
+                        $fn = "$($r.attachment.content.file.filePath)"
+                    }
+                    if ($fn) {
+                        $lines2 = ''
+                        try {
+                            $fc = "$($r.attachment.content.file.content)"
+                            if ($fc) { $lines2 = ('{0} lines' -f @($fc -split "`n").Count) }
+                        } catch { }
+                        $head2 = $(if ($at -eq 'edited_text_file') { 'edited' } else { 'read' })
+                        $out.Add((New-Block 'file' $head2 (Split-Path -Leaf $fn) $lines2))
+                    }
+                }
+                'queued_command' {
+                    $qp = Remove-SRAnsi "$($r.attachment.prompt)"
+                    if ("$qp".Trim()) { $out.Add((New-Block 'queued' 'queued' $qp '')) }
+                }
+                # 🪤 EVERYTHING ELSE IS DELIBERATELY DROPPED. output_style and
+                # total_tokens_reminder alone are 2,246 attachments in a busy
+                # tail - they are per-turn machinery the terminal never shows
+                # either, and rendering them would swamp the pane with the exact
+                # noise this redesign removed.
+                default { }
+            }
+            continue
+        }
         if ($r.type -ne 'user' -and $r.type -ne 'assistant') { continue }
         # WHEN it was said. Kept as LOCAL time because the only question anyone
         # asks of it is "was that before or after I went to lunch".
@@ -3134,6 +3226,29 @@ function Get-SRTranscriptBlocks {
 $script:SR_VitalCache = @{}
 $script:SR_DiffCache = @{}
 $SR_DiffMaxAgeSeconds = 20
+
+# Is this "user" record actually the operator, or is it a tool handing a result
+# back? Everything claude runs comes back as a user record, so this is the
+# difference between "the turn started" and "a tool answered".
+function Test-SRHumanTurn { param($Record)
+    if (-not $Record) { return $false }
+    # The property claude writes on a record that carries a tool's output. Its
+    # presence is decisive and costs one lookup.
+    if ($Record.PSObject.Properties['toolUseResult']) { return $false }
+    # A compact summary is written as a user record too, and it is the machine
+    # talking about the conversation - not a new turn you started.
+    if ($Record.PSObject.Properties['isCompactSummary'] -and $Record.isCompactSummary) { return $false }
+    if ($Record.PSObject.Properties['attachment'] -and $Record.attachment) { return $false }
+    $m = $Record.message
+    if (-not $m) { return $false }
+    $c = $m.content
+    # A plain string is always something typed.
+    if ($c -is [string]) { return $true }
+    foreach ($b in @($c)) {
+        if ($b -and "$($b.type)" -eq 'tool_result') { return $false }
+    }
+    return $true
+}
 
 function New-SRVitals {
     return [PSCustomObject]@{
@@ -3260,7 +3375,7 @@ $script:SR_SigCache = @{}
 $SR_SigTailBytes = 49152
 
 function Get-SRRowSignals { param([string]$JsonlPath)
-    $none = [PSCustomObject]@{ Tokens = 0; Window = 200000; Frac = 0.0; Agents = 0; Ok = $false }
+    $none = [PSCustomObject]@{ Tokens = 0; Window = 200000; Frac = 0.0; Agents = 0; Shells = 0; Ok = $false }
     if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return $none }
     $stamp = ''
     try {
@@ -3296,13 +3411,27 @@ function Get-SRRowSignals { param([string]$JsonlPath)
         }
     }
 
-    # A sub-agent is out when a Task call's id has not been quoted back.
-    $started = @{}
+    # Something is OUT when its call id has not been quoted back by a result.
+    # Two kinds, kept apart all the way to the screen, because they answer
+    # different questions: a sub-agent is another conversation working on your
+    # behalf, a background shell is a command still running.
+    $agents = @{}
+    $shells = @{}
     foreach ($m in [regex]::Matches($text, '"id":"(toolu_[A-Za-z0-9_]+)","name":"Task"')) {
-        $started[$m.Groups[1].Value] = $true
+        $agents[$m.Groups[1].Value] = $true
+    }
+    # 🪤 A BOUNDED WINDOW AFTER THE NAME, not a nested-brace match. run_in_background
+    # sits somewhere inside the input object and the key order is not promised,
+    # so this looks ahead a fixed distance instead of trying to balance braces
+    # with a regex - which is the classic way to write a pattern that backtracks
+    # for seconds on a large input.
+    foreach ($m in [regex]::Matches($text, '"id":"(toolu_[A-Za-z0-9_]+)","name":"Bash","input":\{.{0,600}?"run_in_background":true')) {
+        $shells[$m.Groups[1].Value] = $true
     }
     foreach ($m in [regex]::Matches($text, '"tool_use_id":"(toolu_[A-Za-z0-9_]+)"')) {
-        if ($started.ContainsKey($m.Groups[1].Value)) { $null = $started.Remove($m.Groups[1].Value) }
+        $id = $m.Groups[1].Value
+        if ($agents.ContainsKey($id)) { $null = $agents.Remove($id) }
+        if ($shells.ContainsKey($id)) { $null = $shells.Remove($id) }
     }
 
     $window = 200000
@@ -3310,7 +3439,8 @@ function Get-SRRowSignals { param([string]$JsonlPath)
     $v = [PSCustomObject]@{
         Tokens = $tokens; Window = $window
         Frac = $(if ($window -gt 0) { [double]$tokens / [double]$window } else { 0.0 })
-        Agents = $started.Count; Ok = ($tokens -gt 0 -or $started.Count -gt 0)
+        Agents = $agents.Count; Shells = $shells.Count
+        Ok = ($tokens -gt 0 -or $agents.Count -gt 0 -or $shells.Count -gt 0)
     }
     $script:SR_SigCache[$key] = @{ Stamp = $stamp; Value = $v }
     return $v
@@ -3382,9 +3512,23 @@ function Get-SRSessionVitals {
                     $ts = [datetime]::Parse("$($r.timestamp)", [System.Globalization.CultureInfo]::InvariantCulture,
                                             [System.Globalization.DateTimeStyles]::AdjustToUniversal)
                     $lastAt = $ts
-                    # A TURN STARTS WHEN YOU SPEAK. Everything after that is the
-                    # reply being composed, which is what the clock is timing.
-                    if ("$($r.type)" -eq 'user') { $turnAt = $ts; $turnOut = 0 }
+                    # 🔴 A TURN STARTS WHEN *YOU* SPEAK - AND MOST "user" RECORDS
+                    # ARE NOT YOU.
+                    #
+                    # Every tool_result is written as type "user", because it is
+                    # input being handed back to the model. Measured in a live
+                    # transcript: 5 of the 6 user records in the tail were tool
+                    # results. Treating them as turn starts reset the clock on
+                    # every single tool call, so a reply that had been running
+                    # for nine minutes reported "3s" - reported by the operator
+                    # as the timer never getting past a few seconds, which is
+                    # exactly what it was doing.
+                    #
+                    # A genuine turn carries no toolUseResult and its content is
+                    # not a tool_result block. Both are checked: the property is
+                    # the reliable marker, the block shape is the fallback for a
+                    # record shape that predates it.
+                    if ("$($r.type)" -eq 'user' -and (Test-SRHumanTurn $r)) { $turnAt = $ts; $turnOut = 0 }
                 } catch { }
             }
             $m = $r.message

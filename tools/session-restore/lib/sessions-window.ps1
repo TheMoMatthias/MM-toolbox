@@ -131,7 +131,7 @@ foreach ($n in @(
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
     'SetToolsFold','SetAllow','SetDeny',
     'CastBox','CastWho','CastList','CastText','CastCancel','CastSend',
-    'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneWorktree','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
+    'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions',
@@ -794,7 +794,15 @@ function Update-Model {
                 # context bar on conversations that finished days ago and whose
                 # bar cannot move again. The marks exist to triage what is
                 # RUNNING; the other 190 rows are answered by not asking.
-                Sig = $(if ($live) { try { Get-SRRowSignals "$($s.jsonl)" } catch { $null } } else { $null })
+                #
+                # 🔴 `$live -or (Test-Warm $s)`, NOT `$live` ALONE - the same
+                # predicate the last-said read four lines below already uses.
+                # Liveness comes from the WMI agent probe, which lags a launch;
+                # a conversation relaunched from this window was therefore built
+                # with no signals at all and showed a bare row until the probe
+                # caught up. Warm means "its transcript moved recently", which a
+                # session that just started satisfies immediately.
+                Sig = $(if ($live -or (Test-Warm $s)) { try { Get-SRRowSignals "$($s.jsonl)" } catch { $null } } else { $null })
                 # Filled below, once the project labels exist. See the note there.
                 Hay = ''; HayProj = ''
                 At = $at; Warm = ($at -gt $warmCut)
@@ -1132,6 +1140,7 @@ function Build-Sessions {
             # and a binding to a property that is not there is a silent error in
             # the trace and an empty cell on screen. Named, so it is off.
             CtxVis = $V_Hide; CtxWidth = 0.0; AgentVis = $V_Hide; AgentText = ''
+            ShellVis = $V_Hide; ShellText = ''
             CtxBrush = [System.Windows.Media.Brush][System.Windows.Media.Brushes]::Transparent
         })
         # 🔴 THE HEADINGS ALL STAY WHEN ONE IS PICKED. Hiding the others
@@ -1166,8 +1175,18 @@ function Build-Sessions {
                     if ($r.Sig -and $r.Sig.Frac -gt 0.85) { $Pal.Bad }
                     elseif ($r.Sig -and $r.Sig.Frac -gt 0.7) { $Pal.Warn }
                     else { $Pal.Ask })
+                # 🔴 SHAPE FIRST, HUE SECOND. A sub-agent is a ROUND amber dot -
+                # another mind working on your behalf. A background shell is a
+                # SQUARE violet mark - machinery still running. They answer
+                # different questions ("who is working" vs "what is still going")
+                # and a session can have both, so they must never be one badge
+                # with a total on it. Shape carries the distinction so it also
+                # survives a greyscale screenshot and colour blindness, which is
+                # the rule the rest of this window is built on.
                 AgentVis = $(if ($r.Sig -and $r.Sig.Agents -gt 0) { $V_Show } else { $V_Hide })
                 AgentText = $(if ($r.Sig -and $r.Sig.Agents -gt 0) { "$($r.Sig.Agents)" } else { '' })
+                ShellVis = $(if ($r.Sig -and $r.Sig.Shells -gt 0) { $V_Show } else { $V_Hide })
+                ShellText = $(if ($r.Sig -and $r.Sig.Shells -gt 0) { "$($r.Sig.Shells)" } else { '' })
             })
         }
     }
@@ -1523,11 +1542,20 @@ function Get-ReadTurns { param($Blocks)
             if ($out.Count) { $prev = $out[$out.Count - 1] }
             if ($prev -and $prev.Kind -eq "$($b.Kind)" -and ($b.Kind -eq 'you' -or $b.Kind -eq 'said')) {
                 $prev.Body = ($prev.Body.TrimEnd() + "`n`n" + "$($b.Body)".TrimStart())
+            } elseif ($prev -and $prev.Kind -eq 'file' -and "$($b.Kind)" -eq 'file') {
+                # A compact re-reads a handful of files and the terminal prints
+                # them as one list. Six separate cards would be six times the
+                # height and no more information.
+                $prev.Body = ($prev.Body + "`n" + ('{0}   {1}' -f $b.Body, $b.Meta).TrimEnd())
+                $prev.Count = [int]$prev.Count + 1
             } else {
                 # The turn is stamped with when it STARTED, not when it ended -
                 # merged blocks keep the first one's time, because that is the
                 # moment the reader is placing.
-                $out.Add([PSCustomObject]@{ Kind = "$($b.Kind)"; Body = "$($b.Body)"; Calls = $null; When = $b.When })
+                $body0 = "$($b.Body)"
+                if ("$($b.Kind)" -eq 'file') { $body0 = ('{0}   {1}' -f $b.Body, $b.Meta).TrimEnd() }
+                $out.Add([PSCustomObject]@{ Kind = "$($b.Kind)"; Head = "$($b.Head)"; Body = $body0
+                                            Calls = $null; When = $b.When; Count = 1 })
             }
             $i++
             continue
@@ -1721,6 +1749,61 @@ function Build-ReadDocument {
                 $inner = New-Object System.Windows.Documents.FlowDocument
                 Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextHigh -CodeBg $PalGlassHi
                 foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
+            }
+            'compact' {
+                # 🔴 THE STRONGEST BREAK IN THE TRANSCRIPT, because it is the
+                # one place the conversation genuinely restarts: everything
+                # above it the session can no longer see in full. It was not
+                # drawn at all, so compacting a session and then reading it here
+                # showed nothing happening.
+                $st = New-Object System.Windows.Controls.StackPanel
+                $st.Orientation = 'Horizontal'
+                $st.HorizontalAlignment = 'Center'
+                $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText 'COMPACTED') -Brush $Pal.Ask -Size 9.5 -Semi))
+                if ("$($t.Body)".Trim()) {
+                    $null = $st.Children.Add((New-ReadText -Text ('        ' + $t.Body) -Brush $Pal.TextLow -Size 11.5))
+                }
+                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalWash.Ask -Stroke $PalEdge.Ask -BW 1 -Radius 10 -PadT 9 -PadB 10 -Top 22 -Bottom 18))
+            }
+            'hook' {
+                # What a hook actually said. It rides on a record with no message
+                # at all, which is why none of this ever reached the pane.
+                $st = New-Object System.Windows.Controls.StackPanel
+                $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText ("HOOK  " + $t.Head)) -Brush $Pal.Tool -Size 9.5 -Semi))
+                $body = "$($t.Body)".Trim()
+                if ($body.Length -gt 600) { $body = $body.Substring(0, 597) + [string][char]0x2026 }
+                $tb = New-ReadText -Text $body -Brush $Pal.TextMid -Size 12 -Wrap -Line 18
+                $tb.Margin = New-Object System.Windows.Thickness 0, 6, 0, 0
+                $null = $st.Children.Add($tb)
+                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalFilm.Tool -Stroke $PalEdge.Tool -BW 1 -Radius 10 -PadT 10 -PadB 11))
+            }
+            'system' {
+                $p = New-Object System.Windows.Documents.Paragraph
+                $p.Margin = New-Object System.Windows.Thickness 0, 10, 0, 6
+                $p.Inlines.Add((New-ReadRun -Text (Get-TrackedText $t.Head.ToUpper()) -Brush $Pal.TextLow -Size 9.5 -Weight 'SemiBold'))
+                $p.Inlines.Add((New-ReadRun -Text ('        ' + $t.Body) -Brush $Pal.TextLow -Size 12 -Mono))
+                $doc.Blocks.Add($p)
+            }
+            'file' {
+                # The list a compact prints when it re-reads what it needs.
+                $st = New-Object System.Windows.Controls.StackPanel
+                $n = [int]$t.Count
+                $word = 'files'; if ($n -eq 1) { $word = 'file' }
+                $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText ('{0}  {1} {2}' -f $t.Head, $n, $word)) -Brush $Pal.TextLow -Size 9.5 -Semi))
+                $tb = New-ReadText -Text "$($t.Body)".Trim() -Brush $Pal.TextMid -Size 12 -Mono -Wrap -Line 17
+                $tb.Margin = New-Object System.Windows.Thickness 0, 6, 0, 0
+                $null = $st.Children.Add($tb)
+                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalGlass -Radius 10 -PadT 10 -PadB 10))
+            }
+            'queued' {
+                $body = "$($t.Body)".Trim()
+                if ($body.Length -gt 400) { $body = $body.Substring(0, 397) + [string][char]0x2026 }
+                $st = New-Object System.Windows.Controls.StackPanel
+                $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText 'QUEUED') -Brush $Pal.Out -Size 9.5 -Semi))
+                $tb = New-ReadText -Text $body -Brush $Pal.TextMid -Size 12 -Wrap -Line 18
+                $tb.Margin = New-Object System.Windows.Thickness 0, 6, 0, 0
+                $null = $st.Children.Add($tb)
+                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalFilm.Out -Stroke $PalEdge.Out -BW 1 -Radius 10 -PadT 10 -PadB 11))
             }
             'thinking' {
                 if ($script:toolView -eq 'hidden') { break }
@@ -2058,6 +2141,38 @@ function Invoke-Send {
 }
 
 # ===========================================================================
+# COMPACT - the one command worth a button of its own.
+#
+# It is the thing you want the moment the context chip goes amber, and the
+# window already shows you that number before the session itself complains. So
+# the two sit together: read the bar, press the button.
+#
+# 🪤 IT GOES THROUGH Send-SRSessionInput, the same path as anything typed, and
+# NOT through the answer relay. The relay counts arrow keys against a menu read
+# off the screen; a slash command is text, and pretending otherwise is how a
+# keystroke lands in whatever happens to be highlighted.
+#
+# Not guarded by a confirmation, deliberately: compacting summarises and carries
+# on, so a stray press costs a summary rather than any work. The status line
+# says what was sent, which is the trace that matters if one was not meant.
+function Invoke-Compact {
+    $it = $ui.SessionList.SelectedItem
+    if (-not $it -or $it.Kind -ne 'session') { Set-Status 'pick a conversation first' 'bad'; return }
+    $r = $it.Row
+    if (-not $r.A -or -not $r.A.Pid) {
+        Set-Status 'that conversation is not running, so there is nothing to compact' 'bad'
+        return
+    }
+    Set-Status 'compacting...'
+    $why = $null
+    try { $why = Send-SRSessionInput -SessionId $r.Id -Text '/compact' } catch { $why = $_.Exception.Message }
+    if ($why) { Set-Status $why 'bad' } else {
+        Set-Status 'sent /compact' 'ok'
+        Move-RowToWorking $r
+    }
+}
+
+# ===========================================================================
 # Selection, and following the selected transcript
 # ===========================================================================
 function Update-Document {
@@ -2217,7 +2332,7 @@ function Format-Clock { param([double]$Seconds)
 }
 
 function New-Chip {
-    param([string]$Text, $Fg, $Bg, $Stroke, $Dot, [double]$Bar = -1, $BarFg, [string]$Tip)
+    param([string]$Text, $Fg, $Bg, $Stroke, $Dot, [double]$Bar = -1, $BarFg, [string]$Tip, [switch]$Square)
     $bd = New-Object System.Windows.Controls.Border
     if ($Bg) { $bd.Background = $Bg }
     if ($Stroke) { $bd.BorderBrush = $Stroke; $bd.BorderThickness = New-Object System.Windows.Thickness 1 }
@@ -2230,7 +2345,9 @@ function New-Chip {
     if ($Dot) {
         $d = New-Object System.Windows.Controls.Border
         $d.Width = 6; $d.Height = 6
-        $d.CornerRadius = New-Object System.Windows.CornerRadius 3
+        # Round for a sub-agent, square for a background shell - the same pair
+        # the session rows use, so the two surfaces teach the same vocabulary.
+        $d.CornerRadius = New-Object System.Windows.CornerRadius $(if ($Square) { 1 } else { 3 })
         $d.Background = $Dot
         $d.VerticalAlignment = 'Center'
         $d.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
@@ -2332,7 +2449,7 @@ function Update-Chips { param($R, [switch]$Force)
     # absence is the other half of that signal.
     if ($v.Shells -gt 0) {
         $w = 'shells'; if ($v.Shells -eq 1) { $w = 'shell' }
-        $null = $ui.PaneChips.Children.Add((New-Chip -Text ('{0} {1}' -f $v.Shells, $w) -Fg $Pal.Tool -Bg $PalWash.Tool -Stroke $PalEdge.Tool -Dot $Pal.Tool -Tip 'Background shells started and not yet reported back').Border)
+        $null = $ui.PaneChips.Children.Add((New-Chip -Text ('{0} {1}' -f $v.Shells, $w) -Fg $Pal.Tool -Bg $PalWash.Tool -Stroke $PalEdge.Tool -Dot $Pal.Tool -Square -Tip 'Background commands still running - a square mark means machinery, a round one means a sub-agent').Border)
     }
     if ($v.Agents -gt 0) {
         $w = 'sub-agents'; if ($v.Agents -eq 1) { $w = 'sub-agent' }
@@ -2453,7 +2570,12 @@ function Show-Selected { param([switch]$Force)
         } catch { }
     }
     Update-SendState
-    if (-not $same) { $script:followStamp = $null }
+    if (-not $same) {
+        $script:followStamp = $null
+        # One watcher, on the conversation actually on screen. Following all
+        # twelve would be twelve handles for eleven panes nobody is reading.
+        try { Start-TranscriptWatch "$($r.S.jsonl)" } catch { }
+    }
 }
 
 # FOLLOW ONLY THE SELECTED SESSION. One file, checked once a second, rather than
@@ -3587,6 +3709,90 @@ $ui.PaneSettings.Add_Click({ if ($ui.SettingsBox.Visibility -eq $V_Show) { Hide-
 
 $ui.PaneTools.Content = Get-ToolViewLabel
 $ui.PaneTools.Add_Click({ Step-ToolView })
+$ui.PaneCompact.Add_Click({ Invoke-Compact })
+
+# ===========================================================================
+# WATCHING THE TRANSCRIPT INSTEAD OF ASKING ABOUT IT.
+#
+# The follow tick polls the selected conversation once a second, so the pane was
+# up to a second behind what the terminal had already printed - reported as
+# wanting to see what is happening "almost immediately". A FileSystemWatcher
+# fires when claude writes, which is both faster AND cheaper: nothing runs at
+# all while a session is quiet, where polling stats a file every second forever.
+#
+# 🪤 THE HANDLER RUNS ON A THREADPOOL THREAD, NOT THE UI THREAD. Touching any
+# control from it throws InvalidOperationException from deep inside WPF, so it
+# does exactly one thing - marshal a flag onto the dispatcher. The one-second
+# timer STAYS as the backstop: a watcher misses events under load, dies with its
+# directory, and cannot see a file on a network path, and a pane that silently
+# stopped updating would be far worse than one that updates a beat late.
+$script:watcher = $null
+$script:watchPath = ''
+
+function Stop-TranscriptWatch {
+    if (-not $script:watcher) { return }
+    try { $script:watcher.EnableRaisingEvents = $false } catch { }
+    try { $script:watcher.Dispose() } catch { }
+    $script:watcher = $null
+    $script:watchPath = ''
+}
+
+function Start-TranscriptWatch { param([string]$Path)
+    if (-not $Path -or $Path -eq $script:watchPath) { return }
+    Stop-TranscriptWatch
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    try {
+        $w = New-Object System.IO.FileSystemWatcher
+        $w.Path = (Split-Path -Parent $Path)
+        $w.Filter = (Split-Path -Leaf $Path)
+        $w.NotifyFilter = [System.IO.NotifyFilters]::LastWrite -bor [System.IO.NotifyFilters]::Size
+        $w.IncludeSubdirectories = $false
+        # 🔴 Register-ObjectEvent, not Add_Changed. The window is one script and
+        # a .NET event handler added here would run with no PowerShell runspace
+        # of its own; the engine event queue is what gives it one, and what lets
+        # the action reach $script: state at all.
+        $null = Register-ObjectEvent -InputObject $w -EventName Changed -SourceIdentifier 'SRTranscript' -Action {
+            $script:transcriptDirty = $true
+        }
+        $w.EnableRaisingEvents = $true
+        $script:watcher = $w
+        $script:watchPath = $Path
+    } catch {
+        Write-SRLog ('  [skip] could not watch the transcript, falling back to the timer: ' + $_.Exception.Message)
+        Stop-TranscriptWatch
+    }
+}
+
+# Set by the watcher thread, read and cleared by the dispatcher. A bool
+# assignment is atomic, and the worst a race costs here is one extra refresh.
+$script:transcriptDirty = $false
+
+# 🔴 THE FAST LANE. It runs ten times a second, does NOTHING at all unless the
+# watcher raised the flag, and then does only what a write can have changed -
+# the document and the send state. The vitals, the bands and the question all
+# stay on the one-second tick, because none of them is what you are watching
+# when you watch a session type.
+$script:writeTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:writeTimer.Interval = [TimeSpan]::FromMilliseconds(100)
+$script:writeTimer.Add_Tick({
+    if (-not $script:transcriptDirty) { return }
+    $script:transcriptDirty = $false
+    if ($script:sheetDepth -gt 0) { return }
+    try {
+        $it = $ui.SessionList.SelectedItem
+        if (-not $it -or $it.Kind -ne 'session') { return }
+        Update-Document
+        Update-SendState
+        # Keep the polling tick from redoing this work a beat later: it compares
+        # this stamp to decide whether anything moved.
+        $j = "$($it.Row.S.jsonl)"
+        if ($j -and (Test-Path -LiteralPath $j)) {
+            $fi = Get-Item -LiteralPath $j
+            $script:followStamp = ('{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks)
+        }
+    } catch { }
+})
+$script:writeTimer.Start()
 
 # A NEW CONVERSATION IN ANOTHER WORKTREE - never this one moved. A claude
 # conversation is bound to the directory it was started in and its transcript is

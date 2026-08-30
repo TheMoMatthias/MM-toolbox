@@ -1089,6 +1089,76 @@ elseif (-not $sel[0].PSObject.Properties['Session']) {
     } finally { Remove-Item -LiteralPath $bp -Force -ErrorAction SilentlyContinue }
 }
 
+# --- WHAT THE TERMINAL PRINTS THAT THE PANE USED TO SWALLOW ----------------
+# 🔴 The reader took `user` and `assistant` records and dropped EVERYTHING else
+# on the floor. A compact writes a system record; a hook writes an attachment; a
+# notice like "/remote-control is active" is a system record too. The operator
+# compacted a session, looked here, and saw nothing happen - because nothing
+# was drawn. Hand-built, because a real transcript only contains a compact if
+# one happens to have been run inside the tail window, and the fixture also lets
+# the SKIPPED kinds be asserted, which a real file cannot.
+Write-Host ''
+Write-Host '--- a compact, a hook and a notice all reach the reader ---'
+$mixPath = Join-Path $env:TEMP ('sr-mixed-{0}.jsonl' -f ([guid]::NewGuid().ToString('N')))
+try {
+    [System.IO.File]::WriteAllLines($mixPath, @(
+        '{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual","preTokens":184213},"timestamp":"2026-08-30T14:00:00.000Z","uuid":"a1"}',
+        '{"type":"system","subtype":"turn_duration","durationMs":1342784,"timestamp":"2026-08-30T14:00:01.000Z","uuid":"a2"}',
+        '{"type":"system","subtype":"informational","content":"/remote-control is active","timestamp":"2026-08-30T14:00:02.000Z","uuid":"a3"}',
+        '{"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[{"command":"lane position","durationMs":8982}],"hookErrors":[],"timestamp":"2026-08-30T14:00:03.000Z","uuid":"a4"}',
+        '{"type":"user","attachment":{"type":"hook_success","hookName":"UserPromptSubmit","content":"the hook said this"},"timestamp":"2026-08-30T14:00:04.000Z","uuid":"a5"}',
+        '{"type":"user","attachment":{"type":"file","filename":"C:\\\\x\\\\notes.md","content":{"type":"text","file":{"filePath":"C:\\\\x\\\\notes.md","content":"one\ntwo"}}},"timestamp":"2026-08-30T14:00:05.000Z","uuid":"a6"}',
+        '{"type":"user","attachment":{"type":"output_style","content":"noise"},"timestamp":"2026-08-30T14:00:06.000Z","uuid":"a7"}',
+        '{"type":"user","attachment":{"type":"total_tokens_reminder","content":"noise"},"timestamp":"2026-08-30T14:00:07.000Z","uuid":"a8"}',
+        '{"type":"assistant","message":{"role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"Back after the compact."}]},"timestamp":"2026-08-30T14:00:08.000Z","uuid":"a9"}'
+    ), (New-Object System.Text.UTF8Encoding($false)))
+
+    $mix = @(Get-SRTranscriptBlocks -JsonlPath $mixPath -MaxRecords 60 -MaxTailBytes 60000)
+    foreach ($want in @(
+        @('compact', 'the compact boundary'),
+        @('hook',    "the hook's own output"),
+        @('file',    'the files a compact re-read'),
+        @('said',    'and the reply after it'))) {
+        $got = @($mix | Where-Object { $_.Kind -eq $want[0] })
+        if (-not $got.Count) { Fail ("{0} never reaches the reader" -f $want[1]) }
+        else { Pass ("{0} reaches the reader" -f $want[1]) }
+    }
+    $notice = @($mix | Where-Object { $_.Kind -eq 'system' -and "$($_.Body)" -like '*remote-control*' })
+    if (-not $notice.Count) { Fail 'a system notice is still dropped' }
+    else { Pass 'a system notice reaches the reader' }
+    $compactBody = "$(@($mix | Where-Object { $_.Kind -eq 'compact' })[0].Body)"
+    if ($compactBody -notlike '*184213*') { Fail "the compact says '$compactBody' - it should carry how much it summarised" }
+    else { Pass 'the compact says how much it summarised' }
+
+    # 🪤 AND THE NOISE STAYS OUT, or every assertion above would pass on a reader
+    # that simply renders every record it sees. output_style and
+    # total_tokens_reminder alone run to thousands in a real tail.
+    $noise = @($mix | Where-Object { "$($_.Body)" -eq 'noise' })
+    if ($noise.Count) { Fail "$($noise.Count) per-turn machinery attachment(s) reached the reader" }
+    else { Pass 'per-turn machinery attachments stay out' }
+    $dur = @($mix | Where-Object { "$($_.Head)" -like '*turn duration*' })
+    if ($dur.Count) { Fail 'turn_duration bookkeeping reached the reader' }
+    else { Pass 'turn_duration bookkeeping stays out' }
+} finally { Remove-Item -LiteralPath $mixPath -Force -ErrorAction SilentlyContinue }
+
+# --- A TOOL RESULT IS NOT A TURN -------------------------------------------
+# The clock reported "3s" on a reply that had been running nine minutes, because
+# every tool_result is written as a `user` record and each one reset the turn.
+Write-Host ''
+Write-Host '--- what counts as a turn you started ---'
+foreach ($case in @(
+    @{ n = 'a message you typed'; j = '{"type":"user","message":{"role":"user","content":"do the thing"}}'; want = $true },
+    @{ n = 'a tool handing back a result'; j = '{"type":"user","toolUseResult":{"stdout":"ok"},"message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}'; want = $false },
+    @{ n = 'a compact summary'; j = '{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"summary"}}'; want = $false },
+    @{ n = "a hook's output"; j = '{"type":"user","attachment":{"type":"hook_success","content":"x"},"message":{"role":"user","content":"x"}}'; want = $false }
+)) {
+    $rec = $case.j | ConvertFrom-Json
+    $got = [bool](Test-SRHumanTurn $rec)
+    if ($got -ne $case.want) {
+        Fail ("{0}: counted as a turn = {1}, expected {2}" -f $case.n, $got, $case.want)
+    } else { Pass ("{0} {1} a turn you started" -f $case.n, $(if ($case.want) { 'is' } else { 'is not' })) }
+}
+
 Write-Host ''
 if ($fails) { Write-Host ("$fails FAILURE(S)") -ForegroundColor Red; exit 1 }
 Write-Host 'all conversation-state tests passed' -ForegroundColor Green
