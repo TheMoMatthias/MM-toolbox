@@ -65,6 +65,18 @@ if ($env:SR_SHOT_ASK) {
     })
 }
 
+# 🪤 THE VITALS STRIP IS FILLED BY THE ONE-SECOND TICK, NOT BY THE CLICK - that
+# is deliberate, to keep a JSONL parse and a git call off the click path. A shot
+# never ticks, so without this the header draws empty and every screenshot taken
+# for review silently omits the row of chips it was taken to review.
+# Update-Chips directly rather than Invoke-FollowTick: the tick can also reach
+# Update-Ask, which spawns a process to read another session's console, and a
+# screenshot must not do that.
+try {
+    $shotSel = $ui.SessionList.SelectedItem
+    if ($shotSel -and $shotSel.Kind -eq 'session') { Update-Chips $shotSel.Row -Force }
+} catch { }
+
 $window.Width = $W; $window.Height = $H
 $root = $window.Content
 # 🔴 DO NOT PAINT THE GROUND ONTO THE CONTENT. The app is an inset card with the

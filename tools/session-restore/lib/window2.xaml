@@ -842,9 +842,14 @@
          never have to compete for attention.
          ================================================== -->
     <DataTemplate x:Key="RailRowTpl">
-      <Border Margin="8,3,8,3" CornerRadius="8" Background="{Binding PickBg}"
+      <!-- 🪤 THE SAME RHYTHM THE SESSION ROWS WERE GIVEN. The tile was tuned
+           when it was the only two-line thing in the window; beside the rows'
+           new spacing it read tight, and a rail that is denser than the list it
+           filters gets the emphasis backwards. Nothing here changes what a tile
+           SAYS - only how much air it says it in. -->
+      <Border Margin="8,4,8,4" CornerRadius="9" Background="{Binding PickBg}"
               BorderBrush="{Binding PickEdge}" BorderThickness="1"
-              Padding="0,8,11,9" SnapsToDevicePixels="True">
+              Padding="0,11,12,12" SnapsToDevicePixels="True">
         <Grid>
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto"/>
@@ -858,7 +863,7 @@
 
           <!-- the identity mark -->
           <Border Grid.Column="0" Grid.RowSpan="2" Width="4" CornerRadius="2"
-                  Margin="10,2,12,2" Background="{Binding Accent}"
+                  Margin="11,1,13,1" Background="{Binding Accent}"
                   Opacity="{Binding AccentOpacity}"/>
 
           <TextBlock Grid.Column="1" Grid.Row="0" Text="{Binding Label}"
@@ -870,9 +875,13 @@
                   VerticalAlignment="Center" Margin="8,0,0,0"
                   Visibility="{Binding NeedsVis}"
                   Background="{StaticResource AccNeeds}"/>
+          <!-- What is happening inside. Given its own leading and a real gap
+               from the name: at 2px the two lines read as one wrapped title
+               rather than as a name and its state. -->
           <TextBlock Grid.Column="1" Grid.ColumnSpan="2" Grid.Row="1"
                      Text="{Binding State}" Style="{StaticResource Meta}"
-                     Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
+                     Margin="0,4,0,0" LineHeight="15" LineStackingStrategy="BlockLineHeight"
+                     TextTrimming="CharacterEllipsis"/>
         </Grid>
       </Border>
     </DataTemplate>
