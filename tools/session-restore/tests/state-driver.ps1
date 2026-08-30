@@ -1159,6 +1159,36 @@ foreach ($case in @(
     } else { Pass ("{0} {1} a turn you started" -f $case.n, $(if ($case.want) { 'is' } else { 'is not' })) }
 }
 
+# --- WHAT A SESSION SAYS ABOUT ITSELF ON ITS STATUS LINE -------------------
+# 🔴 The transcript CANNOT see a running background shell: a Bash call with
+# run_in_background gets its tool_result back immediately, carrying the shell
+# id, so the "a call nobody answered is still running" test - correct for
+# sub-agents - never fires for shells and reported zero of them forever. The
+# session already prints the true count; this reads what it prints.
+Write-Host ''
+Write-Host '--- the counts a session prints about itself ---'
+foreach ($sc in @(
+    @{ n = 'one shell and nothing else'
+       t = '>> auto mode on (shift+tab to cycle) . 1 shell . <- for agents . 1 feedback draft'
+       shells = 1; agents = 0; ok = $true },
+    @{ n = 'shells and agents together'
+       t = '>> auto mode on . 3 shells . 2 agents . <- for agents'
+       shells = 3; agents = 2; ok = $true },
+    @{ n = 'the bare agents hint, which is NOT a count'
+       t = '>> auto mode on (shift+tab to cycle) . <- for agents'
+       shells = 0; agents = 0; ok = $false },
+    @{ n = 'a screen with no status line at all'
+       t = 'just some output'; shells = 0; agents = 0; ok = $false }
+)) {
+    $got = Read-SRScreenVitals -ScreenText $sc.t
+    if ($got.Shells -ne $sc.shells -or $got.Agents -ne $sc.agents -or [bool]$got.Ok -ne $sc.ok) {
+        Fail ("{0}: read shells={1} agents={2} ok={3}, expected {4}/{5}/{6}" -f `
+              $sc.n, $got.Shells, $got.Agents, $got.Ok, $sc.shells, $sc.agents, $sc.ok)
+    } else { Pass $sc.n }
+}
+if ((Read-SRScreenVitals -ScreenText $null).Ok) { Fail 'an empty screen still claims to have read counts' }
+else { Pass 'an unread screen reports nothing rather than zero' }
+
 Write-Host ''
 if ($fails) { Write-Host ("$fails FAILURE(S)") -ForegroundColor Red; exit 1 }
 Write-Host 'all conversation-state tests passed' -ForegroundColor Green

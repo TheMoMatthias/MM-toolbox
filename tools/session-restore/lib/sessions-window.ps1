@@ -2450,6 +2450,14 @@ function Update-Chips { param($R, [switch]$Force)
     if (-not $v -or -not $v.Ok) {
         $ui.PaneChips.Children.Clear(); $script:chipStamp = ''; $script:chipClock = $null; $script:chipVitals = $null; return
     }
+    # 🔴 THE SESSION'S OWN COUNT WINS. The transcript estimate cannot see a
+    # background shell at all - a Bash call with run_in_background gets its
+    # result back immediately, so the "a call nobody answered is still running"
+    # test never fires for one - and the session prints the true number on its
+    # status line, which the ask probe has already read. -1 means the screen
+    # could not be read, which is not zero and must not overwrite anything.
+    if ($script:screenShells -ge 0) { $v.Shells = $script:screenShells }
+    if ($script:screenAgents -ge 0) { $v.Agents = $script:screenAgents }
     $script:chipVitals = $v
 
     # Everything except the clock. If none of it moved, only the clock is
@@ -2623,6 +2631,14 @@ function Show-Selected { param([switch]$Force)
         # written for.
         $script:lastAskAt = Get-Date
         Show-Ask $null
+        # 🔴 THE QUESTION GETS ITS OWN PROBE, STARTED HERE. Waiting for the heavy
+        # one meant ten to fifteen seconds before a waiting conversation showed
+        # what it was waiting for - it refreshes the registry and spawns claude
+        # before it ever gets to the screen read. This job does the screen read
+        # and nothing else, and the 100ms lane collects it.
+        $script:screenShells = -1
+        $script:screenAgents = -1
+        try { Start-AskProbe $r } catch { }
         try {
             $script:liveTimer.Stop()
             Start-LiveProbe
@@ -3848,6 +3864,10 @@ $script:writeTimer.Interval = [TimeSpan]::FromMilliseconds(100)
 # clicking a waiting conversation moved it) was invisible to any test that could
 # not call it.
 function Invoke-WriteLane {
+    # Collected here rather than on the one-second tick: this lane runs ten
+    # times a second, so a question that took a second to read is on screen
+    # within a tenth of a second of arriving.
+    if ($script:sheetDepth -eq 0) { try { Complete-AskProbe } catch { } }
     if (-not $script:transcriptDirty) { return }
     $script:transcriptDirty = $false
     if ($script:sheetDepth -gt 0) { return }
@@ -4704,6 +4724,121 @@ function Test-ProbeOverdue {
     if (-not $script:probeStartedAt) { return $false }
     return (((Get-Date) - $script:probeStartedAt).TotalSeconds -gt $script:ProbeDeadlineSeconds)
 }
+
+# ===========================================================================
+# THE ASK PROBE - one screen read, and nothing else.
+#
+# 🔴 THE QUESTION USED TO ARRIVE WITH THE HEAVY PROBE, and that probe also
+# refreshes the registry, spawns claude for the agent list and reads last-said
+# for every live conversation. So clicking a conversation that was waiting on
+# you showed nothing for ten to fifteen seconds - on the one surface whose
+# entire purpose is to show you what is waiting.
+#
+# This is its own runspace carrying one job: read that session's screen, return
+# the question and the two counts printed on its status line. It is started by
+# the click and collected on the 100ms lane, so the answer lands in about a
+# second. The heavy probe keeps its own cadence for everything else and no
+# longer decides how fast a question appears.
+$script:askPs = $null
+$script:askRs = $null
+$script:askHandle = $null
+$script:askFor = ''
+$script:askStartedAt = $null
+
+$script:AskJob = {
+    . (Join-Path $SRHere '_common.ps1')
+    $out = @{ Ask = $null; Shells = -1; Agents = -1 }
+    try {
+        # ONE screen read serves both answers - the question and the counts the
+        # session prints about itself are on the same screen, and reading it
+        # twice would double the one cost this job has.
+        $txt = Get-SRScreenText -ProcessId $SRAsk.Pid
+        # The same single retry Get-SRScreenQuestion makes, and for the same
+        # reason: a missed 3-second budget on a busy machine is not evidence
+        # that there is no question.
+        if (-not $txt) {
+            Start-Sleep -Milliseconds 300
+            $txt = Get-SRScreenText -ProcessId $SRAsk.Pid
+        }
+        if ($txt) {
+            $q = Invoke-SRParseScreenQuestion -Text $txt
+            # The raw screen travels with the parse, exactly as it does on the
+            # other path: when an answer turns out wrong it is the only record
+            # of what was actually on screen when the options were offered.
+            if ($q) { $q | Add-Member -NotePropertyName Screen -NotePropertyValue $txt -Force }
+            $out.Ask = $q
+            $sv = Read-SRScreenVitals -ScreenText $txt
+            if ($sv.Ok) { $out.Shells = $sv.Shells; $out.Agents = $sv.Agents }
+        }
+    } catch { }
+    $out
+}
+
+function Start-AskProbe { param($R)
+    # 🪤 Abandoned rather than queued. A second click while the first read is
+    # still out must answer the SECOND conversation; letting them queue is how
+    # one conversation's menu ends up filed against another.
+    if ($script:askPs) {
+        try { $script:askPs.Stop(); $script:askPs.Dispose() } catch { }
+        try { $script:askRs.Close(); $script:askRs.Dispose() } catch { }
+        $script:askPs = $null; $script:askRs = $null; $script:askHandle = $null
+    }
+    if (-not (Test-AskAllowed $R)) { $script:askFor = ''; return }
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'MTA'
+        $rs.ThreadOptions = 'ReuseThread'
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        $rs.SessionStateProxy.SetVariable('SRAsk', @{ Pid = [int]$R.A.Pid })
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript($script:AskJob)
+        $script:askRs = $rs
+        $script:askPs = $ps
+        $script:askHandle = $ps.BeginInvoke()
+        $script:askFor = "$($R.Id)"
+        $script:askStartedAt = Get-Date
+    } catch {
+        Write-SRLog ('  [skip] the ask probe would not start: ' + $_.Exception.Message)
+        $script:askPs = $null; $script:askFor = ''
+    }
+}
+
+function Complete-AskProbe {
+    if (-not $script:askPs -or -not $script:askHandle) { return }
+    if (-not $script:askHandle.IsCompleted) {
+        # Bounded like the heavy one, and for the same reason: a child that
+        # never answers must not wedge the lane that collects it.
+        if ($script:askStartedAt -and ((Get-Date) - $script:askStartedAt).TotalSeconds -gt 20) {
+            try { $script:askPs.Stop(); $script:askPs.Dispose() } catch { }
+            try { $script:askRs.Close(); $script:askRs.Dispose() } catch { }
+            $script:askPs = $null; $script:askRs = $null; $script:askHandle = $null
+            Write-SRLog '  [warn] the ask probe did not answer in 20s - abandoned'
+        }
+        return
+    }
+    $res = $null
+    try { $res = @($script:askPs.EndInvoke($script:askHandle))[0] } catch { }
+    try { $script:askPs.Dispose(); $script:askRs.Close(); $script:askRs.Dispose() } catch { }
+    $script:askPs = $null; $script:askRs = $null; $script:askHandle = $null
+    if (-not $res) { return }
+    # The selection may have moved while the read was out; a menu belongs to the
+    # conversation it was read from and to no other.
+    if ("$($script:askFor)" -ne "$($script:selId)") { return }
+    $row = Get-SelectedRow
+    if (-not (Test-AskAllowed $row)) { Show-Ask $null; return }
+    Show-Ask $res.Ask
+    # The counts the session printed about itself. -1 means the screen could not
+    # be read, which is not the same as zero and must not overwrite anything.
+    if ([int]$res.Shells -ge 0 -or [int]$res.Agents -ge 0) {
+        $script:screenShells = [int]$res.Shells
+        $script:screenAgents = [int]$res.Agents
+        try { Update-Chips $row -Force } catch { }
+    }
+}
+$script:screenShells = -1
+$script:screenAgents = -1
 
 function Start-LiveProbe {
     if ($script:probePs) {

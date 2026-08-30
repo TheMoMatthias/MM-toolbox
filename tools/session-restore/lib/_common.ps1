@@ -2668,6 +2668,34 @@ function Get-SRScreenText {
         Remove-Item -LiteralPath $scr -Force -ErrorAction SilentlyContinue
     }
 }
+# ===========================================================================
+# WHAT THE SESSION SAYS ABOUT ITSELF, off its own status line.
+#
+#   >> auto mode on . 1 shell . <- for agents . 1 feedback draft
+#
+# 🔴 THIS IS AUTHORITATIVE AND THE TRANSCRIPT IS NOT. Inferring a running
+# background shell from the transcript does not work: a Bash call with
+# run_in_background gets its tool_result back IMMEDIATELY, carrying the shell
+# id, so the "a call nobody answered is still running" test - which is correct
+# for sub-agents - never fires for shells and reported zero of them forever. The
+# session already computes the true count and prints it; reading what it prints
+# beats re-deriving it badly.
+#
+# 🪤 It only knows about a session whose screen has actually been read, which is
+# the one on the pane. Rows keep the transcript estimate, and where the two can
+# disagree the strip is the one to believe.
+function Read-SRScreenVitals { param([string]$ScreenText)
+    $v = [PSCustomObject]@{ Shells = 0; Agents = 0; Ok = $false }
+    if (-not $ScreenText) { return $v }
+    $m = [regex]::Match($ScreenText, '(\d+)\s+shells?\b')
+    if ($m.Success) { $v.Shells = [int]$m.Groups[1].Value; $v.Ok = $true }
+    # "<- for agents" carries no number and means none are out; a count only
+    # appears when there is one, so a bare mention must not be read as a hit.
+    $m = [regex]::Match($ScreenText, '(\d+)\s+(?:sub-?)?agents?\b')
+    if ($m.Success) { $v.Agents = [int]$m.Groups[1].Value; $v.Ok = $true }
+    return $v
+}
+
 function Get-SRScreenQuestion {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
