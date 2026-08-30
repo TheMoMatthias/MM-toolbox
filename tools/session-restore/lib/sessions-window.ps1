@@ -383,7 +383,10 @@ $script:mgrDesc = $true
 $script:MgrKeys = @{
     'logon' = { param($r) $(if ([bool]$r.S.enabled) { 1 } else { 0 }) }
     'name'  = { param($r) "$($r.T.Text)".ToLower() }
-    'lane'  = { param($r) (Get-LaneLabel $r "$($r.T.Text)").ToLower() }
+    # $r.Lane, already computed once per model pass - this recomputed it for
+    # every row on every sort, which is why 'lane' was the last manager gesture
+    # still over budget after the others came in.
+    'lane'  = { param($r) "$($r.Lane)".ToLower() }
     'said'  = { param($r) "$($r.Said.Said)".Trim().ToLower() }
     # Already parsed once per pass and carried on the row; see Build-Manager.
     'age'   = { param($r) $r.At }
@@ -423,6 +426,10 @@ function Sort-ManagerRows { param($Rows)
     # an unrolled array correctly, so the comma buys nothing and costs that.
     return $sorted
 }
+
+# Built manager rows, keyed by conversation id. Dropped by Update-Model and by
+# Toggle-Tick - the only two things that change what a row says.
+$script:mgrItems = @{}
 
 function Build-Manager {
     # 🪤 THE BRUSH IS LOOKED UP ONCE, NOT PER ROW. FindResource walks the
@@ -487,6 +494,19 @@ function Build-Manager {
         if ($shut) { continue }
 
         foreach ($r in $inWindow) {
+            # 🔴 THE ROW OBJECT IS BUILT ONCE AND REUSED. Sorting and filtering
+            # the manager change WHICH rows appear and in what ORDER - they never
+            # change what a row says - yet every sort click reconstructed all ~230
+            # PSCustomObjects from scratch at about 0.2 ms each, which is where
+            # Build-Manager's 55 ms went. Measured: the cost tracked the row count
+            # exactly, 'filter manager: needs' at 12 ms against 'all' at 52 ms.
+            #
+            # 🪤 The cache is dropped whenever the MODEL is rebuilt or a tick is
+            # toggled - the only two things that change what a row says. A cache
+            # that outlives the truth behind it is worse than no cache, and on
+            # this surface it would mean showing a tick that is not set.
+            $cached = $script:mgrItems[$r.Id]
+            if ($cached) { $items.Add($cached); continue }
             $t = $r.T
             $saidText = ''
             if ($r.Said -and "$($r.Said.Said)".Trim()) { $saidText = ("$($r.Said.Said)".Trim() -replace '\s+', ' ') }
@@ -509,6 +529,7 @@ function Build-Manager {
                 # colour, so it survives everything the accents do not.
                 TickBg = $(if ([bool]$r.S.enabled) { $tickOn } else { $tickOff })
             })
+            $script:mgrItems[$r.Id] = $items[$items.Count - 1]
         }
     }
 
@@ -555,6 +576,9 @@ function Build-Manager {
 # THE ONE PLACE A TICK CHANGES. Both the mouse and the keyboard come through
 # here, so they cannot drift apart.
 function Set-TickOn { param($Row)
+    # A tick is the one thing a built row says that can change without the model
+    # being rebuilt, so it drops the cache. See Build-Manager.
+    $script:mgrItems = @{}
     if (-not $Row) { return }
     $s = $Row.S
     $now = -not [bool]$s.enabled
@@ -578,6 +602,7 @@ function Set-TickOn { param($Row)
 }
 
 function Toggle-Tick {
+    $script:mgrItems = @{}
     $it = $ui.ManageList.SelectedItem
     if (-not $it) { return }
     if ($it.Kind -eq 'project') { $script:fold[$it.Path] = -not [bool]$script:fold[$it.Path]; Build-Manager; return }
@@ -844,6 +869,7 @@ function Update-Model {
     # Band, and the lane label - both pure functions of a finished row, both
     # wanted by every list build, so both are answered once here rather than
     # per row per keystroke.
+    $script:mgrItems = @{}
     foreach ($r in $rows) {
         $r.Band = Get-Band $r
         $r.Lane = (Get-LaneLabel $r "$($r.T.Text)")

@@ -40,7 +40,7 @@ function Note { param($m) Write-Host "        $m" -ForegroundColor DarkGray }
 # The spread is reported alongside it, because a huge gap between best and worst
 # is itself a finding: it means the operation is fighting something.
 function Bench {
-    param([string]$Name, [scriptblock]$Do, [string]$Class = 'QUICK', [int]$Runs = 7)
+    param([string]$Name, [scriptblock]$Do, [string]$Class = 'QUICK', [int]$Runs = 15)
     $ms = New-Object System.Collections.Generic.List[double]
     $threw = ''
     for ($i = 0; $i -lt $Runs; $i++) {
@@ -249,6 +249,38 @@ $null = Bench 'Get-ProjectAccent (cold cache)' {
 
 # ---------------------------------------------------------------------------
 Write-Host ''
+Write-Host '--- the gestures nothing was measuring ---'
+# ---------------------------------------------------------------------------
+# Everything below is a control the operator can press that had no timing at
+# all. Several are trivial and that is worth KNOWING rather than assuming - a
+# handler nobody measured is exactly where the two worst stalls in this tool
+# were found.
+$railPickWas2 = $script:railPick
+$null = Bench 'pick a project in the rail' {
+    $script:railPick = "$(@($script:dirs)[0].path)"
+    Build-Rail; Build-Sessions
+} 'GESTURE'
+$script:railPick = $railPickWas2
+Build-Rail; Build-Sessions
+
+$null = Bench 'toggle the steps view (the redraw half)' { Show-Selected -Force } 'GESTURE'
+$null = Bench 'the maximise glyph' { Update-MaxGlyph } 'GESTURE'
+$null = Bench 'the window frame' { Update-Frame } 'GESTURE'
+$null = Bench 'the send-to-many text box' {
+    $ui.CastSend.IsEnabled = (@($script:castPick.Keys).Count -gt 0 -and "$($ui.CastText.Text)".Trim().Length -gt 0)
+} 'GESTURE'
+$null = Bench 'is the registry stale? (what Save checks first)' { Get-SRRegistryStamp } 'GESTURE'
+# 🪤 WHAT THE BUTTON DOES, NOT A HARSHER THING I INVENTED. This first measured
+# Get-LaunchBlock across all 202 conversations - 227 ms - but the handler calls
+# it once per TICKED one, from inside Get-TickedPlan. Benching work the tool
+# never performs is the same error as benching a function it no longer has.
+$null = Bench 'open everything not running (up to the launch)' {
+    $planNow = Get-TickedPlan
+    $null = Limit-ToCap $planNow.Fresh
+} 'GESTURE'
+
+# ---------------------------------------------------------------------------
+Write-Host ''
 Write-Host '--- the library underneath ---'
 # ---------------------------------------------------------------------------
 $null = Bench 'Get-SRRegistry (read from disk)' { Get-SRRegistry } 'QUICK' 2
@@ -261,6 +293,71 @@ if ($liveOnes.Count) {
 }
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '--- is every control the operator can press actually measured? ---'
+# ---------------------------------------------------------------------------
+# 🔴 "EVERY OPERATION THE OPERATOR CAN CAUSE" WAS A CLAIM IN A COMMENT AND
+# NOTHING CHECKED IT. This reads the wired handlers straight out of the window
+# source and requires each one to be named here - either against the bench that
+# covers it, or with a reason it cannot be run. A control added tomorrow with no
+# timing fails this, which is the only way the claim at the top of this file
+# stays true.
+#
+# 🪤 The excused ones are excused for ONE reason only: running them would type
+# into a live session, write the operator's registry, raise a terminal or open a
+# modal dialog that never returns. Where that is true the work they do BEFORE
+# the irreversible step is measured instead, and named below.
+$COVERAGE = @{
+    'Search'           = 'search: header box'
+    'RailSearch'       = 'search: rail box'
+    'ListSearch'       = 'search: sessions box'
+    'SendBox'          = 'filter the skill picker'
+    'CastText'         = 'the send-to-many text box'
+    'ModeWork'         = 'Set-Surface work'
+    'ModeManage'       = 'Set-Surface manage'
+    'SessionList'      = 'select a conversation'
+    'RailList'         = 'pick a project in the rail'
+    'PaneSettings'     = 'open the settings panel'
+    'SetCancel'        = 'close the settings panel'
+    'SetPerm'          = 'permission note'
+    'PaneTools'        = 'toggle the steps view (the redraw half)'
+    'Broadcast'        = 'open send-to-many'
+    'CastCancel'       = 'open send-to-many'
+    'WinMax'           = 'the maximise glyph'
+    'WinMin'           = 'the window frame'
+    'WinClose'         = 'the window frame'
+    'SaveBtn'          = 'is the registry stale? (what Save checks first)'
+    'RelaunchSessions' = 'Get-TickedPlan'
+    'OpenNotRunning'   = 'open everything not running (up to the launch)'
+    # Excused, with what is measured in their place.
+    'SendBtn'          = 'EXCUSED: types into a live session. Its gesture is a string trim; the relay suite covers the send itself.'
+    'PaneCompact'      = 'EXCUSED: types /compact into a live session. Same path as SendBtn.'
+    'CastSend'         = 'EXCUSED: types into every ticked session at once.'
+    'SetApply'         = 'EXCUSED: writes per-session settings and may relaunch.'
+    'Rescan'           = 'EXCUSED: saves the registry and rescans; its cost IS Update-Model, benched above.'
+    'PaneRelaunch'     = 'EXCUSED: kills and relaunches a conversation.'
+    'PaneGoTo'         = 'EXCUSED: raises a real terminal window; the jump suite covers it.'
+    'NewSession'       = 'EXCUSED: ShowDialog never returns without a human. Its build cost is Build-SettingDrops, benched above.'
+    'PaneWorktree'     = 'EXCUSED: opens the same dialog as NewSession.'
+}
+$srcTxt = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-window.ps1') -Raw -Encoding UTF8
+$wired = @([regex]::Matches($srcTxt, '(?m)^\$ui\.([A-Za-z]+)\.Add_(?:Click|SelectionChanged|TextChanged|KeyDown|Checked|MouseDoubleClick)') |
+           ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+$unmeasured = @($wired | Where-Object { -not $COVERAGE.ContainsKey($_) })
+if ($unmeasured.Count) {
+    Fail ("{0} control(s) the operator can press have no timing at all: {1}" -f $unmeasured.Count, ($unmeasured -join ', '))
+} else {
+    $excused = @($COVERAGE.Values | Where-Object { "$_" -like 'EXCUSED*' }).Count
+    Note ("{0} wired controls: {1} measured, {2} excused with the work they do beforehand measured instead" -f `
+          $wired.Count, ($wired.Count - $excused), $excused)
+    # 🪤 AND THE MAP MUST NOT ROT EITHER. A name here that no longer exists in
+    # the window means the map was edited and the window was not.
+    $stale = @($COVERAGE.Keys | Where-Object { $wired -notcontains $_ })
+    if ($stale.Count) { Fail ("the coverage map names {0} control(s) the window no longer has: {1}" -f $stale.Count, ($stale -join ', ')) }
+    else { Note 'every name in the coverage map is a control that still exists' }
+}
+
 Write-Host ''
 Write-Host '=== the whole surface, slowest first ==='
 # ---------------------------------------------------------------------------

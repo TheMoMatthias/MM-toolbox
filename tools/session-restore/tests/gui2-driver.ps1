@@ -1682,6 +1682,88 @@ try {
     $script:transcriptDirty = $false
 }
 
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the manager row cache cannot show a stale tick ---'
+# ===========================================================================
+# 🔴 THE CACHE EXISTS BECAUSE SORTING REBUILT EVERY ROW. Sorting and filtering
+# change which rows appear and in what order - never what a row SAYS - so the
+# built objects are reused, which took the manager's gestures from 55 ms to
+# ~40 ms. The danger is obvious and specific: a tick is the one thing a built
+# row says that can change without the model being rebuilt, and this surface
+# decides what reopens at logon. A row showing a tick that is not set would be a
+# lie about tomorrow morning.
+$ui.ModeManage.IsChecked = $true
+Set-Surface 'manage'
+$script:mgrFilter = 'all'
+$script:showOlder = $true
+Build-Manager
+foreach ($fk2 in @($script:fold.Keys)) { $script:fold[$fk2] = $false }
+Build-Manager
+$cacheRow = @($ui.ManageList.Items | Where-Object { $_.Kind -eq 'conv' })[0]
+if (-not $cacheRow) { Fail 'no manager row to test the cache with' }
+else {
+    $wasEnabled = [bool]$cacheRow.Row.S.enabled
+    $tickBefore = "$($cacheRow.TickBg)"
+    try {
+        # Prove the cache is real first: a rebuild with nothing changed must hand
+        # back the SAME object, or there is no cache and this test proves nothing.
+        Build-Manager
+        $again = @($ui.ManageList.Items | Where-Object { $_.Kind -eq 'conv' -and $_.Row.Id -eq $cacheRow.Row.Id })[0]
+        if (-not [object]::ReferenceEquals($again, $cacheRow)) {
+            Fail 'the manager rebuilt its rows - the cache is not in use, so the staleness check below proves nothing'
+        } else { Pass 'an unchanged rebuild reuses the built rows' }
+
+        # 🪤 THE CONTRACT, NOT A ROUND TRIP. An earlier version of this flipped
+        # `enabled` and then called Set-TickOn - which sets the tick ON, so on an
+        # already-ticked row it put the value straight back and the assertion
+        # failed against correct code. What has to be true is narrower and
+        # checkable: every path that can change what a row says empties the
+        # cache. Each is exercised, so a new one added without an invalidation
+        # is the thing that goes red.
+        foreach ($path in @(
+            @{ n = 'ticking a row';   go = { Set-TickOn $cacheRow.Row } },
+            @{ n = 'toggling a tick'; go = { Toggle-Tick } },
+            @{ n = 'rebuilding the model'; go = { Update-Model -Registry $script:reg -Agents $script:agents -Said @{} } }
+        )) {
+            Build-Manager
+            if ($script:mgrItems.Count -eq 0) { Fail "the cache is empty before '$($path.n)' - nothing is being cached"; continue }
+            try { & $path.go } catch { }
+            Build-Manager
+            # 🪤 NOT "the cache is empty". Set-TickOn drops the cache and then
+            # rebuilds, so it legitimately leaves 205 rows cached again - an
+            # earlier version of this failed correct code for that. What must
+            # never be true is a DRAWN row disagreeing with the conversation it
+            # stands for, whichever way the invalidation was achieved.
+            $lying = @()
+            foreach ($it2 in @($ui.ManageList.Items | Where-Object { $_.Kind -eq 'conv' })) {
+                $drawnOn = ("$($it2.TickBg)" -ne "$([System.Windows.Media.Brushes]::Transparent)")
+                if ($drawnOn -ne [bool]$it2.Row.S.enabled) { $lying += $it2 }
+            }
+            if ($lying.Count) {
+                Fail ("after {0}, {1} row(s) draw a tick that disagrees with the conversation - the manager is lying about what reopens at logon" -f $path.n, $lying.Count)
+            } else { Pass ("after {0}, every drawn tick matches its conversation" -f $path.n) }
+        }
+
+        # And the value really does follow the row afterwards, which is the thing
+        # the invalidation exists to make true.
+        $script:mgrItems = @{}
+        $cacheRow.Row.S.enabled = (-not $wasEnabled)
+        Build-Manager
+        $after = @($ui.ManageList.Items | Where-Object { $_.Kind -eq 'conv' -and $_.Row.Id -eq $cacheRow.Row.Id })[0]
+        if (-not $after) { Fail 'the row vanished after its tick changed' }
+        elseif ("$($after.TickBg)" -eq $tickBefore) {
+            Fail 'a rebuilt row still draws the old tick'
+        } else { Pass 'a rebuilt row draws the tick the conversation actually has' }
+    } finally {
+        $cacheRow.Row.S.enabled = $wasEnabled
+        $script:mgrItems = @{}
+        Build-Manager
+    }
+}
+$ui.ModeWork.IsChecked = $true
+Set-Surface 'work'
+
 Write-Host ''
 Write-Host '--- the skill picker ---'
 # ===========================================================================
