@@ -1231,6 +1231,8 @@
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <!-- the live tail, only while the session is mid-turn -->
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
@@ -1475,7 +1477,42 @@
                appears. A question you miss is the failure this panel exists to
                prevent, and being the only teal thing on screen prevents it more
                reliably than an edge does. -->
-          <Border x:Name="AskBox" Grid.Row="2" Visibility="Collapsed"
+          <!-- ================== THE LIVE TAIL ==================
+               🔴 THE TRANSCRIPT IS NOT LIVE, AND CANNOT BE MADE SO. Measured
+               on a busy session: it grew three times in thirty seconds, a
+               median of 14.6 s apart, because claude writes a record when a
+               BLOCK COMPLETES. Between blocks there is nothing on disk to read,
+               so the pane above - which is a reader of that record - cannot be
+               fresher than its source however fast the parse gets, and the
+               parse is already 150-215 ms on a 132 MB file.
+
+               The terminal is fresher because it renders the stream. So while a
+               session is mid-turn this shows the foot of its actual SCREEN,
+               about twice a second: the cards keep their structure and the
+               stream is visible underneath them. It disappears the moment the
+               turn ends, because then the record has caught up and this would
+               be showing the same thing twice.
+               ==================================================== -->
+          <Border x:Name="LiveBox" Grid.Row="2" Visibility="Collapsed"
+                  Background="{StaticResource PanelHi}" CornerRadius="10"
+                  Margin="14,0,14,12" SnapsToDevicePixels="True"
+                  BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                  Padding="16,11,16,12">
+            <StackPanel>
+              <StackPanel Orientation="Horizontal" Margin="0,0,0,7">
+                <Ellipse x:Name="LiveDot" Width="6" Height="6" Fill="{StaticResource HueOk}"
+                         VerticalAlignment="Center" Margin="0,0,7,0"/>
+                <TextBlock x:Name="LiveHead" Style="{StaticResource Caption}" Text="LIVE"
+                           Foreground="{StaticResource TextMid}" VerticalAlignment="Center"/>
+              </StackPanel>
+              <TextBlock x:Name="LiveText" Text="" TextWrapping="NoWrap"
+                         FontFamily="{DynamicResource FontMono}" FontSize="11.5"
+                         Foreground="{StaticResource TextMid}" LineHeight="16"
+                         LineStackingStrategy="BlockLineHeight"/>
+            </StackPanel>
+          </Border>
+
+          <Border x:Name="AskBox" Grid.Row="3" Visibility="Collapsed"
                   Background="{StaticResource HueAskFilm}" CornerRadius="14"
                   Margin="14,0,14,14" SnapsToDevicePixels="True"
                   BorderBrush="{StaticResource HueAskEdge}" BorderThickness="1"
@@ -1564,7 +1601,7 @@
             </ScrollViewer>
           </Border>
 
-          <Border Grid.Row="3" Background="{StaticResource Panel}"
+          <Border Grid.Row="4" Background="{StaticResource Panel}"
                   BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,0" Padding="18,10,18,12">
             <Grid>
               <Grid.RowDefinitions>

@@ -2879,6 +2879,52 @@ public static class SRScreenMain {
 # Returns a hashtable of pid -> screen text. A console that could not be read is
 # simply absent, never an empty string: unread and empty are different answers
 # and the callers depend on the difference.
+# ===========================================================================
+# THE FOOT OF A SESSION'S SCREEN - what it is doing RIGHT NOW.
+#
+# 🔴 THE TRANSCRIPT CANNOT ANSWER THIS. Measured on a busy session: it grew
+# three times in thirty seconds, a median of 14.6 s apart, because a record is
+# written when a BLOCK COMPLETES. Between blocks there is nothing on disk, so a
+# reader of the record is structurally behind the terminal - by seconds, not by
+# milliseconds, and no amount of parsing speed touches it.
+#
+# So the last few lines of the screen are taken verbatim. Everything the session
+# draws for itself is dropped: the prompt box it types into, the status line
+# under it, and the banner - none of that is the work.
+function Get-SRScreenTail {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$ScreenText, [int]$Lines = 9)
+    if (-not $ScreenText) { return '' }
+    $play  = [string][char]0x23F5
+    $pause = [string][char]0x23F8
+    $keep = New-Object System.Collections.Generic.List[string]
+    $all = @("$ScreenText" -split "`n")
+    for ($i = $all.Count - 1; $i -ge 0 -and $keep.Count -lt $Lines; $i--) {
+        $raw = "$($all[$i])".TrimEnd()
+        $t = $raw.Trim()
+        if (-not $t) { continue }
+        # The session's own furniture, not its work.
+        if (Test-SRQuestionChrome $raw) { continue }
+        if ($t.StartsWith($play, [System.StringComparison]::Ordinal) -or $t.StartsWith($pause, [System.StringComparison]::Ordinal)) { continue }
+        if ($t -match '^Model:\s') { continue }
+        if ($t -match '(?i)^\s*(auto mode|bypass permissions|manual mode)\b') { continue }
+        if ($t -match '(?i)for shortcuts$') { continue }
+        # A run of box-drawing is the prompt frame.
+        if ($t -match ('^[' + [regex]::Escape([string][char]0x2500 + [string][char]0x2502 + [string][char]0x256D + [string][char]0x256E + [string][char]0x2570 + [string][char]0x256F) + ']+$')) { continue }
+        $null = $keep.Add($raw)
+    }
+    if (-not $keep.Count) { return '' }
+    $keep.Reverse()
+    # Trim the common indent so the strip does not inherit the terminal's own
+    # left margin on top of its own padding.
+    $min = 999
+    foreach ($l in $keep) { $ind = $l.Length - $l.TrimStart().Length; if ($ind -lt $min) { $min = $ind } }
+    if ($min -gt 0 -and $min -lt 999) {
+        for ($k = 0; $k -lt $keep.Count; $k++) { $keep[$k] = $keep[$k].Substring([Math]::Min($min, $keep[$k].Length)) }
+    }
+    return ($keep -join "`n")
+}
+
 function Get-SRScreenTextMany {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int[]]$ProcessIds, [int]$TimeoutMs = 20000)
@@ -3040,7 +3086,7 @@ function Read-SRScreenVitals { param([string]$ScreenText)
     $tail = @(@("$ScreenText" -split "`n" | Where-Object { "$_".Trim() }) | Select-Object -Last 6)
     foreach ($ln in $tail) {
         $t = "$ln".Trim()
-        if ($t.StartsWith($play) -or $t.StartsWith($pause)) { $null = $statusLines.Add($t) }
+        if ($t.StartsWith($play, [System.StringComparison]::Ordinal) -or $t.StartsWith($pause, [System.StringComparison]::Ordinal)) { $null = $statusLines.Add($t) }
     }
     $status = ($statusLines -join ' ')
 
@@ -3084,7 +3130,7 @@ function Read-SRScreenVitals { param([string]$ScreenText)
     foreach ($ln in @("$ScreenText" -split "`n")) {
         $t = "$ln".Trim()
         if (-not $t) { continue }
-        if ($t.StartsWith($elbow)) { continue }
+        if ($t.StartsWith($elbow, [System.StringComparison]::Ordinal)) { continue }
         if ($t -match '(?i)\btimeout\b') { continue }
         # Finished: "for 3m 9s · done"
         $d = [regex]::Match($t, '(?i)\bfor\s+(?:(\d+)h\s+)?(?:(\d+)m\s+)?(\d+)s\b[^\n]*?\bdone\b')
@@ -3159,12 +3205,30 @@ function Get-SRScreenQuestion {
 # drawn in box-drawing characters, and the status line under it carries the model
 # and the context meter - none of that is part of what was asked, and letting any
 # of it into the footer would put "Model: Opus 5 | [████...]" under the options.
+# 🔴 EVERY StartsWith AGAINST A SYMBOL IN THIS FILE IS ORDINAL, AND MUST BE.
+#
+# String.StartsWith(string) is CULTURE-SENSITIVE by default, and under this
+# culture unrelated symbols compare EQUAL. Measured 2026-08-30:
+#
+#     ("· Sauteing").StartsWith("⏵")   ->  True
+#
+# A middle dot is not a play triangle by any reading, but the comparer folds
+# both to "ignorable symbol" and says yes. Every place that recognises a line by
+# the glyph it starts with was therefore matching almost any symbol-led line:
+# the status-line gate accepted conversation text (which is how a session
+# reported 2,100 shells in the first place), the turn clock's tool-line
+# exclusion excluded the turn as well, and the live tail classified every line
+# on screen as furniture and produced nothing at all - which is how this was
+# caught.
+#
+# [StringComparison]::Ordinal compares code points, which is the only question
+# being asked here.
 function Test-SRQuestionChrome { param([string]$Line)
     $t = "$Line".Trim()
     if (-not $t) { return $false }
     # A run of box-drawing or dashes is the input box's border.
     if ($t -match ('^[' + [regex]::Escape('-=_' + [string][char]0x2500 + [string][char]0x2502 + [string][char]0x256D + [string][char]0x256E + [string][char]0x2570 + [string][char]0x256F) + ']{6,}')) { return $true }
-    if ($t.StartsWith([string][char]0x276F)) { return $true }        # the prompt caret
+    if ($t.StartsWith([string][char]0x276F, [System.StringComparison]::Ordinal)) { return $true }   # the prompt caret
     if ($t -match '^Model:\s') { return $true }
     if ($t -match '\bshift\+tab to cycle\b') { return $true }
     if ($t -match '^\?\s+for shortcuts') { return $true }
@@ -3401,8 +3465,8 @@ function Invoke-SRParseScreenQuestion {
         $pendQ = ''
         for ($i = 0; $i -lt $lines.Count; $i++) {
             $t = "$($lines[$i])".Trim()
-            if ($t.StartsWith($rDot)) { $pendQ = $t.Substring(1).Trim(); continue }
-            if ($t.StartsWith($arrow) -and $pendQ) {
+            if ($t.StartsWith($rDot, [System.StringComparison]::Ordinal)) { $pendQ = $t.Substring(1).Trim(); continue }
+            if ($t.StartsWith($arrow, [System.StringComparison]::Ordinal) -and $pendQ) {
                 $null = $pairs.Add([PSCustomObject]@{ Question = $pendQ; Answer = $t.Substring(1).Trim() })
                 $pendQ = ''
             }

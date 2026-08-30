@@ -1170,20 +1170,29 @@ foreach ($case in @(
 # session already prints the true count; this reads what it prints.
 Write-Host ''
 Write-Host '--- the counts a session prints about itself ---'
+# 🔴 THE MARKER IS WRITTEN FROM ITS CODE POINT, not pasted and not stood in
+# for. These cases used an ASCII ">>" placeholder, which was fine while the
+# reader scanned the whole screen - and stopped being fine the moment it began
+# recognising the STATUS LINE by the glyph claude starts it with, which it now
+# must, because scanning everything is how a session came to report 2,100
+# shells. A stand-in would have tested a line the tool never sees.
+$SRMark = ([string][char]0x23F5) * 2
 foreach ($sc in @(
     @{ n = 'one shell and nothing else'
-       t = '>> auto mode on (shift+tab to cycle) . 1 shell . <- for agents . 1 feedback draft'
+       t = 'auto mode on (shift+tab to cycle) . 1 shell . <- for agents . 1 feedback draft'
        shells = 1; agents = 0; ok = $true },
     @{ n = 'shells and agents together'
-       t = '>> auto mode on . 3 shells . 2 agents . <- for agents'
+       t = 'auto mode on . 3 shells . 2 agents . <- for agents'
        shells = 3; agents = 2; ok = $true },
     @{ n = 'the bare agents hint, which is NOT a count'
-       t = '>> auto mode on (shift+tab to cycle) . <- for agents'
+       t = 'auto mode on (shift+tab to cycle) . <- for agents'
        shells = 0; agents = 0; ok = $false },
     @{ n = 'a screen with no status line at all'
-       t = 'just some output'; shells = 0; agents = 0; ok = $false }
+       t = 'just some output'; shells = 0; agents = 0; ok = $false; bare = $true }
 )) {
-    $got = Read-SRScreenVitals -ScreenText $sc.t
+    # The last case is deliberately NOT a status line, so it keeps no marker.
+    $scText = $(if ($sc.bare) { "$($sc.t)" } else { $SRMark + ' ' + $sc.t })
+    $got = Read-SRScreenVitals -ScreenText $scText
     if ($got.Shells -ne $sc.shells -or $got.Agents -ne $sc.agents -or [bool]$got.Ok -ne $sc.ok) {
         Fail ("{0}: read shells={1} agents={2} ok={3}, expected {4}/{5}/{6}" -f `
               $sc.n, $got.Shells, $got.Agents, $got.Ok, $sc.shells, $sc.agents, $sc.ok)

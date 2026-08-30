@@ -493,6 +493,72 @@ try {
         else { Pass 'prose that merely mentions seconds is not read as a turn clock' }
     }
 
+    # =====================================================================
+    # THE LIVE TAIL - the foot of a working session's screen.
+    #
+    # 🔴 THE RECORD IS BEHIND AND CANNOT BE HURRIED. Measured: a busy
+    # session's transcript grew three times in thirty seconds, a median of
+    # 14.6 s apart, because a record is written when a BLOCK COMPLETES. The
+    # parse is 150-215 ms on a 132 MB file, so the tool's own contribution was
+    # never the problem - there was simply nothing on disk between blocks.
+    # This shows the screen instead, and must show the WORK rather than the
+    # furniture the session draws around it.
+    # =====================================================================
+    Write-Host ''
+    Write-Host '--- the live tail, off a real working screen ---'
+    # 🔴 THE COMPARISON ITSELF, FIRST. String.StartsWith(string) is
+    # CULTURE-SENSITIVE by default and folds unrelated symbols together:
+    # ("· Sauteing").StartsWith("⏵") is True under this culture. Every reader
+    # that recognises a line by its leading glyph rested on that, so this is
+    # asserted before anything that depends on it - a failure here explains a
+    # dozen downstream ones and nothing else does.
+    $dotLine = ([string][char]0x00B7) + ' Sauteing'
+    if ($dotLine.StartsWith(([string][char]0x23F5), [System.StringComparison]::Ordinal)) {
+        Fail 'a middle dot is being read as the status-line marker even ordinally'
+    } else { Pass 'a leading glyph is compared by code point, not by what the culture calls equivalent' }
+
+    $tailTxt = [System.IO.File]::ReadAllText((Join-Path $shots 'turn-running.txt'))
+    $tail = Get-SRScreenTail -ScreenText $tailTxt -Lines 9
+    if (-not $tail) { Fail 'a working screen produced no tail at all' }
+    else {
+        $tLines = @($tail -split "`n")
+        if ($tLines.Count -lt 2) { Fail "the tail is $($tLines.Count) line(s) - it is meant to be the last several" }
+        else { Pass ("the tail carries {0} lines of what the session is doing" -f $tLines.Count) }
+        # 🪤 NONE OF THE SESSION'S OWN FURNITURE. The status line, the prompt
+        # box and the banner are what the session draws AROUND its work; a
+        # tail full of those would be a strip that says nothing while looking
+        # like it says something.
+        $bad = @()
+        foreach ($tl in $tLines) {
+            $tt = "$tl".Trim()
+            # 🪤 ORDINAL HERE TOO. This test caught the culture-folding bug in
+            # the library and then made the same mistake itself: without it,
+            # ("· Sauteing").StartsWith("⏵") is True and every line in the tail
+            # reads as the status line.
+            $ORD = [System.StringComparison]::Ordinal
+            if ($tt.StartsWith([string][char]0x23F5, $ORD) -or $tt.StartsWith([string][char]0x23F8, $ORD)) { $bad += 'the status line' }
+            if ($tt -match '^Model:\s') { $bad += 'the model line' }
+            if ($tt.StartsWith([string][char]0x276F, $ORD)) { $bad += 'the prompt caret' }
+            if ($tt -match ('^[' + [regex]::Escape([string][char]0x2500) + ']{6,}')) { $bad += 'the prompt frame' }
+        }
+        if ($bad.Count) { Fail ("the tail carries " + (($bad | Sort-Object -Unique) -join ', ')) }
+        else { Pass 'and none of the furniture the session draws around it' }
+        # It is the FOOT of the screen: the newest line on screen has to be in it.
+        $lastReal = @(@($tailTxt -split "`n") | Where-Object {
+            $q = "$_".Trim()
+            $q -and -not (Test-SRQuestionChrome $_) -and
+            -not $q.StartsWith([string][char]0x23F5, [System.StringComparison]::Ordinal) -and
+            -not $q.StartsWith([string][char]0x23F8, [System.StringComparison]::Ordinal) -and $q -notmatch '^Model:\s'
+        } | Select-Object -Last 1)
+        if ($lastReal -and ($tail -notmatch [regex]::Escape("$lastReal".Trim()))) {
+            Fail 'the newest line on screen is not in the tail - it is not reading from the foot'
+        } else { Pass 'and it is the foot of the screen, newest line included' }
+        # The inverse: a screen with nothing but furniture yields nothing.
+        $onlyChrome = ([string][char]0x23F5) * 2 + " auto mode on`nModel: Opus 5 | main`n"
+        if (Get-SRScreenTail -ScreenText $onlyChrome) { Fail 'a screen of pure furniture still produced a tail' }
+        else { Pass 'a screen carrying only furniture produces no tail, rather than a strip of noise' }
+    }
+
     # 🔑 THE SUBMIT TAB IS A REVIEW of the whole round - the one screen that
     # says how every question currently stands.
     $rev = Get-Shot 'round-review.txt'

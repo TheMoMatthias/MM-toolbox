@@ -127,6 +127,7 @@ foreach ($n in @(
     'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear','RailSearch','RailSort','RailOnlyLive',
     'ListPane','ListSplit','ListCaption','ListSort','ListSearch','ListCount','SessionList',
     'AskTabs','AskFreeBox','AskFree','AskFreeSend','AskFreeLabel','AskReview',
+    'LiveBox','LiveText','LiveHead','LiveDot',
     'OutputPane','PaneName','PaneState','PaneStateDot','PaneGoTo','PaneRelaunch','PaneSettings',
     'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
@@ -4736,6 +4737,100 @@ function Stop-VitalsSweep {
     $script:sweepPs = $null; $script:sweepRs = $null; $script:sweepHandle = $null
 }
 
+# ===========================================================================
+# WHAT THE ONE CONVERSATION YOU ARE LOOKING AT IS DOING RIGHT NOW.
+#
+# 🔴 THE PANE ABOVE READS THE RECORD, AND THE RECORD IS BEHIND. Measured on a
+# busy session: its transcript grew three times in thirty seconds, a median of
+# 14.6 s apart, because claude writes a record when a BLOCK COMPLETES. The
+# parse is 150-215 ms even on a 132 MB file and the watcher fires in 130, so the
+# tool's own contribution is under half a second - and the operator still saw it
+# trailing the terminal by seconds, because between blocks there is nothing on
+# disk to read. A faster reader of a file that is not being written is still a
+# reader of a file that is not being written.
+#
+# 🪤 THE SELECTED SESSION ONLY, and only while it is mid-turn. The sweep reads
+# every console every 2.5 s for the marks; this is the one you are watching, at
+# twice a second, and it stops the moment the turn ends - at which point the
+# record has caught up and this would be showing the same thing twice.
+$script:tailPs = $null
+$script:tailRs = $null
+$script:tailHandle = $null
+$script:tailFor = ''
+$script:tailAt = $null
+$SR_TailEvery = 500
+
+$script:TailJob = {
+    . (Join-Path $SRHere '_common.ps1')
+    $out = @{ Text = '' }
+    try {
+        $txt = Get-SRScreenText -ProcessId $SRTail.Pid
+        if ($txt) { $out.Text = Get-SRScreenTail -ScreenText $txt -Lines 9 }
+    } catch { }
+    $out
+}
+
+function Start-LiveTail {
+    if ($script:tailPs) { return }
+    if ($script:tailAt -and ((Get-Date) - $script:tailAt).TotalMilliseconds -lt $SR_TailEvery) { return }
+    $row = Get-SelectedRow
+    if (-not $row -or -not $row.A -or -not $row.A.Pid -or "$($row.A.Status)" -ne 'busy' -or
+        ($row.A.Kind -and "$($row.A.Kind)" -ne 'interactive')) {
+        # Not working: the record is authoritative again, so the strip goes.
+        if ($ui.LiveBox.Visibility -ne $V_Hide) { $ui.LiveBox.Visibility = $V_Hide; $ui.LiveText.Text = '' }
+        $script:tailAt = Get-Date
+        return
+    }
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'MTA'
+        $rs.ThreadOptions = 'ReuseThread'
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        $rs.SessionStateProxy.SetVariable('SRTail', @{ Pid = [int]$row.A.Pid })
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript($script:TailJob)
+        $script:tailRs = $rs
+        $script:tailPs = $ps
+        $script:tailHandle = $ps.BeginInvoke()
+        $script:tailFor = "$($row.Id)"
+        $script:tailAt = Get-Date
+    } catch { $script:tailPs = $null }
+}
+
+function Complete-LiveTail {
+    if (-not $script:tailPs -or -not $script:tailHandle) { return }
+    if (-not $script:tailHandle.IsCompleted) {
+        if ($script:tailAt -and ((Get-Date) - $script:tailAt).TotalSeconds -gt 15) {
+            try { $script:tailPs.Stop(); $script:tailPs.Dispose() } catch { }
+            try { $script:tailRs.Close(); $script:tailRs.Dispose() } catch { }
+            $script:tailPs = $null; $script:tailRs = $null; $script:tailHandle = $null
+        }
+        return
+    }
+    $res = $null
+    try { $res = @($script:tailPs.EndInvoke($script:tailHandle))[0] } catch { }
+    try { $script:tailPs.Dispose(); $script:tailRs.Close(); $script:tailRs.Dispose() } catch { }
+    $script:tailPs = $null; $script:tailRs = $null; $script:tailHandle = $null
+    $script:tailAt = Get-Date
+    # 🔒 THE SELECTION MAY HAVE MOVED while the read was out, and one
+    # conversation's output under another's name is worse than none.
+    if ("$($script:tailFor)" -ne "$($script:selId)") { return }
+    $txt = ''
+    if ($res) { $txt = "$($res.Text)" }
+    if (-not $txt) { $ui.LiveBox.Visibility = $V_Hide; $ui.LiveText.Text = ''; return }
+    if ("$($ui.LiveText.Text)" -ne $txt) { $ui.LiveText.Text = $txt }
+    $ui.LiveBox.Visibility = $V_Show
+}
+
+function Stop-LiveTail {
+    if (-not $script:tailPs) { return }
+    try { $script:tailPs.Stop(); $script:tailPs.Dispose() } catch { }
+    try { $script:tailRs.Close(); $script:tailRs.Dispose() } catch { }
+    $script:tailPs = $null; $script:tailRs = $null; $script:tailHandle = $null
+}
+
 $script:QuietJob = {
     . (Join-Path $SRHere '_common.ps1')
     $out = @{ Asking = $false; Read = $false; Shells = 0; Agents = -1 }
@@ -4942,6 +5037,10 @@ function Invoke-WriteLane {
         # the window opening instead of trickling in over a quarter of a minute.
         try { if (Complete-VitalsSweep) { Build-Sessions } } catch { }
         try { Start-VitalsSweep } catch { }
+        # And the one conversation on screen, twice a second while it works -
+        # the record it is read from only lands every fifteen.
+        try { Complete-LiveTail } catch { }
+        try { Start-LiveTail } catch { }
     }
     # Returns whether it actually redrew. The tick discards it; the suite needs
     # it, because the flag is consumed in the same call that sets it and there
@@ -6103,6 +6202,7 @@ $window.Add_Closed({
     # flight far more often than it lands on the probe - and it holds a thread
     # and a child process of its own.
     try { Stop-VitalsSweep } catch { }
+    try { Stop-LiveTail } catch { }
 })
 
 $null = $window.ShowDialog()
