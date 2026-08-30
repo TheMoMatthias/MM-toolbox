@@ -110,9 +110,36 @@ function SelectedNames {
 $before = SelectedNames
 Note ("active before: " + ($before -join ', '))
 
+# The conversations this tool knows about, by title. Built HERE rather than
+# further down because BOTH picks below need it - see the note beside the probe
+# pick, which learned this the hard way and then only fixed its own half.
+$known = @{}
+try {
+    foreach ($d in (Get-SRRegistry).directories) {
+        foreach ($s in @($d.sessions)) {
+            $kt = "$($s.title)".Trim()
+            if ($kt -and $kt -ne '(untitled)') { $known[$kt.ToLower()] = $true }
+        }
+    }
+} catch { }
+
 # Pick a tab that is NOT currently active, so a pass cannot be a no-op.
+#
+# 🪤 AND ONE THAT WILL STILL BE THERE A MOMENT LATER. This took the first
+# inactive tab of any kind, and on a machine with a CI runner up that is
+# 'C:\actions-runner-4\externals\node24\bin\node.exe' - a tab that lives for
+# seconds. It was gone by the time the jump went out, so the suite reported the
+# jump as broken when what had actually happened is that the target evaporated.
+# The probe pick below already carried this lesson; the target pick did not.
 $target = $null
-foreach ($t in $tabs) { if ($before -notcontains $t.Name) { $target = $t; break } }
+foreach ($t in $tabs) {
+    if ($before -contains $t.Name) { continue }
+    if (-not $known["$($t.Name)".Trim().ToLower()]) { continue }
+    $target = $t; break
+}
+if (-not $target) {
+    foreach ($t in $tabs) { if ($before -notcontains $t.Name) { $target = $t; break } }
+}
 if (-not $target) {
     Note 'every tab is already the active one in its own window - cannot prove a switch'
 } else {
@@ -156,15 +183,7 @@ $unique = @($tabs | Where-Object { $byName["$($_.Name)"] -eq 1 })
 # was actions-runner-22, because those tabs live for seconds. Prefer a tab that
 # belongs to a conversation this tool knows about; those last. Any unique title
 # is the fallback, for a machine with no sessions up.
-$known = @{}
-try {
-    foreach ($d in (Get-SRRegistry).directories) {
-        foreach ($s in @($d.sessions)) {
-            $t = "$($s.title)".Trim()
-            if ($t -and $t -ne '(untitled)') { $known[$t.ToLower()] = $true }
-        }
-    }
-} catch { }
+# $known is built once, above the target pick, because both picks need it.
 $probe = @($unique | Where-Object { $known["$($_.Name)".Trim().ToLower()] })[0]
 if (-not $probe) { $probe = $unique[0] }
 if (-not $probe) {

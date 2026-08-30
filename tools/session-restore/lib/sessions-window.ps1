@@ -631,24 +631,56 @@ $script:Bands = @(
 # waiting and has no word for finished.
 $script:HandbackMinChars = 40
 
+# 🔴 A MENU SEEN ON SCREEN IS AN INPUT TO THE BAND, NOT A CORRECTION AFTER IT.
+#
+# This is what made a conversation flip between NEEDS YOU and WORKING every few
+# seconds. The quiet check reads a session's screen, sees a menu, and used to
+# write $r.Band = 'needs' directly - but the band is DERIVED, and every
+# recompute (Update-Model, and the live probe's light path) calls Get-Band again
+# and overwrote it with whatever the agent probe thought. The probe says
+# 'working' for a session sitting on a menu, so the two took turns: screen says
+# needs, probe says working, screen says needs. Neither was wrong; the screen's
+# answer simply had nowhere durable to live.
+#
+# So it lives here, keyed by session, and Get-Band consults it. A recompute is
+# now idempotent - it reads the same evidence and reaches the same band - and
+# the flag is cleared only by EVIDENCE, never by a recompute: the transcript
+# growing (that session is working again) or a later screen read finding no
+# menu. See Set-AskSeen.
+$script:askSeen = @{}
+
+function Set-AskSeen { param([string]$Id, [bool]$Asking)
+    if (-not $Id) { return $false }
+    $was = [bool]$script:askSeen[$Id]
+    if ($was -eq $Asking) { return $false }
+    if ($Asking) { $script:askSeen[$Id] = $true } else { $null = $script:askSeen.Remove($Id) }
+    return $true
+}
+
 function Get-Band { param($Row)
     $cv = $Row.Conv
     if (-not $cv) { return 'quiet' }
     if ($cv.Stuck) { return 'quiet' }
     if ($cv.Needs) { return 'needs' }
     if ($cv.Stale) { return 'quiet' }
+    $band = 'quiet'
     switch ("$($cv.State)") {
-        'working'     { return 'working' }
-        'summarising' { return 'working' }
-        'waiting'     { return 'needs' }
+        'working'     { $band = 'working' }
+        'summarising' { $band = 'working' }
+        'waiting'     { $band = 'needs' }
         'idle' {
             $sd = $Row.Said
             if ($sd -and -not "$($sd.Pending)".Trim() -and
-                "$($sd.Said)".Trim().Length -ge $script:HandbackMinChars) { return 'done' }
-            return 'idle'
+                "$($sd.Said)".Trim().Length -ge $script:HandbackMinChars) { $band = 'done' }
+            else { $band = 'idle' }
         }
     }
-    return 'quiet'
+    # 🪤 ONLY EVER working -> needs, the same one-way rule the screen read has
+    # always carried. A menu on the screen of a conversation the probe calls
+    # WORKING means the probe is behind; it does not license moving a row that
+    # is done, idle or quiet, whatever the screen appears to show.
+    if ($band -eq 'working' -and $script:askSeen["$($Row.Id)"]) { return 'needs' }
+    return $band
 }
 
 # 🔴 THE LEAF NAME IS NOT UNIQUE. Eight projects on this machine are called
@@ -1263,10 +1295,13 @@ function Build-Sessions {
                 # transcript sees them reliably and the status line may not name
                 # them at all - so the screen only overrides there when it
                 # actually said a number.
+                # 🪤 THE COUNT ONLY WHEN IT IS NOT ONE. "1" beside a single mark
+                # is a digit that says what the mark already said; the number
+                # earns its place at two.
                 AgentVis = $(if ($rowAgents -gt 0) { $V_Show } else { $V_Hide })
-                AgentText = $(if ($rowAgents -gt 0) { "$rowAgents" } else { '' })
+                AgentText = $(if ($rowAgents -gt 1) { "$rowAgents" } else { '' })
                 ShellVis = $(if ($rowShells -gt 0) { $V_Show } else { $V_Hide })
-                ShellText = $(if ($rowShells -gt 0) { "$rowShells" } else { '' })
+                ShellText = $(if ($rowShells -gt 1) { "$rowShells" } else { '' })
             })
         }
     }
@@ -2364,6 +2399,10 @@ function Start-AnswerRecord {
 # wins. Nothing here fakes a state that is not about to be confirmed.
 function Move-RowToWorking { param($Row)
     if (-not $Row) { return }
+    # Keys have just been delivered, so whatever menu the last screen read saw
+    # has been answered. Clearing the flag as well as the band is what keeps the
+    # next recompute from deriving 'needs' straight back out of stale evidence.
+    $null = Set-AskSeen -Id "$($Row.Id)" -Asking $false
     $Row.Band = 'working'
     try { Build-Sessions } catch { }
     # Restart rather than merely start, so the next scheduled probe is a full
@@ -4419,12 +4458,21 @@ $script:SweepJob = {
         $screens = Get-SRScreenTextMany -ProcessIds ([int[]]$SRSweep.Pids)
         foreach ($k in $screens.Keys) {
             $v = Read-SRScreenVitals -ScreenText $screens[$k]
+            # 🔑 THE SAME SCREEN ANSWERS "IS IT ASKING?" TOO, and having it for
+            # every session on every pass is what lets the flag be cleared by
+            # evidence rather than left to expire. Before this, only a session
+            # the quiet check happened to pick got looked at - one per pass,
+            # once per ten seconds - and a row already in NEEDS YOU was skipped
+            # by its picker entirely, so nothing could ever say "not any more".
+            $q = $null
+            try { $q = Invoke-SRParseScreenQuestion -Text $screens[$k] } catch { }
             # Same two defaults the single reader uses, and for the same reason:
             # a line that printed no shell count IS zero, and one that named no
             # sub-agents means "ask the transcript" rather than "there are none".
             $out[[int]$k] = @{
                 Shells = [int]$v.Shells
                 Agents = $(if ($v.SawAgents) { [int]$v.Agents } else { -1 })
+                Asking = [bool]($q -and @($q.Options).Count -ge 2)
             }
         }
     } catch { }
@@ -4478,6 +4526,9 @@ function Complete-VitalsSweep {
     try { $res = @($script:sweepPs.EndInvoke($script:sweepHandle))[0] } catch { }
     try { $script:sweepPs.Dispose(); $script:sweepRs.Close(); $script:sweepRs.Dispose() } catch { }
     $script:sweepPs = $null; $script:sweepRs = $null; $script:sweepHandle = $null
+    # When this pass's screens were taken, kept before the clock is reset: a
+    # session that wrote after that moment has outrun the read.
+    $started = $script:sweepAt
     $script:sweepAt = Get-Date
     if (-not $res) { return $false }
     $changed = $false
@@ -4488,6 +4539,29 @@ function Complete-VitalsSweep {
         # ages out on its own if the reads keep failing.
         if (-not $got) { continue }
         if (Set-RowScreenSig -Id "$($row.Id)" -Shells ([int]$got.Shells) -Agents ([int]$got.Agents)) {
+            $changed = $true
+        }
+
+        # ---- and whether it is asking ------------------------------------
+        # 🪤 A READ THAT STARTED BEFORE THE SESSION LAST WROTE IS STALE, and
+        # applying it is how the flap would come straight back in a new form:
+        # the transcript grows, the writers pass clears the flag, and then a
+        # sweep that began earlier puts it back from a screen that no longer
+        # exists. The write time decides.
+        $mv = $script:quietSince["$($row.Id)"]
+        if ($mv -and $started -and $mv -gt $started) { continue }
+        $live = @($script:model | Where-Object { "$($_.Id)" -eq "$($row.Id)" })
+        if (-not $live.Count) { continue }
+        if ([bool]$got.Asking) {
+            # 🔴 THROUGH THE SAME ONE-WAY RULE the quiet check uses. Only a
+            # WORKING row may be moved into needing you, whatever the screen
+            # shows for a row that is done, idle or quiet.
+            if (Test-QuietVerdict -Row $live[0] -Asking $true) { $changed = $true }
+        } elseif (Set-AskSeen -Id "$($row.Id)" -Asking $false) {
+            # Measured absence, which is the half that never used to happen:
+            # the row can now leave NEEDS YOU because the menu is gone, not
+            # merely because something else recomputed the band.
+            if ("$($live[0].Band)" -eq 'needs') { $live[0].Band = Get-Band $live[0] }
             $changed = $true
         }
     }
@@ -4596,6 +4670,11 @@ function Complete-QuietCheck {
 function Test-QuietVerdict { param($Row, [bool]$Asking)
     if (-not $Row -or -not $Asking) { return $false }
     if ("$($Row.Band)" -ne 'working') { return $false }
+    # 🔴 THE FLAG FIRST, THEN THE BAND. Setting only the band is what made the
+    # row flap: the band is derived, so the next recompute wiped it and the
+    # screen had to win the same argument again a few seconds later. The flag is
+    # what Get-Band reads, so a recompute now agrees instead of overruling.
+    $null = Set-AskSeen -Id "$($Row.Id)" -Asking $true
     $Row.Band = 'needs'
     return $true
 }
@@ -5481,9 +5560,16 @@ function Update-LiveWriters {
         $script:liveStamp[$key] = $now
         # When it last moved, which is what makes 'gone quiet' answerable at all.
         if ($was -ne $now) { $script:quietSince[$key] = Get-Date }
-        if ($was -and $was -ne $now -and "$($r.Band)" -eq 'needs') {
-            $r.Band = 'working'
-            $moved = $true
+        if ($was -and $was -ne $now) {
+            # 🔴 GROWING IS THE MEASURED ANSWER TO "IS IT STILL ASKING?" - a
+            # session writing is a session working, whatever a screen read from
+            # two seconds ago said. Clearing the flag here is what stops the
+            # sweep's older evidence putting the row straight back.
+            if (Set-AskSeen -Id $key -Asking $false) { $moved = $true }
+            if ("$($r.Band)" -eq 'needs') {
+                $r.Band = 'working'
+                $moved = $true
+            }
         }
     }
     return $moved

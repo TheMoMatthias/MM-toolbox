@@ -1776,6 +1776,43 @@ else {
             if (-not (Test-QuietVerdict -Row $qRow -Asking $true) -or "$($qRow.Band)" -ne 'needs') {
                 Fail 'a WORKING row shown a menu was not moved into needs - the positive case does not fire'
             } else { Pass 'a working row shown a menu is moved into needs' }
+
+            # ===============================================================
+            # 🔴 AND A RECOMPUTE MUST AGREE, NOT OVERRULE. This is the flap the
+            # operator reported: a conversation flipping between NEEDS YOU and
+            # WORKING every few seconds. The band is DERIVED, so writing
+            # $r.Band = 'needs' after the fact was undone by the next Get-Band -
+            # and the agent probe says 'working' for a session sitting on a
+            # menu, so the two took turns forever. The screen's answer is an
+            # INPUT now, and this is the assertion that says so.
+            # ===============================================================
+            # 🪤 THE UNDERLYING STATE IS PINNED TO 'working' FOR THIS, or the
+            # assertion proves nothing: this row's real Conv says waiting, so
+            # Get-Band would answer 'needs' whatever the flag held and the test
+            # would pass without the fix. The whole question is what happens
+            # when the probe says WORKING and the screen says otherwise.
+            $qConvWas = $qRow.Conv
+            $qSaidWas = $qRow.Said
+            $qRow.Conv = [PSCustomObject]@{ State = 'working'; Needs = $false; Stuck = $false; Stale = $false }
+            if ((Get-Band $qRow) -ne 'needs') {
+                Fail "a recompute puts the row back to '$(Get-Band $qRow)' - the screen's verdict does not survive it"
+            } else { Pass 'recomputing the band agrees with the menu that was seen, rather than overruling it' }
+            # Cleared by evidence: keys were delivered, so it is not asking now.
+            $null = Set-AskSeen -Id "$($qRow.Id)" -Asking $false
+            if ((Get-Band $qRow) -ne 'working') {
+                Fail "the row derives as '$(Get-Band $qRow)' after the menu was answered - the flag stuck"
+            } else { Pass 'and once the menu is gone the recompute lets it leave, so the flag cannot stick' }
+            # 🪤 ONE-WAY, even as an input. A done/idle/quiet row is not dragged
+            # into needing you by a menu the screen appears to show.
+            $null = Set-AskSeen -Id "$($qRow.Id)" -Asking $true
+            $qRow.Said = $null
+            $qRow.Conv = [PSCustomObject]@{ State = 'idle'; Needs = $false; Stuck = $false; Stale = $false }
+            if ((Get-Band $qRow) -eq 'needs') {
+                Fail 'an idle conversation was dragged into needing you by the ask flag'
+            } else { Pass 'the flag only ever turns working into needs, never an idle row' }
+            $qRow.Conv = $qConvWas
+            $qRow.Said = $qSaidWas
+            $null = Set-AskSeen -Id "$($qRow.Id)" -Asking $false
             $qRow.Band = 'working'
             if ((Test-QuietVerdict -Row $qRow -Asking $false) -or "$($qRow.Band)" -ne 'working') {
                 Fail 'a row with no menu on screen was moved anyway'

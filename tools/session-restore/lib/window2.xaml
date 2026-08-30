@@ -807,29 +807,32 @@
                      shape, not the hue, is what carries it, so a greyscale
                      screenshot and a colour-blind reader both still see two
                      different things. -->
+                <!-- 🪤 THE MARK, NOT A PILL AROUND THE MARK. Each of these was
+                     a rounded tinted capsule holding a 5px shape and a number -
+                     three pieces of chrome to say a thing one shape already
+                     says. On a row whose whole job is to be scanned that reads
+                     as a badge competing with the name. The shape carries it
+                     alone now, at the size it can actually be seen at, with the
+                     count beside it only when there is more than one. -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                  <Border Visibility="{Binding AgentVis}" CornerRadius="7"
-                          Background="{StaticResource HueOutWash}" Padding="6,1,7,2"
-                          Margin="9,0,0,0"
-                          ToolTip="Sub-agents this conversation has out">
-                    <StackPanel Orientation="Horizontal">
-                      <Ellipse Width="5" Height="5" Fill="{StaticResource HueOut}"
-                               VerticalAlignment="Center" Margin="0,0,5,0"/>
-                      <TextBlock Text="{Binding AgentText}" Style="{StaticResource Meta}"
-                                 Foreground="{StaticResource HueOut}" VerticalAlignment="Center"/>
-                    </StackPanel>
-                  </Border>
-                  <Border Visibility="{Binding ShellVis}" CornerRadius="4"
-                          Background="{StaticResource HueToolWash}" Padding="6,1,7,2"
-                          Margin="6,0,0,0"
-                          ToolTip="Background commands this conversation still has running">
-                    <StackPanel Orientation="Horizontal">
-                      <Rectangle Width="5" Height="5" Fill="{StaticResource HueTool}"
-                                 VerticalAlignment="Center" Margin="0,0,5,0"/>
-                      <TextBlock Text="{Binding ShellText}" Style="{StaticResource Meta}"
-                                 Foreground="{StaticResource HueTool}" VerticalAlignment="Center"/>
-                    </StackPanel>
-                  </Border>
+                  <StackPanel Orientation="Horizontal" Visibility="{Binding AgentVis}"
+                              VerticalAlignment="Center" Margin="10,0,0,0"
+                              ToolTip="Sub-agents this conversation has out">
+                    <Ellipse Width="7" Height="7" Fill="{StaticResource HueOut}"
+                             VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding AgentText}" Style="{StaticResource Meta}"
+                               Foreground="{StaticResource HueOut}" VerticalAlignment="Center"
+                               Margin="4,0,0,0"/>
+                  </StackPanel>
+                  <StackPanel Orientation="Horizontal" Visibility="{Binding ShellVis}"
+                              VerticalAlignment="Center" Margin="10,0,0,0"
+                              ToolTip="Background commands this conversation still has running">
+                    <Rectangle Width="7" Height="7" Fill="{StaticResource HueTool}"
+                               VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding ShellText}" Style="{StaticResource Meta}"
+                               Foreground="{StaticResource HueTool}" VerticalAlignment="Center"
+                               Margin="4,0,0,0"/>
+                  </StackPanel>
                 </StackPanel>
 
                 <!-- how full its context is, once that is worth knowing -->
