@@ -182,6 +182,13 @@ $SR_ToolViews = @('folded', 'full', 'hidden')
 # so the choice belongs to whoever is looking at one.
 $SR_TextModes = @('grayscale', 'cleartype')
 
+# How wide the reading pane sets its prose.
+#   full      fill the window, the way the terminal does, with the type scaling
+#             up as it widens. What a maximised window wants.
+#   measured  cap the line near 70 characters however wide the window is. Reads
+#             better for long prose; leaves the right of a wide pane empty.
+$SR_ReadWidths = @('full', 'measured')
+
 function Get-SRConfig {
     if (-not (Test-Path -LiteralPath $SR_ConfigPath)) { throw "config not found: $SR_ConfigPath" }
     # 🪤 SAY WHAT TO DO ABOUT IT. Get-SRRegistry has caught its own parse
@@ -213,7 +220,8 @@ function Get-SRConfig {
         # text. folded is the default because it keeps the count and the names
         # (so you still know what ran) without the volume.
         @{ k = 'transcriptTools';      v = 'folded' },
-        @{ k = 'textRendering';        v = 'grayscale' }
+        @{ k = 'textRendering';        v = 'grayscale' },
+        @{ k = 'readingWidth';         v = 'full' }
     )) {
         if ($null -eq $c.PSObject.Properties[$kv.k]) {
             $c | Add-Member -NotePropertyName $kv.k -NotePropertyValue $kv.v -Force
@@ -277,6 +285,13 @@ function Get-SRConfig {
         $tr = 'grayscale'
     }
     $c.textRendering = $tr
+
+    $rw = "$($c.readingWidth)".Trim().ToLower()
+    if ($SR_ReadWidths -notcontains $rw) {
+        if ($rw) { Write-SRLog ("  [warn] config readingWidth is '{0}'; expected one of {1}. Using full." -f $rw, ($SR_ReadWidths -join ', ')) }
+        $rw = 'full'
+    }
+    $c.readingWidth = $rw
 
     return $c
 }

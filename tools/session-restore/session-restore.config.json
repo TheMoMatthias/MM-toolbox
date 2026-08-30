@@ -64,6 +64,19 @@
     "                        writes your choice back here, so this is a starting",
     "                        value rather than somewhere you have to come.",
     "",
+    "  readingWidth          how wide the reading pane sets its prose.",
+    "",
+    "                          full      fill the window the way the terminal",
+    "                                    does, with the type scaling up as it",
+    "                                    widens - 16px normally, to 20px on a",
+    "                                    very wide one. What a maximised window",
+    "                                    wants, and the default.",
+    "                          measured  cap the line near 70 characters however",
+    "                                    wide the window gets. Reads better for",
+    "                                    long prose; leaves the right of a wide",
+    "                                    pane empty, which at 2,746px meant 78%",
+    "                                    of it.",
+    "",
     "  textRendering         how glyphs are antialiased. This one is genuinely a",
     "                        matter of your eyes and your monitor, which is why it",
     "                        is a setting and not a decision:",
@@ -120,6 +133,7 @@
 
   "transcriptTools": "folded",
   "textRendering": "cleartype",
+  "readingWidth": "full",
 
   "//panelScanMaxAgeSeconds": [
     "How fresh the registry has to be for the panel to skip its opening scan.",

@@ -1440,8 +1440,15 @@ function Get-TrackedText { param([string]$Text)
 function New-ReadCard {
     param($Child, $Bg, $Stroke, [double]$Radius = 12, [double]$BW = 0,
           [double]$PadL = 16, [double]$PadT = 12, [double]$PadR = 16, [double]$PadB = 12,
-          [double]$Left = 0, [double]$Top = 10, [double]$Bottom = 10)
+          [double]$Left = 0, [double]$Top = 10, [double]$Bottom = 10, [switch]$Hug)
     $bd = New-Object System.Windows.Controls.Border
+    # 🪤 A CARD THAT STRETCHES TO CARRY TWO WORDS reads as a mistake, and on a
+    # maximised window a folded run of calls did exactly that - 2,200px of
+    # ground behind "1 step  Bash". Hug means the card is only as wide as what
+    # is in it; everything with real content still fills, because a code block
+    # that stopped early would break the left-edge alignment this pane is built
+    # on.
+    if ($Hug) { $bd.HorizontalAlignment = 'Left' }
     if ($Bg) { $bd.Background = $Bg }
     if ($Stroke -and $BW -gt 0) {
         $bd.BorderBrush = $Stroke
@@ -1607,14 +1614,45 @@ function Get-RunSummary { param($Calls)
 # FlowDocument has no max-width, so the right PagePadding is the only lever -
 # which is why it is arithmetic here rather than a property.
 $script:ReadMeasureChars = 70
-function Set-ReadMeasure { param($Doc, [double]$Size = 16, [double]$PadL = 44)
+# The size the last layout settled on. The renderer reads it rather than a
+# literal, so type and measure can never disagree about how wide a line is.
+$script:readSize = 16.0
+$script:readLead = 28.0
+
+# 🔴 A MEASURE IS A CEILING, NOT A WIDTH - AND AS AN ABSOLUTE IT WAS WRONG.
+#
+# 70 characters is right on a 927px pane and absurd on a maximised one:
+# measured at a 2,746px window the text column was still ~580px, so 78% of the
+# pane was empty, the hairlines between turns stopped a third of the way across,
+# and the whole document hugged the left edge. Reported as the text not scaling
+# and the alignment looking off, which is exactly what it was.
+#
+# So the pane now FILLS, the way the terminal it mirrors does, and the type
+# scales with it so a long line is still readable: 16px on a normal window,
+# rising to 20px on a very wide one. The old column is not deleted - it is
+# `readingWidth: measured` in the config, because a capped measure genuinely
+# reads better for long prose and that argument did not stop being true.
+function Set-ReadMeasure { param($Doc, [double]$Size = 0, [double]$PadL = 44)
     $avail = 0.0
     try { $avail = [double]$ui.PaneDoc.ActualWidth } catch { }
     if ($avail -lt 200) { $avail = 900.0 }
-    # 0.52em per character is Manrope's measured average advance for prose at
-    # these sizes; it does not need to be exact, only stable.
-    $target = $script:ReadMeasureChars * $Size * 0.52
-    $right = [Math]::Max(40.0, $avail - $PadL - $target)
+
+    # Type scales with the pane, gently and with a ceiling. Linear scaling would
+    # reach 47px at this width - filling the line by growing the letters is not
+    # scaling, it is zooming.
+    $size = 16.0
+    if ($avail -gt 1100) { $size = 16.0 + [Math]::Min(4.0, ($avail - 1100.0) / 340.0) }
+    if ($Size -gt 0) { $size = $Size }
+    $script:readSize = $size
+    $script:readLead = [Math]::Round($size * 1.75, 1)
+
+    $right = 44.0
+    if ($script:readWidth -eq 'measured') {
+        # 0.52em per character is Manrope's measured average advance for prose
+        # at these sizes; it does not need to be exact, only stable.
+        $target = $script:ReadMeasureChars * $size * 0.52
+        $right = [Math]::Max(44.0, $avail - $PadL - $target)
+    }
     $Doc.PagePadding = New-Object System.Windows.Thickness $PadL, 24, $right, 34
 }
 
@@ -1665,9 +1703,13 @@ function Add-ReadLabel {
 # then owned by the window, so the toggle is instant and the write is a side
 # effect rather than something the render path waits on.
 $script:toolView = 'folded'
+$script:readWidth = 'full'
 try {
-    $tv = "$((Get-SRConfig).transcriptTools)".Trim().ToLower()
+    $cfg0 = Get-SRConfig
+    $tv = "$($cfg0.transcriptTools)".Trim().ToLower()
     if ($SR_ToolViews -contains $tv) { $script:toolView = $tv }
+    $rw = "$($cfg0.readingWidth)".Trim().ToLower()
+    if ($SR_ReadWidths -contains $rw) { $script:readWidth = $rw }
 } catch { }
 
 function Get-ToolViewLabel {
@@ -1706,7 +1748,7 @@ function Build-ReadDocument {
     # large part of what reads as the text "not being smooth" - and it is not
     # antialiasing, which is where the eye goes looking for it first.
     $doc.TextAlignment = 'Left'
-    Set-ReadMeasure -Doc $doc -Size 16 -PadL 44
+    Set-ReadMeasure -Doc $doc -PadL 44
 
     if (-not @($Blocks).Count) {
         $p = New-Object System.Windows.Documents.Paragraph
@@ -1733,7 +1775,7 @@ function Build-ReadDocument {
                 if ($hidden -gt 0) { $trail = "$hidden steps hidden"; $hidden = 0 }
                 Add-ReadLabel -Doc $doc -Text 'you said' -Brush $Pal.Out -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
-                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextMax -CodeBg $PalFilm.Out
+                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextMax -Size $script:readSize -Line $script:readLead -CodeBg $PalFilm.Out
                 # Blocks is a live collection: moving them while enumerating it
                 # silently drops every second one, hence the @() snapshot. And
                 # $null = on Remove is not tidiness - it returns a BOOL, and an
@@ -1747,7 +1789,7 @@ function Build-ReadDocument {
                 if ($hidden -gt 0) { $trail = "$hidden steps hidden"; $hidden = 0 }
                 Add-ReadLabel -Doc $doc -Text 'claude' -Brush $Pal.In -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
-                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextHigh -CodeBg $PalGlassHi
+                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextHigh -Size $script:readSize -Line $script:readLead -CodeBg $PalGlassHi
                 foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
             }
             'compact' {
@@ -1847,7 +1889,7 @@ function Build-ReadDocument {
                         $null = $st.Children.Add((New-ReadText -Text ('and {0} more' -f (@($t.Calls).Count - $shown)) -Brush $Pal.TextLow -Size 11.5 -Mono))
                     }
                 }
-                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalGlass -Stroke $PalHair -BW 1 -Radius 12 -PadT 11 -PadB 10))
+                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalGlass -Stroke $PalHair -BW 1 -Radius 12 -PadT 11 -PadB 10 -Hug:($script:toolView -ne 'full')))
             }
         }
     }
@@ -2675,7 +2717,15 @@ $script:measureTimer.Add_Tick({
     if ($script:sheetDepth -gt 0) { return }
     try {
         $doc = $ui.PaneDoc.Document
-        if ($doc) { Set-ReadMeasure -Doc $doc -Size 16 -PadL 44 }
+        if (-not $doc) { return }
+        # 🪤 PADDING CAN BE RESTATED; TYPE CANNOT. Set-ReadMeasure recomputes the
+        # size the pane now wants, but every Run in the document was built at
+        # the OLD size and nothing re-reads it - so when the size band actually
+        # moves, the document has to be rebuilt rather than re-padded. Compared
+        # before and after, so an ordinary drag still costs only the padding.
+        $was = $script:readSize
+        Set-ReadMeasure -Doc $doc -PadL 44
+        if ([Math]::Abs($script:readSize - $was) -ge 0.5) { Show-Selected -Force }
     } catch { }
 })
 $ui.PaneDoc.Add_SizeChanged({ $script:measureTimer.Stop(); $script:measureTimer.Start() })
