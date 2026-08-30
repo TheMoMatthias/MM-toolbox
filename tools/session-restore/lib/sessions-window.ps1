@@ -2638,7 +2638,13 @@ function Show-Selected { param([switch]$Force)
         # and nothing else, and the 100ms lane collects it.
         $script:screenShells = -1
         $script:screenAgents = -1
-        try { Start-AskProbe $r } catch { }
+        # 🪤 REQUESTED HERE, STARTED ON THE LANE. Opening a runspace is 200-400ms
+        # of synchronous work, and doing it in the click handler put the cold
+        # click back to 1,191ms - measured, and caught by the profile assertion.
+        # That is the very cost this probe exists to keep off the click. The lane
+        # runs ten times a second, so the read still begins within a tenth of a
+        # second of the click and the click itself pays nothing.
+        $script:askWanted = $true
         try {
             $script:liveTimer.Stop()
             Start-LiveProbe
@@ -3814,6 +3820,17 @@ $script:watcher = $null
 $script:watchPath = ''
 
 function Stop-TranscriptWatch {
+    # 🔴 UNREGISTER THE SUBSCRIBER, NOT JUST THE WATCHER. Register-ObjectEvent
+    # keeps the subscription under its SourceIdentifier until it is explicitly
+    # removed - disposing the FileSystemWatcher does not take it with it. So the
+    # SECOND conversation selected hit "The subscription identifier is already
+    # in use", the registration failed inside the try, and the window fell back
+    # to the one-second timer for the rest of its life. Silently: the catch logs
+    # to a file nobody reads while a session is open.
+    #
+    # 🪤 -Force, because the subscriber is created by an -Action and PowerShell
+    # marks those as its own; without it the removal is refused.
+    try { Unregister-Event -SourceIdentifier 'SRTranscript' -Force -ErrorAction SilentlyContinue } catch { }
     if (-not $script:watcher) { return }
     try { $script:watcher.EnableRaisingEvents = $false } catch { }
     try { $script:watcher.Dispose() } catch { }
@@ -3831,13 +3848,18 @@ function Start-TranscriptWatch { param([string]$Path)
         $w.Filter = (Split-Path -Leaf $Path)
         $w.NotifyFilter = [System.IO.NotifyFilters]::LastWrite -bor [System.IO.NotifyFilters]::Size
         $w.IncludeSubdirectories = $false
-        # 🔴 Register-ObjectEvent, not Add_Changed. The window is one script and
-        # a .NET event handler added here would run with no PowerShell runspace
-        # of its own; the engine event queue is what gives it one, and what lets
-        # the action reach $script: state at all.
-        $null = Register-ObjectEvent -InputObject $w -EventName Changed -SourceIdentifier 'SRTranscript' -Action {
-            $script:transcriptDirty = $true
-        }
+        # 🔴 NO -Action, AND THAT IS THE WHOLE FIX. This was
+        # `-Action { $script:transcriptDirty = $true }`, which never once fired
+        # the pane: an -Action block runs in its OWN scope, so `$script:` inside
+        # it is the action's module scope and not this script's. The flag was
+        # being set somewhere nobody reads, the lane never woke, and the window
+        # ran on the one-second backstop for the whole time it was described as
+        # near-instant. Measured by a test that watches a file and waits for the
+        # flag - it never came.
+        #
+        # Registering WITHOUT an action queues the events instead, and the lane
+        # drains that queue. No cross-scope write exists to get wrong.
+        $null = Register-ObjectEvent -InputObject $w -EventName Changed -SourceIdentifier 'SRTranscript'
         $w.EnableRaisingEvents = $true
         $script:watcher = $w
         $script:watchPath = $Path
@@ -3867,13 +3889,32 @@ function Invoke-WriteLane {
     # Collected here rather than on the one-second tick: this lane runs ten
     # times a second, so a question that took a second to read is on screen
     # within a tenth of a second of arriving.
-    if ($script:sheetDepth -eq 0) { try { Complete-AskProbe } catch { } }
-    if (-not $script:transcriptDirty) { return }
+    if ($script:sheetDepth -eq 0) {
+        # The click asked for a read; this is where it actually starts, so the
+        # runspace is opened off the click path.
+        if ($script:askWanted) {
+            $script:askWanted = $false
+            try { Start-AskProbe (Get-SelectedRow) } catch { }
+        }
+        try { Complete-AskProbe } catch { }
+    }
+    # Drain whatever the watcher queued. Several writes between two ticks are
+    # one redraw, which is the point of collecting rather than handling.
+    try {
+        foreach ($ev in @(Get-Event -SourceIdentifier 'SRTranscript' -ErrorAction SilentlyContinue)) {
+            Remove-Event -EventIdentifier $ev.EventIdentifier -ErrorAction SilentlyContinue
+            $script:transcriptDirty = $true
+        }
+    } catch { }
+    # Returns whether it actually redrew. The tick discards it; the suite needs
+    # it, because the flag is consumed in the same call that sets it and there
+    # is otherwise nothing to observe from outside.
+    if (-not $script:transcriptDirty) { return $false }
     $script:transcriptDirty = $false
-    if ($script:sheetDepth -gt 0) { return }
+    if ($script:sheetDepth -gt 0) { return $false }
     try {
         $it = $ui.SessionList.SelectedItem
-        if (-not $it -or $it.Kind -ne 'session') { return }
+        if (-not $it -or $it.Kind -ne 'session') { return $false }
         Update-Document
         Update-SendState
         # Keep the polling tick from redoing this work a beat later: it compares
@@ -3897,6 +3938,7 @@ function Invoke-WriteLane {
             }
         }
     } catch { }
+    return $true
 }
 $script:writeTimer.Add_Tick({ Invoke-WriteLane })
 $script:writeTimer.Start()
@@ -4839,6 +4881,10 @@ function Complete-AskProbe {
 }
 $script:screenShells = -1
 $script:screenAgents = -1
+# Set by the click, consumed by the lane. One flag rather than a queue: a second
+# click before the first read starts should read the SECOND conversation, and
+# the lane always reads whatever is selected when it fires.
+$script:askWanted = $false
 
 function Start-LiveProbe {
     if ($script:probePs) {

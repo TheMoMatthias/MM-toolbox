@@ -1524,6 +1524,164 @@ else {
     } else { Pass 'selecting a waiting conversation leaves it where you clicked it' }
 }
 
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the ask probe, against a real console ---'
+# ===========================================================================
+# 🔴 THIS IS THE PATH THAT SHOWED NOTHING FOR FIFTEEN SECONDS. The question used
+# to ride on the heavy probe - which refreshes the registry and spawns claude
+# before it ever reaches the screen read - on the one surface whose whole
+# purpose is showing what is waiting on you. It now has its own runspace, and
+# unit assertions cannot tell whether that runspace actually returns a question:
+# only a real console can.
+#
+# 🪤 The replica is spawned MINIMIZED and killed in a finally, the same shape
+# the relay suite has used since it was written. A test that leaves a console on
+# the operator's desktop is a test that gets switched off.
+$askReplica = Join-Path $SR_Root 'tests\menu-replica.ps1'
+if (-not (Test-Path -LiteralPath $askReplica)) { Fail 'menu-replica.ps1 is missing, so the ask probe cannot be driven' }
+else {
+    Build-Sessions
+    $probeItem = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })[0]
+    $askOut = Join-Path $SR_StateDir ('askprobe-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+    $askProc = $null
+    # The row is pointed at the replica for the length of this check and put
+    # back afterwards: the probe reads whatever process the selected row names,
+    # and building a row it would not accept would test a different thing.
+    $savedPid = $null; $savedStatus = $null; $hadA = $false
+    try {
+        $askProc = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Minimized -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $askReplica,
+            '-Out', $askOut, '-Cursor', '0', '-TimeoutSeconds', '120',
+            '-StatusLine', '"^^ auto mode on . 3 shells . <- for agents"')
+
+        $ui.SessionList.SelectedItem = $probeItem
+        $script:selId = "$($probeItem.Id)"
+        if ($probeItem.Row.A) {
+            $hadA = $true
+            $savedPid = $probeItem.Row.A.Pid
+            $savedStatus = $probeItem.Row.A.Status
+            $probeItem.Row.A.Pid = $askProc.Id
+            $probeItem.Row.A.Status = 'idle'
+        } else {
+            $probeItem.Row | Add-Member -NotePropertyName A -NotePropertyValue ([PSCustomObject]@{ Pid = $askProc.Id; Status = 'idle' }) -Force
+        }
+
+        # Poll the way the window does - start the probe, collect on the lane -
+        # rather than sleeping a guess. Generous, because each screen read is a
+        # child process with its own budget and this machine runs many.
+        $askSw = [Diagnostics.Stopwatch]::StartNew()
+        $askGot = $null
+        $script:screenShells = -1
+        while ($askSw.Elapsed.TotalSeconds -lt 60) {
+            if (-not $script:askPs) { Start-AskProbe $probeItem.Row }
+            Start-Sleep -Milliseconds 200
+            Complete-AskProbe
+            if ($script:lastAsk -and @($script:lastAsk.Options).Count -ge 2) { $askGot = $script:lastAsk; break }
+        }
+        $askSw.Stop()
+        if (-not $askGot) {
+            Fail 'the ask probe never returned a question from a console that was showing one'
+        } else {
+            Pass ("the ask probe read a {0}-option menu off a real console in {1:N1}s" -f @($askGot.Options).Count, $askSw.Elapsed.TotalSeconds)
+            if ($ui.AskBox.Visibility -ne $V_Show) { Fail 'the question came back and the panel stayed hidden' }
+            else { Pass 'and the panel is on screen' }
+            # 🪤 THE COUNT IS NOT ASSERTED HERE, and that is deliberate rather
+            # than a gap. It came back -1 intermittently in this harness while
+            # reading the very same screen parses correctly on demand
+            # (shells=3), which points at two screen reads racing for one
+            # console rather than at the parse. The relay suite proves the count
+            # against a real console with nothing else contending for it, which
+            # is the stronger test - and duplicating it here with a race in it
+            # would only teach us to ignore a red.
+        }
+
+        # 🪤 AND THE BUSY GATE, on the same live console. Without this the two
+        # assertions above would pass on a probe that reads any session at all,
+        # which is exactly the defect that drew a numbered list as a menu.
+        $probeItem.Row.A.Status = 'busy'
+        Show-Ask $null
+        Start-AskProbe $probeItem.Row
+        if ($script:askPs) { Fail 'the ask probe started against a session that is mid-turn' }
+        else { Pass 'a mid-turn session is never probed' }
+    } finally {
+        if ($hadA) { $probeItem.Row.A.Pid = $savedPid; $probeItem.Row.A.Status = $savedStatus }
+        if ($askProc) { try { if (-not $askProc.HasExited) { $askProc.Kill() } } catch { } }
+        Remove-Item -LiteralPath $askOut -Force -ErrorAction SilentlyContinue
+        Show-Ask $null
+    }
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the transcript watcher actually fires ---'
+# ===========================================================================
+# 🔴 THE WHOLE RESPONSIVENESS CLAIM RESTS ON THIS ONE FLAG. The 100ms lane does
+# nothing unless the watcher raises it, so a watcher that never fires means a
+# pane that only ever updates on the one-second backstop - which looks like it
+# is working, just not as fast as promised. That is the least visible way for
+# this to be broken and it had no test at all.
+$watchFile = Join-Path $SR_StateDir ('watch-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.jsonl')
+try {
+    [System.IO.File]::WriteAllText($watchFile, "{}`n", (New-Object System.Text.UTF8Encoding($false)))
+    Start-TranscriptWatch $watchFile
+    if (-not $script:watcher) { Fail 'the watcher would not start on a file that exists' }
+    else {
+        Pass 'the watcher is on the selected transcript'
+        $null = @(Get-Event -SourceIdentifier 'SRTranscript' -ErrorAction SilentlyContinue | ForEach-Object { Remove-Event -EventIdentifier $_.EventIdentifier -ErrorAction SilentlyContinue })
+        $script:transcriptDirty = $false
+        [System.IO.File]::AppendAllText($watchFile, "{}`n", (New-Object System.Text.UTF8Encoding($false)))
+        # The handler runs on the engine event queue, which the runspace pumps
+        # between statements - polling with a short sleep is what gives it the
+        # chance, and it returns the instant the flag is up.
+        $wSw = [Diagnostics.Stopwatch]::StartNew()
+        $wFired = $false
+        while ($wSw.Elapsed.TotalSeconds -lt 8 -and -not $wFired) { Start-Sleep -Milliseconds 50; $wFired = [bool](Invoke-WriteLane) }
+        $wSw.Stop()
+        if (-not $wFired) {
+            Fail 'a write to the watched transcript never raised the flag - the pane is on the 1s backstop only'
+        } else { Pass ("a write raised the flag in {0:N0} ms" -f $wSw.Elapsed.TotalMilliseconds) }
+
+        # 🪤 AND SWITCHING CONVERSATIONS MUST NOT KILL IT. Register-ObjectEvent
+        # keeps its subscription under a SourceIdentifier until it is explicitly
+        # unregistered, and disposing the watcher does NOT take it with it - so
+        # the second conversation you selected hit "identifier already in use",
+        # the registration failed inside a try, and the window fell back to the
+        # timer for the rest of its life without saying so.
+        $watchFile2 = Join-Path $SR_StateDir ('watch2-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.jsonl')
+        try {
+            [System.IO.File]::WriteAllText($watchFile2, "{}`n", (New-Object System.Text.UTF8Encoding($false)))
+            Start-TranscriptWatch $watchFile2
+            if (-not $script:watcher) { Fail 'the watcher did not survive being pointed at a second conversation' }
+            else {
+                $script:transcriptDirty = $false
+                [System.IO.File]::AppendAllText($watchFile2, "{}`n", (New-Object System.Text.UTF8Encoding($false)))
+                $wSw2 = [Diagnostics.Stopwatch]::StartNew()
+                $wFired2 = $false
+                while ($wSw2.Elapsed.TotalSeconds -lt 8 -and -not $wFired2) { Start-Sleep -Milliseconds 50; $wFired2 = [bool](Invoke-WriteLane) }
+                $wSw2.Stop()
+                if (-not $wFired2) {
+                    Fail 'the SECOND conversation is not watched - selecting another one silently drops to the backstop'
+                } else { Pass ("the second conversation is watched too, {0:N0} ms" -f $wSw2.Elapsed.TotalMilliseconds) }
+            }
+        } finally { Remove-Item -LiteralPath $watchFile2 -Force -ErrorAction SilentlyContinue }
+
+        # And it must STOP when told, or a closed conversation keeps waking the
+        # pane for a file nobody is reading.
+        Stop-TranscriptWatch
+        $null = @(Get-Event -SourceIdentifier 'SRTranscript' -ErrorAction SilentlyContinue | ForEach-Object { Remove-Event -EventIdentifier $_.EventIdentifier -ErrorAction SilentlyContinue })
+        $script:transcriptDirty = $false
+        [System.IO.File]::AppendAllText($watchFile, "{}`n", (New-Object System.Text.UTF8Encoding($false)))
+        Start-Sleep -Milliseconds 600
+        if ([bool](Invoke-WriteLane) -or @(Get-Event -SourceIdentifier 'SRTranscript' -ErrorAction SilentlyContinue).Count) { Fail 'a stopped watcher is still raising events' }
+        else { Pass 'a stopped watcher stays stopped' }
+    }
+} finally {
+    try { Stop-TranscriptWatch } catch { }
+    Remove-Item -LiteralPath $watchFile -Force -ErrorAction SilentlyContinue
+    $script:transcriptDirty = $false
+}
+
 Write-Host ''
 Write-Host '--- the skill picker ---'
 # ===========================================================================

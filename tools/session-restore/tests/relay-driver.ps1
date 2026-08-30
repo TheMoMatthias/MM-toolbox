@@ -54,10 +54,16 @@ $null = New-Item -ItemType Directory -Path $relayTmp -Force
 $started = New-Object System.Collections.Generic.List[object]
 
 function Start-Replica {
-    param([int]$StartCursor, [switch]$Multi)
+    param([int]$StartCursor, [switch]$Multi, [string]$StatusLine = '')
     $outFile = Join-Path $relayTmp ('answer-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
     $extra = @()
     if ($Multi) { $extra += '-Multi' }
+    # 🪤 QUOTED, because -ArgumentList joins this array with spaces and quotes
+    # NOTHING. Passed bare, a status line with spaces arrives as a dozen
+    # positional arguments, the replica fails to bind them and never paints -
+    # which surfaced as "never showed a menu" and looked like a screen-reading
+    # problem rather than an argument-passing one.
+    if ($StatusLine) { $extra += @('-StatusLine', ('"' + $StatusLine + '"')) }
     # MINIMIZED, NOT HIDDEN. -WindowStyle Hidden gives the process no console
     # window, and while the screen BUFFER still exists, the point of this test is
     # to read what a real terminal is showing. Minimized keeps a real console and
@@ -242,6 +248,53 @@ try {
         $why7 = Invoke-SRAnswerMultiOnScreen -ProcessId ([int]$r5.Proc.Id) -Indexes @(0) -Who 'replica'
         if (-not $why7) { Fail 'the multi relay answered a SINGLE-select menu' }
         else { Pass "a single-select menu is refused by the multi path: $why7" }
+    }
+
+    # ===========================================================================
+    Write-Host ''
+    Write-Host '--- the counts a session prints, read off a REAL console ---'
+    # ===========================================================================
+    # 🔴 THIS IS THE ONLY SOURCE FOR A RUNNING BACKGROUND SHELL. A Bash call with
+    # run_in_background gets its tool_result back IMMEDIATELY, carrying the shell
+    # id, so the "a call nobody answered is still running" test - which is right
+    # for sub-agents - can never fire for a shell. The reader that tried reported
+    # zero of them for hours while it was being called working. The session
+    # prints the true number on its status line, and the whole chip now rests on
+    # this parse, so it is worth proving against a console rather than a string.
+    #
+    # 🪤 And this was called untestable. It is not: the suite has been spawning a
+    # real console and reading its screen since it was written.
+    $statusText = '>> auto mode on (shift+tab to cycle) . 2 shells . <- for agents . 1 feedback draft'
+    $r6 = Start-Replica -StartCursor 0 -StatusLine $statusText
+    $seen6 = Wait-ForMenu -ProcessId $r6.Proc.Id
+    if (-not $seen6) { Fail 'the replica with a status line never showed a menu' }
+    else {
+        $screen6 = Get-SRScreenText -ProcessId ([int]$r6.Proc.Id)
+        if (-not $screen6) { Fail 'could not read the screen that was just read for its menu' }
+        else {
+            $vit = Read-SRScreenVitals -ScreenText $screen6
+            if (-not $vit.Ok) { Fail 'the status line was on screen and nothing was read off it' }
+            elseif ($vit.Shells -ne 2) { Fail "the screen says 2 shells and the reader saw $($vit.Shells)" }
+            else { Pass "2 shells read off a real console's status line" }
+            # The bare "<- for agents" hint carries no number and must not be
+            # counted as one - the trap that would report an agent on every
+            # session that has none.
+            if ($vit.Agents -ne 0) { Fail "no agent count was printed and the reader invented $($vit.Agents)" }
+            else { Pass 'the bare agents hint is not read as a count' }
+        }
+    }
+
+    # THE INVERSE, or the two assertions above would pass on a reader that
+    # returns 2 for anything: the same replica WITHOUT a status line must report
+    # nothing rather than zero, because unread is not the same as none.
+    $r7 = Start-Replica -StartCursor 0
+    $seen7 = Wait-ForMenu -ProcessId $r7.Proc.Id
+    if (-not $seen7) { Fail 'the plain replica never showed a menu' }
+    else {
+        $screen7 = Get-SRScreenText -ProcessId ([int]$r7.Proc.Id)
+        $vit7 = Read-SRScreenVitals -ScreenText $screen7
+        if ($vit7.Ok) { Fail "a menu with no status line still reported counts (shells=$($vit7.Shells))" }
+        else { Pass 'a console with no status line reports nothing, not zero' }
     }
 } finally {
     foreach ($p in $started) {

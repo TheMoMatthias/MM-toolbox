@@ -56,7 +56,14 @@ param(
     # ticks the options it was asked for -- and proves NOTHING about whether the
     # real TUI toggles on Enter. Until somebody measures that, nothing here may
     # be pointed at a live session.
-    [switch]$Multi
+    [switch]$Multi,
+
+    # A status line to paint under the menu, e.g.
+    #   ">> auto mode on (shift+tab to cycle) . 1 shell . <- for agents"
+    # Passed rather than hard-coded so a test can assert what it asked for, and
+    # so the no-status-line case stays the default - a menu without one must
+    # still read exactly as it did before.
+    [string]$StatusLine = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -109,6 +116,17 @@ function Show-Menu {
         Write-Host ''
     }
     Write-Host '  (replica of an AskUserQuestion menu - this is a test fixture)'
+    # THE STATUS LINE, painted the way a real session paints it. It is the only
+    # place a running BACKGROUND SHELL can be counted: a Bash call with
+    # run_in_background gets its tool_result back immediately, so the transcript
+    # can never tell one that is still running from one that finished, and the
+    # reader that tried reported zero of them forever. Reading what the session
+    # PRINTS is the fix, and this is what lets that be tested against a real
+    # console rather than against a string in a fixture.
+    if ($StatusLine) {
+        Write-Host ''
+        Write-Host $StatusLine
+    }
 }
 
 Show-Menu
