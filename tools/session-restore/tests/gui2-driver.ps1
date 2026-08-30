@@ -1423,6 +1423,74 @@ else { Pass 'a notice tells you one thing and offers one way out' }
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- a stale registry must not trap your ticks ---'
+# ===========================================================================
+# 🔴 THE STALE-WRITE GUARD HAD NO WAY OUT. It refuses a save when the file
+# has moved on since this window read it - right, and it stopped two windows
+# discarding each other's ticks - but the HOURLY SCAN TASK writes that file from
+# its own process. Tick something, wait for the scan, press Save: refused. Press
+# Rescan: it saves first, also refused. Neither button could get the ticks out
+# and the only exit was closing the window and losing them. Reachable within an
+# hour of ordinary use, and introduced by the fix for the two-window case.
+$dirtyWas = $script:dirty
+$stampWas = $null
+try { $stampWas = Get-SRRegistryStamp } catch { }
+# 🔴 THE REGISTRY PATH IS REDIRECTED FIRST. This assertion drives a real
+# Save-SRRegistry, and this suite's own rule is that it NEVER SAVES - a rule that
+# exists because a test wrote over the operator's registry on 2026-08-30 and cost
+# them 210 conversations. The first version of this block ignored that and did
+# write; the content happened to match, which is luck rather than design. Save
+# resolves $SR_RegistryPath at call time, so pointing it at a temp file makes a
+# real write impossible rather than merely unlikely, and the real file's stamp is
+# checked at the end.
+$realRegPath = $SR_RegistryPath
+$realRegStamp = $null
+try { $realRegStamp = (Get-Item -LiteralPath $realRegPath -ErrorAction Stop).LastWriteTimeUtc.Ticks } catch { }
+$sandReg = Join-Path $SR_StateDir ('conflict-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+try {
+    $script:SR_RegistryPath = $sandReg
+    # 🪤 THE SANDBOX FILE HAS TO EXIST FIRST. A missing file has no stamp, so
+    # the staleness check cannot fire and the save simply succeeds - which is what
+    # the first version of this measured, and it reported the decline path as
+    # broken when it had never been reached.
+    Save-SRRegistry -Registry $script:reg
+    # Now make this window's view stale: the stamp IS its memory of what it saw.
+    Set-SRRegistryStamp 'a-stamp-from-before-something-else-wrote'
+    $script:dirty = $true
+
+    # Refuse the prompt: nothing is written, and the window stays usable.
+    Press 'SheetB1'
+    $ok = Save-RegistryOrAsk 'the probe ticks'
+    if ($ok) { Fail 'declining the conflict prompt still saved' }
+    elseif (-not $script:pressOk) { Fail 'no conflict prompt was shown - the save failed silently' }
+    else { Pass 'a stale save asks rather than refusing outright' }
+
+    # Accept it: the ticks get out. This is the exit the deadlock lacked.
+    Set-SRRegistryStamp 'a-stamp-from-before-something-else-wrote'
+    $script:dirty = $true
+    Press 'SheetB3'
+    $ok2 = Save-RegistryOrAsk 'the probe ticks'
+    if (-not $ok2) { Fail 'accepting the prompt did not save - the ticks are still trapped' }
+    elseif ($script:dirty) { Fail 'it saved but the window still thinks it has unsaved work' }
+    else { Pass 'accepting it saves, so the ticks are never trapped in the window' }
+} finally {
+    $script:SR_RegistryPath = $realRegPath
+    Remove-Item -LiteralPath $sandReg -Force -ErrorAction SilentlyContinue
+    $script:dirty = $dirtyWas
+    if ($stampWas) { Set-SRRegistryStamp $stampWas }
+}
+# And prove it: the operator's own registry must not have moved.
+$nowStamp = $null
+try { $nowStamp = (Get-Item -LiteralPath $realRegPath -ErrorAction Stop).LastWriteTimeUtc.Ticks } catch { }
+if ($realRegStamp -and $nowStamp -ne $realRegStamp) {
+    Fail 'this assertion wrote to the real registry - the suite must never save'
+} else { Pass 'the conflict test wrote only to its own file, never the real registry' }
+
+# 🪤 AFTER the sheet section, not before it: this drives the conflict
+# prompt with Press, which is defined there. PowerShell runs a script top to
+# bottom, so a helper used above where it is declared is simply not a command.
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the new-session dialog reads the same palette ---'
 # ===========================================================================
 # 🔴 A MISSPELLED DynamicResource KEY FAILS SILENTLY. That is the whole risk of

@@ -1970,12 +1970,9 @@ $window.Add_Closing({
     )
     if ($r -eq 'stay') { $e.Cancel = $true; return }
     if ($r -eq 'save') {
-        try { Save-SRRegistry -Registry $script:reg; $script:dirty = $false }
-        catch {
-            Show-Notice 'Not saved' ("The ticks could not be written, so the window is staying open " +
-                "rather than losing them.`n`n" + $_.Exception.Message)
-            $e.Cancel = $true
-        }
+        # Through the prompt as well: closing is exactly when being unable to
+        # save, with no way out, costs the most.
+        if (-not (Save-RegistryOrAsk 'your ticks')) { $e.Cancel = $true }
     }
 })
 
@@ -2294,12 +2291,10 @@ $ui.ManageList.Add_PreviewMouseRightButtonDown({
 })
 
 $ui.SaveBtn.Add_Click({
-    try {
-        Save-SRRegistry -Registry $script:reg
-        $script:dirty = $false
+    if (Save-RegistryOrAsk) {
         if ($script:surface -eq 'manage') { Build-Manager }
         Set-Status 'saved - those ticks decide what comes back at the next logon' 'ok'
-    } catch { Set-Status ("could not save: " + $_.Exception.Message) 'bad' }
+    }
 })
 # ===========================================================================
 # THE TWO LOGON BUTTONS
@@ -2501,6 +2496,43 @@ function Start-LaunchQueue { param($Items)
 # 🪤 THE VERB IS NOT DECORATION. 'OK' beside a list of twelve live conversations
 # does not say what pressing it does, and these confirmations exist precisely
 # because the action is hard to take back. Every caller names it.
+# 🔴 THE STALE-WRITE GUARD NEEDED A WAY OUT, AND HAD NONE. It refuses a save
+# when the file has moved on since this window read it - which is right, and
+# stopped two windows discarding each other's ticks. What it missed is that the
+# HOURLY SCAN TASK writes that file from its own process. So: tick something,
+# wait for the scan, press Save -> refused; press Rescan -> it must save first,
+# also refused. Neither button could get the ticks out and the only exit was
+# closing the window and losing them. Measured in a sandbox on 2026-08-30, and
+# reachable within an hour of ordinary use.
+#
+# 🪤 FORCING IS SAFE HERE IN THE COMMON CASE AND THE OPERATOR IS STILL ASKED.
+# The scan only ADDS conversations it discovered; anything overwritten comes back
+# on its next run. What forcing cannot tell apart is another WINDOW's ticks,
+# which do not come back - so this asks rather than deciding, and says which
+# outcome is which.
+function Save-RegistryOrAsk {
+    param([string]$What = 'those ticks')
+    try { Save-SRRegistry -Registry $script:reg; $script:dirty = $false; return $true }
+    catch {
+        $msg = "$($_.Exception.Message)"
+        if ($msg -notmatch 'changed on disk') {
+            Set-Status ("could not save: $msg") 'bad'
+            return $false
+        }
+        $pick = Show-Sheet -Title 'The registry changed while you were working' -Escape 'keep' -Body (
+            "Something else has written it since this window read it - almost always the hourly scan, " +
+            "which only adds conversations it has discovered.`n`n" +
+            "Saving yours replaces what it wrote. Anything the scan found comes back on its next run; " +
+            "ticks made in ANOTHER Sessions window would not.") -Choices @(
+            @{ Key = 'keep';  Label = 'Leave it for now' },
+            @{ Key = 'force'; Label = 'Save mine anyway' }
+        )
+        if ($pick -ne 'force') { Set-Status ("$What not saved - the file changed underneath this window") 'warn'; return $false }
+        try { Save-SRRegistry -Registry $script:reg -Force; $script:dirty = $false; return $true }
+        catch { Set-Status ("could not save even forced: $($_.Exception.Message)") 'bad'; return $false }
+    }
+}
+
 function Confirm-Action { param([string]$Title, [string]$Body, [string]$Verb = 'Continue')
     return ((Show-Sheet -Title $Title -Body $Body -Escape 'no' -Choices @(
         @{ Key = 'no';  Label = 'Cancel' },
@@ -3380,9 +3412,13 @@ $ui.Rescan.Add_Click({
     # The order that matters - save unsaved ticks, THEN scan, and refuse if that
     # save fails - lives in Invoke-SRRescan so it can be tested in a sandbox
     # rather than against the operator's real registry. See the note there.
-    if ($script:dirty) { Set-Status 'saving your ticks, then rescanning...' } else { Set-Status 'rescanning...' }
-    $r = Invoke-SRRescan -Registry $script:reg -Config $script:cfg -Dirty ([bool]$script:dirty) -Quiet
-    if ($r.Saved) { $script:dirty = $false }
+    # Save first, THROUGH THE PROMPT, so a stale stamp cannot leave the rescan
+    # and the save both refusing with no way out - see Save-RegistryOrAsk.
+    if ($script:dirty) {
+        Set-Status 'saving your ticks, then rescanning...'
+        if (-not (Save-RegistryOrAsk 'your ticks')) { return }
+    } else { Set-Status 'rescanning...' }
+    $r = Invoke-SRRescan -Registry $script:reg -Config $script:cfg -Dirty $false -Quiet
     Update-Model; Update-Surface
     if (-not $r.Scanned) {
         Write-SRLog ('  [FAIL] rescan: ' + $r.Why)
