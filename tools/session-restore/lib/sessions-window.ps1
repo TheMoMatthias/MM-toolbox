@@ -1705,13 +1705,23 @@ function Get-ReadTurns { param($Blocks)
         $calls = New-Object System.Collections.Generic.List[object]
         while ($i -lt $arr.Count -and ($arr[$i].Kind -eq 'tool' -or $arr[$i].Kind -eq 'result')) {
             if ($arr[$i].Kind -eq 'tool') {
-                $calls.Add([PSCustomObject]@{ Name = "$($arr[$i].Head)"; Arg = "$($arr[$i].Body)"; Res = ''; Bad = $false })
+                $calls.Add([PSCustomObject]@{ Name = "$($arr[$i].Head)"; Arg = "$($arr[$i].Body)"; Res = ''; ResFull = ''; Bad = $false })
             } elseif ($calls.Count) {
                 $last = $calls[$calls.Count - 1]
                 if (-not $last.Res) {
-                    $one = "$(@("$($arr[$i].Body)" -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1))"
+                    $lines = @("$($arr[$i].Body)" -replace "`r", '' -split "`n" | Where-Object { $_.Trim() })
+                    $one = "$(@($lines | Select-Object -First 1))"
                     if ($one.Length -gt 130) { $one = $one.Substring(0, 127) + [string][char]0x2026 }
                     $last.Res = $one
+                    # 🔴 FOLDED KEEPS ITS ONE LINE; FULL GETS SOMETHING WORTH
+                    # OPENING. "Steps: full" used to show the same 130-character
+                    # first line as folded, on a control that does not wrap - so
+                    # the one view whose whole purpose is to show more showed
+                    # the same thing, cut off. Kept here rather than re-read at
+                    # render time because the blocks are gone by then.
+                    $more = @($lines | Select-Object -First 6) -join "`n"
+                    if ($more.Length -gt 900) { $more = $more.Substring(0, 897) + [string][char]0x2026 }
+                    $last.ResFull = $more
                     $last.Bad = ("$($arr[$i].Head)" -eq 'failed')
                 }
             }
@@ -2004,18 +2014,35 @@ function Build-ReadDocument {
 
                 if ($script:toolView -eq 'full') {
                     $cap.Margin = New-Object System.Windows.Thickness 0, 0, 0, 10
+                    # 🔴 WRAPPED, AND THE NAME OFF THE COMMAND. Neither line
+                    # wrapped, so a command longer than the pane - which is most
+                    # real commands - was simply cut off at the edge, and the
+                    # view you open to READ what ran showed less than the folded
+                    # one did. Three changes, each answering that: the tool's
+                    # name gets its own line so the command starts at a
+                    # predictable place, the command wraps, and the result shows
+                    # the first several lines rather than one truncated one.
                     $shown = 0
                     foreach ($c in @($t.Calls)) {
-                        if ($shown -ge 6) { break }
+                        if ($shown -ge 8) { break }
                         $shown++
                         $ln = New-Object System.Windows.Controls.StackPanel
-                        $ln.Margin = New-Object System.Windows.Thickness 0, 0, 0, 7
+                        $ln.Margin = New-Object System.Windows.Thickness 0, 0, 0, 11
                         $fg = $Pal.TextHigh
                         if ($c.Bad) { $fg = $Pal.Bad }
-                        $null = $ln.Children.Add((New-ReadText -Text ($c.Name + '   ' + (Compress-SRPath $c.Arg)) -Brush $fg -Size 12.5 -Mono))
-                        if ($c.Res) {
-                            $r = New-ReadText -Text (Compress-SRPath $c.Res) -Brush $Pal.TextLow -Size 12 -Mono
-                            $r.Margin = New-Object System.Windows.Thickness 18, 3, 0, 0
+                        $nm = New-ReadText -Text $c.Name -Brush $(if ($c.Bad) { $Pal.Bad } else { $Pal.Tool }) -Size 10.5 -Semi
+                        $null = $ln.Children.Add($nm)
+                        $argText = (Compress-SRPath $c.Arg).Trim()
+                        if ($argText) {
+                            $ar = New-ReadText -Text $argText -Brush $fg -Size 12.5 -Mono -Wrap -Line 17
+                            $ar.Margin = New-Object System.Windows.Thickness 0, 3, 0, 0
+                            $null = $ln.Children.Add($ar)
+                        }
+                        $resText = "$($c.ResFull)"
+                        if (-not $resText) { $resText = "$($c.Res)" }
+                        if ($resText) {
+                            $r = New-ReadText -Text (Compress-SRPath $resText) -Brush $Pal.TextLow -Size 12 -Mono -Wrap -Line 17
+                            $r.Margin = New-Object System.Windows.Thickness 14, 5, 0, 0
                             $null = $ln.Children.Add($r)
                         }
                         $null = $st.Children.Add($ln)
@@ -2845,6 +2872,42 @@ $script:chipVitals = $null
 # until the selection moves mid-tick.
 $script:clockId = ''
 
+# ===========================================================================
+# THE ONE ANIMATION IN THE WINDOW, and it earns its place by meaning something:
+# this conversation is working AT THIS MOMENT. Nothing else moves, so movement
+# reads as liveness rather than as decoration.
+#
+# 🪤 STARTED AND STOPPED, NEVER LEFT RUNNING. A storyboard on a control that is
+# no longer showing what it was started for keeps animating - and worse, keeps a
+# timer alive - so selecting a finished conversation would leave a dot pulsing
+# about a session that stopped an hour ago.
+$script:pulseOn = $false
+$script:pulseStory = $null
+
+function Set-WorkingPulse { param([bool]$On)
+    if ($On -eq $script:pulseOn) { return }
+    $script:pulseOn = $On
+    if (-not $On) {
+        try { $ui.PaneStateDot.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null) } catch { }
+        $ui.PaneStateDot.Opacity = 1.0
+        return
+    }
+    try {
+        $a = New-Object System.Windows.Media.Animation.DoubleAnimation
+        $a.From = 1.0
+        $a.To = 0.25
+        $a.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(900))
+        $a.AutoReverse = $true
+        $a.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+        # Eased, not linear: a linear fade reads as a fault light, a sine one
+        # reads as breathing.
+        $ease = New-Object System.Windows.Media.Animation.SineEase
+        $ease.EasingMode = 'EaseInOut'
+        $a.EasingFunction = $ease
+        $ui.PaneStateDot.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $a)
+    } catch { $script:pulseOn = $false }
+}
+
 function Get-ShortModel { param([string]$Model)
     if (-not $Model) { return 'model unknown' }
     $s = $Model -replace '^claude-', '' -replace '-\d{8}$', ''
@@ -2942,6 +3005,10 @@ function New-Chip {
 }
 
 function Update-Chips { param($R, [switch]$Force)
+    # The pulse follows the STATUS, not the selection: a session you are already
+    # looking at starts and stops working while you watch it, and the dot has to
+    # follow that rather than whatever was true when you clicked.
+    Set-WorkingPulse ([bool]($R -and $R.A -and "$($R.A.Status)" -eq 'busy'))
     if (-not $R) { $ui.PaneChips.Children.Clear(); $script:chipStamp = ''; $script:chipClock = $null; $script:chipVitals = $null; $script:clockId = ''; return }
     $v = $null
     try {
@@ -3120,6 +3187,13 @@ function Show-Selected { param([switch]$Force)
     $ui.PaneName.Text = $t.Text
     $b = @($script:Bands | Where-Object { $_.Key -eq "$($r.Band)" })
     $ui.PaneStateDot.Background = $(if ($b.Count) { $window.FindResource($b[0].Acc) } else { $window.FindResource('AccIdle') })
+    # 🔑 A DOT THAT BREATHES WHILE IT IS ACTUALLY THINKING. The header said
+    # WORKING in text, which is a state you have to read; there was nothing that
+    # said "right now" at a glance, and on a surface whose whole job is telling
+    # you what is alive that is the one thing worth animating. It runs only
+    # while the session is mid-turn, and stops dead otherwise - a permanent
+    # animation would be decoration, and this window has none.
+    Set-WorkingPulse ($r.A -and "$($r.A.Status)" -eq 'busy')
     $detail = $(if ($r.Conv -and "$($r.Conv.Detail)") { "$($r.Conv.Detail)" } else { 'no process is holding it' })
     $ui.PaneState.Text = ('{0}   |   {1}   |   {2}' -f $(if ($b.Count) { $b[0].Label } else { '' }), $detail, (Get-ProjectLabel "$($r.D.path)"))
     # 🔴 NOT ON THE CLICK. Reading the vitals costs ~120 ms of JSONL parsing plus

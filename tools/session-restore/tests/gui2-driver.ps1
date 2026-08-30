@@ -1880,6 +1880,21 @@ else {
         @{ T = 600001;  Want = 'Bad';  Why = 'just over 600k' },
         @{ T = 990000;  Want = 'Bad';  Why = 'nearly a full 1M window' }
     )
+    # 🔑 THE DOT BREATHES ONLY WHILE IT IS WORKING. The one animation in the
+    # window, so it has to mean something: started for a busy session, stopped
+    # dead for anything else. A storyboard left running on a control that has
+    # moved on keeps a timer alive and pulses about a session that finished an
+    # hour ago.
+    Set-WorkingPulse $false
+    Set-WorkingPulse $true
+    if (-not $script:pulseOn) { Fail 'the working pulse would not start' }
+    else {
+        Set-WorkingPulse $false
+        if ($script:pulseOn) { Fail 'the working pulse would not stop' }
+        elseif ($ui.PaneStateDot.Opacity -ne 1.0) { Fail "the dot was left at opacity $($ui.PaneStateDot.Opacity) after the pulse stopped" }
+        else { Pass 'the working dot pulses while a session is mid-turn and stops when it is not' }
+    }
+
     $ctxBad = 0
     foreach ($cc in $ctxCases) {
         $got = Get-CtxBrush ([int]$cc.T)
