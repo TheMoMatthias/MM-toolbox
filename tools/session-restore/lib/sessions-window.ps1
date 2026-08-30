@@ -425,6 +425,11 @@ function Sort-ManagerRows { param($Rows)
 }
 
 function Build-Manager {
+    # 🪤 THE BRUSH IS LOOKED UP ONCE, NOT PER ROW. FindResource walks the
+    # resource tree, and this was doing it for every ticked conversation on
+    # every sort - 200 tree walks behind a click that has 50 ms to answer in.
+    $tickOn  = $window.FindResource('TextMax')
+    $tickOff = [System.Windows.Media.Brushes]::Transparent
     $cut = (Get-Date).AddDays(-7)
     $cutTicks = $cut.Ticks
     $items = New-Object System.Collections.Generic.List[object]
@@ -497,12 +502,12 @@ function Build-Manager {
                 # the worktree only when that is news; when the names match it
                 # still reports that the conversation is isolated, without
                 # spending a column saying the same word twice.
-                Lane = (Get-LaneLabel $r $t.Text)
+                Lane = $r.Lane
                 Said = $saidText
                 Age  = (Get-AgeTicks $r.At)
                 # The tick is a FILLED SQUARE or an empty one - a shape, not a
                 # colour, so it survives everything the accents do not.
-                TickBg = $(if ([bool]$r.S.enabled) { $window.FindResource('TextMax') } else { [System.Windows.Media.Brushes]::Transparent })
+                TickBg = $(if ([bool]$r.S.enabled) { $tickOn } else { $tickOff })
             })
         }
     }
@@ -829,10 +834,20 @@ function Update-Model {
                 # 'sort manager: lane' were the last two gestures over 50 ms.
                 # Same reasoning as At above.
                 T = (Get-Title $s $d)
+                # The lane label too: it is a pure function of the row and its title,
+                # and Build-Manager was recomputing it for all 200 rows on every
+                # sort click. Same reasoning as T and At.
+                Lane = ''
             })
         }
     }
-    foreach ($r in $rows) { $r.Band = Get-Band $r }
+    # Band, and the lane label - both pure functions of a finished row, both
+    # wanted by every list build, so both are answered once here rather than
+    # per row per keystroke.
+    foreach ($r in $rows) {
+        $r.Band = Get-Band $r
+        $r.Lane = (Get-LaneLabel $r "$($r.T.Text)")
+    }
     $script:model = $rows
     Update-ProjectLabels
 
