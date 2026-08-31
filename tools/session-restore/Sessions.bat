@@ -39,9 +39,32 @@ if defined SR_GUI_SHOW (
     exit /b %ERRORLEVEL%
 )
 
-REM start "" detaches, so this console closes at once instead of sitting behind
-REM the window for as long as it is open. -WindowStyle Hidden keeps the
-REM PowerShell console off the screen. Anything that goes wrong is written to
-REM .state\restore.log -- that is the file to read if nothing appears.
+REM ---------------------------------------------------------------------------
+REM A FRESH MACHINE HAS NO Sessions.exe, AND THAT IS BY DESIGN. The exe and its
+REM icon are both COMPILED AND DRAWN by app\build.ps1 so the repo carries no
+REM checked-in binary -- which is right, and means a clone has the sources and
+REM nothing built. Double-clicking an exe that was never built does nothing at
+REM all, and that is what "the exe is not showing correctly" looks like on a
+REM second machine.
+REM
+REM So this builds it once, on demand, and then gets out of the way. It is a few
+REM seconds the first time on any machine and nothing on every run after.
+if not exist "%~dp0Sessions.exe" (
+    echo Building Sessions.exe for this machine, one moment...
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0app\build.ps1" -Quiet
+)
+
+REM Prefer the exe: it hosts the runspace itself, carries the app's own icon in
+REM Alt-Tab and the taskbar, and opens ONCE however many times it is started.
+if exist "%~dp0Sessions.exe" (
+    start "" "%~dp0Sessions.exe" %*
+    exit /b 0
+)
+
+REM The fallback, for a machine where the exe will not build or an antivirus has
+REM quarantined it. start "" detaches, so this console closes at once instead of
+REM sitting behind the window for as long as it is open. -WindowStyle Hidden
+REM keeps the PowerShell console off the screen. Anything that goes wrong is
+REM written to .state\restore.log -- that is the file to read if nothing appears.
 start "" powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0lib\sessions-window.ps1" %*
 exit /b 0
