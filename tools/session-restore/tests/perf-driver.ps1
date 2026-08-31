@@ -310,6 +310,21 @@ if ($sessions.Count -ge 2 -and $script:__b) {
         } 'GESTURE'
     } else { Note 'no tool run in this tail - cannot profile opening one' }
 
+    # 🔴 THE TICK THE OPERATOR ACTUALLY FEELS. A working conversation calls
+    # Update-Document every time its transcript grows, and that used to rebuild
+    # every block in the document. This is the same content through both paths.
+    $abFull = Bench 'a growth tick, REBUILDING the document (the old behaviour)' {
+        $script:docKey = ''; $script:docTurns = $null
+        Set-ReadDocument -Blocks $script:__b -Truncated $false
+    } 'GESTURE' 5
+    $abAppend = Bench 'a growth tick, APPENDING the tail (now)' {
+        Set-ReadDocument -Blocks $script:__b -Truncated $false
+    } 'GESTURE' 5
+    if ($abFull -gt 0 -and $abAppend -gt 0) {
+        Note ("a growth tick: {0:N0} ms rebuilding, {1:N0} ms appending - {2:N0} ms saved every time a watched session writes" -f `
+              $abFull, $abAppend, ($abFull - $abAppend))
+    }
+
     # 🔴 CONSTRUCTION VERSUS LAYOUT, which is what decides where a fix belongs.
     #
     # 🪤 DO NOT MEASURE LAYOUT BY RE-ASSIGNING A DOCUMENT WPF HAS ALREADY LAID

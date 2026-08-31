@@ -2295,6 +2295,89 @@ else {
             } else { Pass 'and that text is the conversation, not just the header the pane draws' }
 
             # ===============================================================
+            # 🔴 GROWTH IS AN APPEND, AND IT MUST NOT DRIFT FROM A REBUILD.
+            #
+            # A working conversation used to rebuild this entire document every
+            # time it wrote - measured ~250 ms - and assign a NEW FlowDocument,
+            # which resets the scroll extent. Scroll up to read something while
+            # a session worked and every write threw you back to where the pane
+            # decided. Growth now appends into the document already on screen.
+            #
+            # The one thing that matters about an append is that it produces
+            # what a full rebuild would. A second renderer that drifts from the
+            # first is a bug NEITHER HALF CAN SEE - each looks right alone.
+            # ===============================================================
+            $flatten = {
+                param($d)
+                $sb = New-Object System.Text.StringBuilder
+                $st = New-Object System.Collections.Generic.Stack[object]
+                # Pushed in order and popped, so both documents are walked the
+                # same way - the comparison is of content, not of traversal.
+                foreach ($b in $d.Blocks) { $st.Push($b) }
+                $gd = 0
+                while ($st.Count -and $gd -lt 40000) {
+                    $gd++
+                    $e = $st.Pop()
+                    if ($e -is [System.Windows.Documents.Run]) { $null = $sb.Append("$($e.Text)").Append("`n"); continue }
+                    if ($e -is [System.Windows.Controls.TextBlock]) { $null = $sb.Append("$($e.Text)").Append("`n"); continue }
+                    foreach ($p in @('Blocks', 'Inlines')) {
+                        try { if ($e.PSObject.Properties[$p] -and $e.$p) { foreach ($k in $e.$p) { $st.Push($k) } } } catch { }
+                    }
+                    try { if ($e.PSObject.Properties['Child'] -and $e.Child) { $st.Push($e.Child) } } catch { }
+                    try { if ($e.PSObject.Properties['Children'] -and $e.Children) { foreach ($k in $e.Children) { $st.Push($k) } } } catch { }
+                }
+                return $sb.ToString()
+            }
+            $srcAll = @($script:__blk)
+            if ($srcAll.Count -lt 6) { Note "only $($srcAll.Count) blocks here - not enough to exercise the append path" }
+            else {
+                $keyWas = $script:docKey; $pathWas = $script:docPath
+                try {
+                    $script:docPath = 'C:\append-under-test.jsonl'
+                    $cut = [int]($srcAll.Count * 0.7)
+                    if ($cut -lt 2) { $cut = 2 }
+                    $head = @($srcAll[0..($cut - 1)])
+                    $testKey = ('{0}|{1}|{2}' -f "$($script:docPath)".ToLower(), $script:tailBytes, $script:toolView)
+
+                    $script:docKey = ''; $script:docTurns = $null
+                    Set-ReadDocument -Blocks $head -Truncated $false
+
+                    # 🔴 THE FAST PATH MUST ACTUALLY BE TAKEN. Without this the
+                    # comparison below passes trivially whenever the append
+                    # refuses and silently rebuilds - which is every way this
+                    # can regress.
+                    $turnsAll = @(Get-ReadTurns $srcAll)
+                    if (-not (Test-CanAppend -NewTurns $turnsAll -Key $testKey)) {
+                        Fail 'pure growth was refused by the append path - the pane would rebuild on every write'
+                    } else {
+                        Pass 'a transcript that only grew is recognised as appendable'
+                        Set-ReadDocument -Blocks $srcAll -Truncated $false
+                        $apCount = $ui.PaneDoc.Document.Blocks.Count
+                        $apText = (& $flatten $ui.PaneDoc.Document)
+
+                        # The same content, built from nothing.
+                        $script:docKey = ''; $script:docTurns = $null
+                        Set-ReadDocument -Blocks $srcAll -Truncated $false
+                        $fullCount = $ui.PaneDoc.Document.Blocks.Count
+                        $fullText = (& $flatten $ui.PaneDoc.Document)
+
+                        if ($apCount -ne $fullCount) {
+                            Fail ("appending produced {0} blocks where a rebuild produces {1}" -f $apCount, $fullCount)
+                        } elseif ($apText -ne $fullText) {
+                            $n1 = "$apText".Length; $n2 = "$fullText".Length
+                            Fail ("appending and rebuilding render different text ({0} vs {1} characters)" -f $n1, $n2)
+                        } else {
+                            Pass ("appending a grown transcript renders exactly what a rebuild does: {0} blocks, {1:N0} characters" -f $apCount, "$apText".Length)
+                        }
+                    }
+                } finally {
+                    $script:docKey = $keyWas; $script:docPath = $pathWas
+                    $script:docTurns = $null
+                    try { Show-Selected -Force } catch { }
+                }
+            }
+
+            # ===============================================================
             # 🔴 AND THE MACHINERY MAY NOT DROWN IT. A Remote Control session
             # prints a notice per artifact per reconnect, and folded they were
             # each drawn in full - a rendered pane turned out to be ELEVEN of

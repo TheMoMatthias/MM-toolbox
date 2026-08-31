@@ -1755,7 +1755,7 @@ function Add-ReadProse {
             $i++
             # A fenced block is machine text: mono, on the rail, and NOT in a
             # card. Nothing in this document is in a card any more.
-            $tb = New-ReadText -Text (($code -join "`n").TrimEnd()) -Brush $Pal.TextHigh -Size ($Size - 0.5) -Mono -Wrap -Line ($Size + 3.5)
+            $tb = New-ReadText -Text (($code -join "`n").TrimEnd()) -Brush $Pal.TextHigh -Size $script:MonoSize -Mono -Wrap -Line 20
             $Doc.Blocks.Add((New-RailBlock -Child $tb -Kind 'result' -Indent $Indent -Top 10 -Bottom 10 -Rail))
             continue
         }
@@ -1960,6 +1960,17 @@ $script:readLead = 18.0
 # their text at exactly the same x. That is the whole point of the column, and
 # two numbers that were meant to be equal would drift the first time one moved.
 $script:GutterW = 22.0
+
+# THE SIZE MACHINE TEXT IS SET AT - commands, their output, fenced code.
+#
+# Windows Terminal's default is Cascadia Mono at 12 POINT, which is 16 device
+# pixels, and this pane was drawing the same face at 12px - three quarters of
+# the size, which is why executed commands read as smaller and thinner here
+# than in the terminal beside it. 15 rather than a literal 16: prose is set at
+# 13, and machine text three pixels above the prose around it already carries
+# the weight the terminal has without the block dominating the reply it sits
+# in. One knob, so the whole of the machine voice moves together.
+$script:MonoSize = 15.0
 
 # 🔴 THE MARKER TABLE - ONE ROW PER BLOCK KIND, AND EVERY KIND HAS ONE.
 #
@@ -2293,7 +2304,7 @@ function Add-MonoDetail { param($Panel, [string]$Text, $Brush)
     if (-not $Brush) { $Brush = $Pal.TextMid }
     $t = "$Text".TrimEnd()
     if (-not $t) { return }
-    $tb = New-ReadText -Text (Compress-SRPath $t) -Brush $Brush -Size 12 -Mono -Wrap -Line 16.5
+    $tb = New-ReadText -Text (Compress-SRPath $t) -Brush $Brush -Size $script:MonoSize -Mono -Wrap -Line 20
     $null = $Panel.Children.Add((New-BoundedText $tb))
 }
 
@@ -2401,7 +2412,7 @@ function Add-RunDetail { param($Panel, $Calls)
             if ($ck -ne 'agent') { $stmts = @(Split-SRCommandLine $argText) }
             foreach ($stmt in $stmts) {
                 $ar = New-ReadText -Text $stmt -Brush $(if ($c.Bad) { $Pal.Bad } else { $Pal.TextHigh }) `
-                                   -Size 12 -Mono -Wrap -Line 16.5
+                                   -Size $script:MonoSize -Mono -Wrap -Line 20
                 # The hanging indent that makes a wrapped command readable: the
                 # statement starts at the left and its continuation lines sit in
                 # from it, so you can see where one command ends and the next
@@ -2429,7 +2440,7 @@ function Add-RunDetail { param($Panel, $Calls)
             $rm.FontFamily = $script:MonoFace
             $rm.VerticalAlignment = 'Top'
             $null = $rg.Children.Add($rm)
-            $rt = New-ReadText -Text (Compress-SRPath $resText) -Brush $Pal.TextLow -Size 12 -Mono -Wrap -Line 16.5
+            $rt = New-ReadText -Text (Compress-SRPath $resText) -Brush $Pal.TextLow -Size $script:MonoSize -Mono -Wrap -Line 20
             $sv = New-BoundedText $rt
             [System.Windows.Controls.Grid]::SetColumn($sv, 1)
             $null = $rg.Children.Add($sv)
@@ -2478,7 +2489,7 @@ function Add-RunDetail { param($Panel, $Calls)
             $hl = New-ReadText -Text (Get-TrackedText $shLabel) -Brush (Get-MarkBrush 'shell') -Size 9.5 -Semi
             $null = $sv2.Children.Add($hl)
             if ($shText) {
-                $bt = New-ReadText -Text $shText -Brush $Pal.TextMid -Size 12 -Mono -Wrap -Line 16.5
+                $bt = New-ReadText -Text $shText -Brush $Pal.TextMid -Size $script:MonoSize -Mono -Wrap -Line 20
                 $bt.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
                 $null = $sv2.Children.Add((New-BoundedText $bt))
             }
@@ -2596,7 +2607,7 @@ function Get-ToolViewLabel {
 }
 
 function Build-ReadDocument {
-    param($Blocks, [bool]$Truncated = $false)
+    param($Blocks, [bool]$Truncated = $false, $Turns = $null)
     $doc = New-Object System.Windows.Documents.FlowDocument
     $doc.FontFamily  = $script:UiFace
     # TRANSPARENT, NOT Ink. The document was painting the GROUND colour - the
@@ -2671,8 +2682,31 @@ function Build-ReadDocument {
         $doc.Blocks.Add((New-RailBlock -Child $bd -Kind 'system' -Top 0 -Bottom 8))
     }
 
-    $hidden = 0
-    foreach ($t in @(Get-ReadTurns $Blocks)) {
+    $script:docHidden = 0
+    # HOW MANY DOCUMENT BLOCKS EACH TURN PRODUCED, in order. This is what makes
+    # an incremental update possible: a turn is not one block - a prose turn is
+    # a paragraph per source line - so appending or replacing the last turn needs
+    # to know exactly how much of the document belongs to it.
+    $script:docTurnCounts = New-Object System.Collections.Generic.List[int]
+    # Folding blocks into turns is not free, and Set-ReadDocument has already
+    # done it to decide whether this build was needed at all. Reuse it.
+    if ($Turns) { $script:docTurns = @($Turns) } else { $script:docTurns = @(Get-ReadTurns $Blocks) }
+    foreach ($t in $script:docTurns) {
+        $before = $doc.Blocks.Count
+        Add-ReadTurn -Doc $doc -Turn $t
+        $script:docTurnCounts.Add($doc.Blocks.Count - $before)
+    }
+    return $doc
+}
+
+# ONE TURN, RENDERED. Extracted from Build-ReadDocument's loop so that the
+# incremental path and the full build are the SAME code - a second renderer
+# that drew "the new turns" slightly differently from the first would be a bug
+# nobody could see, because both halves would look right on their own.
+function Add-ReadTurn { param($Doc, $Turn)
+    $doc = $Doc
+    $t = $Turn
+    if ($true) {
         switch ($t.Kind) {
             'you' {
                 # A human turn is the one real boundary in a conversation, and
@@ -2681,7 +2715,7 @@ function Build-ReadDocument {
                 # rather than structure - the marker says who is speaking now.
                 Add-ReadRule -Doc $doc -Brush $PalEdge.Out -Height 1
                 $trail = ''
-                if ($hidden -gt 0) { $trail = "$hidden steps hidden"; $hidden = 0 }
+                if ($script:docHidden -gt 0) { $trail = "$script:docHidden steps hidden"; $script:docHidden = 0 }
                 Add-ReadLabel -Doc $doc -Text 'you said' -Brush $Pal.Out -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
                 Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextMax -Size $script:readSize -Line $script:readLead -Kind 'you'
@@ -2694,7 +2728,7 @@ function Build-ReadDocument {
             }
             'said' {
                 $trail = ''
-                if ($hidden -gt 0) { $trail = "$hidden steps hidden"; $hidden = 0 }
+                if ($script:docHidden -gt 0) { $trail = "$script:docHidden steps hidden"; $script:docHidden = 0 }
                 Add-ReadLabel -Doc $doc -Text 'claude' -Brush $Pal.In -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
                 Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextHigh -Size $script:readSize -Line $script:readLead -Kind 'said'
@@ -2734,7 +2768,7 @@ function Build-ReadDocument {
                 # followed by all sixteen and there was no way to shut just this
                 # one. It folds on its own now; Steps only chooses where it
                 # starts. Nothing is discarded either way.
-                if ($script:toolView -eq 'hidden') { $hidden += [int]$t.Count; break }
+                if ($script:toolView -eq 'hidden') { $script:docHidden += [int]$t.Count; break }
                 $n = [int]$t.Count
                 if ($n -lt 1) { $n = 1 }
                 $body = "$($t.Body)"
@@ -2808,7 +2842,7 @@ function Build-ReadDocument {
                 $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'thinking' -Top 9 -Bottom 5))
             }
             'run' {
-                if ($script:toolView -eq 'hidden') { $hidden += @($t.Calls).Count; break }
+                if ($script:toolView -eq 'hidden') { $script:docHidden += @($t.Calls).Count; break }
 
                 # 🔴 EVERY CALL, NOT THE FIRST EIGHT. The old renderer stopped
                 # at 8 and printed "and N more" - a run of twelve tool calls
@@ -2839,7 +2873,6 @@ function Build-ReadDocument {
             }
         }
     }
-    return $doc
 }
 
 # ===========================================================================
@@ -3424,6 +3457,11 @@ function Update-Document { param([switch]$Wait)
     # PARENT's id, sub-agent or not: the tasks directory belongs to the session,
     # and an agent's shells are filed under the session that owns it.
     $script:docSessionId = "$($r.Id)"
+    # 🪤 THE APPEND KEY IS THE PATH, NOT THE SESSION ID. A sub-agent is read
+    # under its PARENT's id (its shells live in the parent's tasks directory),
+    # so keying the incremental update on the id would make a session and its
+    # own sub-agent look like the same document and append one onto the other.
+    $script:docPath = $j
     if (-not $j -or -not (Test-Path -LiteralPath $j)) {
         $ui.PaneDoc.Document = $null
         $ui.PaneEmpty.Text = $(if ($it.Kind -eq 'agent') {
@@ -3559,11 +3597,93 @@ function Complete-DocParse {
 # Building the document and putting it on screen. Separated from the parse so
 # the expensive half can move threads and this half - which cannot, because WPF
 # objects have thread affinity - stays here and stays inside budget.
+# What the document on screen was built from, so the next update can tell
+# whether it is a continuation of the same conversation or a different one.
+$script:docKey = ''
+
+# 🔴 A CONVERSATION THAT IS WORKING REBUILT THE WHOLE DOCUMENT EVERY TIME IT
+# WROTE, and that is the lag you feel while watching one.
+#
+# The follow tick calls this whenever the transcript grows. It threw away every
+# block and built them again - measured at ~250 ms on a real conversation - and
+# then assigned a NEW FlowDocument, which resets the scroll extent. The
+# stick-to-bottom logic below saves your place only if you were AT the bottom;
+# scroll up to read something while the session is working and every write
+# threw you back. Reported as scrolling that lags.
+#
+# So growth is now an APPEND. Only the tail of the document is touched:
+#
+#   Everything before the last turn is IMMUTABLE. A finished turn cannot change
+#   - the records behind it are written and done.
+#
+#   THE LAST TURN CAN. A run gains another call, consecutive prose merges, a
+#   notice joins a run of notices. So the last turn is re-rendered rather than
+#   assumed, and only turns after it are appended.
+#
+# Appending MUTATES the document already on screen instead of replacing it,
+# which is what keeps the scroll offset: the reader stays exactly where they
+# were, with no save-and-restore to get wrong.
+#
+# 🪤 ANY DOUBT FALLS BACK TO A FULL BUILD. A different conversation, a changed
+# tail budget, a shorter turn list than last time (a compact), a Steps setting
+# that moved - each of those can change blocks anywhere in the document, and
+# there is no cheap way to know which. Rebuilding is always correct; appending
+# is only correct under conditions this checks first.
+function Test-CanAppend { param($NewTurns, [string]$Key)
+    if ($script:docKey -ne $Key) { return $false }
+    if (-not $script:docTurns -or -not $script:docTurnCounts) { return $false }
+    $old = @($script:docTurns)
+    $new = @($NewTurns)
+    if ($old.Count -eq 0) { return $false }
+    if ($new.Count -lt $old.Count) { return $false }
+    if ($script:docTurnCounts.Count -ne $old.Count) { return $false }
+    if (-not $ui.PaneDoc.Document) { return $false }
+    # Every turn before the last must be untouched. Kind and body length is a
+    # cheap signature that catches a re-flow without comparing whole bodies.
+    for ($i = 0; $i -lt $old.Count - 1; $i++) {
+        if ("$($old[$i].Kind)" -ne "$($new[$i].Kind)") { return $false }
+        if ("$($old[$i].Body)".Length -ne "$($new[$i].Body)".Length) { return $false }
+        if (@($old[$i].Calls).Count -ne @($new[$i].Calls).Count) { return $false }
+    }
+    return $true
+}
+
+function Add-ReadDocumentTail { param($NewTurns)
+    $doc = $ui.PaneDoc.Document
+    $old = @($script:docTurns)
+    $new = @($NewTurns)
+    # Drop the blocks belonging to the last rendered turn - it is the one that
+    # may have changed - then render it again along with everything new.
+    $lastCount = [int]$script:docTurnCounts[$script:docTurnCounts.Count - 1]
+    for ($k = 0; $k -lt $lastCount; $k++) {
+        if ($doc.Blocks.Count -le 0) { break }
+        $null = $doc.Blocks.Remove($doc.Blocks.LastBlock)
+    }
+    $script:docTurnCounts.RemoveAt($script:docTurnCounts.Count - 1)
+    for ($i = $old.Count - 1; $i -lt $new.Count; $i++) {
+        $before = $doc.Blocks.Count
+        Add-ReadTurn -Doc $doc -Turn $new[$i]
+        $script:docTurnCounts.Add($doc.Blocks.Count - $before)
+    }
+    $script:docTurns = $new
+}
+
 function Set-ReadDocument { param($Blocks, [bool]$Truncated = $false)
-    $doc = Build-ReadDocument -Blocks $Blocks -Truncated $Truncated
+    $key = ('{0}|{1}|{2}' -f "$($script:docPath)".ToLower(), $script:tailBytes, $script:toolView)
+    $turns = @(Get-ReadTurns $Blocks)
+    if ((-not $Truncated) -and (Test-CanAppend -NewTurns $turns -Key $key)) {
+        $stickA = Test-AtBottom
+        if ($script:docToBottom) { $stickA = $true; $script:docToBottom = $false }
+        Add-ReadDocumentTail -NewTurns $turns
+        $ui.PaneEmpty.Visibility = $V_Hide
+        if ($stickA) { Move-ToBottom }
+        return
+    }
+    $doc = Build-ReadDocument -Blocks $Blocks -Truncated $Truncated -Turns $turns
     if ($doc -isnot [System.Windows.Documents.FlowDocument]) {
         throw ('Build-ReadDocument returned {0}, not a FlowDocument - something in it emitted to the pipeline' -f $doc.GetType().Name)
     }
+    $script:docKey = $key
     # 🔴 STICK TO THE BOTTOM, BUT NEVER FIGHT THE READER.
     #
     # The newest line is the one you want, so a fresh conversation opens at the
