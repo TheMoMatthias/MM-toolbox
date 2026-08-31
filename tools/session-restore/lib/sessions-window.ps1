@@ -2371,10 +2371,40 @@ function Build-ReadDocument {
     # SAY WHEN IT IS PARTIAL. A pane that silently shows the last slice of a
     # conversation reads as the whole of a short one.
     if ($Truncated) {
-        $p = New-Object System.Windows.Documents.Paragraph
-        $p.Margin = New-Object System.Windows.Thickness 0, 0, 0, 6
-        $p.Inlines.Add((New-ReadRun -Text ('showing the last {0} KB of a longer conversation - press L to load earlier' -f [int]($script:tailBytes / 1KB)) -Brush $Pal.TextDim -Size 11.5 -Italic))
-        $doc.Blocks.Add($p)
+        # 🔴 IT IS A CONTROL, NOT A CAPTION. This said "press L to load earlier"
+        # and was the only way to reach the rest of a long conversation - a
+        # keyboard shortcut announced in italics at the top of a document nobody
+        # had focused. Same defect as the fold captions: the thing that looks
+        # like the affordance has to BE the affordance. The L key still works.
+        $bd = New-Object System.Windows.Controls.Border
+        $bd.Background = [System.Windows.Media.Brushes]::Transparent
+        $bd.Cursor = 'Hand'
+        $bd.ToolTip = 'Load an earlier slice of this conversation (or press L)'
+        $sp = New-Object System.Windows.Controls.StackPanel
+        $sp.Orientation = 'Horizontal'
+        $up = New-Object System.Windows.Controls.TextBlock
+        $up.Text = [string][char]0x25B4
+        $up.Foreground = $Pal.TextLow
+        $up.FontSize = 9
+        $up.FontFamily = $script:MonoFace
+        $up.VerticalAlignment = 'Center'
+        $up.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
+        $null = $sp.Children.Add($up)
+        $lb = New-Object System.Windows.Controls.TextBlock
+        $lb.Text = ('load earlier   showing the last {0} KB of a longer conversation' -f [int]($script:tailBytes / 1KB))
+        $lb.Foreground = $Pal.TextDim
+        $lb.FontSize = 11.5
+        $lb.FontFamily = $script:UiFace
+        $lb.VerticalAlignment = 'Center'
+        $null = $sp.Children.Add($lb)
+        $bd.Child = $sp
+        $bd.Add_MouseLeftButtonUp({
+            param($s, $e)
+            $script:tailBytes = $script:tailBytes * 2
+            Update-Document
+            Set-Status ('loaded the last {0} KB' -f [int]($script:tailBytes / 1KB))
+        })
+        $doc.Blocks.Add((New-RailBlock -Child $bd -Kind 'system' -Top 0 -Bottom 8))
     }
 
     $hidden = 0
