@@ -1373,6 +1373,58 @@ try {
     Remove-Item -LiteralPath $askDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# --- AND AGAINST REAL RECORDS, NOT ONLY HAND-BUILT ONES --------------------
+# 🔴 THIS CARD HAD NEVER BEEN LOOKED AT. Its structure was asserted above from
+# fixtures written to match what the parser expects - which proves the parser
+# against the fixture and says nothing about whether Claude Code actually writes
+# records that shape. It renders outside the visible tail on every live
+# conversation tried, so no screenshot had ever contained one either. That is
+# exactly the gap that let three defects ship on 2026-08-30.
+#
+# `asked-round.jsonl` is three ROUNDS lifted verbatim out of a real transcript -
+# one single-question, two multi-question - and it is what
+# SR_SHOT_JSONL draws to put the card on screen for review.
+Write-Host ''
+Write-Host '--- the answered-question card, from real records ---'
+# 🪤 NOT $PSScriptRoot. The runner SPLICES each driver into a generated harness
+# under .state\ and runs THAT, so inside a suite $PSScriptRoot is .state and not
+# tests\ - the first version of this looked for the capture beside the harness
+# and failed, correctly. $SR_StateDir is the anchor that holds either way: the
+# tool root is its parent. The $PSScriptRoot fallback keeps a direct run of the
+# driver working.
+$askReal = Join-Path (Join-Path (Split-Path $SR_StateDir -Parent) 'tests') 'asked-round.jsonl'
+if (-not (Test-Path -LiteralPath $askReal)) { $askReal = Join-Path $PSScriptRoot 'asked-round.jsonl' }
+if (-not (Test-Path -LiteralPath $askReal)) {
+    Fail "the captured round is missing: $askReal"
+} else {
+    # 🪤 Assign, then wrap - the comma-guard again.
+    $arGot = Get-SRTranscriptBlocks -JsonlPath $askReal -MaxRecords 50 -MaxTailBytes 200000
+    $arBl = @($arGot)
+    $arAsk = @($arBl | Where-Object { $_.Kind -eq 'asked' })
+    if ($arAsk.Count -ne 3) { Fail "expected 3 answered rounds from the capture, got $($arAsk.Count)" }
+    else { Pass 'three real answered rounds are recognised as answered rounds' }
+
+    # One line per question, question and answer split by SOH. A round that
+    # collapsed to one line would be the old run-on defect coming back.
+    $counts = @($arAsk | ForEach-Object { @("$($_.Body)" -split "`n" | Where-Object { $_.Trim() }).Count })
+    $want = @(1, 4, 3)
+    $sorted = @($counts | Sort-Object)
+    $wantSorted = @($want | Sort-Object)
+    if (($sorted -join ',') -ne ($wantSorted -join ',')) {
+        Fail ("the rounds carried {0} questions, expected {1}" -f ($sorted -join '/'), ($wantSorted -join '/'))
+    } else { Pass 'a 1-question round and two multi-question rounds all keep every question' }
+
+    $split = 0
+    foreach ($a in $arAsk) {
+        foreach ($ln in @("$($a.Body)" -split "`n" | Where-Object { $_.Trim() })) {
+            $bits = "$ln" -split ([string][char]1), 2
+            if ($bits.Count -ne 2 -or -not "$($bits[0])".Trim() -or -not "$($bits[1])".Trim()) { $split++ }
+        }
+    }
+    if ($split) { Fail "$split real question/answer pairs did not survive as a pair" }
+    else { Pass 'every real question keeps its own answer, neither run together nor lost' }
+}
+
 # --- WHAT A SESSION SAYS ABOUT ITSELF ON ITS STATUS LINE -------------------
 # 🔴 The transcript CANNOT see a running background shell: a Bash call with
 # run_in_background gets its tool_result back immediately, carrying the shell

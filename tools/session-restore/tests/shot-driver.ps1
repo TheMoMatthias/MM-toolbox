@@ -148,17 +148,39 @@ try {
 if ($env:SR_SHOT_STEPS) { $script:toolView = "$env:SR_SHOT_STEPS" }
 
 try {
-    if ($shotSel -and ($shotSel.Kind -eq 'session' -or $shotSel.Kind -eq 'agent')) {
+    $shotJs = ''
+    # 🔴 SR_SHOT_JSONL DRAWS A TRANSCRIPT THAT IS NOT ANYBODY'S SELECTION, and
+    # it exists because some blocks cannot be reached any other way. The
+    # answered-question card renders outside the visible tail on every live
+    # conversation tried so far, so it had been asserted for days and never once
+    # LOOKED AT - the precise gap that let three defects ship on 2026-08-30.
+    #
+    # 🪤 Point it at REAL RECORDS, never at a hand-written fixture. A record
+    # invented to match what the parser expects proves the guess against itself
+    # and reads as verification - the reason the multi-select menu is still
+    # deliberately unanswerable in the relay suite. Lift the lines out of an
+    # actual transcript instead.
+    if ($env:SR_SHOT_JSONL) {
+        $shotJs = "$env:SR_SHOT_JSONL"
+        Write-Host ("  drawing the transcript at {0}" -f $shotJs)
+    } elseif ($shotSel -and ($shotSel.Kind -eq 'session' -or $shotSel.Kind -eq 'agent')) {
         $shotJs = "$($shotSel.Row.S.jsonl)"
         # A sub-agent's own transcript, which is a real file beside the parent's
         # and parses with the same reader.
         if ($shotSel.Kind -eq 'agent') { $shotJs = "$($shotSel.Sub.Path)" }
-        if ($shotJs -and (Test-Path -LiteralPath $shotJs)) {
-            $shotTrunc = $false
-            try { $shotTrunc = ((Get-Item -LiteralPath $shotJs).Length -gt $script:tailBytes) } catch { }
-            $shotGot = Get-SRTranscriptBlocks -JsonlPath $shotJs -MaxRecords 220 -MaxTailBytes $script:tailBytes
-            Set-ReadDocument -Blocks @($shotGot) -Truncated $shotTrunc
-        }
+    }
+    if ($shotJs -and (Test-Path -LiteralPath $shotJs)) {
+        $shotTrunc = $false
+        try { $shotTrunc = ((Get-Item -LiteralPath $shotJs).Length -gt $script:tailBytes) } catch { }
+        # 🪤 ASSIGN, THEN WRAP. Get-SRTranscriptBlocks comma-guards its return,
+        # so @(Get-SRTranscriptBlocks ...) in ONE step is a single element
+        # holding every block - the bug that made this pane blank in the
+        # shipped window, and one this suite walked into again while the
+        # sub-agent assertions were being written.
+        $shotGot = Get-SRTranscriptBlocks -JsonlPath $shotJs -MaxRecords 220 -MaxTailBytes $script:tailBytes
+        Set-ReadDocument -Blocks @($shotGot) -Truncated $shotTrunc
+    } elseif ($shotJs) {
+        Write-Host ("  [warn] no transcript at {0}" -f $shotJs)
     }
 } catch { Write-Host "  [warn] the document could not be built for the shot: $($_.Exception.Message)" }
 
