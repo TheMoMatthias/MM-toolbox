@@ -1270,7 +1270,29 @@ function Build-Sessions {
             # answer half of it. See the note beside the marks below.
             $scr = Get-RowScreenSig "$($r.Id)"
             $rowShells = $(if ($scr) { [int]$scr.Shells } else { 0 })
-            $rowAgents = $(if ($r.Sig) { [int]$r.Sig.Agents } else { 0 })
+            # 🔴 ACTIVE, ON EVIDENCE - NOT "A TASK ID THE TAIL NEVER SAW
+            # ANSWERED". The count came from $r.Sig.Agents, which is an open
+            # `Task` tool_use with no tool_result quoting it back in the read
+            # window. That is a fine way to spot an agent going out and a
+            # terrible way to know one is still there: once the answering
+            # result scrolls past the end of the tail, the call looks open
+            # FOREVER and the row claims an agent that finished hours ago.
+            # Reported on F2-SPINE, which showed a sub-agent with none running.
+            #
+            # A sub-agent has no process to ask about, so the evidence is its
+            # own transcript still being written - see $SR_SubAgentLiveSecs.
+            # The session's own status line still outranks that when it
+            # actually named a number, because that is first-party and live.
+            #
+            # 🪤 `-ge 0` IS HOW THIS CACHE SAYS "THE SCREEN NAMED A NUMBER" -
+            # Set-RowScreenSig files -1 for "the status line did not say" and
+            # carries no SawAgents flag of its own. Testing a flag that is not
+            # on the object made every screen-supplied count fall through to the
+            # fallback, and the suite caught it: a staged session with a shell
+            # AND a sub-agent drew neither mark.
+            $subsAll = @(Get-RowSubAgents $r)
+            $subsLive = @($subsAll | Where-Object { $_.Live })
+            $rowAgents = $subsLive.Count
             if ($scr -and [int]$scr.Agents -ge 0) { $rowAgents = [int]$scr.Agents }
             # The context, from the session's own bar where we have it. The
             # transcript reader has to INFER the window from the token count, so
@@ -1356,15 +1378,33 @@ function Build-Sessions {
             # 🪤 THE PARENT STAYS OPEN WHILE ONE OF ITS AGENTS IS SELECTED, or
             # selecting an agent would remove the row that is selected on the
             # very next rebuild - the list would fight the click.
-            $subs = @(Get-RowSubAgents $r)
+            # 🔴 ONLY WHAT IS ACTUALLY RUNNING. These rows listed every
+            # sub-agent a conversation had EVER spawned - my call, and the wrong
+            # one: the operator reported seeing sub-agent sessions with none
+            # deployed, twice. The list answers "what is happening now", and a
+            # row for an agent that finished last week is not an answer to that.
+            #
+            # 🪤 THE SELECTION IS CHECKED AGAINST ALL OF THEM, not just the live
+            # ones. An agent that is being READ has usually just gone quiet, and
+            # filtering before the check would delete the row under the cursor
+            # on the next rebuild.
+            $subsShow = @($subsAll | Where-Object { $_.Live })
             $expand = ($script:selId -eq $r.Id)
             if (-not $expand -and "$($script:selId)".StartsWith('agent:')) {
-                foreach ($sa in $subs) {
-                    if (('agent:' + $sa.Id) -eq "$($script:selId)") { $expand = $true; break }
+                foreach ($sa in $subsAll) {
+                    if (('agent:' + $sa.Id) -eq "$($script:selId)") {
+                        $expand = $true
+                        # Keep the one being read on screen even once it stops
+                        # writing, or selecting it would close it.
+                        if ($subsShow.Count -eq 0 -or -not @($subsShow | Where-Object { $_.Id -eq $sa.Id }).Count) {
+                            $subsShow = @($subsShow) + @($sa)
+                        }
+                        break
+                    }
                 }
             }
             if (-not $expand) { continue }
-            foreach ($sa in $subs) {
+            foreach ($sa in $subsShow) {
                 $tag = $(if ($sa.IsTeammate) { 'teammate' } else { 'task' })
                 $tip = ('{0} - {1}' -f $sa.Label, $(if ($sa.Description) { $sa.Description } else { 'no description recorded' }))
                 # 🔑 IS IT STILL WORKING? A sub-agent has no process of its own
@@ -1375,11 +1415,10 @@ function Build-Sessions {
                 # refreshes for free because Build-Sessions already runs on the
                 # 2.5s vitals sweep. No second poller; one was removed for
                 # doubling the view and is not coming back.
-                $live = $false
-                if ($sa.HasTranscript) {
-                    try { $live = (((Get-Date) - $sa.When).TotalSeconds -lt 60) } catch { }
-                }
-                if ($live) { $tag = $tag + '  -  working' }
+                # One definition of live, in Get-SRSubAgents, used by both the
+                # row and the count on the parent. Two would drift.
+                if ($sa.Live) { $tag = $tag + '  -  working' }
+                else { $tag = $tag + '  -  finished' }
                 if (-not $sa.HasTranscript) {
                     # A real state, said out loud. 45 of 374 sub-agents on this
                     # machine have metadata and no transcript - showing them as

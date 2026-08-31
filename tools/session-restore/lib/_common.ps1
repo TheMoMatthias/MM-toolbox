@@ -3736,6 +3736,17 @@ function Get-SRSubAgentDir { param([string]$JsonlPath)
     return (Join-Path (Join-Path $dir $stem) 'subagents')
 }
 
+# 🔴 WHAT MAKES A SUB-AGENT "ACTIVE", and why it is the transcript's mtime.
+#
+# A sub-agent has NO PROCESS OF ITS OWN - it runs inside its parent, so
+# `claude agents --json` cannot be asked about it and there is no pid to check.
+# What a running one does do is WRITE, and a finished one stops writing
+# permanently. So a file touched recently is an agent still going, and the
+# window is generous on purpose: an agent thinking for a minute writes nothing,
+# and a threshold tight enough to catch that would flicker. Three minutes
+# tolerates a long pause and still excludes anything that finished.
+$SR_SubAgentLiveSecs = 180
+
 function Get-SRSubAgents { param([string]$JsonlPath)
     $out = New-Object System.Collections.Generic.List[object]
     $dir = Get-SRSubAgentDir $JsonlPath
@@ -3802,6 +3813,9 @@ function Get-SRSubAgents { param([string]$JsonlPath)
             # a one-shot the session dispatched. Different things, and the row
             # says which.
             IsTeammate    = ($kind -eq 'in_process_teammate')
+            # Still going, on the evidence of its own file. An agent with no
+            # transcript can never be Live: there is nothing writing.
+            Live          = ($has -and (((Get-Date) - $when).TotalSeconds -lt $SR_SubAgentLiveSecs))
         })
     }
     # Newest first, matching every other list in this tool.

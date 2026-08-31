@@ -1238,6 +1238,25 @@ try {
     elseif ("$($probe[0].ToolUseId)" -ne 'toolu_01ABC') { Fail 'the toolUseId that ties it to the parent call was lost' }
     else { Pass 'a Task sub-agent with no transcript is reported, not hidden' }
 
+    # 🔴 ACTIVE MEANS STILL WRITING, and this is the assertion behind "I am
+    # seeing sub-agent sessions when none are deployed". Measured on this
+    # machine the day it was reported: 374 sub-agents on disk, ZERO live. The
+    # list showed the 374. A sub-agent has no process to ask about, so a
+    # transcript still being written is the whole of the evidence.
+    if (-not $mate[0].Live) { Fail 'an agent whose transcript was written a moment ago is not reported as live' }
+    else { Pass 'an agent still writing its transcript is live' }
+    if ($probe[0].Live) { Fail 'an agent with NO transcript was reported as live - there is nothing writing' }
+    else { Pass 'an agent with no transcript is never live' }
+    # And one that finished: same file, backdated past the window.
+    $oldTx = Join-Path $subs 'agent-mate-aaa.jsonl'
+    (Get-Item -LiteralPath $oldTx).LastWriteTime = (Get-Date).AddSeconds(-($SR_SubAgentLiveSecs + 120))
+    $saOld = @(Get-SRSubAgents -JsonlPath $saJs)
+    $mateOld = @($saOld | Where-Object { $_.Label -eq 'mate' })
+    if (-not $mateOld.Count) { Fail 'the backdated agent vanished' }
+    elseif ($mateOld[0].Live) { Fail "an agent whose transcript stopped $($SR_SubAgentLiveSecs + 120)s ago still reads as live" }
+    elseif (-not $mateOld[0].HasTranscript) { Fail 'backdating the file lost its transcript' }
+    else { Pass 'an agent that stopped writing is NOT live, but is still readable - the check can go both ways' }
+
     # A conversation with no subagents directory is the common case and must be
     # cheap and silent, not an error.
     $none = @(Get-SRSubAgents -JsonlPath (Join-Path $saDir 'nothing.jsonl'))
