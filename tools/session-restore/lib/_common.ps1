@@ -3854,15 +3854,25 @@ function Get-SRTranscriptBlocks {
                             if ($p.Count) { $arg = "$($p[0].Value)" }
                         }
                     }
-                    $arg = ($arg -replace '\s+', ' ').Trim()
-                    # 🔴 COMPRESS BEFORE TRUNCATING, or the 150-char budget is
-                    # spent on the part of the path that is identical on every
-                    # line and the end - the part that says WHICH worktree - is
-                    # what gets cut. Truncation also destroys the closing quote,
-                    # so a path shortened afterwards can no longer be recognised
-                    # as quoted at all: the order here is the whole point.
-                    $arg = Compress-SRPath $arg
-                    if ($arg.Length -gt 150) { $arg = $arg.Substring(0, 147) + [string][char]0x2026 }
+                    # 🔴 THE FULL ARGUMENT REACHES THE RENDERER. This used to
+                    # compress the path and then cut at 150 characters, HERE, so
+                    # the command was already destroyed before anything could
+                    # choose to show it - the reported `-Shot "C:\...\444f9...`
+                    # survived every fix made in the pane, because the pane never
+                    # had the rest of it. Deciding how much to show is the
+                    # renderer's job; this one's is to carry it.
+                    #
+                    # Newlines are kept for the same reason: a heredoc or a
+                    # multi-line prompt collapsed to one line is unreadable, and
+                    # the pane wraps and splits properly now.
+                    $arg = "$arg".Trim()
+                    # The one-line form still exists, in Meta, for any caller
+                    # that wants a summary rather than the call. Compress BEFORE
+                    # truncating, or the budget is spent on the part of the path
+                    # that is identical on every line and the end - the part that
+                    # says WHICH worktree - is what gets cut.
+                    $argShort = Compress-SRPath (($arg -replace '\s+', ' ').Trim())
+                    if ($argShort.Length -gt 150) { $argShort = $argShort.Substring(0, 147) + [string][char]0x2026 }
                     # 🔴 A QUESTION YOU ANSWERED IS NOT A TOOL CALL, and drawing
                     # it as one is what made it unreadable. The argument slot got
                     # PowerShell's stringification of the input object -
@@ -3874,7 +3884,7 @@ function Get-SRTranscriptBlocks {
                     # structurally, so the RESULT emits an 'asked' block and the
                     # call itself is dropped rather than drawn twice.
                     if ($name -eq 'AskUserQuestion') { continue }
-                    $out.Add((New-Block 'tool' $name $arg ''))
+                    $out.Add((New-Block 'tool' $name $arg $argShort))
                 }
                 'tool_result' {
                     # 🔑 THE ANSWERED ROUND, STRUCTURED. toolUseResult carries

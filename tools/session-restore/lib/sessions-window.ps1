@@ -1585,42 +1585,17 @@ function Get-TrackedText { param([string]$Text)
     return (($Text.ToCharArray() | ForEach-Object { [string]$_ }) -join ([string][char]0x2009))
 }
 
-# A ROUNDED, PADDED SURFACE INSIDE A FLOWDOCUMENT.
+# THERE ARE NO CARDS IN THIS DOCUMENT ANY MORE, and `New-ReadCard` is gone with
+# them. It built the rounded, padded, translucent surface every block used to
+# sit on - a run, a hook, an answered question, a notice - and the accumulated
+# effect was a column of differently-shaped boxes where a terminal has a single
+# aligned column of text. Category is carried by the GUTTER now (see the marker
+# table below): one marker glyph, one hue, on a fixed left column, with an
+# optional rail down it for the blocks that own several lines.
 #
-# Paragraph.Background paints a HARD RECTANGLE and Paragraph has no CornerRadius
-# at all. That is the whole reason the old code blocks were square slabs sitting
-# inside a card with a 12px radius - reported as the text "not looking clean and
-# rounded off", which sounded like a font problem and was a layout one. A Border
-# inside a BlockUIContainer is the only way to get a rounded, padded,
-# translucent block in flowed text.
-#
-# The container's own Margin does the spacing, not the Border's, or the two
-# stack and every block drifts further right than the one above it.
-function New-ReadCard {
-    param($Child, $Bg, $Stroke, [double]$Radius = 12, [double]$BW = 0,
-          [double]$PadL = 16, [double]$PadT = 12, [double]$PadR = 16, [double]$PadB = 12,
-          [double]$Left = 0, [double]$Top = 10, [double]$Bottom = 10, [switch]$Hug)
-    $bd = New-Object System.Windows.Controls.Border
-    # 🪤 A CARD THAT STRETCHES TO CARRY TWO WORDS reads as a mistake, and on a
-    # maximised window a folded run of calls did exactly that - 2,200px of
-    # ground behind "1 step  Bash". Hug means the card is only as wide as what
-    # is in it; everything with real content still fills, because a code block
-    # that stopped early would break the left-edge alignment this pane is built
-    # on.
-    if ($Hug) { $bd.HorizontalAlignment = 'Left' }
-    if ($Bg) { $bd.Background = $Bg }
-    if ($Stroke -and $BW -gt 0) {
-        $bd.BorderBrush = $Stroke
-        $bd.BorderThickness = New-Object System.Windows.Thickness $BW
-    }
-    $bd.CornerRadius = New-Object System.Windows.CornerRadius $Radius
-    $bd.Padding = New-Object System.Windows.Thickness $PadL, $PadT, $PadR, $PadB
-    $bd.SnapsToDevicePixels = $true
-    $bd.Child = $Child
-    $c = New-Object System.Windows.Documents.BlockUIContainer $bd
-    $c.Margin = New-Object System.Windows.Thickness $Left, $Top, 0, $Bottom
-    return $c
-}
+# It is deleted rather than left unused on purpose. A card builder sitting in
+# this file is an invitation to put one block back in a card, and one block in a
+# card is exactly how the old surface started.
 
 function New-ReadText {
     param([string]$Text, $Brush, [double]$Size = 13, [switch]$Mono, [switch]$Semi,
@@ -1641,11 +1616,14 @@ function New-ReadText {
 # heading, a bullet, and inline `code`. Anything more would be a markdown
 # engine, which is not what this needs to be.
 function Add-ReadProse {
-    param($Doc, [string]$Text, $Brush, [double]$Size = 16, [double]$Line = 28,
-          $CodeBg, $CodeStroke, [double]$Indent = 0)
-    if (-not $CodeBg) { $CodeBg = $PalGlassHi }
+    param($Doc, [string]$Text, $Brush, [double]$Size = 13, [double]$Line = 18,
+          [double]$Indent = 0, [string]$Kind = '')
     $lines = @((Remove-SRAnsi $Text) -replace "`r", '' -split "`n")
     $i = 0
+    # The marker is drawn ONCE, on the first line that carries words. A turn is
+    # one thing said; marking every paragraph of it would put a column of dots
+    # down the side of a long reply and say nothing the first one did not.
+    $firstMark = ($Kind -ne '')
     while ($i -lt $lines.Count) {
         $ln = $lines[$i]
         if ($ln.TrimStart().StartsWith('``' + '`')) {
@@ -1653,20 +1631,32 @@ function Add-ReadProse {
             $i++
             while ($i -lt $lines.Count -and -not $lines[$i].TrimStart().StartsWith('``' + '`')) { $code.Add($lines[$i]); $i++ }
             $i++
-            $tb = New-ReadText -Text (($code -join "`n").TrimEnd()) -Brush $Pal.TextHigh -Size ($Size - 2.5) -Mono -Wrap -Line ($Size + 5)
-            $bw = 0; if ($CodeStroke) { $bw = 1 }
-            $Doc.Blocks.Add((New-ReadCard -Child $tb -Bg $CodeBg -Stroke $CodeStroke -BW $bw -Radius 10 -Left $Indent -Top 12 -Bottom 12))
+            # A fenced block is machine text: mono, on the rail, and NOT in a
+            # card. Nothing in this document is in a card any more.
+            $tb = New-ReadText -Text (($code -join "`n").TrimEnd()) -Brush $Pal.TextHigh -Size ($Size - 0.5) -Mono -Wrap -Line ($Size + 3.5)
+            $Doc.Blocks.Add((New-RailBlock -Child $tb -Kind 'result' -Indent $Indent -Top 10 -Bottom 10 -Rail))
             continue
         }
         $p = New-Object System.Windows.Documents.Paragraph
-        $p.Margin = New-Object System.Windows.Thickness $Indent, 3, 0, 3
+        $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW), 3, 0, 3
+        $p.TextIndent = -$script:GutterW
         $p.LineHeight = $Line
         $p.LineStackingStrategy = 'BlockLineHeight'
+        if ($firstMark -and $ln.Trim()) {
+            $p.Inlines.Add((New-GutterMark -Glyph (Get-MarkGlyph $Kind) -Brush (Get-MarkBrush $Kind)))
+            $firstMark = $false
+        } else {
+            $p.Inlines.Add((New-GutterMark -Glyph ' ' -Brush $Pal.TextLow))
+        }
         $body = $ln; $size = $Size; $weight = 'Normal'; $bump = 0
         if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = $Size + 2 }
         elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [string][char]0x2022 + '   ' + $Matches[1]; $bump = 18 }
         elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.   ' + $Matches[2]; $bump = 18 }
-        if ($bump) { $p.Margin = New-Object System.Windows.Thickness ($Indent + $bump), 2, 0, 2 }
+        # 🪤 THE GUTTER STAYS IN THE MARGIN. A bullet re-sets the whole Margin,
+        # so leaving the original arithmetic here would have dropped the gutter
+        # offset on exactly the lines that are indented anyway - every bullet in
+        # every reply sliding one column left of the prose above it.
+        if ($bump) { $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW + $bump), 2, 0, 2 }
         $rest = $body
         while ($rest -match '^(.*?)(`([^`]+)`|\*\*([^*]+)\*\*)(.*)$') {
             $before = $Matches[1]; $codeTxt = $Matches[3]; $boldTxt = $Matches[4]; $rest = $Matches[5]
@@ -1676,9 +1666,15 @@ function Add-ReadProse {
         }
         if ($rest) { $p.Inlines.Add((New-ReadRun -Text $rest -Brush $Brush -Size $size -Weight $weight)) }
         # An empty source line is a paragraph break, and it is set SMALL: at the
-        # full body size a blank line between two paragraphs is 28px of nothing
-        # and the reply looks double-spaced.
-        if ($p.Inlines.Count -eq 0) { $p.Inlines.Add((New-ReadRun -Text ' ' -Brush $Brush -Size ($Size * 0.4))) }
+        # full body size a blank line between two paragraphs is a whole line of
+        # nothing and the reply looks double-spaced.
+        #
+        # 🪤 `-le 1`, NOT `-eq 0`. Every paragraph now opens with its gutter box,
+        # so an empty line has ONE inline rather than none - and the old test
+        # would have quietly stopped firing, leaving full-size blank lines
+        # through every reply. A count that changed meaning when a column was
+        # added in front of it.
+        if ($p.Inlines.Count -le 1) { $p.Inlines.Add((New-ReadRun -Text ' ' -Brush $Brush -Size ($Size * 0.4))) }
         $Doc.Blocks.Add($p)
         $i++
     }
@@ -1754,15 +1750,20 @@ function Get-ReadTurns { param($Blocks)
                     $one = "$(@($lines | Select-Object -First 1))"
                     if ($one.Length -gt 130) { $one = $one.Substring(0, 127) + [string][char]0x2026 }
                     $last.Res = $one
-                    # 🔴 FOLDED KEEPS ITS ONE LINE; FULL GETS SOMETHING WORTH
-                    # OPENING. "Steps: full" used to show the same 130-character
-                    # first line as folded, on a control that does not wrap - so
-                    # the one view whose whole purpose is to show more showed
-                    # the same thing, cut off. Kept here rather than re-read at
-                    # render time because the blocks are gone by then.
-                    $more = @($lines | Select-Object -First 6) -join "`n"
-                    if ($more.Length -gt 900) { $more = $more.Substring(0, 897) + [string][char]0x2026 }
-                    $last.ResFull = $more
+                    # 🔴 FOLDED KEEPS ITS ONE LINE; OPENED IS THE WHOLE THING.
+                    #
+                    # This was capped at the first 6 lines or 900 characters,
+                    # and it is the single biggest reason the terminal showed
+                    # more than this tool did: even with Steps: full, the view
+                    # whose entire purpose is to show what ran was cutting the
+                    # output off after six lines. There is no cap now. What
+                    # keeps it manageable is the FOLD - a closed block is one
+                    # summary line - and a scroll region around the open one, so
+                    # a long result cannot push the conversation off screen.
+                    #
+                    # The RAW body, not the blank-stripped $lines: a result's
+                    # own blank lines are part of how it reads.
+                    $last.ResFull = ("$($arr[$i].Body)" -replace "`r", '').TrimEnd()
                     $last.Bad = ("$($arr[$i].Head)" -eq 'failed')
                 }
             }
@@ -1799,44 +1800,462 @@ function Get-RunSummary { param($Calls)
 # adaptive breakpoints that change the pane width without the window moving.
 # FlowDocument has no max-width, so the right PagePadding is the only lever -
 # which is why it is arithmetic here rather than a property.
-$script:ReadMeasureChars = 70
+$script:ReadMeasureChars = 100
 # The size the last layout settled on. The renderer reads it rather than a
 # literal, so type and measure can never disagree about how wide a line is.
-$script:readSize = 16.0
-$script:readLead = 28.0
+$script:readSize = 13.0
+$script:readLead = 18.0
 
-# 🔴 A MEASURE IS A CEILING, NOT A WIDTH - AND AS AN ABSOLUTE IT WAS WRONG.
+# THE GUTTER, in device-independent pixels.
 #
-# 70 characters is right on a 927px pane and absurd on a maximised one:
-# measured at a 2,746px window the text column was still ~580px, so 78% of the
-# pane was empty, the hairlines between turns stopped a third of the way across,
-# and the whole document hugged the left edge. Reported as the text not scaling
-# and the alignment looking off, which is exactly what it was.
+# Wide enough for one marker glyph plus the space after it, and it is the SAME
+# number for a flowed paragraph's hanging indent and for a rail block's first
+# Grid column - so a paragraph of prose and a block of machine output start
+# their text at exactly the same x. That is the whole point of the column, and
+# two numbers that were meant to be equal would drift the first time one moved.
+$script:GutterW = 22.0
+
+# 🔴 THE MARKER TABLE - ONE ROW PER BLOCK KIND, AND EVERY KIND HAS ONE.
 #
-# So the pane now FILLS, the way the terminal it mirrors does, and the type
-# scales with it so a long line is still readable: 16px on a normal window,
-# rising to 20px on a very wide one. The old column is not deleted - it is
-# `readingWidth: measured` in the config, because a capped measure genuinely
-# reads better for long prose and that argument did not stop being true.
+# Category has to be legible BEFORE the words are, which is the thing a terminal
+# does and this pane did not: prose, a command, a hook and a notice all arrived
+# as differently-shaped cards and you had to read one to know which it was.
+#
+# 🪤 GLYPHS ARE CHAR CODES, NEVER LITERALS. PowerShell 5.1 reads a BOM-less
+# UTF-8 file as ANSI, so a literal marker here would reach the screen as two
+# mojibake characters - the same trap that made the group headers read
+# "93 A- 9 armed". CONTEXT.md records it; this table is exactly where it would
+# happen again.
+$SR_Marks = @{
+    said     = @{ G = 0x25CF; H = 'In'      }  # filled dot   - claude speaking
+    you      = @{ G = 0x203A; H = 'Out'     }  # angle        - you said
+    thinking = @{ G = 0x223C; H = 'TextLow' }  # tilde        - thinking
+    # 🪤 NOT THE SAME DOT AS `said`. The terminal uses one glyph for both and
+    # separates them by colour alone - and in review that is exactly what it
+    # looked like: Claude's marker and a tool call's marker were one shape in
+    # two hues a few degrees apart, indistinguishable at 11px on a dark ground.
+    # Every kind is meant to be distinct BEFORE you read it, so the shape
+    # carries the difference and the hue reinforces it.
+    run      = @{ G = 0x25A0; H = 'Tool'    }  # filled square- a tool call
+    result   = @{ G = 0x2514; H = 'TextLow' }  # corner       - its result
+    system   = @{ G = 0x00B7; H = 'TextLow' }  # middle dot   - a notice
+    hook     = @{ G = 0x25C6; H = 'Tool'    }  # diamond      - a hook fired
+    file     = @{ G = 0x2261; H = 'TextLow' }  # triple bar   - files re-read
+    asked    = @{ G = 0x003F; H = 'Ask'     }  # question     - you answered
+    queued   = @{ G = 0x00BB; H = 'Out'     }  # guillemet    - queued input
+    compact  = @{ G = 0x2014; H = 'Ask'     }  # em dash      - the break
+    agent    = @{ G = 0x0040; H = 'Ask'     }  # at           - a sub-agent
+    shell    = @{ G = 0x0024; H = 'Ok'      }  # dollar       - a background shell
+}
+
+function Get-MarkGlyph { param([string]$Kind)
+    $m = $SR_Marks["$Kind"]
+    if (-not $m) { return ' ' }
+    return [string][char]$m.G
+}
+
+function Get-MarkBrush { param([string]$Kind)
+    $m = $SR_Marks["$Kind"]
+    if (-not $m) { return $Pal.TextLow }
+    return $Pal[$m.H]
+}
+
+# WHAT A FOLDED BLOCK SAYS ABOUT ITSELF: its first line of real content, so the
+# summary names what the block is about rather than only counting it. "16
+# NOTICES" tells you how much; "16 NOTICES  Remote Control disconnected" tells
+# you whether to open it.
+function Get-SRHeadLine { param([string]$Text, [int]$Max = 88)
+    $head = @("$Text" -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1) -join ' '
+    $head = "$head".Trim()
+    if ($head.Length -gt $Max) { $head = $head.Substring(0, $Max - 1) + [string][char]0x2026 }
+    return $head
+}
+
+# 🔴 THE MARKER IS A FIXED-WIDTH BOX, NOT A CHARACTER FOLLOWED BY SPACES.
+#
+# Prose in this pane is set in a PROPORTIONAL face - Segoe UI Variable, the
+# operator's choice and deliberately not a terminal font - so nothing about a
+# glyph's advance can be counted on. A marker padded with spaces would land the
+# text at a different x on every block, which is the exact failure the gutter
+# exists to prevent. An InlineUIContainer holding a TextBlock of a KNOWN width
+# is the only way to get a guaranteed column inside flowed text.
+function New-GutterMark { param([string]$Glyph, $Brush, [double]$Size = 11.5)
+    $tb = New-Object System.Windows.Controls.TextBlock
+    $tb.Text = $Glyph
+    $tb.Width = $script:GutterW
+    $tb.Foreground = $Brush
+    $tb.FontSize = $Size
+    $tb.FontFamily = $script:MonoFace
+    $tb.TextAlignment = 'Left'
+    $iuc = New-Object System.Windows.Documents.InlineUIContainer $tb
+    $iuc.BaselineAlignment = 'Baseline'
+    return $iuc
+}
+
+# A FLOWED PARAGRAPH THAT HANGS OFF THE GUTTER. The negative TextIndent pulls
+# the first line back by exactly one gutter so the marker sits in it, and the
+# left margin holds every CONTINUATION line at the text column. That is what
+# makes a wrapped paragraph line up under itself instead of under its own
+# marker - and it is why wrapping and the gutter had to be built together.
+function New-GutterPara {
+    param([string]$Kind, [double]$Top = 0, [double]$Bottom = 0, [double]$Indent = 0,
+          [double]$Line = 0, [switch]$NoMark)
+    $p = New-Object System.Windows.Documents.Paragraph
+    $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW), $Top, 0, $Bottom
+    $p.TextIndent = -$script:GutterW
+    if ($Line -gt 0) { $p.LineHeight = $Line; $p.LineStackingStrategy = 'BlockLineHeight' }
+    if ($NoMark) {
+        # A continuation paragraph inside one turn: it keeps the indent so it
+        # aligns, and shows no marker because the turn already has one. A blank
+        # box, not a space - a space is proportional and would not be a gutter.
+        $p.Inlines.Add((New-GutterMark -Glyph ' ' -Brush $Pal.TextLow))
+    } else {
+        $p.Inlines.Add((New-GutterMark -Glyph (Get-MarkGlyph $Kind) -Brush (Get-MarkBrush $Kind)))
+    }
+    return $p
+}
+
+# THE SAME COLUMN, FOR A BLOCK THAT IS CONTROLS RATHER THAN TEXT.
+#
+# Machine output, a fold header, a sub-agent - these are panels, not paragraphs,
+# so they cannot hang off a TextIndent. A two-column Grid whose first column is
+# GutterW wide puts them on precisely the same x as the prose above them, and
+# the optional rail draws the vertical line down the gutter that says "all of
+# this belongs to that marker".
+function New-RailBlock {
+    param($Child, [string]$Kind, [double]$Top = 8, [double]$Bottom = 8,
+          [double]$Indent = 0, [switch]$Rail, $Brush)
+    if (-not $Brush) { $Brush = Get-MarkBrush $Kind }
+    $g = New-Object System.Windows.Controls.Grid
+    $c0 = New-Object System.Windows.Controls.ColumnDefinition
+    $c0.Width = New-Object System.Windows.GridLength $script:GutterW
+    $c1 = New-Object System.Windows.Controls.ColumnDefinition
+    $c1.Width = New-Object System.Windows.GridLength 1, 'Star'
+    $null = $g.ColumnDefinitions.Add($c0)
+    $null = $g.ColumnDefinitions.Add($c1)
+
+    $col = New-Object System.Windows.Controls.Grid
+    $r0 = New-Object System.Windows.Controls.RowDefinition
+    $r0.Height = New-Object System.Windows.GridLength 0, 'Auto'
+    $r1 = New-Object System.Windows.Controls.RowDefinition
+    $r1.Height = New-Object System.Windows.GridLength 1, 'Star'
+    $null = $col.RowDefinitions.Add($r0)
+    $null = $col.RowDefinitions.Add($r1)
+
+    $mk = New-Object System.Windows.Controls.TextBlock
+    $mk.Text = (Get-MarkGlyph $Kind)
+    $mk.Foreground = $Brush
+    $mk.FontSize = 11.5
+    $mk.FontFamily = $script:MonoFace
+    $null = $col.Children.Add($mk)
+
+    if ($Rail) {
+        # 1px, and tinted rather than the full hue: a rail you notice instead of
+        # read would compete with the marker it hangs from. 0.28 was invisible
+        # in review at 100% - the line was being drawn and could not be seen,
+        # which is the same as not drawing it.
+        $ln = New-Object System.Windows.Shapes.Rectangle
+        $ln.Width = 1
+        $ln.HorizontalAlignment = 'Left'
+        $ln.VerticalAlignment = 'Stretch'
+        $ln.Margin = New-Object System.Windows.Thickness 3, 4, 0, 2
+        $ln.Fill = (New-SRTint $Brush 0.5)
+        [System.Windows.Controls.Grid]::SetRow($ln, 1)
+        $null = $col.Children.Add($ln)
+    }
+    $null = $g.Children.Add($col)
+
+    [System.Windows.Controls.Grid]::SetColumn($Child, 1)
+    $null = $g.Children.Add($Child)
+
+    $bc = New-Object System.Windows.Documents.BlockUIContainer $g
+    $bc.Margin = New-Object System.Windows.Thickness $Indent, $Top, 0, $Bottom
+    return $bc
+}
+
+# ===========================================================================
+# FOLDS THAT ARE ACTUALLY FOLDS
+#
+# 🔴 The old ones were a LABEL and a GLOBAL SWITCH, and the two together were
+# the defect: "16 NOTICES" looked like something you could open, and the only
+# control was `Steps: full`, which opened every block in the document at once.
+# With it set, that caption was followed by all sixteen notices in full - a
+# fold that folds nothing, reported as "although folded I see it is fully
+# shown".
+#
+# Now each block owns its own state and its own caret, and `Steps` supplies
+# only the DEFAULT. Two rules make this affordable:
+#
+#   LAZY - a closed block builds its summary line and nothing else. The
+#   content is constructed the first time it is opened and then kept, so
+#   selecting a conversation costs the same whether its results are six lines
+#   or six thousand.
+#
+#   BOUNDED - an open block scrolls inside its own region rather than growing
+#   the document, so opening one thing never pushes everything else away.
+#
+# State rides on the header's Tag as plain data, and ONE shared handler reads
+# it. A per-block closure would capture the loop variable by reference - every
+# header in the document would end up building the last turn's content, which
+# is a trap this codebase has walked into with `foreach` scoping before.
+$script:FoldMaxHeight = 460.0
+
+function Build-FoldContent { param([string]$Kind, $Data, $Panel)
+    switch ($Kind) {
+        'run'    { Add-RunDetail    -Panel $Panel -Calls $Data }
+        'text'   { Add-MonoDetail   -Panel $Panel -Text  $Data }
+        default  { Add-MonoDetail   -Panel $Panel -Text  "$Data" }
+    }
+}
+
+function Invoke-FoldToggle { param($Header)
+    $st = $Header.Tag
+    if (-not $st) { return }
+    if (-not $st.Built) {
+        Build-FoldContent -Kind $st.Kind -Data $st.Data -Panel $st.Panel
+        $st.Built = $true
+    }
+    $st.Open = -not $st.Open
+    $st.Panel.Visibility = $(if ($st.Open) { $V_Show } else { $V_Hide })
+    $st.Caret.Text = [string][char]$(if ($st.Open) { 0x25BE } else { 0x25B8 })
+}
+
+# The clickable summary line. It is a Border rather than a Button so it carries
+# no chrome at all - this pane has none anywhere now - but it still takes a
+# click, shows a hand, and says what it does.
+function New-FoldHeader {
+    param([string]$Caption, $Brush, [string]$Kind, $Data, $Panel, [bool]$Open,
+          [string]$Trailing = '')
+    $bd = New-Object System.Windows.Controls.Border
+    $bd.Background = [System.Windows.Media.Brushes]::Transparent
+    $bd.Cursor = 'Hand'
+    $bd.Padding = New-Object System.Windows.Thickness 0, 1, 0, 2
+    $bd.ToolTip = 'Click to open or close this block'
+    $sp = New-Object System.Windows.Controls.StackPanel
+    $sp.Orientation = 'Horizontal'
+
+    $car = New-Object System.Windows.Controls.TextBlock
+    $car.Text = [string][char]$(if ($Open) { 0x25BE } else { 0x25B8 })
+    $car.Foreground = $Brush
+    $car.FontSize = 9
+    $car.FontFamily = $script:MonoFace
+    $car.VerticalAlignment = 'Center'
+    $car.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
+    $null = $sp.Children.Add($car)
+
+    $cap = New-Object System.Windows.Controls.TextBlock
+    $cap.Text = (Get-TrackedText $Caption)
+    $cap.Foreground = $Brush
+    $cap.FontSize = 9.5
+    $cap.FontWeight = $FW_Semi
+    $cap.FontFamily = $script:UiFace
+    $cap.VerticalAlignment = 'Center'
+    $null = $sp.Children.Add($cap)
+
+    if ($Trailing) {
+        $tr = New-Object System.Windows.Controls.TextBlock
+        $tr.Text = $Trailing
+        $tr.Foreground = $Pal.TextDim
+        $tr.FontSize = 11.5
+        $tr.FontFamily = $script:MonoFace
+        $tr.VerticalAlignment = 'Center'
+        $tr.TextTrimming = 'CharacterEllipsis'
+        $tr.Margin = New-Object System.Windows.Thickness 10, 0, 0, 0
+        $null = $sp.Children.Add($tr)
+    }
+
+    $bd.Child = $sp
+    $bd.Tag = @{ Kind = $Kind; Data = $Data; Panel = $Panel; Built = $false
+                 Open = $false; Caret = $car }
+    $bd.Add_MouseLeftButtonUp({ param($s, $e) Invoke-FoldToggle $s })
+    return $bd
+}
+
+# A foldable block, assembled: header, then the content panel under it. Returns
+# the outer StackPanel so the caller can drop it into a rail.
+function New-FoldPanel {
+    param([string]$Caption, $Brush, [string]$Kind, $Data, [string]$Trailing = '',
+          [bool]$Open = $false)
+    $outer = New-Object System.Windows.Controls.StackPanel
+    $inner = New-Object System.Windows.Controls.StackPanel
+    $inner.Margin = New-Object System.Windows.Thickness 0, 7, 0, 0
+    $inner.Visibility = $V_Hide
+    $hd = New-FoldHeader -Caption $Caption -Brush $Brush -Kind $Kind -Data $Data `
+                         -Panel $inner -Open:$false -Trailing $Trailing
+    $null = $outer.Children.Add($hd)
+    $null = $outer.Children.Add($inner)
+    # Opening it here rather than by setting flags means the OPEN path is the
+    # same code the click takes - a default that rendered through a second path
+    # is a default that can disagree with the control.
+    if ($Open) { Invoke-FoldToggle $hd }
+    return $outer
+}
+
+# Verbatim machine text, wrapped and bounded. The ScrollViewer is what lets the
+# result be complete: without it, a 4,000-line output would be 4,000 lines of
+# document and everything below it unreachable.
+function Add-MonoDetail { param($Panel, [string]$Text, $Brush)
+    if (-not $Brush) { $Brush = $Pal.TextMid }
+    $t = "$Text".TrimEnd()
+    if (-not $t) { return }
+    $tb = New-ReadText -Text (Compress-SRPath $t) -Brush $Brush -Size 12 -Mono -Wrap -Line 16.5
+    $sv = New-Object System.Windows.Controls.ScrollViewer
+    $sv.VerticalScrollBarVisibility = 'Auto'
+    $sv.HorizontalScrollBarVisibility = 'Disabled'
+    $sv.MaxHeight = $script:FoldMaxHeight
+    $sv.Content = $tb
+    $null = $Panel.Children.Add($sv)
+}
+
+# 🔴 A COMPOUND COMMAND IS SEVERAL COMMANDS, AND IT SHOULD READ AS SEVERAL.
+#
+# The pane used to clip the whole thing mid-path with an ellipsis - the
+# reported "git -C C:\...\Millwri..." - so the one view you open to see WHAT RAN
+# showed less than the folded one. Splitting on the separators first means each
+# statement starts at a predictable place; wrapping with a hanging indent means
+# nothing is ever cut.
+#
+# Quote-aware, because a `;` inside a quoted argument is not a separator and
+# splitting on it would print a command that was never run.
+function Split-SRCommandLine { param([string]$Cmd)
+    $out = New-Object System.Collections.Generic.List[string]
+    $buf = New-Object System.Text.StringBuilder
+    $q = [char]0; $i = 0; $n = "$Cmd".Length
+    # 🪤 DEPTH, OR A `foreach {a; b}` COMES APART INTO PIECES THAT ARE NOT
+    # COMMANDS. A semicolon inside braces or parentheses separates statements
+    # WITHIN one command; splitting there printed a single loop as four
+    # fragments, each of which reads like something that ran on its own. Only a
+    # separator at depth zero is a separator.
+    $depth = 0
+    while ($i -lt $n) {
+        $ch = $Cmd[$i]
+        if ($q -ne [char]0) {
+            $null = $buf.Append($ch)
+            if ($ch -eq $q -and ($i -eq 0 -or $Cmd[$i - 1] -ne '`')) { $q = [char]0 }
+            $i++
+            continue
+        }
+        if ($ch -eq '"' -or $ch -eq "'") { $q = $ch; $null = $buf.Append($ch); $i++; continue }
+        if ($ch -eq '{' -or $ch -eq '(' -or $ch -eq '[') { $depth++ }
+        elseif ($ch -eq '}' -or $ch -eq ')' -or $ch -eq ']') { if ($depth -gt 0) { $depth-- } }
+        $two = ''
+        if ($i + 1 -lt $n) { $two = $Cmd.Substring($i, 2) }
+        if ($depth -eq 0 -and ($two -eq '&&' -or $two -eq '||')) {
+            $out.Add(($buf.ToString().Trim() + ' ' + $two)); $null = $buf.Clear(); $i += 2; continue
+        }
+        if ($depth -eq 0 -and $ch -eq ';') {
+            $out.Add(($buf.ToString().Trim() + ';')); $null = $buf.Clear(); $i++; continue
+        }
+        $null = $buf.Append($ch)
+        $i++
+    }
+    $tail = $buf.ToString().Trim()
+    if ($tail) { $out.Add($tail) }
+    # 🪤 `.ToArray()` HERE THREW ON A STRING, and the reason is the one this
+    # codebase keeps re-learning: `@(...)` produces an ARRAY, arrays have no
+    # ToArray, and member access on a ONE-ELEMENT array UNROLLS to the element -
+    # so a single-statement command reached `[String].ToArray()` and the whole
+    # document failed to build. A plain array out, `@()` at the call site.
+    $keep = @($out | Where-Object { $_.Trim(' ', ';') })
+    if (-not $keep.Count) { return @("$Cmd") }
+    return $keep
+}
+
+# One tool call, opened: its name, what it was given, and what came back.
+function Add-RunDetail { param($Panel, $Calls)
+    foreach ($c in @($Calls)) {
+        $ln = New-Object System.Windows.Controls.StackPanel
+        $ln.Margin = New-Object System.Windows.Thickness 0, 0, 0, 10
+
+        $nm = New-ReadText -Text $c.Name -Brush $(if ($c.Bad) { $Pal.Bad } else { $Pal.Tool }) -Size 10 -Semi
+        $null = $ln.Children.Add($nm)
+
+        # 🔴 THE COMMAND IS NOT PATH-COMPRESSED. Compress-SRPath is right for a
+        # RESULT, which is dense and scanned - but on the command it replaced the
+        # middle of every long path with an ellipsis, so the one line you open
+        # this block to read verbatim came out as `-Shot "C:\...\444f9...`. That
+        # is the reported "cut off", arriving from the shortener rather than from
+        # the layout, and it survived the wrap fix because it is baked into the
+        # text before the control ever sees it. What ran is shown as it ran.
+        $argText = "$($c.Arg)".Trim()
+        if ($argText) {
+            foreach ($stmt in @(Split-SRCommandLine $argText)) {
+                $ar = New-ReadText -Text $stmt -Brush $(if ($c.Bad) { $Pal.Bad } else { $Pal.TextHigh }) `
+                                   -Size 12 -Mono -Wrap -Line 16.5
+                # The hanging indent that makes a wrapped command readable: the
+                # statement starts at the left and its continuation lines sit in
+                # from it, so you can see where one command ends and the next
+                # begins without reading either.
+                $ar.Margin = New-Object System.Windows.Thickness 0, 3, 0, 0
+                $ar.Padding = New-Object System.Windows.Thickness 0, 0, 0, 0
+                $null = $ln.Children.Add($ar)
+            }
+        }
+
+        $resText = "$($c.ResFull)"
+        if (-not $resText) { $resText = "$($c.Res)" }
+        if ($resText) {
+            $rg = New-Object System.Windows.Controls.Grid
+            $rc0 = New-Object System.Windows.Controls.ColumnDefinition
+            $rc0.Width = New-Object System.Windows.GridLength 14
+            $rc1 = New-Object System.Windows.Controls.ColumnDefinition
+            $rc1.Width = New-Object System.Windows.GridLength 1, 'Star'
+            $null = $rg.ColumnDefinitions.Add($rc0)
+            $null = $rg.ColumnDefinitions.Add($rc1)
+            $rm = New-Object System.Windows.Controls.TextBlock
+            $rm.Text = (Get-MarkGlyph 'result')
+            $rm.Foreground = $Pal.TextLow
+            $rm.FontSize = 10.5
+            $rm.FontFamily = $script:MonoFace
+            $rm.VerticalAlignment = 'Top'
+            $null = $rg.Children.Add($rm)
+            $rt = New-ReadText -Text (Compress-SRPath $resText) -Brush $Pal.TextLow -Size 12 -Mono -Wrap -Line 16.5
+            $sv = New-Object System.Windows.Controls.ScrollViewer
+            $sv.VerticalScrollBarVisibility = 'Auto'
+            $sv.HorizontalScrollBarVisibility = 'Disabled'
+            $sv.MaxHeight = $script:FoldMaxHeight
+            $sv.Content = $rt
+            [System.Windows.Controls.Grid]::SetColumn($sv, 1)
+            $null = $rg.Children.Add($sv)
+            $rg.Margin = New-Object System.Windows.Thickness 0, 5, 0, 0
+            $null = $ln.Children.Add($rg)
+        }
+        $null = $Panel.Children.Add($ln)
+    }
+}
+
+# 🔴 THE TYPE DOES NOT SCALE WITH THE PANE, AND THE MEASURE IS A CEILING.
+#
+# This function used to do the opposite of both, and between them they are the
+# whole of "the text is too large and too wide spaced, and that makes it hard to
+# read". It GREW the body from 16px to 20px on a wide window - filling a line by
+# growing the letters is zooming, not scaling - and set leading at 1.75x the
+# size, so a maximised pane drew 20/35 prose across 120+ characters. Nothing in
+# a terminal is set anywhere near that loose, which is why the two surfaces read
+# so differently side by side.
+#
+# Now: ONE fixed size, leading at 1.38x, and the measure capped by default.
+# 13/18 is terminal density and holds ~45% more conversation per screen than
+# 16/28 did. `readingWidth: full` in the config still removes the cap for anyone
+# who wants the old fill behaviour - it is an escape hatch, no longer the
+# default, because an uncapped line on a 2,700px window is the defect.
 function Set-ReadMeasure { param($Doc, [double]$Size = 0, [double]$PadL = 44)
     $avail = 0.0
     try { $avail = [double]$ui.PaneDoc.ActualWidth } catch { }
     if ($avail -lt 200) { $avail = 900.0 }
 
-    # Type scales with the pane, gently and with a ceiling. Linear scaling would
-    # reach 47px at this width - filling the line by growing the letters is not
-    # scaling, it is zooming.
-    $size = 16.0
-    if ($avail -gt 1100) { $size = 16.0 + [Math]::Min(4.0, ($avail - 1100.0) / 340.0) }
+    $size = 13.0
     if ($Size -gt 0) { $size = $Size }
     $script:readSize = $size
-    $script:readLead = [Math]::Round($size * 1.75, 1)
+    $script:readLead = [Math]::Round($size * 1.38, 1)
 
     $right = 44.0
-    if ($script:readWidth -eq 'measured') {
-        # 0.52em per character is Manrope's measured average advance for prose
-        # at these sizes; it does not need to be exact, only stable.
-        $target = $script:ReadMeasureChars * $size * 0.52
+    if ($script:readWidth -ne 'full') {
+        # 0.52em per character is the measured average advance for this face at
+        # these sizes; it does not need to be exact, only stable. The gutter is
+        # inside the measure, not outside it - the text column is what is being
+        # capped, and it starts one gutter in.
+        $target = ($script:ReadMeasureChars * $size * 0.52) + $script:GutterW
         $right = [Math]::Max(44.0, $avail - $PadL - $target)
     }
     $Doc.PagePadding = New-Object System.Windows.Thickness $PadL, 24, $right, 34
@@ -1869,9 +2288,12 @@ function Format-TurnTime { param($When)
 
 function Add-ReadLabel {
     param($Doc, [string]$Text, $Brush, [string]$Trailing = '', $TrailBrush, $When,
-          [double]$Size = 10, [double]$Top = 12, [double]$Bottom = 9)
+          [double]$Size = 9, [double]$Top = 13, [double]$Bottom = 4)
     $p = New-Object System.Windows.Documents.Paragraph
-    $p.Margin = New-Object System.Windows.Thickness 0, $Top, 0, $Bottom
+    # INDENTED INTO THE TEXT COLUMN, not sitting out at the page edge. The
+    # speaker label belongs over the words it introduces; at x=0 it hung one
+    # gutter to the left of everything below it and read as a separate column.
+    $p.Margin = New-Object System.Windows.Thickness $script:GutterW, $Top, 0, $Bottom
     $p.Inlines.Add((New-ReadRun -Text (Get-TrackedText $Text.ToUpper()) -Brush $Brush -Size $Size -Weight 'SemiBold'))
     $stamp = Format-TurnTime $When
     if ($stamp) {
@@ -1889,7 +2311,10 @@ function Add-ReadLabel {
 # then owned by the window, so the toggle is instant and the write is a side
 # effect rather than something the render path waits on.
 $script:toolView = 'folded'
-$script:readWidth = 'full'
+# MEASURED BY DEFAULT. An uncapped line on a maximised pane is ~120 characters,
+# and tracking back to the start of the next one is exactly what makes long
+# replies tiring to read. `readingWidth: full` in the config restores the fill.
+$script:readWidth = 'measured'
 try {
     $cfg0 = Get-SRConfig
     $tv = "$($cfg0.transcriptTools)".Trim().ToLower()
@@ -1956,12 +2381,16 @@ function Build-ReadDocument {
     foreach ($t in @(Get-ReadTurns $Blocks)) {
         switch ($t.Kind) {
             'you' {
-                Add-ReadRule -Doc $doc -Brush $PalEdge.Out -Height 2
+                # A human turn is the one real boundary in a conversation, and
+                # it keeps a rule. Claude's turns no longer do: a rule above
+                # every reply is a rule above almost everything, which is noise
+                # rather than structure - the marker says who is speaking now.
+                Add-ReadRule -Doc $doc -Brush $PalEdge.Out -Height 1
                 $trail = ''
                 if ($hidden -gt 0) { $trail = "$hidden steps hidden"; $hidden = 0 }
                 Add-ReadLabel -Doc $doc -Text 'you said' -Brush $Pal.Out -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
-                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextMax -Size $script:readSize -Line $script:readLead -CodeBg $PalFilm.Out
+                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextMax -Size $script:readSize -Line $script:readLead -Kind 'you'
                 # Blocks is a live collection: moving them while enumerating it
                 # silently drops every second one, hence the @() snapshot. And
                 # $null = on Remove is not tidiness - it returns a BOOL, and an
@@ -1970,12 +2399,11 @@ function Build-ReadDocument {
                 foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
             }
             'said' {
-                Add-ReadRule -Doc $doc -Brush $PalHair
                 $trail = ''
                 if ($hidden -gt 0) { $trail = "$hidden steps hidden"; $hidden = 0 }
                 Add-ReadLabel -Doc $doc -Text 'claude' -Brush $Pal.In -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
-                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextHigh -Size $script:readSize -Line $script:readLead -CodeBg $PalGlassHi
+                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextHigh -Size $script:readSize -Line $script:readLead -Kind 'said'
                 foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
             }
             'compact' {
@@ -1986,59 +2414,52 @@ function Build-ReadDocument {
                 # showed nothing happening.
                 $st = New-Object System.Windows.Controls.StackPanel
                 $st.Orientation = 'Horizontal'
-                $st.HorizontalAlignment = 'Center'
                 $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText 'COMPACTED') -Brush $Pal.Ask -Size 9.5 -Semi))
                 if ("$($t.Body)".Trim()) {
-                    $null = $st.Children.Add((New-ReadText -Text ('        ' + $t.Body) -Brush $Pal.TextLow -Size 11.5))
+                    $tb = New-ReadText -Text "$($t.Body)" -Brush $Pal.TextLow -Size 11.5
+                    $tb.Margin = New-Object System.Windows.Thickness 10, 0, 0, 0
+                    $null = $st.Children.Add($tb)
                 }
-                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalWash.Ask -Stroke $PalEdge.Ask -BW 1 -Radius 10 -PadT 9 -PadB 10 -Top 22 -Bottom 18))
+                $doc.Blocks.Add((New-RailBlock -Child $st -Kind 'compact' -Top 20 -Bottom 16))
             }
             'hook' {
                 # What a hook actually said. It rides on a record with no message
                 # at all, which is why none of this ever reached the pane.
-                $st = New-Object System.Windows.Controls.StackPanel
-                $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText ("HOOK  " + $t.Head)) -Brush $Pal.Tool -Size 9.5 -Semi))
+                #
+                # The 600-character cap is gone with the rest of them: folded it
+                # is one line, opened it is the whole hook.
                 $body = "$($t.Body)".Trim()
-                if ($body.Length -gt 600) { $body = $body.Substring(0, 597) + [string][char]0x2026 }
-                $tb = New-ReadText -Text $body -Brush $Pal.TextMid -Size 12 -Wrap -Line 18
-                $tb.Margin = New-Object System.Windows.Thickness 0, 6, 0, 0
-                $null = $st.Children.Add($tb)
-                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalFilm.Tool -Stroke $PalEdge.Tool -BW 1 -Radius 10 -PadT 10 -PadB 11))
+                $fp = New-FoldPanel -Caption ("HOOK  " + $t.Head) -Brush $Pal.Tool -Kind 'text' `
+                                    -Data $body -Trailing (Get-SRHeadLine $body 84) `
+                                    -Open ($script:toolView -eq 'full')
+                $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'hook' -Rail))
             }
             'system' {
-                # 🔴 FOLDED LIKE A TOOL RUN, for the same reason and by the same
-                # control. Rendered in full these buried the conversation: a
-                # Remote Control session prints a notice per artifact per
-                # reconnect and the pane became eleven of them under two lines
-                # of prose. Steps: full opens them; nothing is discarded.
+                # 🔴 THE CAPTION IS NOW THE CONTROL. It used to be a label, and
+                # `Steps: full` was the only switch - so "16 NOTICES" was
+                # followed by all sixteen and there was no way to shut just this
+                # one. It folds on its own now; Steps only chooses where it
+                # starts. Nothing is discarded either way.
                 if ($script:toolView -eq 'hidden') { $hidden += [int]$t.Count; break }
                 $n = [int]$t.Count
                 if ($n -lt 1) { $n = 1 }
-                $p = New-Object System.Windows.Documents.Paragraph
-                $p.Margin = New-Object System.Windows.Thickness 0, 10, 0, 6
-                if ($script:toolView -eq 'full') {
-                    $p.Inlines.Add((New-ReadRun -Text (Get-TrackedText $(if ($n -eq 1) { 'NOTICE' } else { "$n NOTICES" })) -Brush $Pal.TextLow -Size 9.5 -Weight 'SemiBold'))
-                    $p.Inlines.Add((New-ReadRun -Text ("`n" + $t.Body) -Brush $Pal.TextLow -Size 12 -Mono))
-                } else {
-                    # One quiet line. The first notice names what the run is
-                    # about; the count says how much more there is behind it.
-                    $head = @("$($t.Body)" -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1) -join ' '
-                    if ($head.Length -gt 90) { $head = $head.Substring(0, 87) + [string][char]0x2026 }
-                    $p.Inlines.Add((New-ReadRun -Text (Get-TrackedText $(if ($n -eq 1) { 'NOTICE' } else { "$n NOTICES" })) -Brush $Pal.TextLow -Size 9.5 -Weight 'SemiBold'))
-                    $p.Inlines.Add((New-ReadRun -Text ('        ' + $head) -Brush $Pal.TextDim -Size 11.5 -Mono))
-                }
-                $doc.Blocks.Add($p)
+                $body = "$($t.Body)"
+                $fp = New-FoldPanel -Caption $(if ($n -eq 1) { 'NOTICE' } else { "$n NOTICES" }) `
+                                    -Brush $Pal.TextLow -Kind 'text' -Data $body `
+                                    -Trailing (Get-SRHeadLine $body 88) `
+                                    -Open ($script:toolView -eq 'full')
+                $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'system' -Top 9 -Bottom 5))
             }
             'file' {
                 # The list a compact prints when it re-reads what it needs.
-                $st = New-Object System.Windows.Controls.StackPanel
                 $n = [int]$t.Count
                 $word = 'files'; if ($n -eq 1) { $word = 'file' }
-                $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText ('{0}  {1} {2}' -f $t.Head, $n, $word)) -Brush $Pal.TextLow -Size 9.5 -Semi))
-                $tb = New-ReadText -Text "$($t.Body)".Trim() -Brush $Pal.TextMid -Size 12 -Mono -Wrap -Line 17
-                $tb.Margin = New-Object System.Windows.Thickness 0, 6, 0, 0
-                $null = $st.Children.Add($tb)
-                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalGlass -Radius 10 -PadT 10 -PadB 10))
+                $body = "$($t.Body)".Trim()
+                $fp = New-FoldPanel -Caption ('{0}  {1} {2}' -f $t.Head, $n, $word) `
+                                    -Brush $Pal.TextLow -Kind 'text' -Data $body `
+                                    -Trailing (Get-SRHeadLine $body 84) `
+                                    -Open ($script:toolView -eq 'full')
+                $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'file' -Rail))
             }
             'asked' {
                 # 🔴 A QUESTION YOU ANSWERED, READ AS ONE. It used to arrive as
@@ -2051,6 +2472,8 @@ function Build-ReadDocument {
                 # The record carries the questions and the chosen answers as a
                 # map, so this draws exactly that: the question quietly, the
                 # answer in the hue the question panel uses, one under the next.
+                # It does NOT fold. What you decided is the one thing in this
+                # document you never want to have to go and open.
                 $st = New-Object System.Windows.Controls.StackPanel
                 $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText 'YOU ANSWERED') -Brush $Pal.Ask -Size 9.5 -Semi))
                 $first = $true
@@ -2059,88 +2482,51 @@ function Build-ReadDocument {
                     $bits = "$line" -split ([string][char]1), 2
                     $qt = "$($bits[0])".Trim()
                     $at = $(if ($bits.Count -gt 1) { "$($bits[1])".Trim() } else { '' })
-                    $qb = New-ReadText -Text $qt -Brush $Pal.TextMid -Size 12 -Wrap -Line 17
-                    $qb.Margin = New-Object System.Windows.Thickness 0, $(if ($first) { 9 } else { 13 }), 0, 0
+                    $qb = New-ReadText -Text $qt -Brush $Pal.TextMid -Size 12 -Wrap -Line 16.5
+                    $qb.Margin = New-Object System.Windows.Thickness 0, $(if ($first) { 8 } else { 11 }), 0, 0
                     $null = $st.Children.Add($qb)
                     $first = $false
                     if ($at) {
-                        $ab = New-ReadText -Text $at -Brush $Pal.Ask -Size 13.5 -Semi -Wrap -Line 18
-                        $ab.Margin = New-Object System.Windows.Thickness 14, 3, 0, 0
+                        $ab = New-ReadText -Text $at -Brush $Pal.Ask -Size 13 -Semi -Wrap -Line 17
+                        $ab.Margin = New-Object System.Windows.Thickness 12, 2, 0, 0
                         $null = $st.Children.Add($ab)
                     }
                 }
-                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalFilm.Ask -Stroke $PalEdge.Ask -BW 1 -Radius 12 -PadT 11 -PadB 12 -Top 18 -Bottom 14))
+                $doc.Blocks.Add((New-RailBlock -Child $st -Kind 'asked' -Top 14 -Bottom 12 -Rail))
             }
             'queued' {
+                # The 400-character cap is gone: folded is a line, opened is what
+                # you actually typed.
                 $body = "$($t.Body)".Trim()
-                if ($body.Length -gt 400) { $body = $body.Substring(0, 397) + [string][char]0x2026 }
-                $st = New-Object System.Windows.Controls.StackPanel
-                $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText 'QUEUED') -Brush $Pal.Out -Size 9.5 -Semi))
-                $tb = New-ReadText -Text $body -Brush $Pal.TextMid -Size 12 -Wrap -Line 18
-                $tb.Margin = New-Object System.Windows.Thickness 0, 6, 0, 0
-                $null = $st.Children.Add($tb)
-                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalFilm.Out -Stroke $PalEdge.Out -BW 1 -Radius 10 -PadT 10 -PadB 11))
+                $fp = New-FoldPanel -Caption 'QUEUED' -Brush $Pal.Out -Kind 'text' -Data $body `
+                                    -Trailing (Get-SRHeadLine $body 84) `
+                                    -Open ($script:toolView -eq 'full')
+                $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'queued' -Rail))
             }
             'thinking' {
+                # Thinking was a single 150-character line with no way to see the
+                # rest of it. It folds like everything else now.
                 if ($script:toolView -eq 'hidden') { break }
-                $head = @("$($t.Body)" -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1) -join ' '
-                if ($head.Length -gt 150) { $head = $head.Substring(0, 147) + [string][char]0x2026 }
-                $p = New-Object System.Windows.Documents.Paragraph
-                $p.Margin = New-Object System.Windows.Thickness 0, 10, 0, 4
-                $p.Inlines.Add((New-ReadRun -Text 'thinking   ' -Brush $Pal.TextLow -Size 11 -Weight 'SemiBold'))
-                $p.Inlines.Add((New-ReadRun -Text $head -Brush $Pal.TextLow -Size 13 -Italic))
-                $doc.Blocks.Add($p)
+                $body = "$($t.Body)".Trim()
+                $fp = New-FoldPanel -Caption 'THINKING' -Brush $Pal.TextLow -Kind 'text' -Data $body `
+                                    -Trailing (Get-SRHeadLine $body 96) `
+                                    -Open ($script:toolView -eq 'full')
+                $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'thinking' -Top 9 -Bottom 5))
             }
             'run' {
                 if ($script:toolView -eq 'hidden') { $hidden += @($t.Calls).Count; break }
 
-                $st = New-Object System.Windows.Controls.StackPanel
-                $cap = New-Object System.Windows.Controls.StackPanel
-                $cap.Orientation = 'Horizontal'
-                $null = $cap.Children.Add((New-ReadText -Text ([string][char]0x25B8 + '   ') -Brush $Pal.Tool -Size 11 -Semi))
-                $null = $cap.Children.Add((New-ReadText -Text (Get-TrackedText (Get-RunSummary $t.Calls)) -Brush $Pal.Tool -Size 9.5 -Semi))
-                $null = $st.Children.Add($cap)
-
-                if ($script:toolView -eq 'full') {
-                    $cap.Margin = New-Object System.Windows.Thickness 0, 0, 0, 10
-                    # 🔴 WRAPPED, AND THE NAME OFF THE COMMAND. Neither line
-                    # wrapped, so a command longer than the pane - which is most
-                    # real commands - was simply cut off at the edge, and the
-                    # view you open to READ what ran showed less than the folded
-                    # one did. Three changes, each answering that: the tool's
-                    # name gets its own line so the command starts at a
-                    # predictable place, the command wraps, and the result shows
-                    # the first several lines rather than one truncated one.
-                    $shown = 0
-                    foreach ($c in @($t.Calls)) {
-                        if ($shown -ge 8) { break }
-                        $shown++
-                        $ln = New-Object System.Windows.Controls.StackPanel
-                        $ln.Margin = New-Object System.Windows.Thickness 0, 0, 0, 11
-                        $fg = $Pal.TextHigh
-                        if ($c.Bad) { $fg = $Pal.Bad }
-                        $nm = New-ReadText -Text $c.Name -Brush $(if ($c.Bad) { $Pal.Bad } else { $Pal.Tool }) -Size 10.5 -Semi
-                        $null = $ln.Children.Add($nm)
-                        $argText = (Compress-SRPath $c.Arg).Trim()
-                        if ($argText) {
-                            $ar = New-ReadText -Text $argText -Brush $fg -Size 12.5 -Mono -Wrap -Line 17
-                            $ar.Margin = New-Object System.Windows.Thickness 0, 3, 0, 0
-                            $null = $ln.Children.Add($ar)
-                        }
-                        $resText = "$($c.ResFull)"
-                        if (-not $resText) { $resText = "$($c.Res)" }
-                        if ($resText) {
-                            $r = New-ReadText -Text (Compress-SRPath $resText) -Brush $Pal.TextLow -Size 12 -Mono -Wrap -Line 17
-                            $r.Margin = New-Object System.Windows.Thickness 14, 5, 0, 0
-                            $null = $ln.Children.Add($r)
-                        }
-                        $null = $st.Children.Add($ln)
-                    }
-                    if (@($t.Calls).Count -gt $shown) {
-                        $null = $st.Children.Add((New-ReadText -Text ('and {0} more' -f (@($t.Calls).Count - $shown)) -Brush $Pal.TextLow -Size 11.5 -Mono))
-                    }
-                }
-                $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalGlass -Stroke $PalHair -BW 1 -Radius 12 -PadT 11 -PadB 10 -Hug:($script:toolView -ne 'full')))
+                # 🔴 EVERY CALL, NOT THE FIRST EIGHT. The old renderer stopped
+                # at 8 and printed "and N more" - a run of twelve tool calls
+                # could not be read here at all. Add-RunDetail draws all of
+                # them, lazily, and only once this block is opened.
+                #
+                # The summary line is the fold's caption, so the thing that
+                # looked like a control finally is one.
+                $fp = New-FoldPanel -Caption (Get-RunSummary $t.Calls) -Brush $Pal.Tool `
+                                    -Kind 'run' -Data $t.Calls `
+                                    -Open ($script:toolView -eq 'full')
+                $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'run' -Rail))
             }
         }
     }

@@ -58,10 +58,45 @@ column and is never the grouping: the band is. Clicking a project narrows what i
 scope; clicking again clears it.
 
 **output pane** — the central column: the selected conversation's TRANSCRIPT,
-live-tailing its `.jsonl`, with its pending question pinned at the foot above the
+rendered from its `.jsonl`, with its pending question pinned at the foot above the
 composer. *Not* a mirror of the terminal. 214 conversations exist and 18 run, so the
 pane must work for a conversation nothing is holding — which a console mirror
 cannot. *Retired alias: "read pane".*
+It does NOT live-tail. A streaming tail shipped and was removed the same day
+(`d0d4587`): it drew the conversation a second time in a pane of its own below the
+document, and it ignored the Steps setting, so folded output arrived in full. The
+transcript is a RECORD written when a block completes — measured 3 writes in 30s,
+median gap 14.6s — so a tail cannot be live anyway. What is genuinely live comes
+off the SCREEN, via the vitals sweep.
+
+**gutter** — the fixed-width left column of the output pane carrying one marker
+glyph per block, and the thing that makes the pane readable at a glance: category
+is legible before any word is. It is a real layout column (a `Grid` column), never
+leading spaces — prose is set in a PROPORTIONAL face (Segoe UI Variable, the
+operator's choice, deliberately not a terminal font), and a proportional glyph
+cannot be counted on to align. Mono (Cascadia) is used only where alignment earns
+it: commands, output, aligned machine text.
+
+**block kind** — what a rendered block IS, from a closed set, each with its own
+gutter marker and hue: prose, user, thinking, run, result, notice, hook, file,
+asked, queued, compacted, agent, shell. Distinct from a transcript RECORD, which is
+a line of `.jsonl`; one block can merge several records (consecutive notices) and
+one record can yield none. Say "block kind" for the taxonomy and "record" for the
+file — "block" alone has meant both, which is why this entry exists.
+
+**fold state** — whether one block is open or closed, owned BY THAT BLOCK. The
+`Steps` setting supplies only its DEFAULT and is not an override. These were one
+thing until 2026-08-31 and the bug was visible on screen: `Steps: full` flipped
+`$script:toolView` for every block at once, so the caption "16 NOTICES" was a
+LABEL and not a control, and all sixteen printed under it. A folded block is one
+summary line; an opened block is complete, with no truncation at all.
+
+**drill-in** — selecting a sub-agent and reading its conversation. Sub-agents are
+NESTED ROWS in the sessions column, indented under their parent, selectable like
+any conversation; their transcripts are real files on disk at
+`<session-id>/subagents/agent-<type>-<hash>.jsonl` (measured 2026-08-31: complete
+conversations, one file per sub-agent). The parent's own `Task` call still renders
+as a one-line agent block — the row is what opens the conversation.
 
 **hand-back** — what puts a conversation in FINISHED: nothing pending, and the last
 thing it SAID is substantial enough to be worth reading. A heuristic, deliberately,
