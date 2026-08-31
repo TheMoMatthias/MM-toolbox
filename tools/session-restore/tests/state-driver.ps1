@@ -1190,6 +1190,143 @@ try {
     Remove-Item -LiteralPath $synDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# --- SUB-AGENTS AND BACKGROUND SHELLS ARE READABLE -------------------------
+# 🔴 THE TOOL COULD ONLY EVER COUNT THESE. A sub-agent was an open `Task` id
+# and a background shell was a line saying one had started; what either was
+# doing was invisible, while the terminal showed all of it. Both turned out to
+# be fully on disk, and these assertions are what stops that quietly regressing.
+Write-Host ''
+Write-Host '--- sub-agents and background shells ---'
+$saDir = Join-Path $SR_StateDir ('sa-' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
+$null = New-Item -ItemType Directory -Path $saDir -Force
+try {
+    $saJs = Join-Path $saDir 'sess.jsonl'
+    [System.IO.File]::WriteAllText($saJs, '{"type":"user","message":{"role":"user","content":"hi"}}' + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    $subs = Join-Path (Join-Path $saDir 'sess') 'subagents'
+    $null = New-Item -ItemType Directory -Path $subs -Force
+
+    # A teammate WITH a transcript, and a Task agent WITHOUT one. Both are real
+    # states - measured 2026-08-31: 329 of 374 sub-agents on this machine have a
+    # transcript and 45 do not - and the one without must not read as an error.
+    [System.IO.File]::WriteAllText((Join-Path $subs 'agent-mate-aaa.meta.json'),
+        '{"agentType":"gui-builder","description":"Build the window","name":"mate","taskKind":"in_process_teammate","model":"claude-opus-5"}',
+        (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText((Join-Path $subs 'agent-mate-aaa.jsonl'),
+        '{"type":"user","message":{"role":"user","content":"your brief"}}' + "`n",
+        (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText((Join-Path $subs 'agent-probe-bbb.meta.json'),
+        '{"agentType":"Explore","description":"Map the surface","toolUseId":"toolu_01ABC","spawnDepth":1}',
+        (New-Object System.Text.UTF8Encoding($false)))
+
+    $sa = @(Get-SRSubAgents -JsonlPath $saJs)
+    if ($sa.Count -ne 2) { Fail "expected 2 sub-agents, got $($sa.Count)" }
+    else { Pass 'both sub-agents are found beside the parent transcript' }
+
+    $mate = @($sa | Where-Object { $_.Label -eq 'mate' })
+    if (-not $mate.Count) { Fail 'the teammate was not found by its name' }
+    elseif (-not $mate[0].IsTeammate) { Fail 'a teammate did not read as one' }
+    elseif (-not $mate[0].HasTranscript) { Fail 'a teammate with a transcript reported none' }
+    elseif ("$($mate[0].Description)" -ne 'Build the window') { Fail "the teammate's description was lost: '$($mate[0].Description)'" }
+    else { Pass "the teammate carries its description and its transcript is found" }
+
+    # A Task agent has an agentType and NO name, so the label has to fall back.
+    $probe = @($sa | Where-Object { $_.AgentType -eq 'Explore' })
+    if (-not $probe.Count) { Fail 'the Task sub-agent was not found' }
+    elseif ($probe[0].IsTeammate) { Fail 'a Task sub-agent read as a teammate' }
+    elseif ($probe[0].HasTranscript) { Fail 'an agent with no .jsonl reported having a transcript' }
+    elseif ("$($probe[0].Label)" -ne 'Explore') { Fail "a nameless Task agent did not fall back to its type: '$($probe[0].Label)'" }
+    elseif ("$($probe[0].ToolUseId)" -ne 'toolu_01ABC') { Fail 'the toolUseId that ties it to the parent call was lost' }
+    else { Pass 'a Task sub-agent with no transcript is reported, not hidden' }
+
+    # A conversation with no subagents directory is the common case and must be
+    # cheap and silent, not an error.
+    $none = @(Get-SRSubAgents -JsonlPath (Join-Path $saDir 'nothing.jsonl'))
+    if ($none.Count -ne 0) { Fail "a session with no sub-agents returned $($none.Count)" }
+    else { Pass 'a session with no sub-agents returns nothing rather than throwing' }
+
+    # --- the call that starts a shell nothing else can see ---
+    $bgJs = Join-Path $saDir 'bg.jsonl'
+    $bgRec = @(
+        '{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo plain","description":"a normal command"}}]}}',
+        '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"plain"}]}}',
+        '{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"sleep 600","description":"Watch for the lane to exit","run_in_background":true}}]}}',
+        '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"Command running in background with ID: bq7x9zzz. Output is being written to: C:\\temp\\bq7x9zzz.output"}]}}',
+        '{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_3","name":"Task","input":{"description":"Map the touched surface","prompt":"Read every file that renders the pane; report what you find."}}]}}'
+    ) -join "`n"
+    [System.IO.File]::WriteAllText($bgJs, $bgRec + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    # 🪤 ASSIGN, THEN WRAP. Get-SRTranscriptBlocks comma-guards its return, so
+    # @(Get-SRTranscriptBlocks ...) in ONE step is a single element holding
+    # every block - the trap CONTEXT.md records, and one this very assertion
+    # walked into while it was being written.
+    $bgGot = Get-SRTranscriptBlocks -JsonlPath $bgJs -MaxRecords 50 -MaxTailBytes 65536
+    $bgBl = @($bgGot)
+    $tools = @($bgBl | Where-Object { $_.Kind -eq 'tool' })
+    $plain = @($tools | Where-Object { $_.Head -eq 'Bash' })
+    $bg    = @($tools | Where-Object { $_.Head -eq 'Bash (background)' })
+    if (-not $plain.Count) { Fail 'an ordinary Bash call was not read as Bash' }
+    elseif ($bg.Count -ne 1) { Fail "expected exactly 1 backgrounded Bash, got $($bg.Count)" }
+    elseif ("$($bg[0].Meta)" -ne 'Watch for the lane to exit') { Fail "the shell's description was lost: '$($bg[0].Meta)'" }
+    else { Pass 'a backgrounded Bash is named as one and carries its description' }
+
+    # The whole command, not the 150 characters the block builder used to cut it
+    # to - the defect that survived every fix made in the pane, because the pane
+    # never had the rest of it.
+    $longJs = Join-Path $saDir 'long.jsonl'
+    $longCmd = 'git -C C:\Users\mauri\Documents\Millwright add ' + ('.millwright/some/quite/long/path/file{0}.json ' * 12 -f 1,2,3,4,5,6,7,8,9,10,11,12)
+    $longRec = '{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"' + ($longCmd -replace '\\', '\\\\') + '"}}]}}'
+    [System.IO.File]::WriteAllText($longJs, $longRec + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    $lGot = Get-SRTranscriptBlocks -JsonlPath $longJs -MaxRecords 50 -MaxTailBytes 65536
+    $lBl = @($lGot)
+    $lTool = @($lBl | Where-Object { $_.Kind -eq 'tool' })
+    if (-not $lTool.Count) { Fail 'the long command produced no tool block' }
+    elseif ("$($lTool[0].Body)".Length -lt 400) { Fail "the command was truncated to $("$($lTool[0].Body)".Length) chars - it is $($longCmd.Trim().Length) long" }
+    elseif ("$($lTool[0].Body)" -match [string][char]0x2026) { Fail 'the command reached the renderer with an ellipsis in it' }
+    else { Pass "a $($longCmd.Trim().Length)-character command reaches the renderer whole" }
+
+    # A Task call carries what it was FOR as well as what it was given.
+    $tk = @($tools | Where-Object { $_.Head -eq 'Task' })
+    if ($tk.Count -ne 1) { Fail "expected 1 Task call, got $($tk.Count)" }
+    elseif ("$($tk[0].Meta)" -ne 'Map the touched surface') { Fail "the Task description was lost: '$($tk[0].Meta)'" }
+    elseif ("$($tk[0].Body)" -notmatch 'Read every file') { Fail 'the Task prompt - the instructions - did not reach the block' }
+    else { Pass "a Task call carries both its description and the agent's instructions" }
+
+    # --- reading a shell's output while it is still being written ---
+    # 🔴 THIS IS THE LOAD-BEARING CLAIM. The shell that owns the file still has
+    # it open, so a plain read throws "being used by another process" on exactly
+    # the running shell this feature exists to show. FileShare::ReadWrite is
+    # what makes it work, and nothing else in the suite would notice if it were
+    # dropped.
+    $liveOut = Join-Path $saDir 'live.output'
+    $held = New-Object System.IO.FileStream($liveOut, [System.IO.FileMode]::Create,
+                [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes("LANE ab-stc EXITED after ~21min`n")
+        $held.Write($bytes, 0, $bytes.Length)
+        $held.Flush()
+        $lo = Get-SRShellOutput -Path $liveOut
+        if (-not $lo) { Fail 'the output of a still-running shell could not be read at all' }
+        elseif ("$($lo.Text)" -notmatch 'LANE ab-stc EXITED') { Fail "the live output read back wrong: '$($lo.Text)'" }
+        else { Pass 'a background shell is read while the shell still holds the file open' }
+    } finally { $held.Dispose() }
+
+    # The path builder reaches the filesystem with a WILDCARD in it, so anything
+    # not shaped like an id is refused rather than pasted into a glob.
+    $guardBad = 0
+    foreach ($bad in @('../../etc', 'a\b', 'x*y', '', ('z' * 80))) {
+        if ((Get-SRShellOutputPath -SessionId '444f91ed-5a95-4157-a481-de977b7ade7c' -Shell $bad)) { $guardBad++ }
+    }
+    if ($guardBad) { Fail "$guardBad malformed shell ids were accepted into a filesystem glob" }
+    else { Pass 'a malformed shell id is refused before it reaches the filesystem' }
+
+    # And a well-formed id for a session that has no tasks directory is simply
+    # nothing - not an error, and not a guess at a path.
+    if ((Get-SRShellOutputPath -SessionId 'ffffffff-0000-0000-0000-000000000000' -Shell 'babcdef12')) {
+        Fail 'a shell id for an unknown session resolved to a path'
+    } else { Pass 'an unknown session resolves to no output file rather than a guess' }
+} finally {
+    Remove-Item -LiteralPath $saDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # --- A QUESTION YOU ANSWERED ------------------------------------------------
 # 🔴 IT USED TO ARRIVE AS A TOOL CALL, which is what made it unreadable: the
 # argument slot got PowerShell's stringification of the input object

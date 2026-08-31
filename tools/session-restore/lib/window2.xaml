@@ -860,6 +860,56 @@
             </StackPanel>
           </Grid>
         </Border>
+
+        <!-- ================== A SUB-AGENT ==================
+             🔑 A sub-agent is a CONVERSATION, and it is selectable like any
+             other. Claude Code writes each one its own transcript beside the
+             parent, so opening one is the same act as opening a session - which
+             is why this row goes in this list rather than into a panel of its
+             own. Measured 2026-08-31: 329 of 374 sub-agents on this machine
+             have a full transcript on disk.
+
+             It is INDENTED and it is QUIET. The list is scanned for what needs
+             you, and a sub-agent never does - it belongs to the session above
+             it. So: no accent bar, no unread dot, no context bar; an @ in the
+             agent hue, the name, what it was asked to do, and how long ago it
+             last wrote.
+
+             🪤 SubVis, not AgentVis. `AgentVis` already exists on this template
+             and means something else entirely - the amber dot counting agents a
+             SESSION has out. Two properties one letter apart, on one template,
+             would have been a silent empty cell the first time they were
+             confused. -->
+        <Border Visibility="{Binding SubVis}" Padding="0,7,14,8" Cursor="Hand"
+                ToolTip="{Binding SubTip}">
+          <Grid Margin="34,0,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="&#x0040;" FontFamily="{DynamicResource FontMono}"
+                       FontSize="11" Foreground="{StaticResource HueAsk}"
+                       Opacity="{Binding SubOpacity}"
+                       VerticalAlignment="Top" Margin="0,1,9,0"/>
+            <StackPanel Grid.Column="1">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="{Binding SubName}" Style="{StaticResource Body}"
+                           FontSize="13" Foreground="{StaticResource TextHigh}"
+                           Opacity="{Binding SubOpacity}"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding SubTag}" Style="{StaticResource Meta}"
+                           Foreground="{StaticResource TextLow}" Margin="9,0,0,0"
+                           VerticalAlignment="Center"/>
+              </StackPanel>
+              <TextBlock Text="{Binding SubDesc}" Style="{StaticResource Dim}"
+                         FontSize="12" TextTrimming="CharacterEllipsis" Margin="0,3,0,0"
+                         LineHeight="16" LineStackingStrategy="BlockLineHeight"/>
+            </StackPanel>
+            <TextBlock Grid.Column="2" Text="{Binding SubAge}" Style="{StaticResource Meta}"
+                       Margin="10,0,0,0" VerticalAlignment="Center"/>
+          </Grid>
+        </Border>
       </Grid>
     </DataTemplate>
 

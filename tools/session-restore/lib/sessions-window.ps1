@@ -1253,6 +1253,8 @@ function Build-Sessions {
             # the trace and an empty cell on screen. Named, so it is off.
             CtxVis = $V_Hide; CtxWidth = 0.0; AgentVis = $V_Hide; AgentText = ''
             ShellVis = $V_Hide; ShellText = ''
+            SubVis = $V_Hide; SubName = ''; SubDesc = ''; SubTag = ''; SubAge = ''
+            SubOpacity = 1.0; SubTip = ''
             CtxBrush = [System.Windows.Media.Brush][System.Windows.Media.Brushes]::Transparent
         })
         # 🔴 THE HEADINGS ALL STAY WHEN ONE IS PICKED. Hiding the others
@@ -1327,7 +1329,83 @@ function Build-Sessions {
                 AgentText = $(if ($rowAgents -gt 1) { "$rowAgents" } else { '' })
                 ShellVis = $(if ($rowShells -gt 0) { $V_Show } else { $V_Hide })
                 ShellText = $(if ($rowShells -gt 1) { "$rowShells" } else { '' })
+                SubVis = $V_Hide; SubName = ''; SubDesc = ''; SubTag = ''; SubAge = ''
+                SubOpacity = 1.0; SubTip = ''
             })
+            # 🔑 ITS SUB-AGENTS, NESTED UNDER IT. Each one is a real conversation
+            # with its own transcript beside the parent's, so it goes in this
+            # list and is selected the same way - the pane then opens it with no
+            # special path at all, because a sub-agent transcript uses the same
+            # record shape as any other.
+            #
+            # 🪤 THE MARKS ABOVE AND THESE ROWS COUNT DIFFERENT THINGS, and both
+            # are right. The amber dot says how many agents are out RIGHT NOW
+            # (an open Task id, or the session's own status line). These rows are
+            # every agent this conversation has EVER spawned, because the
+            # question they answer is "what did it have working on this?" - a
+            # finished agent's findings are the thing you most often want back.
+            # 🔴 UNDER THE SELECTED CONVERSATION ONLY, and that is a density
+            # decision with history behind it. Rendering every conversation's
+            # agents took this list from 36 rows to 106 in review - a 3x list on
+            # a surface that was explicitly asked to get LESS dense, and one
+            # session on this machine has 31 agents on its own. CONTEXT.md
+            # already records the answer to "an endless list": the roster opens
+            # folded. Same rule here. The amber dot still says, on every row,
+            # that a session has agents out right now.
+            #
+            # 🪤 THE PARENT STAYS OPEN WHILE ONE OF ITS AGENTS IS SELECTED, or
+            # selecting an agent would remove the row that is selected on the
+            # very next rebuild - the list would fight the click.
+            $subs = @(Get-RowSubAgents $r)
+            $expand = ($script:selId -eq $r.Id)
+            if (-not $expand -and "$($script:selId)".StartsWith('agent:')) {
+                foreach ($sa in $subs) {
+                    if (('agent:' + $sa.Id) -eq "$($script:selId)") { $expand = $true; break }
+                }
+            }
+            if (-not $expand) { continue }
+            foreach ($sa in $subs) {
+                $tag = $(if ($sa.IsTeammate) { 'teammate' } else { 'task' })
+                $tip = ('{0} - {1}' -f $sa.Label, $(if ($sa.Description) { $sa.Description } else { 'no description recorded' }))
+                # 🔑 IS IT STILL WORKING? A sub-agent has no process of its own
+                # to ask - `claude agents --json` does not report them - so the
+                # evidence is its TRANSCRIPT: a file written in the last minute
+                # is a conversation that is still writing. The same rule the
+                # rest of this tool uses for an inferred-live session, and it
+                # refreshes for free because Build-Inbox already runs on the
+                # 2.5s vitals sweep. No second poller; one was removed for
+                # doubling the view and is not coming back.
+                $live = $false
+                if ($sa.HasTranscript) {
+                    try { $live = (((Get-Date) - $sa.When).TotalSeconds -lt 60) } catch { }
+                }
+                if ($live) { $tag = $tag + '  -  working' }
+                if (-not $sa.HasTranscript) {
+                    # A real state, said out loud. 45 of 374 sub-agents on this
+                    # machine have metadata and no transcript - showing them as
+                    # an empty conversation would read as a broken reader.
+                    $tag = $tag + '  -  no transcript'
+                    $tip = $tip + ' (this agent left no transcript on disk)'
+                }
+                $items.Add([PSCustomObject]@{
+                    Kind = 'agent'; Id = ('agent:' + $sa.Id); Row = $r; Sub = $sa
+                    BandVis = $V_Hide; RowVis = $V_Hide; SubVis = $V_Show
+                    DotVis = $V_Hide; BandLabel = ''; BandCount = ''; Accent = $acc
+                    Name = ''; Age = ''; Said = ''; NameWeight = 'Normal'; NameStyle = 'Normal'
+                    BarOpacity = 0.0
+                    CtxVis = $V_Hide; CtxWidth = 0.0
+                    CtxBrush = [System.Windows.Media.Brush][System.Windows.Media.Brushes]::Transparent
+                    AgentVis = $V_Hide; AgentText = ''; ShellVis = $V_Hide; ShellText = ''
+                    SubName = $sa.Label
+                    SubDesc = $(if ($sa.Description) { $sa.Description } else { $sa.AgentType })
+                    SubTag  = $tag
+                    SubAge  = (Get-AgeTicks $sa.When.Ticks)
+                    # Dimmed, not hidden: it still says what it was asked to do,
+                    # which is often the only thing you needed.
+                    SubOpacity = $(if ($sa.HasTranscript) { 1.0 } else { 0.55 })
+                    SubTip = $tip
+                })
+            }
         }
     }
 
@@ -1742,7 +1820,20 @@ function Get-ReadTurns { param($Blocks)
         $calls = New-Object System.Collections.Generic.List[object]
         while ($i -lt $arr.Count -and ($arr[$i].Kind -eq 'tool' -or $arr[$i].Kind -eq 'result')) {
             if ($arr[$i].Kind -eq 'tool') {
-                $calls.Add([PSCustomObject]@{ Name = "$($arr[$i].Head)"; Arg = "$($arr[$i].Body)"; Res = ''; ResFull = ''; Bad = $false })
+                # Which of the three shapes this call is. A Task and a
+                # backgrounded Bash each start something that outlives the call,
+                # so they carry their own marker in the pane rather than being
+                # one more grey row among the Reads.
+                $cn = "$($arr[$i].Head)"
+                $ck = 'run'
+                if ($cn -eq 'Task') { $ck = 'agent' }
+                elseif ($cn -eq 'Bash (background)') { $ck = 'shell' }
+                $calls.Add([PSCustomObject]@{
+                    Name = $cn; Arg = "$($arr[$i].Body)"; Res = ''; ResFull = ''; Bad = $false
+                    # What a human wrote to say what this is FOR, as opposed to
+                    # the prompt or the command, which is the Arg.
+                    Desc = "$($arr[$i].Meta)"; CallKind = $ck; Shell = ''
+                })
             } elseif ($calls.Count) {
                 $last = $calls[$calls.Count - 1]
                 if (-not $last.Res) {
@@ -1765,6 +1856,17 @@ function Get-ReadTurns { param($Blocks)
                     # own blank lines are part of how it reads.
                     $last.ResFull = ("$($arr[$i].Body)" -replace "`r", '').TrimEnd()
                     $last.Bad = ("$($arr[$i].Head)" -eq 'failed')
+                    # 🔑 THE SHELL ID, OUT OF THE ANSWER'S OWN PROSE. A
+                    # backgrounded Bash returns immediately with
+                    #   "Command running in background with ID: beqvs0dpb."
+                    # and that id is the ONLY link from the transcript to the
+                    # file the shell is still writing. There is no structured
+                    # field for it anywhere in the record - which is why a
+                    # background shell looked unreadable until this line.
+                    if ($last.CallKind -eq 'shell') {
+                        $m = [regex]::Match("$($last.ResFull)", 'with\s+ID:\s*([A-Za-z0-9_-]{1,64})')
+                        if ($m.Success) { $last.Shell = $m.Groups[1].Value }
+                    }
                 }
             }
             $i++
@@ -2167,8 +2269,31 @@ function Add-RunDetail { param($Panel, $Calls)
         $ln = New-Object System.Windows.Controls.StackPanel
         $ln.Margin = New-Object System.Windows.Thickness 0, 0, 0, 10
 
-        $nm = New-ReadText -Text $c.Name -Brush $(if ($c.Bad) { $Pal.Bad } else { $Pal.Tool }) -Size 10 -Semi
-        $null = $ln.Children.Add($nm)
+        # A SUB-AGENT AND A BACKGROUND SHELL ARE NAMED AS WHAT THEY ARE. Both
+        # used to read as an ordinary tool call in the same grey as a Read, and
+        # they are the two things a session starts that keep going after the
+        # call returns - which is exactly what the operator could not see.
+        $ck = "$($c.CallKind)"
+        if (-not $ck) { $ck = 'run' }
+        $hue = $(if ($c.Bad) { $Pal.Bad } elseif ($ck -ne 'run') { Get-MarkBrush $ck } else { $Pal.Tool })
+        $head = New-Object System.Windows.Controls.StackPanel
+        $head.Orientation = 'Horizontal'
+        if ($ck -ne 'run') {
+            $gm = New-ReadText -Text ((Get-MarkGlyph $ck) + '  ') -Brush $hue -Size 11 -Mono -Semi
+            $null = $head.Children.Add($gm)
+        }
+        $null = $head.Children.Add((New-ReadText -Text $c.Name -Brush $hue -Size 10 -Semi))
+        $null = $ln.Children.Add($head)
+
+        # What it was FOR, above what it was GIVEN. On a Task this is the one
+        # line that says which sub-agent this is; on a background shell it is
+        # the only human-written description of what was left running.
+        $dsc = "$($c.Desc)".Trim()
+        if ($dsc -and $ck -ne 'run') {
+            $db = New-ReadText -Text $dsc -Brush $Pal.TextMid -Size 12.5 -Wrap -Line 16.5
+            $db.Margin = New-Object System.Windows.Thickness 0, 3, 0, 0
+            $null = $ln.Children.Add($db)
+        }
 
         # 🔴 THE COMMAND IS NOT PATH-COMPRESSED. Compress-SRPath is right for a
         # RESULT, which is dense and scanned - but on the command it replaced the
@@ -2179,7 +2304,14 @@ function Add-RunDetail { param($Panel, $Calls)
         # text before the control ever sees it. What ran is shown as it ran.
         $argText = "$($c.Arg)".Trim()
         if ($argText) {
-            foreach ($stmt in @(Split-SRCommandLine $argText)) {
+            # 🪤 A SUB-AGENT'S ARGUMENT IS A PROMPT, NOT A COMMAND, and the
+            # splitter must not touch it: prose is full of semicolons, and
+            # breaking an instruction at each one would print the briefing as a
+            # list of statements that were never separate. Only a shell command
+            # is split.
+            $stmts = @($argText)
+            if ($ck -ne 'agent') { $stmts = @(Split-SRCommandLine $argText) }
+            foreach ($stmt in $stmts) {
                 $ar = New-ReadText -Text $stmt -Brush $(if ($c.Bad) { $Pal.Bad } else { $Pal.TextHigh }) `
                                    -Size 12 -Mono -Wrap -Line 16.5
                 # The hanging indent that makes a wrapped command readable: the
@@ -2219,6 +2351,59 @@ function Add-RunDetail { param($Panel, $Calls)
             $null = $rg.Children.Add($sv)
             $rg.Margin = New-Object System.Windows.Thickness 0, 5, 0, 0
             $null = $ln.Children.Add($rg)
+        }
+
+        # 🔑 WHAT THE BACKGROUND SHELL HAS ACTUALLY PRINTED, live off disk.
+        #
+        # The tool_result above says only "running in background with ID: x" -
+        # which was everything this tool could show, and is why a background
+        # shell read as a thing you were told about rather than a thing you
+        # could watch. Claude Code writes the shell's stdout to
+        # %TEMP%\claude\<cwd-slug>\<session>\tasks\<id>.output and keeps writing
+        # while it runs, so this is the real current output, not a copy.
+        #
+        # Read at OPEN time, deliberately: this block is lazy, so the bytes are
+        # fetched when you look at it and are as fresh as the click. A folded
+        # block reads no files at all.
+        if ("$($c.Shell)" -and "$($script:docSessionId)") {
+            $sp = ''
+            try { $sp = Get-SRShellOutputPath -SessionId "$($script:docSessionId)" -Shell "$($c.Shell)" } catch { }
+            $so = $null
+            if ($sp) { try { $so = Get-SRShellOutput -Path $sp } catch { } }
+            # 🪤 NOT $head / $body. `$head` is the call-header StackPanel a few
+            # lines above, still in scope, and PowerShell would have let this
+            # silently rebind it to a string - the shadowing family CONTEXT.md
+            # already records twice.
+            $shLabel = ''
+            $shText = ''
+            if (-not $sp) {
+                # Said plainly rather than left blank. The file is cleaned up
+                # once a shell is reaped, so this is the normal state for an old
+                # conversation and must not read as a failure.
+                $shLabel = 'no output file - this shell has been cleaned up'
+            } elseif (-not $so) {
+                $shLabel = 'its output file could not be read'
+            } elseif (-not "$($so.Text)".Trim()) {
+                $shLabel = 'running - nothing printed yet'
+            } else {
+                $shLabel = ('output   {0:N0} bytes{1}' -f $so.Bytes, $(if ($so.Truncated) { ' - showing the end' } else { '' }))
+                $shText = "$($so.Text)"
+            }
+            $sv2 = New-Object System.Windows.Controls.StackPanel
+            $sv2.Margin = New-Object System.Windows.Thickness 14, 7, 0, 0
+            $hl = New-ReadText -Text (Get-TrackedText $shLabel) -Brush (Get-MarkBrush 'shell') -Size 9.5 -Semi
+            $null = $sv2.Children.Add($hl)
+            if ($shText) {
+                $bt = New-ReadText -Text $shText -Brush $Pal.TextMid -Size 12 -Mono -Wrap -Line 16.5
+                $bt.Margin = New-Object System.Windows.Thickness 0, 5, 0, 0
+                $sc = New-Object System.Windows.Controls.ScrollViewer
+                $sc.VerticalScrollBarVisibility = 'Auto'
+                $sc.HorizontalScrollBarVisibility = 'Disabled'
+                $sc.MaxHeight = $script:FoldMaxHeight
+                $sc.Content = $bt
+                $null = $sv2.Children.Add($sc)
+            }
+            $null = $ln.Children.Add($sv2)
         }
         $null = $Panel.Children.Add($ln)
     }
@@ -2553,10 +2738,25 @@ function Build-ReadDocument {
                 #
                 # The summary line is the fold's caption, so the thing that
                 # looked like a control finally is one.
-                $fp = New-FoldPanel -Caption (Get-RunSummary $t.Calls) -Brush $Pal.Tool `
+                # THE BLOCK IS MARKED BY THE MOST NOTABLE THING IN IT. A run
+                # that spawned a sub-agent is not the same event as a run of
+                # Reads, and at a glance down the gutter that difference is the
+                # one worth seeing.
+                #
+                # 🪤 TWO DIFFERENT "Kind"s ON ONE LINE, and they are not the
+                # same argument. New-FoldPanel's -Kind selects which BUILDER
+                # fills the panel and must stay 'run'; New-RailBlock's -Kind
+                # selects the MARKER. Passing the marker kind to the fold would
+                # render the calls as a blob of mono text.
+                $rk = 'run'
+                foreach ($c0 in @($t.Calls)) {
+                    if ("$($c0.CallKind)" -eq 'agent') { $rk = 'agent'; break }
+                    if ("$($c0.CallKind)" -eq 'shell') { $rk = 'shell' }
+                }
+                $fp = New-FoldPanel -Caption (Get-RunSummary $t.Calls) -Brush (Get-MarkBrush $rk) `
                                     -Kind 'run' -Data $t.Calls `
                                     -Open ($script:toolView -eq 'full')
-                $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'run' -Rail))
+                $doc.Blocks.Add((New-RailBlock -Child $fp -Kind $rk -Rail))
             }
         }
     }
@@ -3133,12 +3333,28 @@ function Invoke-Compact {
 # ===========================================================================
 function Update-Document { param([switch]$Wait)
     $it = $ui.SessionList.SelectedItem
-    if (-not $it -or $it.Kind -ne 'session') { return }
+    if (-not $it) { return }
+    # A SUB-AGENT IS READ BY THE SAME PATH. Its transcript uses the same record
+    # shape as any conversation, so everything below this line is unchanged -
+    # the only difference is which file is opened.
+    if ($it.Kind -ne 'session' -and $it.Kind -ne 'agent') { return }
     $r = $it.Row
     $j = "$($r.S.jsonl)"
+    if ($it.Kind -eq 'agent') { $j = "$($it.Sub.Path)" }
+    # Which conversation's background shells this document may read. Always the
+    # PARENT's id, sub-agent or not: the tasks directory belongs to the session,
+    # and an agent's shells are filed under the session that owns it.
+    $script:docSessionId = "$($r.Id)"
     if (-not $j -or -not (Test-Path -LiteralPath $j)) {
         $ui.PaneDoc.Document = $null
-        $ui.PaneEmpty.Text = 'This conversation has no transcript left on disk.'
+        $ui.PaneEmpty.Text = $(if ($it.Kind -eq 'agent') {
+            # Not an error, and it must not read as one: 45 of 374 sub-agents on
+            # this machine are in exactly this state. What it was ASKED to do is
+            # still known, so it is shown rather than an empty pane.
+            $d = "$($it.Sub.Description)"
+            if ($d) { "This sub-agent left no transcript on disk." + [Environment]::NewLine + [Environment]::NewLine + "It was asked to: " + $d }
+            else { 'This sub-agent left no transcript on disk.' }
+        } else { 'This conversation has no transcript left on disk.' })
         $ui.PaneEmpty.Visibility = $V_Show
         return
     }
@@ -3703,7 +3919,49 @@ function Step-ToolView {
 
 function Show-Selected { param([switch]$Force)
     $it = $ui.SessionList.SelectedItem
-    if (-not $it -or $it.Kind -ne 'session') { return }
+    if (-not $it) { return }
+
+    # ===================================================================
+    # A SUB-AGENT, OPENED.
+    #
+    # It gets its own path rather than sharing the session one, because every
+    # live thing below this block is meaningless for it: it has no process, so
+    # nothing can be typed into it, it cannot be waiting on a question, and
+    # there is no console to read. Running the session path against an agent
+    # would spawn a screen probe for a pid that does not exist and put the
+    # PARENT's pending question over the agent's transcript.
+    #
+    # What it does share is the document, which is the whole point - the same
+    # reader, the same gutter, the same folds.
+    # ===================================================================
+    if ($it.Kind -eq 'agent') {
+        $same = ($script:selId -eq $it.Id)
+        $script:selId = $it.Id
+        $sa = $it.Sub
+        $ui.PaneName.Text = "$($sa.Label)"
+        $ui.PaneStateDot.Background = $window.FindResource('HueAsk')
+        Set-WorkingPulse $false
+        $what = $(if ($sa.IsTeammate) { 'teammate' } else { 'task sub-agent' })
+        $of = ''
+        try { $of = "$($it.Row.T.Text)" } catch { }
+        $bits = @("$what")
+        if ($of) { $bits += ('working for ' + $of) }
+        if ($sa.Description) { $bits += "$($sa.Description)" }
+        $ui.PaneState.Text = ($bits -join '   |   ')
+        # The vitals strip describes a LIVE session - model, context, branch,
+        # turn clock. None of it applies to a transcript nothing is holding.
+        if (-not $same) { try { Update-Chips $null } catch { } }
+        Show-Ask $null
+        if ($same -and -not $Force) { return }
+        if (-not $same) {
+            $script:tailBytes = $script:TailBase
+            $script:docToBottom = $true
+        }
+        Update-Document
+        return
+    }
+
+    if ($it.Kind -ne 'session') { return }
     $same = ($script:selId -eq $it.Id)
     $script:selId = $it.Id
     $r = $it.Row
@@ -5110,6 +5368,35 @@ function Get-RowScreenSig { param([string]$Id)
     # anything at all. Past its life it is not evidence and must not draw.
     if (((Get-Date) - $v.At).TotalSeconds -gt $SR_RowScreenTTL) { return $null }
     return $v
+}
+
+# THE SUB-AGENT LIST FOR ONE ROW, CACHED, because Build-Inbox runs on every
+# refresh and this touches the disk.
+#
+# 🪤 THE CHEAP TEST COMES FIRST AND IS THE WHOLE OPTIMISATION. Only 24 of the
+# 374 conversations on this machine have a subagents directory at all, so a
+# Test-Path that fails is the answer for almost every row and costs nothing.
+# Enumerating and parsing the meta files - 2 to 31 tiny JSON reads - happens
+# only for the few that do, and then not again for 20 seconds.
+#
+# The cache is keyed on the conversation id and holds the empty answer too: a
+# row with no agents must not re-probe the filesystem on every single repaint,
+# and that is the common case.
+$script:subAgents = @{}
+$SR_SubAgentTTL = 20
+
+function Get-RowSubAgents { param($R)
+    $id = "$($R.Id)"
+    if (-not $id) { return @() }
+    $v = $script:subAgents[$id]
+    if ($v -and ((Get-Date) - $v.At).TotalSeconds -le $SR_SubAgentTTL) { return $v.List }
+    $list = @()
+    try {
+        $j = "$($R.S.jsonl)"
+        if ($j) { $list = @(Get-SRSubAgents -JsonlPath $j) }
+    } catch { $list = @() }
+    $script:subAgents[$id] = @{ At = (Get-Date); List = $list }
+    return $list
 }
 
 # ===========================================================================

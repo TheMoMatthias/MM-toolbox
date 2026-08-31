@@ -3668,6 +3668,198 @@ function Remove-SRAnsi { param([string]$Text)
     return $script:SR_AnsiCtl.Replace($t, '')
 }
 
+# ===========================================================================
+# SUB-AGENTS ARE REAL CONVERSATIONS ON DISK, and nothing in this tool had ever
+# opened one.
+#
+# Until now a sub-agent was only COUNTED - an open `Task` tool_use id with no
+# result quoting it back (see Get-SRRowSignals) - so the window could say "2
+# agents" and nothing else. What they were told, what they are doing and what
+# they found were all invisible, and the terminal shows every bit of it.
+#
+# 🔑 THEY LIVE BESIDE THE PARENT, NOT INSIDE IT. Claude Code writes each one to
+#     <project>\<session-id>\subagents\agent-<name>-<hash>.jsonl
+#     <project>\<session-id>\subagents\agent-<name>-<hash>.meta.json
+# and the transcript uses the SAME record shape as a top-level conversation, so
+# Get-SRTranscriptBlocks reads it unchanged. That is the whole reason this is a
+# reader and not a parser.
+#
+# MEASURED 2026-08-31 across every project on this machine: 374 sub-agents, 329
+# of them WITH a transcript. Both kinds appear -
+#   in_process_teammate  a teammate from an agent team          (257)
+#   no taskKind          a Task sub-agent - Explore and friends (117)
+# - so this is not a teammates-only feature. 45 carry metadata and no
+# transcript, which is a real state and is reported rather than hidden: an
+# agent that never wrote anything must not look like one whose file failed to
+# load.
+#
+# The meta file is the interesting half and it is tiny:
+#   {"agentType":"Explore","description":"Map review UI","toolUseId":"toolu_...",
+#    "spawnDepth":1}
+#   {"agentType":"gui-builder-2","description":"GUI state, filters, restyle",
+#    "name":"gui-builder-2","model":"claude-opus-5[1m]",
+#    "taskKind":"in_process_teammate","teamName":"session-d7d204c3", ...}
+# `toolUseId` is what ties a Task agent back to the exact call in the parent
+# that spawned it, which is what lets the parent's own block name it.
+function Get-SRSubAgentDir { param([string]$JsonlPath)
+    if (-not $JsonlPath) { return '' }
+    $dir = Split-Path -Parent $JsonlPath
+    if (-not $dir) { return '' }
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($JsonlPath)
+    if (-not $stem) { return '' }
+    return (Join-Path (Join-Path $dir $stem) 'subagents')
+}
+
+function Get-SRSubAgents { param([string]$JsonlPath)
+    $out = New-Object System.Collections.Generic.List[object]
+    $dir = Get-SRSubAgentDir $JsonlPath
+    if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { return $out.ToArray() }
+    $metas = @()
+    try { $metas = @(Get-ChildItem -LiteralPath $dir -Filter '*.meta.json' -File -ErrorAction Stop) } catch { return $out.ToArray() }
+    foreach ($m in $metas) {
+        $j = $null
+        try { $j = Get-Content -LiteralPath $m.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+        # A meta that will not parse is still a sub-agent that ran. Name it from
+        # the file and carry on - dropping it would under-report the very thing
+        # this function exists to surface.
+        $stem = $m.Name -replace '\.meta\.json$', ''
+        $tx = Join-Path $dir ($stem + '.jsonl')
+        $has = Test-Path -LiteralPath $tx
+        $bytes = 0L
+        $when = $m.LastWriteTime
+        if ($has) {
+            try {
+                $fi = Get-Item -LiteralPath $tx
+                $bytes = $fi.Length
+                # The TRANSCRIPT's mtime, not the meta's: the meta is written
+                # once at spawn and never touched again, so ordering by it would
+                # put a finished agent above one still writing.
+                $when = $fi.LastWriteTime
+            } catch { }
+        }
+        $name = ''
+        $type = ''
+        $desc = ''
+        $kind = ''
+        $model = ''
+        $team = ''
+        $tuid = ''
+        if ($j) {
+            $name  = "$($j.name)"
+            $type  = "$($j.agentType)"
+            $desc  = "$($j.description)"
+            $kind  = "$($j.taskKind)"
+            $model = "$($j.model)"
+            $team  = "$($j.teamName)"
+            $tuid  = "$($j.toolUseId)"
+        }
+        # A Task sub-agent has an agentType and NO name; a teammate has both and
+        # they are usually the same. The file stem is the last resort and always
+        # says something, because it carries the agent's own id.
+        $label = $name
+        if (-not $label) { $label = $type }
+        if (-not $label) { $label = ($stem -replace '^agent-', '') }
+        $out.Add([PSCustomObject]@{
+            Id            = $stem
+            Label         = $label
+            AgentType     = $type
+            Description   = $desc
+            TaskKind      = $kind
+            Model         = $model
+            Team          = $team
+            ToolUseId     = $tuid
+            Path          = $tx
+            HasTranscript = $has
+            Bytes         = $bytes
+            When          = $when
+            # A teammate is a peer working alongside the session; a Task agent is
+            # a one-shot the session dispatched. Different things, and the row
+            # says which.
+            IsTeammate    = ($kind -eq 'in_process_teammate')
+        })
+    }
+    # Newest first, matching every other list in this tool.
+    $sorted = @($out | Sort-Object -Property When -Descending)
+    return $sorted
+}
+
+# ===========================================================================
+# A BACKGROUND SHELL'S OUTPUT IS ON DISK, LIVE, and this was very nearly
+# written off.
+#
+# The first reading of the evidence was that a backgrounded Bash is
+# unrecoverable: the transcript answers it immediately, records no shell id
+# field and carries no BashOutput records unless the session happened to poll -
+# measured, and true as far as it went. What it missed is that the ANSWER
+# names the file:
+#
+#   Command running in background with ID: beqvs0dpb. Output is being written
+#   to: C:\...\<session-id>\tasks\beqvs0dpb.output
+#
+# So the id and the path are both in the transcript after all, in prose, in the
+# tool_result. MEASURED 2026-08-31: 363 `tasks` directories on this machine,
+# holding live stdout - the sample read was seconds old while its command was
+# still running. This is the real thing, not a cached copy.
+#
+# 🪤 THE DIRECTORY IS FOUND BY GLOB, NEVER BY REBUILDING THE SLUG. The path is
+#     %TEMP%\claude\<cwd-with-separators-as-dashes>\<session-id>\tasks\
+# and that first segment is the session's WORKING DIRECTORY, not its project
+# root - for this very conversation it is
+# `C--Users-mauri-Documents-MM-toolbox-tools-session-restore`, a subdirectory
+# of the project. Reconstructing it would mean knowing the cwd exactly, getting
+# the dash-encoding right, and staying right if either ever changes. The
+# session id is unique on its own, so one wildcard finds the directory and
+# cannot be wrong about the encoding.
+# 🪤 THE PARAMETER IS `$Shell`, NOT `$ShellId`. `$ShellId` is a READ-ONLY
+# AUTOMATIC VARIABLE in Windows PowerShell (it holds "Microsoft.PowerShell"), so
+# a parameter of that name cannot be bound at all: every call died with "Cannot
+# overwrite variable ShellId because it is read-only or constant" and the
+# function returned nothing. Same family as the `$Path`/`$path` and
+# single-letter collisions already recorded in CONTEXT.md - a name that is
+# already taken, in a language that will not warn you.
+function Get-SRShellOutputPath { param([string]$SessionId, [string]$Shell)
+    if (-not $SessionId -or -not $Shell) { return '' }
+    # Only ever a bare id from the transcript, but this reaches the filesystem
+    # with a wildcard in it, so anything that is not the shape of an id is
+    # refused rather than pasted into a path.
+    if ($Shell -notmatch '^[A-Za-z0-9_-]{1,64}$') { return '' }
+    if ($SessionId -notmatch '^[A-Za-z0-9_-]{1,64}$') { return '' }
+    $root = Join-Path $env:TEMP 'claude'
+    if (-not (Test-Path -LiteralPath $root)) { return '' }
+    $glob = Join-Path $root ('*\' + $SessionId + '\tasks\' + $Shell + '.output')
+    $hit = @()
+    try { $hit = @(Get-ChildItem -Path $glob -File -ErrorAction SilentlyContinue) } catch { }
+    if (-not $hit.Count) { return '' }
+    return $hit[0].FullName
+}
+
+# The output as it stands RIGHT NOW. Read with FileShare::ReadWrite because the
+# shell that is writing it still holds the handle - a plain read would throw
+# "being used by another process" on exactly the running shell this exists to
+# show. Tail-bounded for the same reason every other read here is: a chatty
+# background job can produce megabytes and the pane wants the end of it.
+function Get-SRShellOutput { param([string]$Path, [int]$MaxBytes = 65536)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
+    $fs = $null
+    try {
+        $fs = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open,
+                  [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $len = $fs.Length
+        $trunc = $false
+        if ($len -gt $MaxBytes) { $null = $fs.Seek($len - $MaxBytes, [System.IO.SeekOrigin]::Begin); $trunc = $true }
+        $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
+        $txt = $sr.ReadToEnd()
+        $sr.Dispose(); $fs = $null
+        if ($trunc) {
+            # A partial first line after seeking mid-file is noise, not data.
+            $nl = $txt.IndexOf("`n")
+            if ($nl -ge 0 -and $nl -lt 400) { $txt = $txt.Substring($nl + 1) }
+        }
+        return [PSCustomObject]@{ Text = (Remove-SRAnsi $txt); Bytes = $len; Truncated = $trunc }
+    } catch { return $null }
+    finally { if ($fs) { try { $fs.Dispose() } catch { } } }
+}
+
 function Get-SRTranscriptBlocks {
     [CmdletBinding()]
     param(
@@ -3873,6 +4065,34 @@ function Get-SRTranscriptBlocks {
                     # says WHICH worktree - is what gets cut.
                     $argShort = Compress-SRPath (($arg -replace '\s+', ' ').Trim())
                     if ($argShort.Length -gt 150) { $argShort = $argShort.Substring(0, 147) + [string][char]0x2026 }
+
+                    # 🔑 THE TWO CALLS THAT START SOMETHING THAT OUTLIVES THEM.
+                    #
+                    # A `Task` spawns a sub-agent and a backgrounded `Bash`
+                    # leaves a shell running, and both were drawn as an ordinary
+                    # tool call - the same grey row as a Read. They are the two
+                    # things the operator asked to be able to SEE, so they get
+                    # their own marker in the pane and carry their `description`
+                    # rather than only their argument.
+                    #
+                    # The description is what a human wrote to say what this is
+                    # FOR; the argument is the prompt or the command. Both are
+                    # worth having and the argument slot can only hold one, so
+                    # the description rides in Meta.
+                    #
+                    # 🪤 run_in_background IS ON THE INPUT AND NOWHERE ELSE. The
+                    # transcript answers a backgrounded Bash immediately and
+                    # records no shell id, so this flag on the CALL is the only
+                    # evidence in the file that a shell was ever left running -
+                    # measured 2026-08-31: 50 such calls in this session's
+                    # transcript, zero `shellId` and zero BashOutput records.
+                    if ($name -eq 'Task') {
+                        $argShort = "$($i.description)".Trim()
+                    } elseif ($name -eq 'Bash' -and $i -and
+                              $i.PSObject.Properties['run_in_background'] -and $i.run_in_background) {
+                        $name = 'Bash (background)'
+                        $argShort = "$($i.description)".Trim()
+                    }
                     # 🔴 A QUESTION YOU ANSWERED IS NOT A TOOL CALL, and drawing
                     # it as one is what made it unreadable. The argument slot got
                     # PowerShell's stringification of the input object -
