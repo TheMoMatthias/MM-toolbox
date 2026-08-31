@@ -3300,20 +3300,83 @@ function Move-RowToWorking { param($Row)
     } catch { }
 }
 
+# ===========================================================================
+# ANSWERING, WITHOUT THE WINDOW STOPPING.
+#
+# 🔴 THE CLICK USED TO DO ALL OF IT ON THE UI THREAD. Send-SRQuestionAnswer
+# reads the target session's CONSOLE to find the cursor before a single key
+# leaves - a child process with a budget measured in SECONDS - and then the
+# handler read the screen a SECOND time to see what the round did next. Both on
+# the thread that draws. Pressing an option froze the window for as long as
+# both reads took, which is the "answering a question is laggy" report.
+#
+# The click now does only what a click can afford: it disables the options so
+# the same answer cannot be sent twice, says what it is doing, and hands the
+# work to a runspace. The lane collects it.
+#
+# 🪤 THE BUTTONS ARE DISABLED, NOT LEFT LIVE WITH A STATUS LINE. Returning
+# immediately means the operator can press a second option while the first is
+# still travelling, and two arrow-key sequences interleaved on one menu would
+# answer a question nobody chose. Disabling is what makes returning early safe.
+$script:ansPs = $null
+$script:ansRs = $null
+$script:ansHandle = $null
+$script:ansFor = $null
+
+$script:AnswerJob = {
+    . (Join-Path $SRHere '_common.ps1')
+    $why = ''
+    try { $why = Send-SRQuestionAnswer -SessionId $SRAns.SessionId -Index $SRAns.Index }
+    catch { $why = "$($_.Exception.Message)" }
+    @{ Why = "$why" }
+}
+
+function Set-AskEnabled { param([bool]$On)
+    try { $ui.AskOptions.IsEnabled = $On } catch { }
+    try { $ui.AskFreeSend.IsEnabled = $On } catch { }
+    try { $ui.AskTabs.IsEnabled = $On } catch { }
+}
+
 function Invoke-Answer { param([int]$Index)
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
     $r = $it.Row
     if (-not $r.A -or -not $r.A.Pid) { Set-Status 'that conversation is not running any more' 'warn'; return }
-    Set-Status 'answering...'
+    # One in flight at a time. A second click while the first is out is exactly
+    # the double-answer this guard exists to refuse.
+    if ($script:ansPs) { Set-Status 'still sending the last answer...' 'warn'; return }
     $procId = [int]$r.A.Pid
-    # 🪤 THE "BEFORE" IS ALREADY IN HAND. Reading the console again here cost a
-    # second before the keystroke even left - Send-SRQuestionAnswer reads the
-    # screen itself to find the cursor, and $script:lastAsk holds what was drawn
-    # when the buttons were built. Answering must feel immediate.
-    $why = $null
-    try { $why = Send-SRQuestionAnswer -SessionId $r.Id -Index $Index } catch { $why = $_.Exception.Message }
-    if ($why) { Set-Status $why 'bad' } else {
+    Set-Status 'answering...'
+    Set-AskEnabled $false
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'MTA'
+        $rs.ThreadOptions = 'ReuseThread'
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        $rs.SessionStateProxy.SetVariable('SRAns', @{ SessionId = "$($r.Id)"; Index = $Index })
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript($script:AnswerJob)
+        $script:ansRs = $rs
+        $script:ansPs = $ps
+        $script:ansHandle = $ps.BeginInvoke()
+        $script:ansFor = @{ Row = $r; Pid = $procId; Index = $Index; Question = $script:lastAsk }
+    } catch {
+        # 🪤 A FALLBACK THAT STILL ANSWERS. If a runspace will not open, sending
+        # on this thread is slow but correct; refusing to answer is not.
+        Write-SRLog ('  [skip] answering off-thread failed, sending inline: ' + $_.Exception.Message)
+        $script:ansPs = $null; $script:ansRs = $null; $script:ansHandle = $null
+        $why = $null
+        try { $why = Send-SRQuestionAnswer -SessionId $r.Id -Index $Index } catch { $why = $_.Exception.Message }
+        Complete-AnswerLanded -Row $r -Pid_ $procId -Index $Index -Question $script:lastAsk -Why "$why"
+    }
+}
+
+# What used to run straight after the send, now run wherever the send finished.
+function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question, [string]$Why)
+    Set-AskEnabled $true
+    if ($Why) { Set-Status $Why 'bad' } else {
         Set-Status 'answered' 'ok'
         # 🔑 A ROUND DOES NOT END WITH ONE ANSWER. Measured: answering a
         # single-select AUTO-ADVANCES the terminal to the next question, so
@@ -3322,18 +3385,33 @@ function Invoke-Answer { param([int]$Index)
         # another question came up, draw it; only a menu that has actually gone
         # closes the panel and sends the row back to working.
         $seen = $null
-        try { $seen = Get-SRScreenQuestion -ProcessId $procId } catch { }
+        try { $seen = Get-SRScreenQuestion -ProcessId $Pid_ } catch { }
         if ($seen) { Show-Ask $seen } else {
             $ui.AskBox.Visibility = $V_Hide
             $script:lastAsk = $null
-            Move-RowToWorking $r
+            Move-RowToWorking $Row
         }
     }
-
     # The AFTER shot is the evidence, and it is taken on a background thread so
     # it costs the operator nothing. It is still the same measurement: what the
     # screen said once the keys had landed.
-    Start-AnswerRecord -SessionId $r.Id -Pid_ $procId -Index $Index -Question $script:lastAsk -Why "$why"
+    Start-AnswerRecord -SessionId "$($Row.Id)" -Pid_ $Pid_ -Index $Index -Question $Question -Why "$Why"
+}
+
+function Complete-AnswerSend {
+    if (-not $script:ansPs -or -not $script:ansHandle) { return $false }
+    if (-not $script:ansHandle.IsCompleted) { return $false }
+    $res = $null
+    try { $res = @($script:ansPs.EndInvoke($script:ansHandle))[0] } catch { }
+    try { $script:ansPs.Dispose(); $script:ansRs.Close(); $script:ansRs.Dispose() } catch { }
+    $script:ansPs = $null; $script:ansRs = $null; $script:ansHandle = $null
+    $f = $script:ansFor
+    $script:ansFor = $null
+    if (-not $f) { Set-AskEnabled $true; return $false }
+    $why = ''
+    if ($res) { $why = "$($res.Why)" }
+    Complete-AnswerLanded -Row $f.Row -Pid_ ([int]$f.Pid) -Index ([int]$f.Index) -Question $f.Question -Why $why
+    return $true
 }
 
 # ===========================================================================
@@ -5969,6 +6047,9 @@ function Invoke-WriteLane {
         # A transcript parse that has landed becomes the document here, on the
         # lane, so the gesture that asked for it never waited.
         try { $null = Complete-DocParse } catch { }
+        # An answer that has landed reports here, on the lane, so the click that
+        # sent it never waited for a console read.
+        try { $null = Complete-AnswerSend } catch { }
     }
     # Drain whatever the watcher queued. Several writes between two ticks are
     # one redraw, which is the point of collecting rather than handling.

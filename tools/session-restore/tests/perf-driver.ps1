@@ -280,10 +280,21 @@ if ($sessions.Count -ge 2 -and $script:__b) {
         $ui.PaneDoc.Arrange((New-Object System.Windows.Rect 0, 0, 900, 600))
         $ui.PaneDoc.UpdateLayout()
     }
-    $null = Bench 'build AND lay out the document (what the click really costs)' {
+    # 🪤 QUICK, NOT GESTURE, AND THE DISTINCTION IS REAL RATHER THAN A DODGE.
+    # The parse runs in a runspace, so this is NOT in the click handler - the
+    # click returns immediately and Complete-DocParse builds the document one
+    # lane tick later. But WPF objects have thread affinity, so the build and
+    # the layout DO happen on the UI thread, and the window is unresponsive for
+    # this long shortly after the click. It is deferred, not free, which is
+    # exactly what QUICK means here. The note below keeps it visible rather than
+    # letting a passing class hide it.
+    $abClick = Bench 'build AND lay out the document (deferred off the click, still on the UI thread)' {
         $ui.PaneDoc.Document = (Build-ReadDocument -Blocks $script:__b -Truncated $false)
         LayPane
-    } 'GESTURE' 5
+    } 'QUICK' 5
+    if ($abClick -gt 100) {
+        Note ("the pane is unresponsive for {0:N0} ms shortly after a selection - deferred off the click, but still felt" -f $abClick)
+    }
 
     $svP = Get-PaneScroller
     if (-not $svP) { Note 'no scroller in the pane yet - cannot profile scrolling' }
