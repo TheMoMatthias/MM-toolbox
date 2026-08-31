@@ -1872,6 +1872,7 @@ function Get-ReadTurns { param($Blocks)
                 $ck = 'run'
                 if ($cn -eq 'Task') { $ck = 'agent' }
                 elseif ($cn -eq 'Bash (background)') { $ck = 'shell' }
+                elseif ($cn -eq 'SendMessage') { $ck = 'msgout' }
                 $calls.Add([PSCustomObject]@{
                     Name = $cn; Arg = "$($arr[$i].Body)"; Res = ''; ResFull = ''; Bad = $false
                     # What a human wrote to say what this is FOR, as opposed to
@@ -2003,6 +2004,11 @@ $SR_Marks = @{
     compact  = @{ G = 0x2014; H = 'Ask'     }  # em dash      - the break
     agent    = @{ G = 0x0040; H = 'Ask'     }  # at           - a sub-agent
     shell    = @{ G = 0x0024; H = 'Ok'      }  # dollar       - a background shell
+    # ONE CATEGORY, TWO DIRECTIONS. Session-to-session traffic is a single kind
+    # of event and the arrow says which way it went, so it takes one hue and
+    # two glyphs rather than two hues you would have to learn separately.
+    msgin    = @{ G = 0x2190; H = 'Warn'    }  # left arrow   - a message arrived
+    msgout   = @{ G = 0x2192; H = 'Warn'    }  # right arrow  - a message sent
 }
 
 function Get-MarkGlyph { param([string]$Kind)
@@ -2726,6 +2732,21 @@ function Add-ReadTurn { param($Doc, $Turn)
                 # an array of $true with the document buried inside it.
                 foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
             }
+            'msgin' {
+                # 🔴 A MESSAGE FROM ANOTHER SESSION READ AS SOMETHING YOU TYPED.
+                # It arrived as a plain `you said` with its routing envelope
+                # printed as prose - and 8,304 of them exist on this machine.
+                # The pane's whole job is saying who is speaking, so it says so:
+                # who it came from, in the traffic hue, with the arrow that
+                # means inbound.
+                $trail = ''
+                if ($script:docHidden -gt 0) { $trail = "$script:docHidden steps hidden"; $script:docHidden = 0 }
+                Add-ReadLabel -Doc $doc -Text ('message from ' + $t.Head) -Brush $Pal.Warn `
+                              -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
+                $inner = New-Object System.Windows.Documents.FlowDocument
+                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextHigh -Size $script:readSize -Line $script:readLead -Kind 'msgin'
+                foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
+            }
             'said' {
                 $trail = ''
                 if ($script:docHidden -gt 0) { $trail = "$script:docHidden steps hidden"; $script:docHidden = 0 }
@@ -2864,6 +2885,7 @@ function Add-ReadTurn { param($Doc, $Turn)
                 $rk = 'run'
                 foreach ($c0 in @($t.Calls)) {
                     if ("$($c0.CallKind)" -eq 'agent') { $rk = 'agent'; break }
+                    if ("$($c0.CallKind)" -eq 'msgout') { $rk = 'msgout'; break }
                     if ("$($c0.CallKind)" -eq 'shell') { $rk = 'shell' }
                 }
                 $fp = New-FoldPanel -Caption (Get-RunSummary $t.Calls) -Brush (Get-MarkBrush $rk) `

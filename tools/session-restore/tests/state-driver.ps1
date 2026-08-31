@@ -1346,6 +1346,71 @@ try {
     Remove-Item -LiteralPath $saDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# --- MESSAGES BETWEEN SESSIONS ---------------------------------------------
+# 🔴 A MESSAGE FROM ANOTHER SESSION READ AS SOMETHING THE OPERATOR TYPED, with
+# its routing envelope printed as prose. MEASURED across this machine: 8,304
+# inbound messages and 1,881 SendMessage calls - a whole category of traffic the
+# pane could not tell from the operator, on a surface whose job is saying who is
+# speaking.
+#
+# 🪤 INBOUND IS A `queue-operation` RECORD, NOT A USER RECORD. That is why it
+# was invisible: the parser drops everything that is not user or assistant, and
+# the first version of this fix hooked the user path and found exactly zero.
+# The fixture is real records lifted verbatim from a transcript.
+Write-Host ''
+Write-Host '--- messages between sessions ---'
+$msgReal = Join-Path (Join-Path (Split-Path $SR_StateDir -Parent) 'tests') 'messages-round.jsonl'
+if (-not (Test-Path -LiteralPath $msgReal)) { $msgReal = Join-Path $PSScriptRoot 'messages-round.jsonl' }
+if (-not (Test-Path -LiteralPath $msgReal)) {
+    Fail "the captured messages are missing: $msgReal"
+} else {
+    $mGot = Get-SRTranscriptBlocks -JsonlPath $msgReal -MaxRecords 60 -MaxTailBytes 400000
+    $mBl = @($mGot)
+    $mIn = @($mBl | Where-Object { $_.Kind -eq 'msgin' })
+    # 🔴 TWO, NOT THREE, AND THAT IS THE POINT. The capture holds THREE
+    # queue-operation records carrying a cross-session-message: two `enqueue`
+    # and one `remove`. The remove is the SAME message coming back off the
+    # queue, so counting it would draw that message twice - and a pane that
+    # doubles every inbound message would look like a messaging bug, not a
+    # parser one. Only an enqueue is an arrival.
+    $mRaw = @(Get-Content -LiteralPath $msgReal | Where-Object { $_ -match 'cross-session-message' })
+    if ($mRaw.Count -ne 3) { Note "the capture holds $($mRaw.Count) message records, expected 3" }
+    if ($mIn.Count -ne 2) { Fail "expected 2 inbound messages from 3 records (one is the queue removing it), got $($mIn.Count)" }
+    else { Pass 'an inbound message is its own kind, and the queue taking it off again does not draw it twice' }
+
+    if ($mIn.Count) {
+        # 🪤 The sender must be the NAME, never the `from=` pipe address
+        # (uds:\\.\pipe\LOCAL\cc-msg-...) - putting that where a name goes is
+        # the same defect as printing the envelope.
+        $badWho = @($mIn | Where-Object { -not "$($_.Head)".Trim() -or "$($_.Head)" -match 'uds:|\\pipe\\' })
+        if ($badWho.Count) { Fail "$($badWho.Count) inbound message(s) carry a pipe address where the sender's name belongs" }
+        else { Pass ("each inbound message names its sender: " + ((@($mIn | ForEach-Object { $_.Head }) | Select-Object -Unique) -join ', ')) }
+
+        $leaked = @($mIn | Where-Object { "$($_.Body)" -match 'cross-session-message|teammate-message|from-name=' })
+        if ($leaked.Count) { Fail "$($leaked.Count) inbound message(s) still carry the routing envelope in the text" }
+        else { Pass 'the envelope is stripped - what is drawn is the message' }
+
+        $empty = @($mIn | Where-Object { "$($_.Body)".Trim().Length -lt 10 })
+        if ($empty.Count) { Fail "$($empty.Count) inbound message(s) lost their body to the stripping" }
+        else { Pass 'and stripping the envelope did not take the message with it' }
+    }
+
+    $mOut = @($mBl | Where-Object { $_.Kind -eq 'tool' -and $_.Head -eq 'SendMessage' })
+    if ($mOut.Count -ne 2) { Fail "expected 2 outbound messages, got $($mOut.Count)" }
+    else { Pass 'an outbound message reaches the reader as a SendMessage call' }
+    if ($mOut.Count) {
+        # 🪤 Neither `to` nor `message` is in the argument key list, so the
+        # generic path picked the RECIPIENT as the argument and what was
+        # actually sent never reached the pane.
+        $noBody = @($mOut | Where-Object { "$($_.Body)".Trim().Length -lt 20 -or "$($_.Body)" -match '^uds:' })
+        if ($noBody.Count) { Fail 'an outbound message carries its recipient where its text should be' }
+        else { Pass 'an outbound message carries what was sent, not just who it went to' }
+        $rawTo = @($mOut | Where-Object { "$($_.Meta)" -match 'uds:|\\pipe\\' })
+        if ($rawTo.Count) { Fail 'a named-pipe address is being shown as the recipient' }
+        else { Pass ("the recipient reads as words: " + ((@($mOut | ForEach-Object { $_.Meta }) | Select-Object -Unique) -join ', ')) }
+    }
+}
+
 # --- A QUESTION YOU ANSWERED ------------------------------------------------
 # 🔴 IT USED TO ARRIVE AS A TOOL CALL, which is what made it unreadable: the
 # argument slot got PowerShell's stringification of the input object

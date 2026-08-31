@@ -199,6 +199,22 @@ foreach ($pass in 1, 2) {
         [System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
 }
 
+# 🪤 SCROLL AFTER THE LAYOUT PASSES, NEVER BEFORE. A fresh document opens at the
+# END - Move-ToBottom defers itself to Loaded priority, which is exactly what
+# the passes above pump - so anything that scrolled first would be dragged back
+# down before the frame was captured, and the shot would look like the option
+# does nothing.
+if ($env:SR_SHOT_TOP) {
+    $svTop = Get-PaneScroller
+    if ($svTop) {
+        $svTop.ScrollToHome()
+        $root.UpdateLayout()
+        [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
+            [System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
+        Write-Host '  scrolled to the top of the document'
+    } else { Write-Host '  [warn] no scroller - cannot scroll to the top' }
+}
+
 $dir = Split-Path -Parent $out
 if ($dir -and -not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
 

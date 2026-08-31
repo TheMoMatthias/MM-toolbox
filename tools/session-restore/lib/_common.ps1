@@ -3900,6 +3900,49 @@ function Get-SRShellOutput { param([string]$Path, [int]$MaxBytes = 65536)
     finally { if ($fs) { try { $fs.Dispose() } catch { } } }
 }
 
+# ===========================================================================
+# A MESSAGE FROM ANOTHER SESSION IS NOT SOMETHING YOU TYPED.
+#
+# When several sessions run at once they message each other, and every one of
+# those arrived in this pane as a plain `you said` - indistinguishable from the
+# operator's own words, with the routing envelope printed as if it were prose:
+#
+#   <cross-session-message from="uds:\\.\pipe\LOCAL\cc-msg-d6f5..."
+#    from-name="I7" from-mode="bypass">
+#
+# MEASURED across this machine: 8,304 inbound messages and 1,881 SendMessage
+# calls. That is a whole category of traffic the pane could not tell from the
+# operator, on a surface whose entire job is saying who is speaking.
+#
+# Two shapes, both first-party: an inbound one wraps the user record in
+# <cross-session-message> (or <teammate-message> from an agent team) and names
+# the sender in an attribute; an outbound one is a SendMessage tool_use.
+$script:SR_RxMsgIn   = [regex]::new('^\s*<(cross-session-message|teammate-message)\b([^>]*)>')
+$script:SR_RxMsgEnd  = [regex]::new('</(cross-session-message|teammate-message)>\s*$')
+$script:SR_RxMsgFrom = [regex]::new('from-name="([^"]*)"')
+$script:SR_RxMsgMate = [regex]::new('teammate_id="([^"]*)"')
+
+function New-SRUserBlock { param([string]$Text)
+    $m = $script:SR_RxMsgIn.Match($Text)
+    if (-not $m.Success) { return (New-Block 'you' '' $Text '') }
+    $attrs = $m.Groups[2].Value
+    $who = ''
+    $f = $script:SR_RxMsgFrom.Match($attrs)
+    if ($f.Success) { $who = $f.Groups[1].Value }
+    else {
+        $f = $script:SR_RxMsgMate.Match($attrs)
+        if ($f.Success) { $who = $f.Groups[1].Value }
+    }
+    # 🪤 NEVER THE `from=` PIPE PATH as a fallback. It is a named-pipe address -
+    # `uds:\\.\pipe\LOCAL\cc-msg-d6f54257308ddfd6f97ace0da9a8184a` - and putting
+    # that where a name goes is how the envelope ended up on screen in the first
+    # place. If nobody is named, say so in words.
+    if (-not $who) { $who = 'another session' }
+    $body = $script:SR_RxMsgIn.Replace($Text, '', 1)
+    $body = $script:SR_RxMsgEnd.Replace($body, '')
+    return (New-Block 'msgin' $who $body.Trim() '')
+}
+
 function Get-SRTranscriptBlocks {
     [CmdletBinding()]
     param(
@@ -4037,6 +4080,35 @@ function Get-SRTranscriptBlocks {
             }
             continue
         }
+        # 🔴 AN INBOUND MESSAGE IS A QUEUE OPERATION, NOT A USER RECORD - which
+        # is why it was dropped by the guard below and never reached the pane at
+        # all. It arrives as {"type":"queue-operation","operation":"enqueue",
+        # "content":"<cross-session-message ...>"}. Measured: 202 of them in a
+        # single conversation on this machine, none of them drawn.
+        if ("$($r.type)" -eq 'queue-operation') {
+            if ("$($r.operation)" -eq 'enqueue') {
+                $qc = Remove-SRAnsi "$($r.content)"
+                # ONLY an actual message. A plain enqueued prompt keeps the
+                # existing behaviour of not being drawn - it arrives again as a
+                # user record when the session takes it, and drawing it here as
+                # well would show everything the operator typed twice.
+                if ($script:SR_RxMsgIn.IsMatch("$qc")) {
+                    # 🪤 $recWhen is computed BELOW this guard and New-Block
+                    # closes over it, so a block added here with the previous
+                    # record's timestamp would be stamped with somebody else's
+                    # time. Read it before building the block.
+                    $recWhen = $null
+                    if ($r.PSObject.Properties['timestamp'] -and "$($r.timestamp)") {
+                        try {
+                            $recWhen = ([datetime]::Parse("$($r.timestamp)", [System.Globalization.CultureInfo]::InvariantCulture,
+                                                          [System.Globalization.DateTimeStyles]::AdjustToUniversal)).ToLocalTime()
+                        } catch { $recWhen = $null }
+                    }
+                    $out.Add((New-SRUserBlock $qc))
+                }
+            }
+            continue
+        }
         if ($r.type -ne 'user' -and $r.type -ne 'assistant') { continue }
         # WHEN it was said. Kept as LOCAL time because the only question anyone
         # asks of it is "was that before or after I went to lunch".
@@ -4053,7 +4125,10 @@ function Get-SRTranscriptBlocks {
 
         $content = $m.content
         if ($content -is [string]) {
-            if ("$content".Trim()) { $out.Add((New-Block $(if ($role -eq 'user') { 'you' } else { 'said' }) '' "$content" '')) }
+            if ("$content".Trim()) {
+                if ($role -eq 'user') { $out.Add((New-SRUserBlock "$content")) }
+                else { $out.Add((New-Block 'said' '' "$content" '')) }
+            }
             continue
         }
         foreach ($b in @($content)) {
@@ -4061,7 +4136,10 @@ function Get-SRTranscriptBlocks {
             switch ($b.type) {
                 'text' {
                     $s = "$($b.text)"
-                    if ($s.Trim()) { $out.Add((New-Block $(if ($role -eq 'user') { 'you' } else { 'said' }) '' $s '')) }
+                    if ($s.Trim()) {
+                        if ($role -eq 'user') { $out.Add((New-SRUserBlock $s)) }
+                        else { $out.Add((New-Block 'said' '' $s '')) }
+                    }
                 }
                 'thinking' {
                     $s = "$($b.thinking)"
@@ -4126,7 +4204,22 @@ function Get-SRTranscriptBlocks {
                     # evidence in the file that a shell was ever left running -
                     # measured 2026-08-31: 50 such calls in this session's
                     # transcript, zero `shellId` and zero BashOutput records.
-                    if ($name -eq 'Task') {
+                    if ($name -eq 'SendMessage') {
+                        # 🪤 NEITHER `to` NOR `message` IS IN THE ARGUMENT KEY
+                        # LIST above, so the generic path fell through to "the
+                        # first property" and picked the RECIPIENT as the
+                        # argument - which meant what was actually sent never
+                        # reached the pane at all. Both are named here.
+                        # 🪤 AND `to` IS OFTEN A NAMED PIPE, not a name:
+                        # `uds:\\.\pipe\LOCAL\cc-msg-e1d568e1f834...`. Printing
+                        # that as the recipient is the same defect as printing
+                        # the inbound envelope as prose. A peer addressed by
+                        # name keeps its name; an address becomes words.
+                        $to = "$($i.to)".Trim()
+                        if ($to -match '^uds:' -or $to -match '\\pipe\\') { $to = 'another session' }
+                        $argShort = $to
+                        $arg = "$($i.message)".Trim()
+                    } elseif ($name -eq 'Task') {
                         $argShort = "$($i.description)".Trim()
                     } elseif ($name -eq 'Bash' -and $i -and
                               $i.PSObject.Properties['run_in_background'] -and $i.run_in_background) {
