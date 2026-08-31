@@ -99,7 +99,29 @@ Write-Host '--- the model, and the passes that run on a timer ---'
 # Update-Model with NO arguments re-reads the registry and refreshes the agent
 # map, which is what the window does when it has nothing handed to it. This is
 # the single most expensive thing in the tool and it is why the probe exists.
-$null = Bench 'Update-Model (full, hits disk + claude)' { Update-Model } 'SLOW' 2
+$mFull = Bench 'Update-Model (full, hits disk + claude)' { Update-Model } 'SLOW' 2
+# 🔴 AND THE PATH THE OPERATOR ACTUALLY WAITS ON. The full call above is 1,091 ms
+# and a thousand of that is `claude agents --json` spawned on the UI thread.
+# FOUR gestures paid it - opening the window, Rescan, saving settings, and the
+# refresh after a relaunch - and not one of them needed to: the live probe
+# refreshes that list in the background anyway, so they reuse what it last
+# brought back and kick it to correct them. This is what those four now cost.
+$mKeep = Bench 'Update-Model (-KeepAgents: what a gesture pays)' { Update-Model -KeepAgents } 'SLOW' 3
+# 🪤 TIERED AS WHAT IT IS. I first filed this as QUICK and it went red at 385 ms
+# - the mislabel was mine, not the code's: this rebuilds the whole model over
+# 200-odd conversations and was never a 250 ms operation. What matters is that
+# it is decisively cheaper than paying for `claude agents --json` inline, so
+# THAT is the assertion, and it can still go red if the saving is undone.
+# 🪤 THE SAVING IN MILLISECONDS, NOT AS A RATIO. A ratio is a measure of the
+# machine here, not of the code: the same pair read 370/924 and 586/965 minutes
+# apart, so a 0.6 threshold passed once and failed once with nothing changed.
+# What is being claimed is that a gesture no longer spawns claude, and that is
+# worth several hundred milliseconds however loaded the box is.
+if ($mFull -and $mKeep -and ($mFull - $mKeep) -lt 250) {
+    Fail ("skipping the agent refresh saved only {0:N0} ms ({1:N0} against {2:N0}) - is it still spawning claude?" -f ($mFull - $mKeep), $mKeep, $mFull)
+} elseif ($mFull -and $mKeep) {
+    Note ("a gesture pays {0:N0} ms instead of {1:N0} - the agent list is not refreshed inline" -f $mKeep, $mFull)
+}
 $null = Bench 'Update-Model (probe handed the work in)' {
     Update-Model -Registry $script:reg -Agents $script:agents -Said @{}
 } 'QUICK'
@@ -338,6 +360,14 @@ $COVERAGE = @{
     # screen read Send-SRQuestionAnswer performs to find the cursor before a
     # single key leaves, against a real console.
     'Invoke-Answer'    = 'EXCUSED: sends a decision into a live session. gui2 times the screen read it waits on.'
+    # The two controls the batched-round panel added. Both drive a REAL menu in
+    # a REAL terminal - one walks the round with left/right keys, the other
+    # types an answer and commits it - so timing them here would mean answering
+    # somebody's open question to make a benchmark. Excused for the same reason
+    # Invoke-Answer is, and covered where they can be covered honestly: the
+    # relay suite drives both against captured screens and a live replica.
+    'Invoke-AskMove'   = 'EXCUSED: walks a live round with arrow keys. relay drives the parse it depends on.'
+    'AskFreeSend'      = 'EXCUSED: types an answer into a live session. Same path as SendBtn; relay covers the read.'
     'SendBtn'          = 'EXCUSED: types into a live session. Its gesture is a string trim; the relay suite covers the send itself.'
     'PaneCompact'      = 'EXCUSED: types /compact into a live session. Same path as SendBtn.'
     'CastSend'         = 'EXCUSED: types into every ticked session at once.'

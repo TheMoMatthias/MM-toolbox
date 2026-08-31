@@ -804,13 +804,28 @@ function Test-Warm { param($S)
 # already did on a background thread, so this costs no I/O when it is called
 # from there.
 function Update-Model {
-    param($Registry, $Agents, [hashtable]$Said)
+    param($Registry, $Agents, [hashtable]$Said, [switch]$KeepAgents)
 
     $script:cfg = Get-SRConfig
     if ($Registry) { $script:reg = $Registry } else { $script:reg = Get-SRRegistry }
     $script:dirs = @($script:reg.directories)
 
     if ($null -ne $Agents) { $script:agents = $Agents }
+    elseif ($KeepAgents) {
+        # 🔴 THE SECOND IS ALL IN ONE CALL. Measured: the full path is 1,091 ms,
+        # the same work with the agent list handed in is 78, and reading the
+        # registry off disk is 7 - so a full THOUSAND milliseconds of it is
+        # `claude agents --json`, spawned and waited for on the UI thread.
+        #
+        # Four gestures paid it and every one of them is a gesture somebody is
+        # waiting on: opening the window, Rescan, saving settings, and the
+        # refresh after a relaunch. None of them needs to: the live probe
+        # refreshes that list in the background every fifteen seconds anyway, so
+        # these reuse what it last brought back and kick it to correct them.
+        # Worst case a row's liveness is a few seconds stale and then right,
+        # instead of the window being frozen for a second and then right.
+        if ($null -eq $script:agents) { $script:agents = @{} }
+    }
     else {
         $a = @{}
         try { $a = Get-SRAgentStatus -Refresh } catch { }
@@ -3912,7 +3927,7 @@ $script:launchTimer.Add_Tick({
         # it from the tool, which is the exact disaster the comment further down
         # was written to prevent.
         try {
-            Update-Model; Update-Surface
+            Update-Model -KeepAgents; Update-Surface; Start-LiveProbe
             if ($script:surface -eq 'manage') { Build-Manager }
         } catch {
             Write-SRLog ('launch drain failed: ' + $_.Exception.Message)
@@ -5235,7 +5250,7 @@ $ui.SetApply.Add_Click({
         Set-Status ('saved nothing: ' + $_.Exception.Message) 'bad'; return
     }
     Hide-Settings
-    Update-Model; Update-Surface
+    Update-Model -KeepAgents; Update-Surface; Start-LiveProbe
 
     if ($was -eq $now) { Set-Status 'nothing changed' ; return }
 
@@ -5656,7 +5671,7 @@ $ui.Rescan.Add_Click({
         if (-not (Save-RegistryOrAsk 'your ticks')) { return }
     } else { Set-Status 'rescanning...' }
     $r = Invoke-SRRescan -Registry $script:reg -Config $script:cfg -Dirty $false -Quiet
-    Update-Model; Update-Surface
+    Update-Model -KeepAgents; Update-Surface; Start-LiveProbe
     if (-not $r.Scanned) {
         Write-SRLog ('  [FAIL] rescan: ' + $r.Why)
         Set-Status ('not rescanned - ' + $r.Why) 'bad'
@@ -5799,6 +5814,11 @@ $window.Add_PreviewKeyDown({
 # ---------------------------------------------------------------------------
 $script:startupError = $null
 try {
+    # 🪤 STARTUP KEEPS THE FULL REFRESH, deliberately. It is the one caller with
+    # no earlier probe to reuse - there is no list yet - so skipping it would
+    # open the window with every conversation shown as not running and correct
+    # itself a second later, which is worse than opening a second later. The
+    # three GESTURES that had an earlier list now reuse it; this one pays.
     Update-Model
 } catch {
     $script:startupError = "$($_.Exception.Message)"
