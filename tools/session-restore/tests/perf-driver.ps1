@@ -196,6 +196,30 @@ Write-Host ''
 Write-Host '--- selecting a conversation, and its transcript ---'
 # ---------------------------------------------------------------------------
 $sessions = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })
+# 🔴 PROFILE THE BIGGEST CONVERSATION, NOT WHICHEVER IS SECOND IN THE LIST.
+#
+# This took $sessions[1] - an arbitrary row - and on one run that was a SEVEN
+# BLOCK document. Timing the reading pane against seven blocks says nothing
+# about the surface the operator actually complains about, and it is how a suite
+# reports comfortable numbers for a window that is visibly slow. The lag lives
+# in the long conversations, so the bench belongs there: cost here scales with
+# how much transcript is in the tail, and the tail is capped, so the worst case
+# is a conversation big enough to fill it.
+if ($sessions.Count -ge 2) {
+    $bySize = @($sessions | Sort-Object -Property @{ Expression = {
+        $p = "$($_.Row.S.jsonl)"
+        if ($p -and (Test-Path -LiteralPath $p)) { (Get-Item -LiteralPath $p).Length } else { 0 }
+    }} -Descending)
+    if (@($bySize).Count) {
+        $biggest = $bySize[0]
+        $bytes = 0
+        try { $bytes = (Get-Item -LiteralPath "$($biggest.Row.S.jsonl)").Length } catch { }
+        Note ("profiling against the largest conversation on this machine: '{0}', {1:N0} KB of transcript" -f $biggest.Name, ($bytes / 1KB))
+        # Put it second so the existing benches below pick it up unchanged.
+        $sessions = @($biggest) + @($sessions | Where-Object { $_.Id -ne $biggest.Id })
+        $sessions = @($sessions[0], $sessions[0]) + @($sessions | Select-Object -Skip 1)
+    }
+}
 if ($sessions.Count -lt 2) { Note 'not enough conversations to profile selection' }
 else {
     # 🔴 THE COLD PATH IS THE CLICK. $script:selId is what makes a selection
@@ -224,6 +248,134 @@ else {
     $null = Bench 'load earlier (double the tail)' { Update-Document } 'GESTURE'
     $null = Bench 'load earlier, rendered inline' { Update-Document -Wait } 'SLOW'
     $script:tailBytes = $tw
+    Update-Document -Wait
+}
+
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '--- the document ON SCREEN: layout, scrolling, opening a block ---'
+# ---------------------------------------------------------------------------
+# 🔴 CONSTRUCTING A FLOWDOCUMENT IS NOT WHAT THE OPERATOR WAITS FOR, and this
+# suite was measuring only the construction. A FlowDocument costs its real money
+# in WPF's measure/arrange pass, and `FlowDocumentScrollViewer` DOES NOT
+# VIRTUALIZE - every block in the conversation is realized whether or not it is
+# on screen (the tail budget exists for exactly that reason; see the note beside
+# $script:TailBase). So a bench that builds a document and never lays it out can
+# report a comfortable number while the window is visibly slow to the person
+# using it. That is what was happening: 'build the FlowDocument' was in the
+# table all along and the lag was reported anyway.
+#
+# Scrolling is the same gap seen from the other side. It was never timed at all,
+# and it is the single interaction the operator does most.
+if ($sessions.Count -ge 2 -and $script:__b) {
+    # 🪤 LAY OUT THE PANE, NOT THE WHOLE WINDOW. `Lay` measures and arranges
+    # $root - the rail, the session list, the header, everything - and swapping
+    # a document does not do that in the real window: WPF invalidates the
+    # subtree that changed. Using Lay here charged the document with ~113 ms of
+    # unrelated window layout and made the reading pane look three times worse
+    # than it is. Measured: document layout alone is ~1 ms; the rest was the
+    # session list being re-arranged for a benchmark nobody asked it to.
+    function LayPane {
+        $ui.PaneDoc.Measure((New-Object System.Windows.Size 900, 600))
+        $ui.PaneDoc.Arrange((New-Object System.Windows.Rect 0, 0, 900, 600))
+        $ui.PaneDoc.UpdateLayout()
+    }
+    $null = Bench 'build AND lay out the document (what the click really costs)' {
+        $ui.PaneDoc.Document = (Build-ReadDocument -Blocks $script:__b -Truncated $false)
+        LayPane
+    } 'GESTURE' 5
+
+    $svP = Get-PaneScroller
+    if (-not $svP) { Note 'no scroller in the pane yet - cannot profile scrolling' }
+    else {
+        Note ("document extent {0:N0} px over a {1:N0} px viewport - {2:N1} screens, none of it virtualized" -f `
+              $svP.ExtentHeight, $svP.ViewportHeight, $(if ($svP.ViewportHeight -gt 0) { $svP.ExtentHeight / $svP.ViewportHeight } else { 0 }))
+        $null = Bench 'scroll: one screen down' { $svP.PageDown(); Lay } 'GESTURE'
+        $null = Bench 'scroll: one screen up'   { $svP.PageUp();   Lay } 'GESTURE'
+        $null = Bench 'scroll: a wheel notch'   { $svP.ScrollToVerticalOffset($svP.VerticalOffset + 48); Lay } 'GESTURE'
+        $null = Bench 'scroll: jump to the end' { $svP.ScrollToEnd(); Lay } 'GESTURE'
+        $null = Bench 'scroll: jump to the top' { $svP.ScrollToHome(); Lay } 'GESTURE'
+    }
+
+    # Opening a folded block is a control the operator clicks, and it was added
+    # in this session with no timing at all. This measures the LAZY BUILD - the
+    # work a click pays the first time a block is opened.
+    $turnsNow = @(Get-ReadTurns $script:__b)
+    $runTurn = @($turnsNow | Where-Object { $_.Kind -eq 'run' } | Select-Object -First 1)
+    if ($runTurn.Count) {
+        Note ("the run block profiled holds {0} call(s)" -f @($runTurn[0].Calls).Count)
+        $null = Bench 'open a run block (the lazy build a click pays)' {
+            $pnl = New-Object System.Windows.Controls.StackPanel
+            Build-FoldContent -Kind 'run' -Data $runTurn[0].Calls -Panel $pnl
+        } 'GESTURE'
+    } else { Note 'no tool run in this tail - cannot profile opening one' }
+
+    # 🔴 CONSTRUCTION VERSUS LAYOUT, which is what decides where a fix belongs.
+    #
+    # 🪤 DO NOT MEASURE LAYOUT BY RE-ASSIGNING A DOCUMENT WPF HAS ALREADY LAID
+    # OUT. An earlier version of this did, read 1 ms, and concluded layout was
+    # free - it was measuring a cache hit. A FRESH document is the only honest
+    # measurement, so 'construction alone' is subtracted from the full click
+    # rather than layout being timed on its own.
+    $abBuildOnly = Bench 'A/B: construction alone (never laid out)' {
+        $null = Build-ReadDocument -Blocks $script:__b -Truncated $false
+    } 'GESTURE' 5
+    $preBuilt = Build-ReadDocument -Blocks $script:__b -Truncated $false
+    Note ("of the click: {0:N0} ms constructing objects; the remainder is WPF laying them out" -f $abBuildOnly)
+    Note ("blocks in this document: {0}" -f @($preBuilt.Blocks).Count)
+    # 🪤 THREE A/Bs LIVED HERE AND ALL THREE MEASURED AS NOISE - the gutter as a
+    # hosted element vs a Run (4 ms, then -21 ms), Knuth-Plass on vs off (4 ms,
+    # then 25 ms), and a ScrollViewer per result vs none (-58 ms). Each flipped
+    # sign between runs on this machine. They are recorded here rather than kept
+    # running: an A/B whose result reverses run to run is a measurement of the
+    # load, and re-running it would only invite acting on the next reversal.
+    # What DID measure consistently is timed below, inside the builder.
+
+    # --- INSIDE THE BUILDER -------------------------------------------------
+    # 🔴 Two hypotheses died here already - the hosted gutter element and
+    # Knuth-Plass line breaking both measured as NOISE - so this stops guessing
+    # at the shape of the cost and times the pieces the builder actually calls.
+    $turnsAll = @(Get-ReadTurns $script:__b)
+    Note ("turns: {0} ({1} prose, {2} runs)" -f $turnsAll.Count,
+          @($turnsAll | Where-Object { $_.Kind -eq 'said' -or $_.Kind -eq 'you' }).Count,
+          @($turnsAll | Where-Object { $_.Kind -eq 'run' }).Count)
+    $proseT = @($turnsAll | Where-Object { ($_.Kind -eq 'said' -or $_.Kind -eq 'you') -and "$($_.Body)".Length -gt 200 } | Select-Object -First 1)
+    if ($proseT.Count) {
+        $ptxt = "$($proseT[0].Body)"
+        Note ("the prose turn profiled is {0:N0} characters over {1} source lines" -f $ptxt.Length, @($ptxt -split "`n").Count)
+        $null = Bench 'inside: Add-ReadProse for ONE prose turn' {
+            $dd = New-Object System.Windows.Documents.FlowDocument
+            Add-ReadProse -Doc $dd -Text $ptxt -Brush $Pal.TextHigh -Size $script:readSize -Line $script:readLead -Kind 'said'
+        } 'GESTURE'
+    }
+    $null = Bench 'inside: New-SRTint x100 (a brush per rail block)' {
+        for ($q = 0; $q -lt 100; $q++) { $null = New-SRTint $Pal.Tool 0.5 }
+    } 'GESTURE'
+    $null = Bench 'inside: Get-TrackedText x100' {
+        for ($q = 0; $q -lt 100; $q++) { $null = Get-TrackedText '3 steps   Edit . PowerShell' }
+    } 'GESTURE'
+    $null = Bench 'inside: New-ReadText x100' {
+        for ($q = 0; $q -lt 100; $q++) { $null = New-ReadText -Text 'some machine output here' -Brush $Pal.TextMid -Size 12 -Mono -Wrap -Line 16.5 }
+    } 'GESTURE'
+    $null = Bench 'inside: New-RailBlock x50' {
+        for ($q = 0; $q -lt 50; $q++) {
+            $sp2 = New-Object System.Windows.Controls.StackPanel
+            $null = New-RailBlock -Child $sp2 -Kind 'run' -Rail
+        }
+    } 'GESTURE'
+    $null = Bench 'inside: Compress-SRPath x100' {
+        for ($q = 0; $q -lt 100; $q++) { $null = Compress-SRPath 'C:\Users\mauri\Documents\MM-toolbox\tools\session-restore\lib\sessions-window.ps1' }
+    } 'GESTURE'
+
+    # And the same document with every block OPEN, which is what Steps: full
+    # gives the operator and is the heaviest the pane ever gets.
+    $tvWas = $script:toolView
+    $script:toolView = 'full'
+    $null = Bench 'build AND lay out with every block open (Steps: full)' {
+        $ui.PaneDoc.Document = (Build-ReadDocument -Blocks $script:__b -Truncated $false)
+        Lay
+    } 'SLOW' 3
+    $script:toolView = $tvWas
     Update-Document -Wait
 }
 

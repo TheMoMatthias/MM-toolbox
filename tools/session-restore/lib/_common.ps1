@@ -1558,28 +1558,54 @@ function Test-SRTranscriptLive {
 # AlgoTrader/.claude/worktrees/V-INGEST"' twice, which wraps across three lines
 # of tiny monospace and buries the one part that identifies it - the end. The
 # head is what repeats and the tail is what differs, so the middle goes.
+# 🔴 MEASURED AT 1.9 ms A CALL, and it runs on every result and every command in
+# the reading pane - the single largest cost in building a document, found by
+# timing the builder's pieces after two better-sounding hypotheses (a hosted
+# element per paragraph, Knuth-Plass line breaking) both measured as noise.
+#
+# Two things were wrong, and neither was the regex itself:
+#
+#   IT REBUILT ITS DELEGATES ON EVERY CALL. `$shorten`, `$ev1` and `$ev2` were
+#   constructed per invocation, and a [MatchEvaluator] made from a PowerShell
+#   scriptblock re-enters the PS engine for every match. Hoisted to script
+#   scope, they are built once for the life of the window.
+#
+#   IT RAN TWO REGEXES OVER TEXT THAT USUALLY HAS NO PATH IN IT. Most tool
+#   output contains no drive letter at all, and the answer for that text is
+#   itself. One cheap IndexOf-shaped test short-circuits the common case.
+#
+# 🪤 The BEHAVIOUR is unchanged, deliberately: same patterns, same order, same
+# output. This is the same function running less often, not a different one.
+$script:SR_PathShorten = {
+    param([string]$path)
+    $sep = $(if ($path -match '/') { '/' } else { '\' })
+    $parts = @($path -split '[\\/]' | Where-Object { $_ })
+    if ($parts.Count -le 4) { return $path }
+    return $parts[0] + $sep + [string][char]0x2026 + $sep + (($parts | Select-Object -Last 3) -join $sep)
+}
+$script:SR_PathEv1 = [System.Text.RegularExpressions.MatchEvaluator] {
+    param($m) '"' + (& $script:SR_PathShorten $m.Groups[1].Value) + '"'
+}
+$script:SR_PathEv2 = [System.Text.RegularExpressions.MatchEvaluator] {
+    param($m) (& $script:SR_PathShorten $m.Groups[1].Value)
+}
+# Compiled once and reused, rather than parsed from a string literal per call.
+$script:SR_PathRxQuoted = [regex]::new('"([A-Za-z]:[\\/][^"]{24,})"')
+$script:SR_PathRxBare   = [regex]::new('(?<![\w"])([A-Za-z]:[\\/][^\s"'']{24,})')
+# A drive letter is `<letter>:` followed by a slash. Nothing this function does
+# can fire without one, so text that has none is returned untouched.
+$script:SR_PathRxAny    = [regex]::new('[A-Za-z]:[\\/]')
+
+# 🪤 THE QUOTED FORM HAS TO BE MATCHED FIRST AND SEPARATELY. Every path in
+# this operator's transcripts runs through "Trading Bot" - a directory with
+# a SPACE in it - so an unquoted pattern stops dead at the space and shortens
+# the wrong half, leaving the tail that identifies the worktree untouched and
+# trimming the part that was already common to every line.
 function Compress-SRPath { param([string]$Text)
     if (-not $Text) { return $Text }
-    # 🪤 THE QUOTED FORM HAS TO BE MATCHED FIRST AND SEPARATELY. Every path in
-    # this operator's transcripts runs through "Trading Bot" - a directory with
-    # a SPACE in it - so an unquoted pattern stops dead at the space and shortens
-    # the wrong half, leaving the tail that identifies the worktree untouched and
-    # trimming the part that was already common to every line.
-    $shorten = {
-        param([string]$path)
-        $sep = $(if ($path -match '/') { '/' } else { '\' })
-        $parts = @($path -split '[\\/]' | Where-Object { $_ })
-        if ($parts.Count -le 4) { return $path }
-        return $parts[0] + $sep + [string][char]0x2026 + $sep + (($parts | Select-Object -Last 3) -join $sep)
-    }
-    $ev1 = [System.Text.RegularExpressions.MatchEvaluator] {
-        param($m) '"' + (& $shorten $m.Groups[1].Value) + '"'
-    }
-    $out = [regex]::Replace($Text, '"([A-Za-z]:[\\/][^"]{24,})"', $ev1)
-    $ev2 = [System.Text.RegularExpressions.MatchEvaluator] {
-        param($m) (& $shorten $m.Groups[1].Value)
-    }
-    return [regex]::Replace($out, '(?<![\w"])([A-Za-z]:[\\/][^\s"'']{24,})', $ev2)
+    if (-not $script:SR_PathRxAny.IsMatch($Text)) { return $Text }
+    $out = $script:SR_PathRxQuoted.Replace($Text, $script:SR_PathEv1)
+    return $script:SR_PathRxBare.Replace($out, $script:SR_PathEv2)
 }
 
 # --- jumping to a session's terminal tab ------------------------------------

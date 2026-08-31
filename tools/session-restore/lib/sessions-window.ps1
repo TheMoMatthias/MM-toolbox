@@ -1658,9 +1658,14 @@ function New-ReadRun {
 # WPF HAS NO LETTER-SPACING, at all, on any text primitive. Tracking a small
 # uppercase caption is the single move that makes it read as a label rather
 # than as shouting, so it is built by hand out of thin spaces.
+# 🪤 NO PIPELINE. This ran ToCharArray through ForEach-Object to stringify each
+# character, and the pipeline was the entire cost - 0.32 ms a call, on a
+# function called once per label in a document that is rebuilt whenever the
+# transcript grows. `-join` takes the char array directly and needs no
+# per-character cmdlet invocation.
 function Get-TrackedText { param([string]$Text)
     if (-not $Text) { return '' }
-    return (($Text.ToCharArray() | ForEach-Object { [string]$_ }) -join ([string][char]0x2009))
+    return ($Text.ToCharArray() -join ([string][char]0x2009))
 }
 
 # THERE ARE NO CARDS IN THIS DOCUMENT ANY MORE, and `New-ReadCard` is gone with
@@ -1678,7 +1683,7 @@ function Get-TrackedText { param([string]$Text)
 function New-ReadText {
     param([string]$Text, $Brush, [double]$Size = 13, [switch]$Mono, [switch]$Semi,
           [switch]$Wrap, [double]$Line = 0)
-    $t = New-Object System.Windows.Controls.TextBlock
+    $t = [System.Windows.Controls.TextBlock]::new()
     $t.Text = $Text
     if ($Brush) { $t.Foreground = $Brush }
     $t.FontSize = $Size
@@ -1981,8 +1986,14 @@ function Get-SRHeadLine { param([string]$Text, [int]$Max = 88)
 # text at a different x on every block, which is the exact failure the gutter
 # exists to prevent. An InlineUIContainer holding a TextBlock of a KNOWN width
 # is the only way to get a guaranteed column inside flowed text.
+# 🪤 THE HOSTED ELEMENT IS NOT THE COST, AND IT WAS MY FIRST GUESS. Swapping it
+# for a plain monospaced Run was A/B'd twice and measured 4 ms and -21 ms of a
+# ~150 ms rebuild - noise both times, once favouring each side. So it stays, on
+# the evidence, because it is the only construction that guarantees the column
+# is exactly GutterW wide under a PROPORTIONAL prose face. Knuth-Plass line
+# breaking measured the same way and is also staying.
 function New-GutterMark { param([string]$Glyph, $Brush, [double]$Size = 11.5)
-    $tb = New-Object System.Windows.Controls.TextBlock
+    $tb = [System.Windows.Controls.TextBlock]::new()
     $tb.Text = $Glyph
     $tb.Width = $script:GutterW
     $tb.Foreground = $Brush
@@ -2028,50 +2039,53 @@ function New-RailBlock {
     param($Child, [string]$Kind, [double]$Top = 8, [double]$Bottom = 8,
           [double]$Indent = 0, [switch]$Rail, $Brush)
     if (-not $Brush) { $Brush = Get-MarkBrush $Kind }
-    $g = New-Object System.Windows.Controls.Grid
-    $c0 = New-Object System.Windows.Controls.ColumnDefinition
-    $c0.Width = New-Object System.Windows.GridLength $script:GutterW
-    $c1 = New-Object System.Windows.Controls.ColumnDefinition
-    $c1.Width = New-Object System.Windows.GridLength 1, 'Star'
+    # 🔴 ONE GRID, NOT TWO. Measured at 1.7 ms a block, which is a lot when a
+    # document is dozens of them and the whole thing is rebuilt whenever the
+    # transcript grows. The inner Grid existed only to stack the marker above
+    # the rail; a rail with a top margin that clears the marker does the same
+    # thing in one element instead of four (Grid + 2 RowDefinitions + layout).
+    #
+    # 🪤 `::new()` RATHER THAN `New-Object` throughout. New-Object goes through
+    # PowerShell's command pipeline - parameter binding, a cmdlet invocation -
+    # for what is a constructor call, and in a builder that runs hundreds of
+    # times per rebuild that overhead is most of the cost. Same objects, same
+    # arguments.
+    $g = [System.Windows.Controls.Grid]::new()
+    $c0 = [System.Windows.Controls.ColumnDefinition]::new()
+    $c0.Width = [System.Windows.GridLength]::new($script:GutterW)
+    $c1 = [System.Windows.Controls.ColumnDefinition]::new()
+    $c1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
     $null = $g.ColumnDefinitions.Add($c0)
     $null = $g.ColumnDefinitions.Add($c1)
 
-    $col = New-Object System.Windows.Controls.Grid
-    $r0 = New-Object System.Windows.Controls.RowDefinition
-    $r0.Height = New-Object System.Windows.GridLength 0, 'Auto'
-    $r1 = New-Object System.Windows.Controls.RowDefinition
-    $r1.Height = New-Object System.Windows.GridLength 1, 'Star'
-    $null = $col.RowDefinitions.Add($r0)
-    $null = $col.RowDefinitions.Add($r1)
-
-    $mk = New-Object System.Windows.Controls.TextBlock
+    $mk = [System.Windows.Controls.TextBlock]::new()
     $mk.Text = (Get-MarkGlyph $Kind)
     $mk.Foreground = $Brush
     $mk.FontSize = 11.5
     $mk.FontFamily = $script:MonoFace
-    $null = $col.Children.Add($mk)
+    $mk.VerticalAlignment = 'Top'
+    $null = $g.Children.Add($mk)
 
     if ($Rail) {
         # 1px, and tinted rather than the full hue: a rail you notice instead of
         # read would compete with the marker it hangs from. 0.28 was invisible
         # in review at 100% - the line was being drawn and could not be seen,
-        # which is the same as not drawing it.
-        $ln = New-Object System.Windows.Shapes.Rectangle
+        # which is the same as not drawing it. The top margin is what clears the
+        # marker glyph now that they share a cell.
+        $ln = [System.Windows.Shapes.Rectangle]::new()
         $ln.Width = 1
         $ln.HorizontalAlignment = 'Left'
         $ln.VerticalAlignment = 'Stretch'
-        $ln.Margin = New-Object System.Windows.Thickness 3, 4, 0, 2
+        $ln.Margin = [System.Windows.Thickness]::new(3, 17, 0, 2)
         $ln.Fill = (New-SRTint $Brush 0.5)
-        [System.Windows.Controls.Grid]::SetRow($ln, 1)
-        $null = $col.Children.Add($ln)
+        $null = $g.Children.Add($ln)
     }
-    $null = $g.Children.Add($col)
 
     [System.Windows.Controls.Grid]::SetColumn($Child, 1)
     $null = $g.Children.Add($Child)
 
-    $bc = New-Object System.Windows.Documents.BlockUIContainer $g
-    $bc.Margin = New-Object System.Windows.Thickness $Indent, $Top, 0, $Bottom
+    $bc = [System.Windows.Documents.BlockUIContainer]::new($g)
+    $bc.Margin = [System.Windows.Thickness]::new($Indent, $Top, 0, $Bottom)
     return $bc
 }
 
@@ -2193,20 +2207,55 @@ function New-FoldPanel {
     return $outer
 }
 
-# Verbatim machine text, wrapped and bounded. The ScrollViewer is what lets the
-# result be complete: without it, a 4,000-line output would be 4,000 lines of
-# document and everything below it unreachable.
+# HOW A LONG PIECE OF MACHINE TEXT IS BOUNDED.
+#
+# Something has to stop a 4,000-line result becoming 4,000 lines of document
+# with everything below it unreachable. A ScrollViewer does that AND keeps the
+# text reachable - but a nested scrolling container is measured at unbounded
+# height and then clipped, which is real layout work, and there is one per
+# result. $script:NoInnerScroll is the A/B: same bound, no nested scroller.
+#
+# 🪤 A nested ScrollViewer also EATS THE MOUSE WHEEL - see the handler below,
+# which is the actual defect behind "scrolling lags". Removing the scroller
+# entirely was A/B'd and measured as noise (-58 ms on a 355 ms rebuild, i.e. the
+# version WITH it read faster), so it stays and the wheel is fixed instead.
+function New-BoundedText { param($Child)
+    $sv = [System.Windows.Controls.ScrollViewer]::new()
+    $sv.VerticalScrollBarVisibility = 'Auto'
+    $sv.HorizontalScrollBarVisibility = 'Disabled'
+    $sv.MaxHeight = $script:FoldMaxHeight
+    $sv.Content = $Child
+    # 🔴 THE WHEEL MUST REACH THE CONVERSATION. WPF gives a nested ScrollViewer
+    # the wheel unconditionally and does NOT bubble it once that region hits its
+    # end - so with the pointer anywhere over a command's output, scrolling the
+    # conversation simply stopped. That is not slowness, but it is inseparable
+    # from it while you are using the pane: the wheel stops working and the
+    # window feels stuck. Reported as scrolling that lags.
+    #
+    # Inner first while it has somewhere to go, then hand the wheel up - which
+    # is what every browser does and what the hand expects.
+    $sv.Add_PreviewMouseWheel({
+        param($s, $e)
+        $canScroll = ($s.ScrollableHeight -gt 0)
+        $atTop     = ($s.VerticalOffset -le 0)
+        $atBottom  = ($s.VerticalOffset -ge $s.ScrollableHeight)
+        if ((-not $canScroll) -or ($e.Delta -gt 0 -and $atTop) -or ($e.Delta -lt 0 -and $atBottom)) {
+            $e.Handled = $true
+            $up = [System.Windows.Input.MouseWheelEventArgs]::new($e.MouseDevice, $e.Timestamp, $e.Delta)
+            $up.RoutedEvent = [System.Windows.UIElement]::MouseWheelEvent
+            $p = [System.Windows.Media.VisualTreeHelper]::GetParent($s)
+            if ($p) { $p.RaiseEvent($up) }
+        }
+    })
+    return $sv
+}
+
 function Add-MonoDetail { param($Panel, [string]$Text, $Brush)
     if (-not $Brush) { $Brush = $Pal.TextMid }
     $t = "$Text".TrimEnd()
     if (-not $t) { return }
     $tb = New-ReadText -Text (Compress-SRPath $t) -Brush $Brush -Size 12 -Mono -Wrap -Line 16.5
-    $sv = New-Object System.Windows.Controls.ScrollViewer
-    $sv.VerticalScrollBarVisibility = 'Auto'
-    $sv.HorizontalScrollBarVisibility = 'Disabled'
-    $sv.MaxHeight = $script:FoldMaxHeight
-    $sv.Content = $tb
-    $null = $Panel.Children.Add($sv)
+    $null = $Panel.Children.Add((New-BoundedText $tb))
 }
 
 # 🔴 A COMPOUND COMMAND IS SEVERAL COMMANDS, AND IT SHOULD READ AS SEVERAL.
@@ -2342,11 +2391,7 @@ function Add-RunDetail { param($Panel, $Calls)
             $rm.VerticalAlignment = 'Top'
             $null = $rg.Children.Add($rm)
             $rt = New-ReadText -Text (Compress-SRPath $resText) -Brush $Pal.TextLow -Size 12 -Mono -Wrap -Line 16.5
-            $sv = New-Object System.Windows.Controls.ScrollViewer
-            $sv.VerticalScrollBarVisibility = 'Auto'
-            $sv.HorizontalScrollBarVisibility = 'Disabled'
-            $sv.MaxHeight = $script:FoldMaxHeight
-            $sv.Content = $rt
+            $sv = New-BoundedText $rt
             [System.Windows.Controls.Grid]::SetColumn($sv, 1)
             $null = $rg.Children.Add($sv)
             $rg.Margin = New-Object System.Windows.Thickness 0, 5, 0, 0
@@ -2395,13 +2440,8 @@ function Add-RunDetail { param($Panel, $Calls)
             $null = $sv2.Children.Add($hl)
             if ($shText) {
                 $bt = New-ReadText -Text $shText -Brush $Pal.TextMid -Size 12 -Mono -Wrap -Line 16.5
-                $bt.Margin = New-Object System.Windows.Thickness 0, 5, 0, 0
-                $sc = New-Object System.Windows.Controls.ScrollViewer
-                $sc.VerticalScrollBarVisibility = 'Auto'
-                $sc.HorizontalScrollBarVisibility = 'Disabled'
-                $sc.MaxHeight = $script:FoldMaxHeight
-                $sc.Content = $bt
-                $null = $sv2.Children.Add($sc)
+                $bt.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
+                $null = $sv2.Children.Add((New-BoundedText $bt))
             }
             $null = $ln.Children.Add($sv2)
         }
