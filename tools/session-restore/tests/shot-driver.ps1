@@ -83,6 +83,26 @@ if ($env:SR_SHOT_ASK) {
 # Update-Chips directly rather than Invoke-FollowTick: the tick can also reach
 # Update-Ask, which spawns a process to read another session's console, and a
 # screenshot must not do that.
+# 🔴 WHICH CONVERSATION TO DRAW. A shot takes whatever happens to be selected,
+# and that is fine for the list but useless for reviewing the READING pane -
+# whether a run card or an answered question renders well depends entirely on
+# whether the conversation in front of you HAS one. Reviewing "Steps: full"
+# against a session with no tool calls in its tail shows nothing at all, which
+# reads as the feature being empty rather than the sample being wrong.
+if ($env:SR_SHOT_SESSION) {
+    $want = "$env:SR_SHOT_SESSION"
+    $pick = @($ui.SessionList.Items | Where-Object {
+        $_.Kind -eq 'session' -and "$($_.Name)" -like "*$want*"
+    })
+    if ($pick.Count) {
+        $ui.SessionList.SelectedItem = $pick[0]
+        $script:selId = "$($pick[0].Id)"
+        Write-Host ("  drawing '{0}'" -f $pick[0].Name)
+    } else {
+        Write-Host ("  [warn] no conversation matching '{0}' - drawing whatever is selected" -f $want)
+    }
+}
+
 try {
     $shotSel = $ui.SessionList.SelectedItem
     if ($shotSel -and $shotSel.Kind -eq 'session') { Update-Chips $shotSel.Row -Force }

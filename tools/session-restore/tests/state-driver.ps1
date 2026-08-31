@@ -1162,6 +1162,34 @@ foreach ($case in @(
     } else { Pass ("{0} {1} a turn you started" -f $case.n, $(if ($case.want) { 'is' } else { 'is not' })) }
 }
 
+# --- THE MODEL A SESSION IS REALLY REPLYING WITH ---------------------------
+# 🔴 `<synthetic>` IS NOT A MODEL. Claude Code writes some assistant records
+# itself - "No response requested.", cancellations - and stamps them
+# `<synthetic>`. The vitals reader took the LAST model it saw, so one of those
+# put "‹synthetic›" in the strip where the model belongs. Found by rendering the
+# pane and looking at it: no assertion asked what the model WAS, only that a
+# chip existed.
+Write-Host ''
+Write-Host '--- the model a session is really replying with ---'
+$synDir = Join-Path $SR_StateDir ('syn-' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
+$null = New-Item -ItemType Directory -Path $synDir -Force
+$synJs = Join-Path $synDir 's.jsonl'
+try {
+    $synRec = @(
+        '{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"text","text":"real reply"}],"usage":{"input_tokens":1000}}}',
+        '{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]}}'
+    ) -join "`n"
+    [System.IO.File]::WriteAllText($synJs, $synRec + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    $synV = Get-SRSessionVitals -JsonlPath $synJs -NoDiff
+    if ("$($synV.Model)" -eq '<synthetic>') {
+        Fail 'a synthetic record was taken as the model - the strip would read that back to the operator'
+    } elseif ("$($synV.Model)" -ne 'claude-opus-5') {
+        Fail "the model read as '$($synV.Model)', expected the real one below the synthetic record"
+    } else { Pass 'a synthetic record is skipped and the real model is kept' }
+} finally {
+    Remove-Item -LiteralPath $synDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # --- A QUESTION YOU ANSWERED ------------------------------------------------
 # 🔴 IT USED TO ARRIVE AS A TOOL CALL, which is what made it unreadable: the
 # argument slot got PowerShell's stringification of the input object

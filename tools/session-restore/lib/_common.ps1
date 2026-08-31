@@ -4296,7 +4296,16 @@ function Get-SRSessionVitals {
             }
             $m = $r.message
             if (-not $m) { continue }
-            if ($m.PSObject.Properties['model'] -and "$($m.model)") { $parsed.Model = "$($m.model)" }
+            # 🪤 NOT EVERY ASSISTANT RECORD HAS A REAL MODEL. Claude Code writes
+            # some messages itself - "No response requested.", cancellations -
+            # and stamps them `<synthetic>`. Taking the LAST model meant one of
+            # those made the strip read "‹synthetic›" where the model belongs,
+            # which is an internal placeholder on the operator's surface. Caught
+            # by rendering the pane and looking at it; no assertion here asked
+            # what the model WAS, only that a model chip existed.
+            if ($m.PSObject.Properties['model'] -and "$($m.model)" -and "$($m.model)" -ne '<synthetic>') {
+                $parsed.Model = "$($m.model)"
+            }
             if ($m.PSObject.Properties['usage'] -and $m.usage) {
                 $u = $m.usage
                 $tot = 0
