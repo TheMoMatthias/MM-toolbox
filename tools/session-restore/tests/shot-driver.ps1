@@ -88,6 +88,36 @@ try {
     if ($shotSel -and $shotSel.Kind -eq 'session') { Update-Chips $shotSel.Row -Force }
 } catch { }
 
+# 🔴 AND THE DOCUMENT, WHICH EVERY SHOT UNTIL NOW LEFT EMPTY. The window builds
+# it on the 100ms lane out of a runspace parse, and a shot runs neither - so the
+# reading pane, the whole point of the surface, was blank in every screenshot
+# ever taken for review. That is not a small omission: three defects on
+# 2026-08-30 were invisible to assertions and obvious the moment a row was
+# actually rendered, and the reading pane had never been rendered at all.
+#
+# Read synchronously here. The parse is 150-215 ms even on a 132 MB transcript,
+# which is nothing for a screenshot, and it keeps the shot free of the lane.
+#
+# 🪤 ASSIGN, THEN WRAP. Get-SRTranscriptBlocks comma-guards its return, so
+# @(Get-SRTranscriptBlocks ...) in one step is ONE element holding every block -
+# the exact bug that made this pane blank in the shipped window.
+# Which Steps setting to draw. Without this a shot shows whatever the operator
+# last left in the config, which is the one thing a review shot must not depend
+# on - the folded view is the default and the one worth looking at most.
+if ($env:SR_SHOT_STEPS) { $script:toolView = "$env:SR_SHOT_STEPS" }
+
+try {
+    if ($shotSel -and $shotSel.Kind -eq 'session') {
+        $shotJs = "$($shotSel.Row.S.jsonl)"
+        if ($shotJs -and (Test-Path -LiteralPath $shotJs)) {
+            $shotTrunc = $false
+            try { $shotTrunc = ((Get-Item -LiteralPath $shotJs).Length -gt $script:tailBytes) } catch { }
+            $shotGot = Get-SRTranscriptBlocks -JsonlPath $shotJs -MaxRecords 220 -MaxTailBytes $script:tailBytes
+            Set-ReadDocument -Blocks @($shotGot) -Truncated $shotTrunc
+        }
+    }
+} catch { Write-Host "  [warn] the document could not be built for the shot: $($_.Exception.Message)" }
+
 $window.Width = $W; $window.Height = $H
 $root = $window.Content
 # 🔴 DO NOT PAINT THE GROUND ONTO THE CONTENT. The app is an inset card with the

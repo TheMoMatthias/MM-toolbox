@@ -1708,6 +1708,20 @@ function Get-ReadTurns { param($Blocks)
             if ($out.Count) { $prev = $out[$out.Count - 1] }
             if ($prev -and $prev.Kind -eq "$($b.Kind)" -and ($b.Kind -eq 'you' -or $b.Kind -eq 'said')) {
                 $prev.Body = ($prev.Body.TrimEnd() + "`n`n" + "$($b.Body)".TrimStart())
+            } elseif ($prev -and $prev.Kind -eq 'system' -and "$($b.Kind)" -eq 'system') {
+                # 🔴 NOTICES ARRIVE IN RUNS AND DROWN THE CONVERSATION. A Remote
+                # Control session prints one per artifact per reconnect, and a
+                # rendered pane turned out to be ELEVEN of them in cramped mono
+                # with two lines of what claude actually said above - which is
+                # exactly the "flooded with text" this surface was rebuilt to
+                # fix, still there, and invisible until the pane was drawn with
+                # real content in it.
+                #
+                # Merged like a tool run: one line folded, all of it under
+                # Steps: full. Nothing is swallowed - that was the reason they
+                # were added - and nothing shouts either.
+                $prev.Body = ($prev.Body.TrimEnd() + "`n" + ('{0}   {1}' -f $b.Head, $b.Body).Trim())
+                $prev.Count = [int]$prev.Count + 1
             } elseif ($prev -and $prev.Kind -eq 'file' -and "$($b.Kind)" -eq 'file') {
                 # A compact re-reads a handful of files and the terminal prints
                 # them as one list. Six separate cards would be six times the
@@ -1720,6 +1734,9 @@ function Get-ReadTurns { param($Blocks)
                 # moment the reader is placing.
                 $body0 = "$($b.Body)"
                 if ("$($b.Kind)" -eq 'file') { $body0 = ('{0}   {1}' -f $b.Body, $b.Meta).TrimEnd() }
+                # A run of notices is joined head-first, so the first one has to
+                # be written the same way or the run reads ragged.
+                if ("$($b.Kind)" -eq 'system') { $body0 = ('{0}   {1}' -f $b.Head, $b.Body).Trim() }
                 $out.Add([PSCustomObject]@{ Kind = "$($b.Kind)"; Head = "$($b.Head)"; Body = $body0
                                             Calls = $null; When = $b.When; Count = 1 })
             }
@@ -1989,10 +2006,27 @@ function Build-ReadDocument {
                 $doc.Blocks.Add((New-ReadCard -Child $st -Bg $PalFilm.Tool -Stroke $PalEdge.Tool -BW 1 -Radius 10 -PadT 10 -PadB 11))
             }
             'system' {
+                # 🔴 FOLDED LIKE A TOOL RUN, for the same reason and by the same
+                # control. Rendered in full these buried the conversation: a
+                # Remote Control session prints a notice per artifact per
+                # reconnect and the pane became eleven of them under two lines
+                # of prose. Steps: full opens them; nothing is discarded.
+                if ($script:toolView -eq 'hidden') { $hidden += [int]$t.Count; break }
+                $n = [int]$t.Count
+                if ($n -lt 1) { $n = 1 }
                 $p = New-Object System.Windows.Documents.Paragraph
                 $p.Margin = New-Object System.Windows.Thickness 0, 10, 0, 6
-                $p.Inlines.Add((New-ReadRun -Text (Get-TrackedText $t.Head.ToUpper()) -Brush $Pal.TextLow -Size 9.5 -Weight 'SemiBold'))
-                $p.Inlines.Add((New-ReadRun -Text ('        ' + $t.Body) -Brush $Pal.TextLow -Size 12 -Mono))
+                if ($script:toolView -eq 'full') {
+                    $p.Inlines.Add((New-ReadRun -Text (Get-TrackedText $(if ($n -eq 1) { 'NOTICE' } else { "$n NOTICES" })) -Brush $Pal.TextLow -Size 9.5 -Weight 'SemiBold'))
+                    $p.Inlines.Add((New-ReadRun -Text ("`n" + $t.Body) -Brush $Pal.TextLow -Size 12 -Mono))
+                } else {
+                    # One quiet line. The first notice names what the run is
+                    # about; the count says how much more there is behind it.
+                    $head = @("$($t.Body)" -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1) -join ' '
+                    if ($head.Length -gt 90) { $head = $head.Substring(0, 87) + [string][char]0x2026 }
+                    $p.Inlines.Add((New-ReadRun -Text (Get-TrackedText $(if ($n -eq 1) { 'NOTICE' } else { "$n NOTICES" })) -Brush $Pal.TextLow -Size 9.5 -Weight 'SemiBold'))
+                    $p.Inlines.Add((New-ReadRun -Text ('        ' + $head) -Brush $Pal.TextDim -Size 11.5 -Mono))
+                }
                 $doc.Blocks.Add($p)
             }
             'file' {

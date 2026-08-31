@@ -2293,6 +2293,26 @@ else {
             if ("$furniture".Trim().Length -lt 40) {
                 Fail 'the only text in the document is the pane''s own truncation notice'
             } else { Pass 'and that text is the conversation, not just the header the pane draws' }
+
+            # ===============================================================
+            # 🔴 AND THE MACHINERY MAY NOT DROWN IT. A Remote Control session
+            # prints a notice per artifact per reconnect, and folded they were
+            # each drawn in full - a rendered pane turned out to be ELEVEN of
+            # them in cramped mono above two lines of what claude actually
+            # said. That is the "flooded with text" this surface was rebuilt to
+            # fix, still present, and invisible to every assertion here because
+            # they only ever asked whether text EXISTED.
+            #
+            # The measure is the ratio: folded, notices must be a minority of
+            # the pane. They are merged into one line the way a tool run is.
+            # ===============================================================
+            $noticeChars = 0
+            foreach ($m in [regex]::Matches($flat, '(?i)\b(informational|bridge status|away summary|local command)\b')) {
+                $noticeChars += 60
+            }
+            if ($flat.Length -gt 0 -and $noticeChars -gt ($flat.Length * 0.5)) {
+                Fail ("notices are about {0:N0} of {1:N0} characters in the folded pane - they are drowning the conversation" -f $noticeChars, $flat.Length)
+            } else { Pass 'folded, the machinery does not outweigh what was said' }
         }
     }
 
