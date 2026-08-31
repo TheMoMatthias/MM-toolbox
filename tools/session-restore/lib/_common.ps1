@@ -2879,52 +2879,6 @@ public static class SRScreenMain {
 # Returns a hashtable of pid -> screen text. A console that could not be read is
 # simply absent, never an empty string: unread and empty are different answers
 # and the callers depend on the difference.
-# ===========================================================================
-# THE FOOT OF A SESSION'S SCREEN - what it is doing RIGHT NOW.
-#
-# 🔴 THE TRANSCRIPT CANNOT ANSWER THIS. Measured on a busy session: it grew
-# three times in thirty seconds, a median of 14.6 s apart, because a record is
-# written when a BLOCK COMPLETES. Between blocks there is nothing on disk, so a
-# reader of the record is structurally behind the terminal - by seconds, not by
-# milliseconds, and no amount of parsing speed touches it.
-#
-# So the last few lines of the screen are taken verbatim. Everything the session
-# draws for itself is dropped: the prompt box it types into, the status line
-# under it, and the banner - none of that is the work.
-function Get-SRScreenTail {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][AllowEmptyString()][string]$ScreenText, [int]$Lines = 9)
-    if (-not $ScreenText) { return '' }
-    $play  = [string][char]0x23F5
-    $pause = [string][char]0x23F8
-    $keep = New-Object System.Collections.Generic.List[string]
-    $all = @("$ScreenText" -split "`n")
-    for ($i = $all.Count - 1; $i -ge 0 -and $keep.Count -lt $Lines; $i--) {
-        $raw = "$($all[$i])".TrimEnd()
-        $t = $raw.Trim()
-        if (-not $t) { continue }
-        # The session's own furniture, not its work.
-        if (Test-SRQuestionChrome $raw) { continue }
-        if ($t.StartsWith($play, [System.StringComparison]::Ordinal) -or $t.StartsWith($pause, [System.StringComparison]::Ordinal)) { continue }
-        if ($t -match '^Model:\s') { continue }
-        if ($t -match '(?i)^\s*(auto mode|bypass permissions|manual mode)\b') { continue }
-        if ($t -match '(?i)for shortcuts$') { continue }
-        # A run of box-drawing is the prompt frame.
-        if ($t -match ('^[' + [regex]::Escape([string][char]0x2500 + [string][char]0x2502 + [string][char]0x256D + [string][char]0x256E + [string][char]0x2570 + [string][char]0x256F) + ']+$')) { continue }
-        $null = $keep.Add($raw)
-    }
-    if (-not $keep.Count) { return '' }
-    $keep.Reverse()
-    # Trim the common indent so the strip does not inherit the terminal's own
-    # left margin on top of its own padding.
-    $min = 999
-    foreach ($l in $keep) { $ind = $l.Length - $l.TrimStart().Length; if ($ind -lt $min) { $min = $ind } }
-    if ($min -gt 0 -and $min -lt 999) {
-        for ($k = 0; $k -lt $keep.Count; $k++) { $keep[$k] = $keep[$k].Substring([Math]::Min($min, $keep[$k].Length)) }
-    }
-    return ($keep -join "`n")
-}
-
 function Get-SRScreenTextMany {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int[]]$ProcessIds, [int]$TimeoutMs = 20000)

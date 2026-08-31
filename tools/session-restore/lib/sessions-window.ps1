@@ -2849,9 +2849,6 @@ function Complete-DocParse {
 # the expensive half can move threads and this half - which cannot, because WPF
 # objects have thread affinity - stays here and stays inside budget.
 function Set-ReadDocument { param($Blocks, [bool]$Truncated = $false)
-    # A rebuilt document has no live block in it, so the handle to the old one is
-    # a reference into a document nobody is showing any more.
-    $script:liveBlock = $null
     $doc = Build-ReadDocument -Blocks $Blocks -Truncated $Truncated
     if ($doc -isnot [System.Windows.Documents.FlowDocument]) {
         throw ('Build-ReadDocument returned {0}, not a FlowDocument - something in it emitted to the pipeline' -f $doc.GetType().Name)
@@ -4857,138 +4854,28 @@ function Stop-VitalsSweep {
 }
 
 # ===========================================================================
-# WHAT THE ONE CONVERSATION YOU ARE LOOKING AT IS DOING RIGHT NOW.
+# 🔴 THERE IS NO LIVE TAIL, AND THAT IS A DECISION, NOT AN OMISSION.
 #
-# 🔴 THE PANE ABOVE READS THE RECORD, AND THE RECORD IS BEHIND. Measured on a
-# busy session: its transcript grew three times in thirty seconds, a median of
-# 14.6 s apart, because claude writes a record when a BLOCK COMPLETES. The
-# parse is 150-215 ms even on a 132 MB file and the watcher fires in 130, so the
-# tool's own contribution is under half a second - and the operator still saw it
-# trailing the terminal by seconds, because between blocks there is nothing on
-# disk to read. A faster reader of a file that is not being written is still a
-# reader of a file that is not being written.
+# The reading pane trails the terminal by seconds because its SOURCE does:
+# claude writes a transcript record when a BLOCK COMPLETES, and a busy session
+# measured three writes in thirty seconds, a median of 14.6 s apart. The parse
+# is 150-215 ms even on a 132 MB file and the watcher fires in 130, so the
+# tool's own contribution is under half a second. No amount of speed touches it.
 #
-# 🪤 THE SELECTED SESSION ONLY, and only while it is mid-turn. The sweep reads
-# every console every 2.5 s for the marks; this is the one you are watching, at
-# twice a second, and it stops the moment the turn ends - at which point the
-# record has caught up and this would be showing the same thing twice.
-$script:tailPs = $null
-$script:tailRs = $null
-$script:tailHandle = $null
-$script:tailFor = ''
-$script:tailAt = $null
-$SR_TailEvery = 500
-
-$script:TailJob = {
-    . (Join-Path $SRHere '_common.ps1')
-    $out = @{ Text = '' }
-    try {
-        $txt = Get-SRScreenText -ProcessId $SRTail.Pid
-        if ($txt) { $out.Text = Get-SRScreenTail -ScreenText $txt -Lines 9 }
-    } catch { }
-    $out
-}
-
-function Start-LiveTail {
-    if ($script:tailPs) { return }
-    if ($script:tailAt -and ((Get-Date) - $script:tailAt).TotalMilliseconds -lt $SR_TailEvery) { return }
-    $row = Get-SelectedRow
-    if (-not $row -or -not $row.A -or -not $row.A.Pid -or "$($row.A.Status)" -ne 'busy' -or
-        ($row.A.Kind -and "$($row.A.Kind)" -ne 'interactive')) {
-        # Not working: the record is authoritative again, so the live block goes.
-        Set-LiveBlock ''
-        $script:tailAt = Get-Date
-        return
-    }
-    try {
-        $rs = [runspacefactory]::CreateRunspace()
-        $rs.ApartmentState = 'MTA'
-        $rs.ThreadOptions = 'ReuseThread'
-        $rs.Open()
-        $rs.SessionStateProxy.SetVariable('SRHere', $here)
-        $rs.SessionStateProxy.SetVariable('SRTail', @{ Pid = [int]$row.A.Pid })
-        $ps = [powershell]::Create()
-        $ps.Runspace = $rs
-        $null = $ps.AddScript($script:TailJob)
-        $script:tailRs = $rs
-        $script:tailPs = $ps
-        $script:tailHandle = $ps.BeginInvoke()
-        $script:tailFor = "$($row.Id)"
-        $script:tailAt = Get-Date
-    } catch { $script:tailPs = $null }
-}
-
-function Complete-LiveTail {
-    if (-not $script:tailPs -or -not $script:tailHandle) { return }
-    if (-not $script:tailHandle.IsCompleted) {
-        if ($script:tailAt -and ((Get-Date) - $script:tailAt).TotalSeconds -gt 15) {
-            try { $script:tailPs.Stop(); $script:tailPs.Dispose() } catch { }
-            try { $script:tailRs.Close(); $script:tailRs.Dispose() } catch { }
-            $script:tailPs = $null; $script:tailRs = $null; $script:tailHandle = $null
-        }
-        return
-    }
-    $res = $null
-    try { $res = @($script:tailPs.EndInvoke($script:tailHandle))[0] } catch { }
-    try { $script:tailPs.Dispose(); $script:tailRs.Close(); $script:tailRs.Dispose() } catch { }
-    $script:tailPs = $null; $script:tailRs = $null; $script:tailHandle = $null
-    $script:tailAt = Get-Date
-    # 🔒 THE SELECTION MAY HAVE MOVED while the read was out, and one
-    # conversation's output under another's name is worse than none.
-    if ("$($script:tailFor)" -ne "$($script:selId)") { return }
-    $txt = ''
-    if ($res) { $txt = "$($res.Text)" }
-    Set-LiveBlock $txt
-}
-
+# A live strip reading the session's SCREEN was built to close that gap, first
+# beside the document and then inside it. Both were removed, for two reasons the
+# operator reported and neither of which is fixable while it exists:
+#
+#   1. IT SHOWS THE SAME CONVERSATION TWICE. Once the record catches up, the
+#      screen tail and the parsed cards are the same turn side by side.
+#   2. IT IGNORES THE Steps SETTING. It is raw screen text, so a shell's output
+#      appeared in full on a pane explicitly folded to hide it.
+#
+# Freshness bought at the cost of showing everything twice and overriding a
+# control the operator set is not a good trade. The pane reads the record, the
+# record is what it is, and the strip's turn clock - which IS read off the
+# screen - is what says a session is working right now.
 # ===========================================================================
-# THE LIVE OUTPUT GOES INTO THE DOCUMENT, NOT BESIDE IT.
-#
-# 🔴 ONE CONVERSATION, SHOWN ONCE. This first arrived as its own panel under
-# the reading pane, and the operator's answer was immediate and right: that is
-# the same session twice on one surface. What the record has caught up with, and
-# what it has not, are not two things to read - they are the same conversation,
-# and the newest part of it simply happens to come from a different place.
-#
-# So it is appended to the END of the document as one block and replaced in
-# place. The whole document is NOT rebuilt: that costs 64-140 ms and would run
-# twice a second on the UI thread to move a few lines.
-$script:liveBlock = $null
-
-function Set-LiveBlock { param([string]$Text)
-    $doc = $ui.PaneDoc.Document
-    if (-not $doc) { $script:liveBlock = $null; return }
-    # Always drop the previous one first - it is a replacement, not a log.
-    if ($script:liveBlock) {
-        try { if ($doc.Blocks.Contains($script:liveBlock)) { $null = $doc.Blocks.Remove($script:liveBlock) } } catch { }
-        $script:liveBlock = $null
-    }
-    if (-not "$Text".Trim()) { return }
-    $st = New-Object System.Windows.Controls.StackPanel
-    $cap = New-Object System.Windows.Controls.StackPanel
-    $cap.Orientation = 'Horizontal'
-    $dot = New-Object System.Windows.Shapes.Ellipse
-    $dot.Width = 6; $dot.Height = 6
-    $dot.Fill = $Pal.Ok
-    $dot.VerticalAlignment = 'Center'
-    $dot.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
-    $null = $cap.Children.Add($dot)
-    $null = $cap.Children.Add((New-ReadText -Text (Get-TrackedText 'HAPPENING NOW') -Brush $Pal.TextLow -Size 9.5 -Semi))
-    $cap.Margin = New-Object System.Windows.Thickness 0, 0, 0, 8
-    $null = $st.Children.Add($cap)
-    $tb = New-ReadText -Text $Text -Brush $Pal.TextMid -Size 12 -Mono -Wrap -Line 17
-    $null = $st.Children.Add($tb)
-    $blk = New-ReadCard -Child $st -Bg $PalGlass -Stroke $PalHair -BW 1 -Radius 12 -PadT 11 -PadB 12
-    $doc.Blocks.Add($blk)
-    $script:liveBlock = $blk
-}
-
-function Stop-LiveTail {
-    if (-not $script:tailPs) { return }
-    try { $script:tailPs.Stop(); $script:tailPs.Dispose() } catch { }
-    try { $script:tailRs.Close(); $script:tailRs.Dispose() } catch { }
-    $script:tailPs = $null; $script:tailRs = $null; $script:tailHandle = $null
-}
 
 $script:QuietJob = {
     . (Join-Path $SRHere '_common.ps1')
@@ -5196,10 +5083,6 @@ function Invoke-WriteLane {
         # the window opening instead of trickling in over a quarter of a minute.
         try { if (Complete-VitalsSweep) { Build-Sessions } } catch { }
         try { Start-VitalsSweep } catch { }
-        # And the one conversation on screen, twice a second while it works -
-        # the record it is read from only lands every fifteen.
-        try { Complete-LiveTail } catch { }
-        try { Start-LiveTail } catch { }
     }
     # Returns whether it actually redrew. The tick discards it; the suite needs
     # it, because the flag is consumed in the same call that sets it and there
@@ -6380,7 +6263,6 @@ $window.Add_Closed({
     # flight far more often than it lands on the probe - and it holds a thread
     # and a child process of its own.
     try { Stop-VitalsSweep } catch { }
-    try { Stop-LiveTail } catch { }
 })
 
 $null = $window.ShowDialog()
