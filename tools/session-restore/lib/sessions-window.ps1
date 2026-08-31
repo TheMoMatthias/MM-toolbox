@@ -1372,7 +1372,7 @@ function Build-Sessions {
                 # evidence is its TRANSCRIPT: a file written in the last minute
                 # is a conversation that is still writing. The same rule the
                 # rest of this tool uses for an inferred-live session, and it
-                # refreshes for free because Build-Inbox already runs on the
+                # refreshes for free because Build-Sessions already runs on the
                 # 2.5s vitals sweep. No second poller; one was removed for
                 # doubling the view and is not coming back.
                 $live = $false
@@ -5370,7 +5370,7 @@ function Get-RowScreenSig { param([string]$Id)
     return $v
 }
 
-# THE SUB-AGENT LIST FOR ONE ROW, CACHED, because Build-Inbox runs on every
+# THE SUB-AGENT LIST FOR ONE ROW, CACHED, because Build-Sessions runs on every
 # refresh and this touches the disk.
 #
 # 🪤 THE CHEAP TEST COMES FIRST AND IS THE WHOLE OPTIMISATION. Only 24 of the

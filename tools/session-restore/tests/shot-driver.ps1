@@ -103,6 +103,27 @@ if ($env:SR_SHOT_SESSION) {
     }
 }
 
+# 🔑 AND DRILLING INTO ONE OF ITS SUB-AGENTS. Agent rows only exist once their
+# parent is selected - they are expanded under the selection, not always - so
+# this has to select the session, REBUILD the list, and only then look for the
+# agent. Without the rebuild the rows are not there yet and the search finds
+# nothing, which reads exactly like the feature being broken.
+if ($env:SR_SHOT_AGENT) {
+    Build-Sessions
+    $wantA = "$env:SR_SHOT_AGENT"
+    $pickA = @($ui.SessionList.Items | Where-Object {
+        $_.Kind -eq 'agent' -and "$($_.SubName)" -like "*$wantA*"
+    })
+    if ($pickA.Count) {
+        $ui.SessionList.SelectedItem = $pickA[0]
+        $script:selId = "$($pickA[0].Id)"
+        Write-Host ("  drilling into sub-agent '{0}'" -f $pickA[0].SubName)
+    } else {
+        $n = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'agent' }).Count
+        Write-Host ("  [warn] no sub-agent matching '{0}' - {1} agent rows present" -f $wantA, $n)
+    }
+}
+
 try {
     $shotSel = $ui.SessionList.SelectedItem
     if ($shotSel -and $shotSel.Kind -eq 'session') { Update-Chips $shotSel.Row -Force }
@@ -127,8 +148,11 @@ try {
 if ($env:SR_SHOT_STEPS) { $script:toolView = "$env:SR_SHOT_STEPS" }
 
 try {
-    if ($shotSel -and $shotSel.Kind -eq 'session') {
+    if ($shotSel -and ($shotSel.Kind -eq 'session' -or $shotSel.Kind -eq 'agent')) {
         $shotJs = "$($shotSel.Row.S.jsonl)"
+        # A sub-agent's own transcript, which is a real file beside the parent's
+        # and parses with the same reader.
+        if ($shotSel.Kind -eq 'agent') { $shotJs = "$($shotSel.Sub.Path)" }
         if ($shotJs -and (Test-Path -LiteralPath $shotJs)) {
             $shotTrunc = $false
             try { $shotTrunc = ((Get-Item -LiteralPath $shotJs).Length -gt $script:tailBytes) } catch { }
