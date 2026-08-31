@@ -94,9 +94,57 @@ summary line; an opened block is complete, with no truncation at all.
 **drill-in** — selecting a sub-agent and reading its conversation. Sub-agents are
 NESTED ROWS in the sessions column, indented under their parent, selectable like
 any conversation; their transcripts are real files on disk at
-`<session-id>/subagents/agent-<type>-<hash>.jsonl` (measured 2026-08-31: complete
-conversations, one file per sub-agent). The parent's own `Task` call still renders
-as a one-line agent block — the row is what opens the conversation.
+`<session-id>/subagents/agent-<name>-<hash>.jsonl`, with a `.meta.json` beside
+each carrying `agentType`, `description`, `taskKind` and — for a Task agent —
+the `toolUseId` of the call that spawned it. The transcript uses the SAME record
+shape as a top-level conversation, which is why the pane opens one with no
+special path at all.
+
+MEASURED 2026-08-31 across every project on this machine: **374 sub-agents, 329
+with a full transcript.** Both kinds appear — 257 `in_process_teammate` and 117
+Task agents (`Explore` and friends) — so this is *not* a teammates-only feature.
+The 45 with metadata and no transcript are a real state, reported as one and
+still carrying what the agent was asked to do; an agent that never wrote must not
+look like a reader that failed.
+
+**They expand under the SELECTED conversation only.** Rendering every session's
+agents took the list from 36 rows to 106 in review — a 3× list on a surface
+explicitly asked to get *less* dense, and one conversation here has 31 agents of
+its own. Same answer as **THE ROSTER OPENS FOLDED**. The amber dot still says, on
+every row, that a session has agents out right now.
+
+**background shell output** — what a `run_in_background` Bash has actually
+printed, read live from
+`%TEMP%\claude\<cwd-slug>\<session-id>\tasks\<shell-id>.output`.
+
+🔴 **This was nearly written off, and the reasoning that wrote it off was sound
+as far as it went.** The transcript answers a backgrounded Bash immediately,
+records no `shellId` field, and carries no `BashOutput` records unless the
+session happened to poll — all measured, all true. What it missed is that the
+*answer* names the file, in prose: `Command running in background with ID:
+beqvs0dpb. Output is being written to: …\tasks\beqvs0dpb.output`. So the id and
+the path were in the transcript the whole time. Measured: **363 `tasks`
+directories on this machine**, holding live stdout — the sample read was seconds
+old while its command was still running. *A negative finding about a data source
+is a claim about where you looked, not about what exists.*
+
+🪤 **The directory is found by GLOB on the session id, never by rebuilding the
+slug.** That first path segment is the session's WORKING DIRECTORY, not its
+project root — for the session-restore conversation it is
+`C--Users-mauri-Documents-MM-toolbox-tools-session-restore`, a subdirectory of
+the project. The session id is unique on its own, so one wildcard finds it and
+cannot be wrong about the dash-encoding.
+
+🪤 **Read it with `FileShare::ReadWrite`.** The shell that owns the file still
+has it open, so a plain read throws on exactly the running shell the feature
+exists to show.
+
+🪤 **`$ShellId` IS A READ-ONLY AUTOMATIC VARIABLE** in Windows PowerShell (it
+holds `Microsoft.PowerShell`), so a *parameter* of that name can never bind:
+every call died with `Cannot overwrite variable ShellId because it is read-only
+or constant`. Same family as the `$Path`/`$path` collision and the single-letter
+ones already listed here — a name that is already taken, in a language that will
+not warn you. The parameter is `$Shell`.
 
 **hand-back** — what puts a conversation in FINISHED: nothing pending, and the last
 thing it SAID is substantial enough to be worth reading. A heuristic, deliberately,
