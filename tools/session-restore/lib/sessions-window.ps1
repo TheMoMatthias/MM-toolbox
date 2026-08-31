@@ -6068,7 +6068,8 @@ $script:askStartedAt = $null
 
 $script:AskJob = {
     . (Join-Path $SRHere '_common.ps1')
-    $out = @{ Ask = $null; Read = $false; Shells = -1; Agents = -1 }
+    $out = @{ Ask = $null; Read = $false; Shells = -1; Agents = -1
+              Effort = ''; TurnSecs = -1; TurnDone = $false; CtxTokens = -1; CtxWindow = -1 }
     try {
         # ONE screen read serves both answers - the question and the counts the
         # session prints about itself are on the same screen, and reading it
@@ -6096,6 +6097,17 @@ $script:AskJob = {
             # last session that HAD one, because -1 means "do not overwrite".
             $out.Shells = [int]$sv.Shells
             if ($sv.SawAgents) { $out.Agents = [int]$sv.Agents }
+            # 🔑 EVERYTHING ELSE THE SAME SCREEN CARRIES. The strip's context,
+            # effort and turn clock all come off this line now, and the sweep
+            # reaches a given session only every 2.5 s - so clicking a
+            # conversation showed no context chip at all until the sweep came
+            # round to it. This read is already happening on the click; filing
+            # the rest of what it saw costs nothing and closes that gap.
+            $out.Effort    = $(if ($sv.SawEffort) { "$($sv.Effort)" } else { '' })
+            $out.TurnSecs  = $(if ($sv.SawTurn) { [int]$sv.TurnSecs } else { -1 })
+            $out.TurnDone  = [bool]$sv.TurnDone
+            $out.CtxTokens = $(if ($sv.SawCtx) { [int]$sv.CtxTokens } else { -1 })
+            $out.CtxWindow = $(if ($sv.SawCtx) { [int]$sv.CtxWindow } else { -1 })
         }
     } catch { }
     $out
@@ -6165,7 +6177,9 @@ function Complete-AskProbe {
         # the freshest read of it there will be - so the list is told too, and
         # the conversation you just clicked carries its marks immediately
         # instead of waiting for the rotation to come round to it.
-        if (Set-RowScreenSig -Id "$($script:askFor)" -Shells ([int]$res.Shells) -Agents ([int]$res.Agents)) {
+        if (Set-RowScreenSig -Id "$($script:askFor)" -Shells ([int]$res.Shells) -Agents ([int]$res.Agents) `
+                             -Effort "$($res.Effort)" -TurnSecs ([int]$res.TurnSecs) -TurnDone ([bool]$res.TurnDone) `
+                             -CtxTokens ([int]$res.CtxTokens) -CtxWindow ([int]$res.CtxWindow)) {
             try { Build-Sessions } catch { }
         }
         try { Update-Chips $row -Force } catch { }

@@ -1963,6 +1963,39 @@ else {
             elseif ("$($drawn[0].ShellText)" -ne '2') { Fail "the shell mark reads '$($drawn[0].ShellText)' rather than 2" }
             else { Pass 'a shell count read off the status line reaches the row as a square mark' }
 
+            # ===============================================================
+            # 🔴 THE CONTEXT BAR AND THE MARKS, TOGETHER. Reported as the bar
+            # being wrong "when the sub agent or shell indicator is turned on".
+            # The row draws dot / name / marks / bar / age across one Grid, and
+            # only the name is star-width - so the suspicion was that the marks
+            # squeeze the bar out. Asserted here because a report nobody can
+            # reproduce comes back.
+            # ===============================================================
+            $null = Set-RowScreenSig -Id $sigId -Shells 2 -Agents 1 -CtxTokens 700000 -CtxWindow 1000000
+            Build-Sessions
+            $both = @($ui.SessionList.ItemsSource | Where-Object { "$($_.Id)" -eq $sigId })
+            if (-not $both.Count) { Fail 'the conversation under test left the list' }
+            else {
+                $bw = $both[0]
+                if ("$($bw.ShellVis)" -ne 'Visible' -or "$($bw.AgentVis)" -ne 'Visible') {
+                    Fail 'a session with both a shell and a sub-agent draws neither mark'
+                } elseif ("$($bw.CtxVis)" -ne 'Visible') {
+                    Fail 'the context bar disappears when a mark is showing - the marks are squeezing it out'
+                } elseif ([double]$bw.CtxWidth -lt 20.0) {
+                    Fail ("the context bar is {0:N1}px wide beside the marks - it is being squeezed" -f $bw.CtxWidth)
+                } else {
+                    Pass ("the bar and both marks coexist: bar {0:N0}px at 70% with a shell and a sub-agent" -f $bw.CtxWidth)
+                }
+                # And the width still tracks the fraction rather than collapsing
+                # to a minimum whenever anything else is on the row.
+                $null = Set-RowScreenSig -Id $sigId -Shells 2 -Agents 1 -CtxTokens 950000 -CtxWindow 1000000
+                Build-Sessions
+                $fuller = @($ui.SessionList.ItemsSource | Where-Object { "$($_.Id)" -eq $sigId })
+                if ($fuller.Count -and [double]$fuller[0].CtxWidth -le [double]$bw.CtxWidth) {
+                    Fail ("a fuller context did not draw a longer bar: {0:N1}px at 95% vs {1:N1}px at 70%" -f $fuller[0].CtxWidth, $bw.CtxWidth)
+                } else { Pass 'and the bar still tracks how full it is, with the marks alongside' }
+            }
+
             # 🪤 AND IT HAS TO CLEAR. A finished shell prints no count, which is
             # a true zero - if that read only ever overwrote a positive the mark
             # would stay up for the life of the window.

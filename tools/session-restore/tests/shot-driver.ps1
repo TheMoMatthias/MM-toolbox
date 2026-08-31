@@ -45,6 +45,24 @@ if ($env:SR_SHOT_SHEET) {
 # goes through. Dressed here from a fabricated question - the same shape
 # Get-SRScreenQuestion returns - so a change to it can be looked at on demand
 # rather than waited for.
+# 🔴 THE ROW AT ITS BUSIEST, on demand. The operator reported the context bar
+# looking wrong "when the sub agent or shell indicator is turned on", and the
+# case is hard to catch in the wild: it needs a session that is simultaneously
+# past half its window AND holding a shell AND holding a sub-agent. The
+# assertions in gui2 prove the VALUES are right; this is for looking at the
+# layout, which is what the report was actually about.
+if ($env:SR_SHOT_MARKS) {
+    $mk = 0
+    foreach ($mrow in $script:model) {
+        if (-not $mrow.Live) { continue }
+        $mk++
+        if ($mk -gt 4) { break }
+        $null = Set-RowScreenSig -Id "$($mrow.Id)" -Shells $mk -Agents $(if ($mk % 2) { 1 } else { 2 }) `
+                                 -CtxTokens (150000 * $mk + 400000) -CtxWindow 1000000
+    }
+    Build-Sessions
+}
+
 if ($env:SR_SHOT_ASK) {
     # 🔴 A REAL ROUND, OFF A REAL SCREEN. This used to hand Show-Ask a question
     # written here to suit the panel - which drew a picture of a surface that
