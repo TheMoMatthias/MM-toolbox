@@ -1967,11 +1967,13 @@ $script:GutterW = 22.0
 # Windows Terminal's default is Cascadia Mono at 12 POINT, which is 16 device
 # pixels, and this pane was drawing the same face at 12px - three quarters of
 # the size, which is why executed commands read as smaller and thinner here
-# than in the terminal beside it. 15 rather than a literal 16: prose is set at
-# 13, and machine text three pixels above the prose around it already carries
-# the weight the terminal has without the block dominating the reply it sits
-# in. One knob, so the whole of the machine voice moves together.
-$script:MonoSize = 15.0
+# than in the terminal beside it.
+#
+# 16, not the 15 this first shipped at. 15 was a hedge against machine text
+# dwarfing the 13px prose around it, and the hedge was mine rather than the
+# operator's: the ask was to MATCH the terminal, and one pixel short of the
+# terminal is not a match. One knob, so the whole machine voice moves together.
+$script:MonoSize = 16.0
 
 # 🔴 THE MARKER TABLE - ONE ROW PER BLOCK KIND, AND EVERY KIND HAS ONE.
 #
@@ -2275,6 +2277,52 @@ function New-FoldPanel {
 # which is the actual defect behind "scrolling lags". Removing the scroller
 # entirely was A/B'd and measured as noise (-58 ms on a 355 ms rebuild, i.e. the
 # version WITH it read faster), so it stays and the wheel is fixed instead.
+# SHELL BLOCKS THAT ARE OPEN, AND ONLY THOSE.
+#
+# A background shell keeps writing its .output file, so a block opened while it
+# runs goes stale the moment it is drawn. These are the ones on screen with
+# their content built; the follow tick re-reads them. Cleared on a full rebuild,
+# because the controls registered here are then orphaned - the append path does
+# NOT clear it, which is right: those controls are still the ones on screen.
+$script:liveShells = New-Object System.Collections.Generic.List[object]
+
+function Register-LiveShell { param($Label, $Body, $Panel, [string]$Shell, [string]$Session)
+    if (-not $Shell -or -not $Session) { return }
+    $script:liveShells.Add(@{ Label = $Label; Body = $Body; Panel = $Panel; Shell = $Shell; Session = $Session })
+}
+
+function Update-LiveShells {
+    if ($script:liveShells.Count -eq 0) { return }
+    foreach ($e in @($script:liveShells)) {
+        $p = ''
+        try { $p = Get-SRShellOutputPath -SessionId $e.Session -Shell $e.Shell } catch { }
+        if (-not $p) { continue }
+        $o = $null
+        try { $o = Get-SRShellOutput -Path $p } catch { }
+        if (-not $o) { continue }
+        $txt = "$($o.Text)"
+        if (-not $txt.Trim()) { continue }
+        try {
+            if ($e.Body) {
+                # 🪤 ONLY WHEN IT ACTUALLY MOVED. Assigning the same string back
+                # invalidates the TextBlock's layout anyway, and this runs every
+                # second against every open shell block on screen.
+                if ("$($e.Body.Text)" -ne $txt) {
+                    $e.Body.Text = $txt
+                    $e.Label.Text = (Get-TrackedText ('output   {0:N0} bytes{1}' -f $o.Bytes, $(if ($o.Truncated) { ' - showing the end' } else { '' })))
+                }
+            } elseif ($e.Panel) {
+                # It had nothing to show when it was opened and now does.
+                $nb = New-ReadText -Text $txt -Brush $Pal.TextMid -Size $script:MonoSize -Mono -Wrap -Line 20
+                $nb.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
+                $null = $e.Panel.Children.Add((New-BoundedText $nb))
+                $e.Body = $nb
+                $e.Label.Text = (Get-TrackedText ('output   {0:N0} bytes' -f $o.Bytes))
+            }
+        } catch { }
+    }
+}
+
 function New-BoundedText { param($Child)
     $sv = [System.Windows.Controls.ScrollViewer]::new()
     $sv.VerticalScrollBarVisibility = 'Auto'
@@ -2400,6 +2448,46 @@ function Add-RunDetail { param($Panel, $Calls)
             $null = $ln.Children.Add($db)
         }
 
+        # 🔑 AND FOR A SUB-AGENT, THE WAY INTO ITS CONVERSATION.
+        #
+        # The sessions column lists only agents that are still RUNNING, which is
+        # what the operator asked for - and 374 of the 375 on this machine are
+        # finished, so that list is almost always empty. Their findings are the
+        # thing you most often want back, and without this they became
+        # unreachable when the rows went active-only. Here is the right place
+        # for it anyway: you open the agent where it was dispatched.
+        #
+        # 🪤 MATCHED ON THE DESCRIPTION, because the tool_use id does not survive
+        # into the block - New-Block carries four fields and all four are spoken
+        # for. The meta.json records the same `description` the Task call was
+        # given, so the two are the same string by construction. A collision
+        # would open a sibling agent with an identical brief, which is why the
+        # one WITH a transcript wins and nothing is drawn when none matches.
+        if ($ck -eq 'agent' -and $dsc -and "$($script:docParentPath)") {
+            $mine = @()
+            try {
+                $all = @(Get-SRSubAgents -JsonlPath "$($script:docParentPath)")
+                $mine = @($all | Where-Object { "$($_.Description)".Trim() -eq $dsc -and $_.HasTranscript })
+            } catch { }
+            if ($mine.Count) {
+                $op = New-Object System.Windows.Controls.Border
+                $op.Background = [System.Windows.Media.Brushes]::Transparent
+                $op.Cursor = 'Hand'
+                $op.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
+                $op.ToolTip = 'Open this sub-agent''s own conversation'
+                $ot = New-ReadText -Text ((Get-MarkGlyph 'agent') + '  open its conversation  ' + [string][char]0x2192) `
+                                   -Brush (Get-MarkBrush 'agent') -Size 11.5 -Semi
+                $op.Child = $ot
+                $op.Tag = @{ Sub = $mine[0]; Row = $script:docParentRow }
+                $op.Add_MouseLeftButtonUp({
+                    param($s, $e)
+                    $g = $s.Tag
+                    if ($g -and $g.Sub -and $g.Row) { Show-AgentDoc -Sub $g.Sub -ParentRow $g.Row }
+                })
+                $null = $ln.Children.Add($op)
+            }
+        }
+
         # 🔴 THE COMMAND IS NOT PATH-COMPRESSED. Compress-SRPath is right for a
         # RESULT, which is dense and scanned - but on the command it replaced the
         # middle of every long path with an ellipsis, so the one line you open
@@ -2494,12 +2582,22 @@ function Add-RunDetail { param($Panel, $Calls)
             $sv2.Margin = New-Object System.Windows.Thickness 14, 7, 0, 0
             $hl = New-ReadText -Text (Get-TrackedText $shLabel) -Brush (Get-MarkBrush 'shell') -Size 9.5 -Semi
             $null = $sv2.Children.Add($hl)
+            $bt = $null
             if ($shText) {
                 $bt = New-ReadText -Text $shText -Brush $Pal.TextMid -Size $script:MonoSize -Mono -Wrap -Line 20
                 $bt.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
                 $null = $sv2.Children.Add((New-BoundedText $bt))
             }
             $null = $ln.Children.Add($sv2)
+            # 🔑 AND IT KEEPS UPDATING. The output file is still being written
+            # while the shell runs, but this read happens once, when the block
+            # is opened - so watching a background command meant closing and
+            # re-opening it. An OPENED block registers itself and the follow
+            # tick re-reads it; a closed one is not in the list and costs
+            # nothing. No new timer: the one that already runs does it.
+            if ($sp -and "$($c.Shell)") {
+                Register-LiveShell -Label $hl -Body $bt -Panel $sv2 -Shell "$($c.Shell)" -Session "$($script:docSessionId)"
+            }
         }
         $null = $Panel.Children.Add($ln)
     }
@@ -2651,6 +2749,21 @@ function Build-ReadDocument {
 
     # SAY WHEN IT IS PARTIAL. A pane that silently shows the last slice of a
     # conversation reads as the whole of a short one.
+    # THE WAY BACK OUT OF A SUB-AGENT. Drilling in is not a selection - the
+    # sessions column still shows the parent - so without this the only route
+    # back would be clicking the row that already looks selected, which does
+    # nothing. It sits at the top because that is where you look for it.
+    if ($script:agentOpen) {
+        $bb = New-Object System.Windows.Controls.Border
+        $bb.Background = [System.Windows.Media.Brushes]::Transparent
+        $bb.Cursor = 'Hand'
+        $bb.ToolTip = 'Back to the conversation that dispatched this agent'
+        $bt2 = New-ReadText -Text ([string][char]0x2190 + '  back to ' + "$($script:agentOpen.Row.T.Text)") `
+                            -Brush $Pal.Ask -Size 11.5 -Semi
+        $bb.Child = $bt2
+        $bb.Add_MouseLeftButtonUp({ param($s, $e) Close-AgentDoc })
+        $doc.Blocks.Add((New-RailBlock -Child $bb -Kind 'agent' -Top 0 -Bottom 10))
+    }
     if ($Truncated) {
         # 🔴 IT IS A CONTROL, NOT A CAPTION. This said "press L to load earlier"
         # and was the only way to reach the rest of a long conversation - a
@@ -2694,6 +2807,10 @@ function Build-ReadDocument {
     # a paragraph per source line - so appending or replacing the last turn needs
     # to know exactly how much of the document belongs to it.
     $script:docTurnCounts = New-Object System.Collections.Generic.List[int]
+    # A rebuild orphans every control the old document held, so the shell blocks
+    # registered against it are gone with it. The APPEND path deliberately does
+    # not do this: those controls are still the ones on screen.
+    $script:liveShells.Clear()
     # Folding blocks into turns is not free, and Set-ReadDocument has already
     # done it to decide whether this build was needed at all. Reuse it.
     if ($Turns) { $script:docTurns = @($Turns) } else { $script:docTurns = @(Get-ReadTurns $Blocks) }
@@ -3361,7 +3478,7 @@ function Invoke-Answer { param([int]$Index)
         $script:ansRs = $rs
         $script:ansPs = $ps
         $script:ansHandle = $ps.BeginInvoke()
-        $script:ansFor = @{ Row = $r; Pid = $procId; Index = $Index; Question = $script:lastAsk }
+        $script:ansFor = @{ Row = $r; Pid = $procId; Index = $Index; Question = $script:lastAsk; At = (Get-Date) }
     } catch {
         # 🪤 A FALLBACK THAT STILL ANSWERS. If a runspace will not open, sending
         # on this thread is slow but correct; refusing to answer is not.
@@ -3398,9 +3515,38 @@ function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question,
     Start-AnswerRecord -SessionId "$($Row.Id)" -Pid_ $Pid_ -Index $Index -Question $Question -Why "$Why"
 }
 
+# A send is allowed this long before the panel is given back. Send-SRQuestionAnswer
+# reads another process's console and has its own budget, so anything past this
+# is a job that is not coming back rather than one still working.
+$SR_AnswerTimeout = 25
+
 function Complete-AnswerSend {
     if (-not $script:ansPs -or -not $script:ansHandle) { return $false }
-    if (-not $script:ansHandle.IsCompleted) { return $false }
+    # 🔴 THE PANEL MUST COME BACK EVEN IF THE SEND DOES NOT. The options are
+    # disabled on the click so a second press cannot interleave two arrow-key
+    # sequences on one menu - which means a job that never completes would
+    # leave the question permanently unanswerable, with no way out but
+    # restarting the window. Disabling a control and having no path that
+    # re-enables it is a worse failure than the double-send it prevents.
+    if (-not $script:ansHandle.IsCompleted) {
+        $started = $null
+        if ($script:ansFor) { $started = $script:ansFor.At }
+        if ($started -and ((Get-Date) - $started).TotalSeconds -gt $SR_AnswerTimeout) {
+            try { $script:ansPs.Stop(); $script:ansPs.Dispose() } catch { }
+            try { $script:ansRs.Close(); $script:ansRs.Dispose() } catch { }
+            $script:ansPs = $null; $script:ansRs = $null; $script:ansHandle = $null
+            $script:ansFor = $null
+            Set-AskEnabled $true
+            # 🪤 IT DOES NOT SAY "NOTHING WAS SENT". The keys may well have
+            # landed before the job stopped answering - abandoning the runspace
+            # says nothing about what reached the console. Claiming the answer
+            # did not go through would be worse than saying it is unknown: the
+            # operator would press again and answer twice.
+            Set-Status ('the answer has not come back after {0}s - check the session before answering again' -f $SR_AnswerTimeout) 'bad'
+            return $true
+        }
+        return $false
+    }
     $res = $null
     try { $res = @($script:ansPs.EndInvoke($script:ansHandle))[0] } catch { }
     try { $script:ansPs.Dispose(); $script:ansRs.Close(); $script:ansRs.Dispose() } catch { }
@@ -3543,7 +3689,59 @@ function Invoke-Compact {
 # ===========================================================================
 # Selection, and following the selected transcript
 # ===========================================================================
+# DRILLING INTO A SUB-AGENT FROM THE CONVERSATION THAT DISPATCHED IT.
+#
+# Not a selection: the agent has no row while it is finished, which is the
+# whole reason this exists. It swaps what the pane is reading and remembers the
+# way back, and the document draws its own return control (see Build-ReadDocument).
+$script:agentOpen = $null
+$script:docParentPath = ''
+$script:docParentRow = $null
+
+function Show-AgentDoc { param($Sub, $ParentRow)
+    if (-not $Sub -or -not $ParentRow) { return }
+    $script:agentOpen = @{ Sub = $Sub; Row = $ParentRow }
+    $script:docSessionId = "$($ParentRow.Id)"
+    $script:docPath = "$($Sub.Path)"
+    $script:docParentPath = "$($ParentRow.S.jsonl)"
+    $script:docParentRow = $ParentRow
+    $ui.PaneName.Text = "$($Sub.Label)"
+    $ui.PaneStateDot.Background = $window.FindResource('HueAsk')
+    Set-WorkingPulse $false
+    $what = $(if ($Sub.IsTeammate) { 'teammate' } else { 'task sub-agent' })
+    $bits = @("$what")
+    try { $bits += ('working for ' + "$($ParentRow.T.Text)") } catch { }
+    if ("$($Sub.Description)") { $bits += "$($Sub.Description)" }
+    $ui.PaneState.Text = ($bits -join '   |   ')
+    # Nothing on the strip describes a transcript no process is holding, and an
+    # agent cannot be waiting on a question.
+    try { Update-Chips $null } catch { }
+    Show-Ask $null
+    $script:docKey = ''; $script:docTurns = $null
+    $script:docToBottom = $true
+    $blocks = @()
+    $trunc = $false
+    try { $trunc = ((Get-Item -LiteralPath $Sub.Path).Length -gt $script:tailBytes) } catch { }
+    # 🪤 Assign, then wrap - the comma guard.
+    try {
+        $got = Get-SRTranscriptBlocks -JsonlPath $Sub.Path -MaxRecords 220 -MaxTailBytes $script:tailBytes
+        $blocks = @($got)
+    } catch { }
+    Set-ReadDocument -Blocks $blocks -Truncated $trunc
+}
+
+function Close-AgentDoc {
+    $script:agentOpen = $null
+    Show-Selected -Force
+}
+
 function Update-Document { param([switch]$Wait)
+    # 🪤 THE FOLLOW TICK MUST NOT CLOBBER A DRILL-IN. This runs every second the
+    # selected transcript grows, and the selection is still the PARENT while an
+    # agent is open - so without this the agent's conversation was replaced by
+    # its parent's a second after being opened. Clearing the drill-in belongs to
+    # a deliberate selection (Show-Selected), never to a refresh.
+    if ($script:agentOpen) { return }
     $it = $ui.SessionList.SelectedItem
     if (-not $it) { return }
     # A SUB-AGENT IS READ BY THE SAME PATH. Its transcript uses the same record
@@ -3562,6 +3760,11 @@ function Update-Document { param([switch]$Wait)
     # so keying the incremental update on the id would make a session and its
     # own sub-agent look like the same document and append one onto the other.
     $script:docPath = $j
+    # The PARENT's transcript and row, kept whatever is being read: a sub-agent
+    # is filed beside its parent, so this is what an agent block looks itself up
+    # in, and what a drill-in comes back to.
+    $script:docParentPath = "$($r.S.jsonl)"
+    $script:docParentRow = $r
     if (-not $j -or -not (Test-Path -LiteralPath $j)) {
         $ui.PaneDoc.Document = $null
         $ui.PaneEmpty.Text = $(if ($it.Kind -eq 'agent') {
@@ -4219,6 +4422,11 @@ function Step-ToolView {
 function Show-Selected { param([switch]$Force)
     $it = $ui.SessionList.SelectedItem
     if (-not $it) { return }
+    # Choosing something in the list is the deliberate act that leaves a
+    # drilled-into sub-agent behind. Close-AgentDoc comes through here too,
+    # having already cleared it, which is why this is a plain assignment rather
+    # than a branch.
+    $script:agentOpen = $null
 
     # ===================================================================
     # A SUB-AGENT, OPENED.
@@ -4362,6 +4570,11 @@ function Invoke-FollowTick {
     # conversation whose transcript has not changed this second - which is every
     # second of a long reply, and exactly when you are watching it.
     try { Step-ChipClock } catch { }
+    # 🔑 AND THE OPEN BACKGROUND SHELLS, for the same reason and in the same
+    # place: a shell keeps writing while the transcript sits still, so behind
+    # the returns below its output would only ever move when something else did.
+    # Costs nothing when no shell block is open - the list is empty.
+    try { Update-LiveShells } catch { }
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
     $r = $it.Row

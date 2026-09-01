@@ -324,10 +324,14 @@ if ($sessions.Count -ge 2 -and $script:__b) {
     # 🔴 THE TICK THE OPERATOR ACTUALLY FEELS. A working conversation calls
     # Update-Document every time its transcript grows, and that used to rebuild
     # every block in the document. This is the same content through both paths.
-    $abFull = Bench 'a growth tick, REBUILDING the document (the old behaviour)' {
+    # 🪤 The rebuild is the CONTROL in this comparison, not a path the window
+    # takes any more - so it is not a gate. Holding it to the gesture budget
+    # would fail the suite for the cost of the thing that was replaced, which
+    # says nothing about the code that ships. The APPEND below is the gate.
+    $abFull = Bench 'a growth tick, REBUILDING the document (the old behaviour, kept as the control)' {
         $script:docKey = ''; $script:docTurns = $null
         Set-ReadDocument -Blocks $script:__b -Truncated $false
-    } 'GESTURE' 5
+    } 'QUICK' 5
     $abAppend = Bench 'a growth tick, APPENDING the tail (now)' {
         Set-ReadDocument -Blocks $script:__b -Truncated $false
     } 'GESTURE' 5
