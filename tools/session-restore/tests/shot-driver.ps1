@@ -204,6 +204,22 @@ foreach ($pass in 1, 2) {
 # the passes above pump - so anything that scrolled first would be dragged back
 # down before the frame was captured, and the shot would look like the option
 # does nothing.
+# 🔴 THE MEASURE IS ARITHMETIC ON THE PANE'S ACTUAL WIDTH, and at BUILD time the
+# pane has not been laid out yet - ActualWidth is 0, Set-ReadMeasure falls back
+# to an assumed 900, and the padding it computes is wrong for any pane that is
+# not 900 wide. The real window does not have this problem: PaneDoc's
+# SizeChanged starts a 240 ms timer that re-runs Set-ReadMeasure once the drag
+# stops. A shot pumps no timers, so without this every review screenshot showed
+# the measure UNCAPPED however the config was set - and a reviewer would
+# reasonably conclude the setting did nothing.
+if ($ui.PaneDoc.Document) {
+    Set-ReadMeasure -Doc $ui.PaneDoc.Document -PadL 44
+    $root.UpdateLayout()
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
+        [System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
+    Write-Host ("  measure: pane {0:N0}px, readingWidth={1}" -f $ui.PaneDoc.ActualWidth, $script:readWidth)
+}
+
 if ($env:SR_SHOT_TOP) {
     $svTop = Get-PaneScroller
     if ($svTop) {
