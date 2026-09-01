@@ -506,6 +506,38 @@ ANSI, so a middle dot in a string literal reached the screen as two characters:
 the group headers read `93 A- 9 armed`. Comments survive because nothing prints
 them. Keep printed literals ASCII.
 
+**A CENTRED BOX WITH A `MinWidth` OVERLAPS ITS NEIGHBOURS.** The header search
+box carried `MinWidth="380"`, `HorizontalAlignment="Center"`, in a `*` column.
+When the grid gives that column LESS than 380 it still renders at 380 and spills
+over **both** sides — so the moment either group beside it grew, the search box
+was drawn on top of them. **This is the header overlap reported twice**, and it
+was latent both times: nothing looked wrong until something was added next to
+it. A `MinWidth` larger than the space a star column can be squeezed to is not a
+minimum, it is an overlap waiting for a neighbour.
+
+**"I AM NOT LOGGED IN" HAS BEEN THREE DIFFERENT FAULTS, AND NONE OF THEM WAS THE
+ACCOUNT.** All three look identical from the outside — sessions run, the phone
+shows nothing, signing in appears to fix it:
+
+1. **The 401 storm.** Eleven `401 OAuth access token has expired`, all 07:30–07:35
+   on four consecutive mornings, up to five sessions in one minute — the logon
+   restore relaunching the ticked set within seconds while every process raced to
+   refresh one overnight-expired token. Gone since the launches were staggered
+   (2026-08-28). The 8-hour access token was never the problem; the contention was.
+2. **The bridge suppression.** `bridgeOauthDeadFailCount` reaches 7 and Claude
+   Code stops registering sessions with Remote Control until
+   `bridgeOauthDeadExpiresAt` passes. Measured at **6 of 7** on 2026-09-01. The
+   header shows it now — amber from 5, red once suppressed. Read-only:
+   `~/.claude.json` is Claude Code's state, not this tool's.
+3. **A genuine token expiry**, which the `Sign in` button handles — and which
+   needs a RELAUNCH after it, because a running claude reads its token at startup.
+
+🪤 **When grepping transcripts for evidence, EXCLUDE THE SESSION'S OWN FILE.** A
+search for the refresh-failure text returned 12 hits, 10 of which were this
+session's own prose about the problem, echoed back out of its transcript. Two
+real occurrences is not a systemic fault. A diagnosis was briefly built on the
+assistant's own words.
+
 **A `Conv` OBJECT IS NOT A TRANSCRIPT.** `Get-SRConversationState` returns a
 result even when the file is gone, carrying State `unknown`. Any guard that means
 "there is something to read" has to test for that, or it passes for exactly the
