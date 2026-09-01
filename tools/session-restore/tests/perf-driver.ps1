@@ -483,6 +483,20 @@ $script:railPick = $railPickWas2
 Build-Rail; Build-Sessions
 
 $null = Bench 'toggle the steps view (the redraw half)' { Show-Selected -Force } 'GESTURE'
+# THE ZOOM, WHICH IS THE MOST EXPENSIVE GESTURE IN THE WINDOW BY CONSTRUCTION:
+# it rewrites six window resources (every XAML style re-resolves), tells the
+# sessions list its rows changed height, and rebuilds the whole document. It is
+# also the one the operator will hold down to find the size they want, so it is
+# the one where lag would be felt most. Timed WITHOUT the config write, which is
+# a side effect the redraw never waits on.
+$zoomWas = $script:Zoom
+$null = Bench 'the text-size control (resources + list + redraw)' {
+    Set-SRTypeScale -Percent $(if ($script:Zoom -eq 100) { 110 } else { 100 })
+    try { $ui.SessionList.Items.Refresh() } catch { }
+    Show-Selected -Force
+} 'GESTURE'
+Set-SRTypeScale -Percent $zoomWas
+$null = Bench 'hide the running-shells panel' { $ui.ShellBox.Visibility = 'Collapsed' } 'GESTURE'
 $null = Bench 'the maximise glyph' { Update-MaxGlyph } 'GESTURE'
 $null = Bench 'the window frame' { Update-Frame } 'GESTURE'
 $null = Bench 'the send-to-many text box' {
@@ -544,6 +558,8 @@ $COVERAGE = @{
     'SetCancel'        = 'close the settings panel'
     'SetPerm'          = 'permission note'
     'PaneTools'        = 'toggle the steps view (the redraw half)'
+    'PaneZoom'         = 'the text-size control (resources + list + redraw)'
+    'ShellFold'        = 'hide the running-shells panel'
     'Broadcast'        = 'open send-to-many'
     'CastCancel'       = 'open send-to-many'
     'WinMax'           = 'the maximise glyph'

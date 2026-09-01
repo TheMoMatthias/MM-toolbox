@@ -1469,6 +1469,67 @@ try {
 # one single-question, two multi-question - and it is what
 # SR_SHOT_JSONL draws to put the card on screen for review.
 Write-Host ''
+Write-Host '--- which background shells are RUNNING, not which have ever run ---'
+# ===========================================================================
+# 🔴 EVERY OBVIOUS SOURCE FOR THIS IS WRONG, WHICH IS WHY IT IS TESTED HARD.
+# The tasks directory holds a .output for every shell that has EVER run (1,475
+# on this machine, almost none live) - a receipt, not a heartbeat. The tool_use
+# / tool_result pairing that works for sub-agents does not work here: measured,
+# 52 of 52 background bashes got their tool_result IMMEDIATELY, because that is
+# where the shell id is handed back, while the shell carried on. The only thing
+# that marks an ending is a <task-notification> naming the id.
+#
+# The fixture is built to break all three shortcuts at once: one shell that
+# finishes, one that is still going, a FOREGROUND bash that must never count,
+# and the completion arriving out of order AFTER the second launch.
+$shReal = Join-Path (Join-Path (Split-Path $SR_StateDir -Parent) 'tests') 'shells-round.jsonl'
+if (-not (Test-Path -LiteralPath $shReal)) { $shReal = Join-Path $PSScriptRoot 'shells-round.jsonl' }
+if (-not (Test-Path -LiteralPath $shReal)) {
+    Fail "the shells fixture is missing: $shReal"
+} else {
+    $shGot = @(Get-SRLiveShells -JsonlPath $shReal)
+    if ($shGot.Count -ne 1) {
+        Fail ('expected exactly 1 running shell, got {0}: {1}' -f $shGot.Count, (($shGot | ForEach-Object { $_.Shell }) -join ', '))
+    } else {
+        Pass 'the finished shell is dropped and the running one is kept'
+    }
+    $one = @($shGot)[0]
+    if ($one -and "$($one.Shell)" -ne 'brunning02') {
+        Fail ("the wrong shell is reported as live: '{0}' - the completion was out of order and moved the wrong one" -f $one.Shell)
+    } elseif ($one) { Pass 'it is the one whose notification never arrived, not simply the last launched' }
+    # The panel is worth nothing without these two: an id alone tells the
+    # operator no more than the count they already had.
+    if ($one -and ("$($one.Desc)" -ne 'Run the full suite' -or "$($one.Command)" -notlike '*pytest*')) {
+        Fail ("the live shell carries no usable description or command: '{0}' / '{1}'" -f $one.Desc, $one.Command)
+    } elseif ($one) { Pass 'it carries the description and the command it was launched with' }
+    if ($one -and -not $one.At) { Fail 'the live shell has no launch time - the panel cannot say how long it has been running' }
+    elseif ($one) { Pass 'and the launch time, so the panel can age it' }
+
+    # 🔴 CAN IT GO RED? The first version of this reader passed by returning 0
+    # from a 512 KB tail that contained no launches AT ALL, in either direction.
+    # Strip the notification and the same file must report BOTH shells.
+    $shTmp = Join-Path $SR_StateDir 'shells-no-notify.jsonl'
+    try {
+        # 🔴 BOM-LESS ON PURPOSE. [Text.Encoding]::UTF8 EMITS one, and a
+        # BOM on the first line is a whole record the reader used to drop in
+        # silence - which is how this control first "failed": the launch it was
+        # meant to expose was the line that went missing. The reader tolerates a
+        # BOM now; this writes what Claude Code actually writes.
+        $w = New-Object System.IO.StreamWriter($shTmp, $false, (New-Object System.Text.UTF8Encoding($false)))
+        foreach ($ln in [System.IO.File]::ReadLines($shReal)) {
+            if (-not $ln.Contains('<task-notification>')) { $w.WriteLine($ln) }
+        }
+        $w.Dispose()
+        $shNone = @(Get-SRLiveShells -JsonlPath $shTmp)
+        if ($shNone.Count -ne 2) {
+            Fail ('with every completion stripped the reader still says {0} running, not 2 - it cannot go red' -f $shNone.Count)
+        } else {
+            Pass 'with the completions stripped it reports both, so the green above means something'
+        }
+    } finally { Remove-Item -LiteralPath $shTmp -Force -ErrorAction SilentlyContinue }
+}
+
+Write-Host ''
 Write-Host '--- the answered-question card, from real records ---'
 # 🪤 NOT $PSScriptRoot. The runner SPLICES each driver into a generated harness
 # under .state\ and runs THAT, so inside a suite $PSScriptRoot is .state and not

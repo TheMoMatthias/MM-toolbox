@@ -2685,6 +2685,204 @@ if ($script:hasManrope) {
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- one type scale, and the zoom moves all of it ---'
+# ===========================================================================
+# 🔴 SAME RULE AS THE BLOCK ABOVE: ASK THE CONTROL. A zoom that writes the six
+# Sz* resources and never reaches a realised TextBlock is the FontFamily bug
+# wearing different clothes, and it would pass any assertion made against
+# FindResource. So every check here reads FontSize off something on screen.
+Lay
+function Get-TextBlocks { param($El, [int]$Depth = 0)
+    $out = @()
+    if (-not $El -or $Depth -gt 40) { return $out }
+    if ($El -is [System.Windows.Controls.TextBlock]) { $out += $El }
+    $n = 0
+    try { $n = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($El) } catch { return $out }
+    for ($i = 0; $i -lt $n; $i++) {
+        $c = $null
+        try { $c = [System.Windows.Media.VisualTreeHelper]::GetChild($El, $i) } catch { }
+        if ($c) { $out += Get-TextBlocks $c ($Depth + 1) }
+    }
+    return $out
+}
+
+$scale = @{}
+foreach ($k in @('Micro', 'Caption', 'Body', 'Mono', 'Strong', 'Display')) {
+    $scale[$k] = [double]$window.Resources["Sz$k"]
+}
+
+# 🔑 THE PARITY THAT MADE THE VOICES LOOK LIKE DIFFERENT DOCUMENTS. Machine text
+# is Cascadia and prose is Manrope, and the same nominal size draws them at
+# different apparent sizes because their x-heights differ (0.518 vs 0.540 em).
+# Mono was 16 to match the terminal's nominal 12pt, which put its x-height 28%
+# above the prose beside it. This asserts the RATIO, not the number, so it stays
+# true if the scale moves and fails loudly if either face is ever swapped.
+# 🪤 ASK THE RESOURCE FOR THE FAMILY, DO NOT NAME IT. Manrope is loaded from
+# lib\fonts at runtime and is NOT installed on the machine, so
+# [FontFamily]'Manrope' silently resolves to a fallback and TryGetGlyphTypeface
+# fails - which skipped this check with a Note that read like a machine
+# limitation rather than a broken lookup. The window's own resources hold the
+# real families, including the loose-folder Uri that makes Manrope resolvable.
+$xh = @{}
+foreach ($pair in @(@('prose', $window.Resources['FontText'], $scale.Body),
+                    @('machine', $window.Resources['FontMono'], $scale.Mono))) {
+    $fam = $pair[1]
+    if ($fam -isnot [System.Windows.Media.FontFamily]) { continue }
+    $tf = New-Object System.Windows.Media.Typeface $fam,
+              ([System.Windows.FontStyles]::Normal), ([System.Windows.FontWeights]::Normal),
+              ([System.Windows.FontStretches]::Normal)
+    $gt = $null
+    if ($tf.TryGetGlyphTypeface([ref]$gt)) {
+        $xh[$pair[0]] = $gt.XHeight * $pair[2]
+        Note ('{0}: {1} at {2}px - x-height {3:N2}px ({4:N3} em)' -f $pair[0], $fam.Source, $pair[2], ($gt.XHeight * $pair[2]), $gt.XHeight)
+    }
+}
+if ($xh.Count -eq 2) {
+    $d = [Math]::Abs($xh['prose'] - $xh['machine'])
+    if ($d -gt 0.6) {
+        Fail ('prose and machine text are {0:N2}px apart in x-height ({1:N2} vs {2:N2}) - they will read as different sizes' -f
+              $d, $xh['prose'], $xh['machine'])
+    } else {
+        Pass ('prose and machine text sit within {0:N2}px of the same x-height ({1:N2}px)' -f $d, $xh['prose'])
+    }
+} else {
+    Note 'one of the two faces is not installed - the x-height parity check is skipped'
+}
+
+# Every size actually on screen has to BE one of the six. This is the assertion
+# the old "one scale" comment claimed and never made: counted at the time it was
+# written, sixteen distinct sizes were live, many half a pixel apart.
+# 🪤 $root, NOT $window. The window is built and never SHOWN, so it has
+# no visual tree of its own - Lay measures and arranges $root, and that is the
+# only subtree that realises. Walking $window returns nothing at all, which
+# reads as "no strays found" and would have passed this check forever.
+$blocks = @(Get-TextBlocks $root)
+$allowed = @($scale.Values) + 0.0
+$stray = @{}
+foreach ($b in $blocks) {
+    $s = [Math]::Round([double]$b.FontSize, 2)
+    if ($allowed -notcontains $s) {
+        $t = "$($b.Text)"; if ($t.Length -gt 24) { $t = $t.Substring(0, 24) }
+        if (-not $stray.ContainsKey("$s")) { $stray["$s"] = $t }
+    }
+}
+if (-not $blocks.Count) {
+    Fail 'no realised TextBlock anywhere in the window - the scale check saw nothing'
+} elseif ($stray.Count) {
+    Fail ('{0} size(s) on screen are not on the scale: {1}' -f $stray.Count,
+          (($stray.Keys | Sort-Object | ForEach-Object { "$_ px ('$($stray[$_])')" }) -join ', '))
+} else {
+    Pass ('all {0} realised text blocks are on the six-step scale' -f $blocks.Count)
+}
+
+# And the zoom. Measured on a control, before and after, then put back.
+$zWas = $script:Zoom
+$sample = @($blocks | Where-Object { $_.FontSize -gt 0 })[0]
+$before = [double]$sample.FontSize
+Set-SRTypeScale -Percent 150
+Lay
+$after = [double]$sample.FontSize
+Set-SRTypeScale -Percent $zWas
+Lay
+$back = [double]$sample.FontSize
+if ($after -le $before) {
+    Fail ('the zoom wrote its resources but the text did not move ({0} -> {1}px) - a DynamicResource is missing somewhere' -f $before, $after)
+} elseif ([Math]::Abs($back - $before) -gt 0.01) {
+    Fail ('the zoom does not come back: {0} -> {1} -> {2}px' -f $before, $after, $back)
+} else {
+    Pass ('150% moves realised text {0} -> {1}px and returns to {2}' -f $before, $after, $back)
+}
+# 🔴 AND NOTHING IN THE HEADER MAY OVERLAP AT ANY ZOOM. The header overlap was
+# reported twice and both times found by LOOKING at a screenshot; the second
+# cause only appears once the type grows, because a horizontal StackPanel hands
+# every child its full desired width and quietly draws over its neighbour. This
+# measures it in RENDERED coordinates at the largest size the control offers,
+# which is where it is worst and where no one thinks to look.
+$ovWas = $script:Zoom
+foreach ($pct in @(100, 150)) {
+    Set-SRTypeScale -Percent $pct
+    Lay
+    $boxes = @()
+    foreach ($n in @('LiveCount', 'Search', 'Stamp', 'BridgeNote')) {
+        $el = $ui.$n
+        if (-not $el -or "$($el.Visibility)" -ne 'Visible' -or $el.ActualWidth -le 0) { continue }
+        try {
+            $tl = $el.TransformToAncestor($root).Transform((New-Object System.Windows.Point 0, 0))
+            $boxes += @{ N = $n; L = $tl.X; R = $tl.X + $el.ActualWidth }
+        } catch { }
+    }
+    $hits = @()
+    for ($a = 0; $a -lt $boxes.Count; $a++) {
+        for ($b = $a + 1; $b -lt $boxes.Count; $b++) {
+            $o = [Math]::Min($boxes[$a].R, $boxes[$b].R) - [Math]::Max($boxes[$a].L, $boxes[$b].L)
+            if ($o -gt 1.0) { $hits += ('{0} over {1} by {2:N0}px' -f $boxes[$a].N, $boxes[$b].N, $o) }
+        }
+    }
+    if ($hits.Count) { Fail ("at {0}% the header overlaps: {1}" -f $pct, ($hits -join '; ')) }
+    else { Pass ("at {0}% no two header elements overlap ({1} measured)" -f $pct, $boxes.Count) }
+}
+Set-SRTypeScale -Percent $ovWas
+Lay
+
+if ([Math]::Abs($script:MonoSize - $scale.Mono) -gt 0.01 -or [Math]::Abs($script:readSize - $scale.Body) -gt 0.01) {
+    Fail ('the document builder is off the scale after a zoom round-trip: mono {0} (want {1}), prose {2} (want {3})' -f
+          $script:MonoSize, $scale.Mono, $script:readSize, $scale.Body)
+} else {
+    Pass 'the document builder''s prose and mono sizes come back on the scale too'
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the running-shells panel puts what it is given on screen ---'
+# ===========================================================================
+# 🪤 A MISSPELLED BINDING RENDERS AN EMPTY CELL AND SAYS NOTHING. That is the
+# same trap the SubVis/AgentVis comment in window2.xaml records, and this panel
+# has six bindings. state-driver proves the DATA is right; nothing there would
+# notice if ShDesc were spelled ShDsc in the template, and the operator would
+# get a panel of blank rows reporting that something is running.
+#
+# 🔴 THE ROWS ARE SUBSTITUTED, NOT WAITED FOR. A live background shell is not
+# something a test may arrange - it would mean running a real command inside
+# somebody's session - so the branch is driven by handing the control the shape
+# Update-ShellPanel builds. Waiting for real data here would mean this path was
+# only ever exercised by accident.
+if (-not $ui.ShellBox -or -not $ui.ShellList) {
+    Fail 'the running-shells panel is not in the window'
+} else {
+    if ("$($ui.ShellBox.Visibility)" -ne 'Collapsed') { Fail 'the shells panel starts visible - it must appear only when something is running' }
+    else { Pass 'it starts collapsed' }
+
+    $ui.ShellList.ItemsSource = @([PSCustomObject]@{
+        ShDesc = 'Rebuild the bundle'; ShCmd = 'npm run build'; ShOut = 'webpack: compiling...'
+        ShOutVis = 'Visible'; ShAge = '2m 14s'; ShTip = 'tip'
+    })
+    $ui.ShellBox.Visibility = 'Visible'
+    Lay
+    $shTexts = @(Get-TextBlocks $ui.ShellList | ForEach-Object { "$($_.Text)" } | Where-Object { $_ })
+    $missing = @()
+    foreach ($want in @('Rebuild the bundle', 'npm run build', 'webpack: compiling...', '2m 14s')) {
+        if ($shTexts -notcontains $want) { $missing += $want }
+    }
+    if (-not $shTexts.Count) {
+        Fail 'the shells panel realised no text at all - every binding is dead'
+    } elseif ($missing.Count) {
+        Fail ('these never reached the screen: ' + ($missing -join ' | ') + "  (got: " + ($shTexts -join ' / ') + ')')
+    } else {
+        Pass 'description, command, live output and elapsed all reach the screen'
+    }
+    # The command and its output are the machine voice and must be drawn in it.
+    $monoOff = @(Get-TextBlocks $ui.ShellList |
+                 Where-Object { "$($_.Text)" -eq 'npm run build' -or "$($_.Text)" -eq 'webpack: compiling...' } |
+                 Where-Object { "$($_.FontFamily.Source)" -notlike '*Cascadia*' -and "$($_.FontFamily.Source)" -notlike '*Consolas*' })
+    if ($monoOff.Count) { Fail ('{0} machine-text line(s) in the shells panel are not in the machine face' -f $monoOff.Count) }
+    else { Pass 'the command and its output are in the machine face' }
+
+    $ui.ShellList.ItemsSource = $null
+    $ui.ShellBox.Visibility = 'Collapsed'
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the window asks in its own voice ---'
 # ===========================================================================
 # 🪤 GREP THE CODE, NOT THE COMMENTS. An earlier assertion in this suite matched

@@ -10,6 +10,7 @@
 #   SR_SHOT_SURFACE=manage   draw the session manager instead of the work surface
 #   SR_SHOT_SIZE=1200x800    draw at another size, to see the adaptive breakpoints
 #   SR_SHOT_OUT=<path>       where to write it
+#   SR_SHOT_SHELLS=1         draw the running-shells panel (substituted rows)
 #
 # 🪤 RENDER THE CONTENT, NOT THE WINDOW, AND PAINT THE GROUND FIRST. A Window
 # that has never been shown has no rendered visual root, so RenderTargetBitmap
@@ -61,6 +62,32 @@ if ($env:SR_SHOT_MARKS) {
                                  -CtxTokens (150000 * $mk + 400000) -CtxWindow 1000000
     }
     Build-Sessions
+}
+
+# 🔴 SUBSTITUTED, BECAUSE THE REAL THING CANNOT BE ARRANGED FOR A PICTURE. The
+# panel only appears while a background shell is genuinely running in the
+# selected conversation, which is not a state a screenshot may create - it would
+# mean starting a real command inside somebody's session. Without this knob the
+# panel would only ever be reviewed by accident, on a day something happened to
+# be running, which is how it would ship looking wrong.
+# The SHAPE here is the shape Update-ShellPanel builds; only the values differ.
+if ($env:SR_SHOT_SHELLS) {
+    $ui.ShellList.ItemsSource = @(
+        [PSCustomObject]@{
+            ShDesc = 'Run the full suite'
+            ShCmd  = 'cd "C:/repo" && pytest -q tests/ --maxfail=1'
+            ShOut  = 'tests/test_engine.py ......................  [ 62%]'
+            ShOutVis = 'Visible'; ShAge = '4m 12s'; ShTip = ''
+        },
+        [PSCustomObject]@{
+            ShDesc = 'Rebuild the bundle'
+            ShCmd  = 'npm run build -- --profile'
+            ShOut  = 'webpack: compiling...'
+            ShOutVis = 'Visible'; ShAge = '38s'; ShTip = ''
+        }
+    )
+    $ui.ShellHead.Text = (Get-TrackedText '2 SHELLS RUNNING')
+    $ui.ShellBox.Visibility = 'Visible'
 }
 
 if ($env:SR_SHOT_ASK) {

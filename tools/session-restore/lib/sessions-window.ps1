@@ -132,7 +132,7 @@ foreach ($n in @(
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
     'SetToolsFold','SetAllow','SetDeny',
     'CastBox','CastWho','CastList','CastText','CastCancel','CastSend',
-    'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
+    'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions','SignIn','BridgeNote',
@@ -1623,6 +1623,68 @@ function Install-SRTypeface {
 $script:hasManrope = Install-SRTypeface
 
 # ===========================================================================
+# ONE TYPE SCALE, AND ONE KNOB THAT MOVES ALL OF IT.
+#
+# 🔴 THE BASE VALUES ARE NOT DEFINED HERE. They are the six Sz* resources in
+# window2.xaml, and this reads them. A second copy of the numbers in script is
+# how the "one scale" claim in that file became untrue the first time - the
+# styles moved and the builder did not - so there is exactly one place a size is
+# written down, and this is not it.
+#
+# 🔑 WHY A KNOB AND NOT THE WINDOW WIDTH. Reported as "the text from the working
+# surface is not scaling with the window size", and it never has: Set-Breakpoint
+# moves COLUMNS, and no font size in the tool has ever read the window. The one
+# thing that did scale - the reading pane growing 16 -> 20px with its width -
+# was removed because it was reported as text that was too large. Growing type
+# when a window is dragged wider is zooming, not scaling, and it takes the
+# decision away from the person who can see the screen. So: one setting, every
+# size together, saved, and the same on both machines.
+$SR_GutterBase = 22.0
+$script:TypeBase = @{}
+foreach ($k in @('Micro', 'Caption', 'Body', 'Mono', 'Strong', 'Display')) {
+    # 🪤 CAST, DO NOT TRUST THE LOOKUP. A missing key returns $null and would
+    # silently make every size 0 - a window that lays out to nothing. The
+    # fallback keeps the shape of the scale if the XAML is ever out of step.
+    $v = 0.0
+    try { $v = [double]$window.Resources["Sz$k"] } catch { $v = 0.0 }
+    if ($v -le 0) { $v = @{ Micro = 9.5; Caption = 11.0; Body = 12.0; Mono = 12.5; Strong = 14.0; Display = 17.0 }[$k] }
+    $script:TypeBase[$k] = $v
+}
+$script:Type = @{}
+$script:Zoom = 100
+
+function Set-SRTypeScale { param([int]$Percent = 0)
+    if ($Percent -gt 0) { $script:Zoom = [Math]::Max(70, [Math]::Min(200, $Percent)) }
+    $f = $script:Zoom / 100.0
+    foreach ($k in @($script:TypeBase.Keys)) {
+        # Rounded to a half pixel. Not to a whole one: the scale's own steps are
+        # 9.5 and 12.5, and rounding those to integers would collapse two pairs
+        # of steps into each other at 100% - the exact flattening this rebuild
+        # exists to undo.
+        $v = [Math]::Round(($script:TypeBase[$k] * $f) * 2.0) / 2.0
+        $script:Type[$k] = $v
+        # The resource is what every XAML style reads, so assigning it here is
+        # what makes the chrome move with the pane rather than only the pane.
+        $window.Resources["Sz$k"] = $v
+    }
+    # The document builder's three derived numbers. Leading at 1.38x is the
+    # measured terminal density this pane settled on; mono is the scale's own
+    # step, chosen for x-height parity with the body rather than by its number.
+    $script:readSize = $script:Type.Body
+    $script:readLead = [Math]::Round($script:Type.Body * 1.38, 1)
+    $script:MonoSize = $script:Type.Mono
+    # The gutter is a TYPE measure, not a layout constant - it holds one marker
+    # glyph and the space after it - so it zooms with the glyph or the marker
+    # grows out of its column. Both users of it read this one variable, so the
+    # invariant that prose and rail blocks start at the same x survives the
+    # scaling; gui2 asserts that in rendered coordinates.
+    $script:GutterW = [Math]::Round($SR_GutterBase * $f, 1)
+}
+
+try { $script:Zoom = [int](Get-SRConfig).zoom } catch { $script:Zoom = 100 }
+Set-SRTypeScale
+
+# ===========================================================================
 # HOW GLYPHS ARE ANTIALIASED - the one look in this window the operator sets.
 #
 # window2.xaml pins Grayscale, with a reasoned comment: ClearType tints the edge
@@ -1960,8 +2022,13 @@ function Get-RunSummary { param($Calls)
 $script:ReadMeasureChars = 100
 # The size the last layout settled on. The renderer reads it rather than a
 # literal, so type and measure can never disagree about how wide a line is.
-$script:readSize = 12.0
-$script:readLead = 16.5
+# 🪤 THESE TWO ARE SET BY Set-SRTypeScale AND ARE ONLY DECLARED HERE. They used
+# to be the definition - a literal 12.0 - and a second literal 12.0 inside
+# Set-ReadMeasure quietly overrode it on every layout, so changing the size here
+# did nothing at all. The scale owns them now; assigning a number to either of
+# them anywhere else is the bug, not the fix.
+$script:readSize = $script:Type.Body
+$script:readLead = [Math]::Round($script:Type.Body * 1.38, 1)
 
 # THE GUTTER, in device-independent pixels.
 #
@@ -1970,20 +2037,28 @@ $script:readLead = 16.5
 # Grid column - so a paragraph of prose and a block of machine output start
 # their text at exactly the same x. That is the whole point of the column, and
 # two numbers that were meant to be equal would drift the first time one moved.
-$script:GutterW = 22.0
+#
+# 🪤 DECLARED HERE, OWNED BY Set-SRTypeScale. The base is $SR_GutterBase and the
+# live value zooms with the type; writing a literal back into this variable is
+# how the zoom would stop reaching the gutter while everything around it moved.
+$script:GutterW = [Math]::Round($SR_GutterBase * ($script:Zoom / 100.0), 1)
 
 # THE SIZE MACHINE TEXT IS SET AT - commands, their output, fenced code.
 #
-# Windows Terminal's default is Cascadia Mono at 12 POINT, which is 16 device
-# pixels, and this pane was drawing the same face at 12px - three quarters of
-# the size, which is why executed commands read as smaller and thinner here
-# than in the terminal beside it.
+# 🔴 IT WAS 16, TO MATCH WINDOWS TERMINAL'S 12pt EXACTLY, AND MATCHING THE
+# NOMINAL NUMBER WAS THE MISTAKE. Two faces at the same nominal size are not the
+# same size on screen; what the eye reads is the x-height. Measured here:
+# Manrope 0.540 em, Cascadia Mono 0.518. So Cascadia at 16 drew an 8.28px
+# x-height beside prose with a 6.48px one - machine text 28% LARGER than the
+# words around it, on a surface whose whole job is telling the two voices apart.
+# That is most of "the text is not uniform in size", and the terminal parity it
+# bought was invisible anyway, because nothing else in the pane is at terminal
+# scale.
 #
-# 16, not the 15 this first shipped at. 15 was a hedge against machine text
-# dwarfing the 13px prose around it, and the hedge was mine rather than the
-# operator's: the ask was to MATCH the terminal, and one pixel short of the
-# terminal is not a match. One knob, so the whole machine voice moves together.
-$script:MonoSize = 16.0
+# Sized by x-height now: Mono is 12.5 against a 12 body, which puts the two
+# within a tenth of a pixel of each other. The number lives in the scale in
+# window2.xaml and moves with the zoom like everything else.
+$script:MonoSize = $script:Type.Mono
 
 # 🔴 THE MARKER TABLE - ONE ROW PER BLOCK KIND, AND EVERY KIND HAS ONE.
 #
@@ -2060,7 +2135,8 @@ function Get-SRHeadLine { param([string]$Text, [int]$Max = 88)
 # the evidence, because it is the only construction that guarantees the column
 # is exactly GutterW wide under a PROPORTIONAL prose face. Knuth-Plass line
 # breaking measured the same way and is also staying.
-function New-GutterMark { param([string]$Glyph, $Brush, [double]$Size = 11.5)
+function New-GutterMark { param([string]$Glyph, $Brush, [double]$Size = 0)
+    if ($Size -le 0) { $Size = $script:Type.Caption }
     $tb = [System.Windows.Controls.TextBlock]::new()
     $tb.Text = $Glyph
     $tb.Width = $script:GutterW
@@ -2129,7 +2205,7 @@ function New-RailBlock {
     $mk = [System.Windows.Controls.TextBlock]::new()
     $mk.Text = (Get-MarkGlyph $Kind)
     $mk.Foreground = $Brush
-    $mk.FontSize = 11.5
+    $mk.FontSize = $script:Type.Caption
     $mk.FontFamily = $script:MonoFace
     $mk.VerticalAlignment = 'Top'
     $null = $g.Children.Add($mk)
@@ -2221,7 +2297,7 @@ function New-FoldHeader {
     $car = New-Object System.Windows.Controls.TextBlock
     $car.Text = [string][char]$(if ($Open) { 0x25BE } else { 0x25B8 })
     $car.Foreground = $Brush
-    $car.FontSize = 9
+    $car.FontSize = $script:Type.Micro
     $car.FontFamily = $script:MonoFace
     $car.VerticalAlignment = 'Center'
     $car.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
@@ -2230,7 +2306,7 @@ function New-FoldHeader {
     $cap = New-Object System.Windows.Controls.TextBlock
     $cap.Text = (Get-TrackedText $Caption)
     $cap.Foreground = $Brush
-    $cap.FontSize = 9.5
+    $cap.FontSize = $script:Type.Micro
     $cap.FontWeight = $FW_Semi
     $cap.FontFamily = $script:UiFace
     $cap.VerticalAlignment = 'Center'
@@ -2240,7 +2316,7 @@ function New-FoldHeader {
         $tr = New-Object System.Windows.Controls.TextBlock
         $tr.Text = $Trailing
         $tr.Foreground = $Pal.TextDim
-        $tr.FontSize = 11.5
+        $tr.FontSize = $script:Type.Caption
         $tr.FontFamily = $script:MonoFace
         $tr.VerticalAlignment = 'Center'
         $tr.TextTrimming = 'CharacterEllipsis'
@@ -2299,6 +2375,113 @@ $script:liveShells = New-Object System.Collections.Generic.List[object]
 function Register-LiveShell { param($Label, $Body, $Panel, [string]$Shell, [string]$Session)
     if (-not $Shell -or -not $Session) { return }
     $script:liveShells.Add(@{ Label = $Label; Body = $Body; Panel = $Panel; Shell = $Shell; Session = $Session })
+}
+
+# ===========================================================================
+# THE PINNED LIST OF WHAT IS RUNNING BEHIND THE SELECTED CONVERSATION.
+#
+# 🔴 THE COST OF THIS IS THE WHOLE DESIGN. Get-SRLiveShells parses up to 24 MB
+# of JSONL - measured at 273 ms on an 11 MB transcript - and its cache is keyed
+# on the transcript's size and mtime, which on a LIVE session changes every time
+# it writes. So calling it from the one-second tick would miss the cache every
+# time and re-parse megabytes ON THE UI THREAD once a second. That is exactly
+# the defect the chip clock already carries a comment about, and it is the
+# defect the operator reported as lag.
+#
+# Three gates, cheapest first:
+#   1. The status line already counts shells, for free, on the sweep. Zero means
+#      there is nothing to list and nothing is read at all - the common case,
+#      and it costs one integer compare.
+#   2. A re-parse only when the ANSWER could have changed: a different
+#      conversation, a different count, or $SR_ShellRescan seconds have passed.
+#   3. The OUTPUT refresh is not the parse. It is one small file read per shell
+#      and it runs every tick, because a shell that is quiet for five seconds is
+#      the one you are actually watching.
+$SR_ShellRescan = 8
+$script:shellFor = ''
+$script:shellAt = $null
+$script:shellCount = -1
+$script:shellList = @()
+$script:shellHidden = $false
+
+function Update-ShellPanel {
+    $id = ''
+    $jsonl = ''
+    $n = 0
+    $it = $ui.SessionList.SelectedItem
+    if ($it -and $it.Kind -eq 'session') {
+        $id = "$($it.Row.Id)"
+        $jsonl = "$($it.Row.S.jsonl)"
+        # The same number the square on the row is drawn from, so the panel and
+        # the mark can no longer disagree about whether anything is running.
+        if ($script:chipVitals) { try { $n = [int]$script:chipVitals.Shells } catch { $n = 0 } }
+    }
+
+    if (-not $id -or $n -le 0) {
+        if ($script:shellList.Count -or $script:shellFor) {
+            $script:shellFor = ''; $script:shellList = @(); $script:shellCount = -1
+            $ui.ShellList.ItemsSource = $null
+            $ui.ShellBox.Visibility = 'Collapsed'
+        }
+        return
+    }
+
+    $stale = ($script:shellFor -ne $id) -or ($script:shellCount -ne $n) -or
+             (-not $script:shellAt) -or (((Get-Date) - $script:shellAt).TotalSeconds -ge $SR_ShellRescan)
+    if ($script:shellFor -ne $id) { $script:shellHidden = $false }
+    if ($stale) {
+        $got = @()
+        try { $got = @(Get-SRLiveShells -JsonlPath $jsonl) } catch { $got = @() }
+        $script:shellList = $got
+        $script:shellFor = $id
+        $script:shellCount = $n
+        $script:shellAt = Get-Date
+    }
+    if ($script:shellHidden) { $ui.ShellBox.Visibility = 'Collapsed'; return }
+
+    # 🪤 THE COUNT IN THE HEADING IS THE STATUS LINE'S, NOT THIS LIST'S LENGTH.
+    # They can differ honestly: a shell launched before the 24 MB window opened
+    # is running and unnamed. Saying "2 running" and listing one is truthful;
+    # silently listing one and calling it the total is not.
+    $rows = @()
+    foreach ($s in $script:shellList) {
+        $out = ''
+        try {
+            $p = Get-SRShellOutputPath -SessionId $id -Shell "$($s.Shell)"
+            if ($p) {
+                # A small tail: this is a one-line preview, not the log.
+                $o = Get-SRShellOutput -Path $p -MaxBytes 4096
+                if ($o) {
+                    $ls = @("$($o.Text)" -split "`n" | Where-Object { $_.Trim() })
+                    if ($ls.Count) { $out = $ls[-1].Trim() }
+                }
+            }
+        } catch { }
+        # How long it has been running, not when it started: the useful question
+        # about a background shell is whether it is taking too long. The launch
+        # timestamp is parsed as UTC, so the subtraction is too.
+        $age = ''
+        if ($s.At) {
+            try { $age = Format-Clock (([datetime]::UtcNow - ([datetime]$s.At)).TotalSeconds) } catch { }
+        }
+        $cmd = (Compress-SRPath ("$($s.Command)" -replace '\s+', ' ')).Trim()
+        $desc = "$($s.Desc)".Trim()
+        if (-not $desc) { $desc = $s.Shell }
+        $rows += [PSCustomObject]@{
+            ShDesc   = $desc
+            ShCmd    = $cmd
+            ShOut    = $out
+            ShOutVis = $(if ($out) { 'Visible' } else { 'Collapsed' })
+            ShAge    = $age
+            ShTip    = ("{0}`n`n{1}`n`nshell {2} - output in %TEMP%\claude\...\tasks\{2}.output" -f $desc, $cmd, $s.Shell)
+        }
+    }
+    $ui.ShellList.ItemsSource = $rows
+    $w = 'shells'; if ($n -eq 1) { $w = 'shell' }
+    $head = '{0} {1} running' -f $n, $w
+    if ($rows.Count -lt $n) { $head = '{0} {1} running - {2} named' -f $n, $w, $rows.Count }
+    $ui.ShellHead.Text = (Get-TrackedText $head.ToUpper())
+    $ui.ShellBox.Visibility = 'Visible'
 }
 
 function Update-LiveShells {
@@ -2486,7 +2669,7 @@ function Add-RunDetail { param($Panel, $Calls)
                 $op.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
                 $op.ToolTip = 'Open this sub-agent''s own conversation'
                 $ot = New-ReadText -Text ((Get-MarkGlyph 'agent') + '  open its conversation  ' + [string][char]0x2192) `
-                                   -Brush (Get-MarkBrush 'agent') -Size 11.5 -Semi
+                                   -Brush (Get-MarkBrush 'agent') -Size $script:Type.Caption -Semi
                 $op.Child = $ot
                 $op.Tag = @{ Sub = $mine[0]; Row = $script:docParentRow }
                 $op.Add_MouseLeftButtonUp({
@@ -2540,7 +2723,7 @@ function Add-RunDetail { param($Panel, $Calls)
             $rm = New-Object System.Windows.Controls.TextBlock
             $rm.Text = (Get-MarkGlyph 'result')
             $rm.Foreground = $Pal.TextLow
-            $rm.FontSize = 10.5
+            $rm.FontSize = $script:Type.Caption
             $rm.FontFamily = $script:MonoFace
             $rm.VerticalAlignment = 'Top'
             $null = $rg.Children.Add($rm)
@@ -2633,11 +2816,14 @@ function Set-ReadMeasure { param($Doc, [double]$Size = 0, [double]$PadL = 44)
     try { $avail = [double]$ui.PaneDoc.ActualWidth } catch { }
     if ($avail -lt 200) { $avail = 900.0 }
 
-    # 12, down from 13: the operator asked for the general text smaller again
-    # after living with it. Machine text is NOT tied to this - it is pinned at
-    # $script:MonoSize to match the terminal exactly - so the gap between prose
-    # and command output widens on purpose.
-    $size = 12.0
+    # 🔴 THIS LITERAL WAS THE REAL SIZE OF THE READING PANE, AND IT WAS THE
+    # THIRD PLACE ONE WAS WRITTEN DOWN. $script:readSize was set at the top of
+    # the file, Set-SRTypeScale set it again, and then this ran on every layout
+    # and overwrote both - so the two visible declarations were decoration and
+    # only this one did anything. It now takes the scale, and the $Size
+    # parameter stays as the one legitimate override (the shot harness renders
+    # at a fixed size so a picture is comparable between runs).
+    $size = $script:Type.Body
     if ($Size -gt 0) { $size = $Size }
     $script:readSize = $size
     $script:readLead = [Math]::Round($size * 1.38, 1)
@@ -2681,7 +2867,8 @@ function Format-TurnTime { param($When)
 
 function Add-ReadLabel {
     param($Doc, [string]$Text, $Brush, [string]$Trailing = '', $TrailBrush, $When,
-          [double]$Size = 9, [double]$Top = 13, [double]$Bottom = 4)
+          [double]$Size = 0, [double]$Top = 13, [double]$Bottom = 4)
+    if ($Size -le 0) { $Size = $script:Type.Micro }
     $p = New-Object System.Windows.Documents.Paragraph
     # INDENTED INTO THE TEXT COLUMN, not sitting out at the page edge. The
     # speaker label belongs over the words it introduces; at x=0 it hung one
@@ -2692,10 +2879,10 @@ function Add-ReadLabel {
     if ($stamp) {
         # Dimmer than the speaker and not tracked: it is a reference you look up
         # when you want it, never something that competes with who is talking.
-        $p.Inlines.Add((New-ReadRun -Text ('        ' + $stamp) -Brush $Pal.TextLow -Size ($Size + 0.5)))
+        $p.Inlines.Add((New-ReadRun -Text ('        ' + $stamp) -Brush $Pal.TextLow -Size $Size))
     }
     if ($Trailing) {
-        $p.Inlines.Add((New-ReadRun -Text ('          ' + $Trailing) -Brush $TrailBrush -Size ($Size + 0.5)))
+        $p.Inlines.Add((New-ReadRun -Text ('          ' + $Trailing) -Brush $TrailBrush -Size $Size))
     }
     $Doc.Blocks.Add($p)
 }
@@ -2773,7 +2960,7 @@ function Build-ReadDocument {
         $bb.Cursor = 'Hand'
         $bb.ToolTip = 'Back to the conversation that dispatched this agent'
         $bt2 = New-ReadText -Text ([string][char]0x2190 + '  back to ' + "$($script:agentOpen.Row.T.Text)") `
-                            -Brush $Pal.Ask -Size 11.5 -Semi
+                            -Brush $Pal.Ask -Size $script:Type.Caption -Semi
         $bb.Child = $bt2
         $bb.Add_MouseLeftButtonUp({ param($s, $e) Close-AgentDoc })
         $doc.Blocks.Add((New-RailBlock -Child $bb -Kind 'agent' -Top 0 -Bottom 10))
@@ -2793,7 +2980,7 @@ function Build-ReadDocument {
         $up = New-Object System.Windows.Controls.TextBlock
         $up.Text = [string][char]0x25B4
         $up.Foreground = $Pal.TextLow
-        $up.FontSize = 9
+        $up.FontSize = $script:Type.Micro
         $up.FontFamily = $script:MonoFace
         $up.VerticalAlignment = 'Center'
         $up.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
@@ -2801,7 +2988,7 @@ function Build-ReadDocument {
         $lb = New-Object System.Windows.Controls.TextBlock
         $lb.Text = ('load earlier   showing the last {0} KB of a longer conversation' -f [int]($script:tailBytes / 1KB))
         $lb.Foreground = $Pal.TextDim
-        $lb.FontSize = 11.5
+        $lb.FontSize = $script:Type.Caption
         $lb.FontFamily = $script:UiFace
         $lb.VerticalAlignment = 'Center'
         $null = $sp.Children.Add($lb)
@@ -2896,7 +3083,7 @@ function Add-ReadTurn { param($Doc, $Turn)
                 $st.Orientation = 'Horizontal'
                 $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText 'COMPACTED') -Brush $Pal.Ask -Size 9.5 -Semi))
                 if ("$($t.Body)".Trim()) {
-                    $tb = New-ReadText -Text "$($t.Body)" -Brush $Pal.TextLow -Size 11.5
+                    $tb = New-ReadText -Text "$($t.Body)" -Brush $Pal.TextLow -Size $script:Type.Caption
                     $tb.Margin = New-Object System.Windows.Thickness 10, 0, 0, 0
                     $null = $st.Children.Add($tb)
                 }
@@ -3148,14 +3335,14 @@ function New-AskTabChip {
     # answered, a tick once it is.
     $mark.Text = $(if ($Answered) { [string][char]0x2714 } else { [string][char]0x25CB })
     $mark.Foreground = $(if ($Answered) { $Pal.Ask } else { $window.FindResource('TextLow') })
-    $mark.FontSize = 10.5
+    $mark.FontSize = $script:Type.Caption
     $mark.FontFamily = $script:UiFace
     $mark.VerticalAlignment = 'Center'
     $mark.Margin = New-Object System.Windows.Thickness 0, 0, 6, 0
     $null = $sp.Children.Add($mark)
     $t = New-Object System.Windows.Controls.TextBlock
     $t.Text = $Label
-    $t.FontSize = 10.5
+    $t.FontSize = $script:Type.Caption
     $t.FontFamily = $script:UiFace
     $t.VerticalAlignment = 'Center'
     $t.Foreground = $(if ($Answered) { $window.FindResource('TextMid') } else { $window.FindResource('TextLow') })
@@ -3233,14 +3420,14 @@ function Show-Ask { param($q)
             $qt = New-Object System.Windows.Controls.TextBlock
             $qt.Text = "$($a.Question)"
             $qt.TextWrapping = 'Wrap'
-            $qt.FontSize = 12
+            $qt.FontSize = $script:Type.Body
             $qt.Foreground = $window.FindResource('TextMid')
             $qt.FontFamily = $script:UiFace
             $null = $sp2.Children.Add($qt)
             $at2 = New-Object System.Windows.Controls.TextBlock
             $at2.Text = "$($a.Answer)"
             $at2.TextWrapping = 'Wrap'
-            $at2.FontSize = 13.5
+            $at2.FontSize = $script:Type.Strong
             $at2.FontWeight = $FW_Semi
             $at2.Foreground = $Pal.Ask
             $at2.FontFamily = $script:UiFace
@@ -3313,7 +3500,7 @@ function Show-Ask { param($q)
         $isOn = $(if ($q.Multi) { [bool]$ticked[$n] } else { $n -eq $chosen })
         $bt.Text = $(if ($isOn) { [string][char]0x2714 } else { "$($n + 1)" })
         $bt.Foreground = $Pal.Ask
-        $bt.FontSize = 11.5
+        $bt.FontSize = $script:Type.Caption
         $bt.FontWeight = $FW_Semi
         $bt.FontFamily = $script:UiFace
         $bt.HorizontalAlignment = 'Center'
@@ -3327,7 +3514,7 @@ function Show-Ask { param($q)
         $lab = New-Object System.Windows.Controls.TextBlock
         $lab.Text = "$o"
         $lab.TextWrapping = 'Wrap'
-        $lab.FontSize = 13.5
+        $lab.FontSize = $script:Type.Body
         $lab.FontWeight = $FW_Semi
         # The first option is the one claude put first, and on a recommended
         # menu that is the recommendation. It is tinted, not bolder: this panel
@@ -3342,7 +3529,7 @@ function Show-Ask { param($q)
             $sub.TextWrapping = 'Wrap'
             $sub.Margin = New-Object System.Windows.Thickness 0, 4, 0, 0
             $sub.Foreground = $window.FindResource('TextMid')
-            $sub.FontSize = 12
+            $sub.FontSize = $script:Type.Caption
             $sub.LineHeight = 18
             $sub.LineStackingStrategy = 'BlockLineHeight'
             $null = $stack.Children.Add($sub)
@@ -4484,6 +4671,43 @@ function Step-ToolView {
     Show-Selected -Force
 }
 
+# ===========================================================================
+# HOW BIG EVERYTHING IS - one control, the whole surface.
+#
+# 🔑 IT MOVES THE CHROME, NOT JUST THE PANE. The six Sz* resources are what
+# every style in window2.xaml reads, so writing them here reaches the list, the
+# rail, the header, the buttons and the menus in the same gesture. That is the
+# difference between this and the thing it replaces: the reading pane used to
+# grow on its own while the surface around it stayed put, so the two drifted
+# apart and the pane looked wrong rather than bigger.
+#
+# 🪤 THE DOCUMENT DOES NOT FOLLOW ON ITS OWN. Everything in the FlowDocument is
+# built in script with a size baked into each run, so a DynamicResource cannot
+# reach it - it has to be rebuilt, which is what the Show-Selected at the end is
+# for. Forgetting that is a zoom that visibly moves every part of the window
+# EXCEPT the conversation, which is the part being read.
+$SR_ZoomSteps = @(80, 90, 100, 110, 125, 150)
+
+function Get-ZoomLabel { 'Text: {0}%' -f $script:Zoom }
+
+function Step-Zoom {
+    # Nearest step rather than IndexOf, so a hand-edited config (or the clamp
+    # above) lands somewhere sensible instead of silently restarting at 80.
+    $cur = $script:Zoom
+    $i = 0
+    for ($n = 0; $n -lt $SR_ZoomSteps.Count; $n++) {
+        if ([Math]::Abs($SR_ZoomSteps[$n] - $cur) -lt [Math]::Abs($SR_ZoomSteps[$i] - $cur)) { $i = $n }
+    }
+    Set-SRTypeScale -Percent $SR_ZoomSteps[($i + 1) % $SR_ZoomSteps.Count]
+    $ui.PaneZoom.Content = Get-ZoomLabel
+    try { Save-SRConfigValue -Name 'zoom' -Value $script:Zoom }
+    catch { Write-SRLog ('  [skip] could not remember the zoom setting: ' + $_.Exception.Message) }
+    # The rows carry their own measured heights, so the list has to be told the
+    # type under it changed or it keeps laying out for the old size.
+    try { $ui.SessionList.Items.Refresh() } catch { }
+    Show-Selected -Force
+}
+
 function Show-Selected { param([switch]$Force)
     $it = $ui.SessionList.SelectedItem
     if (-not $it) { return }
@@ -4640,6 +4864,11 @@ function Invoke-FollowTick {
     # the returns below its output would only ever move when something else did.
     # Costs nothing when no shell block is open - the list is empty.
     try { Update-LiveShells } catch { }
+    # 🪤 AFTER Update-LiveShells, and it is NOT the same thing. That one
+    # refreshes shell blocks the operator has OPENED inside the transcript;
+    # this one is the pinned list of what is running whether or not any block
+    # is open. Its own gates keep it free when nothing is.
+    try { Update-ShellPanel } catch { }
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
     $r = $it.Row
@@ -5893,6 +6122,15 @@ $ui.PaneSettings.Add_Click({ if ($ui.SettingsBox.Visibility -eq $V_Show) { Hide-
 
 $ui.PaneTools.Content = Get-ToolViewLabel
 $ui.PaneTools.Add_Click({ Step-ToolView })
+$ui.PaneZoom.Content = Get-ZoomLabel
+$ui.PaneZoom.Add_Click({ Step-Zoom })
+# Hiding is per-conversation and deliberately not remembered: it means "I have
+# seen this one", and it clears when you select a different conversation or a
+# different set of shells starts.
+$ui.ShellFold.Add_Click({
+    $script:shellHidden = $true
+    $ui.ShellBox.Visibility = 'Collapsed'
+})
 $ui.PaneCompact.Add_Click({ Invoke-Compact })
 
 # ===========================================================================

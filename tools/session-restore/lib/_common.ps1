@@ -221,7 +221,15 @@ function Get-SRConfig {
         # (so you still know what ran) without the volume.
         @{ k = 'transcriptTools';      v = 'folded' },
         @{ k = 'textRendering';        v = 'grayscale' },
-        @{ k = 'readingWidth';         v = 'full' }
+        @{ k = 'readingWidth';         v = 'full' },
+        # HOW BIG EVERY SIZE ON THE SURFACE IS, as a percentage of the scale in
+        # window2.xaml. One number, not a per-element setting: the complaint it
+        # answers was that the work surface does not respond to the window at
+        # all, and the previous attempt at that - growing the reading pane with
+        # its width - produced 20px body text on a maximised window, which is
+        # zooming rather than scaling. A knob the operator turns is predictable;
+        # type that moves on its own when you drag a window edge is not.
+        @{ k = 'zoom';                 v = 100 }
     )) {
         if ($null -eq $c.PSObject.Properties[$kv.k]) {
             $c | Add-Member -NotePropertyName $kv.k -NotePropertyValue $kv.v -Force
@@ -292,6 +300,21 @@ function Get-SRConfig {
         $rw = 'full'
     }
     $c.readingWidth = $rw
+
+    # CLAMPED, NOT REJECTED. Every other word-valued key falls back to its
+    # default when it does not recognise the value, which is right for a word -
+    # `grayscal` means nothing. A number is different: 300 is not a typo, it is
+    # someone reaching past the end of the range, and the useful answer is the
+    # nearest size that works rather than a silent snap back to 100. Below 70 the
+    # 9.5px micro step stops resolving; above 200 a maximised window fits less
+    # than a phone.
+    $z = 100
+    try { $z = [int][Math]::Round([double]"$($c.zoom)") } catch { $z = 100 }
+    if ($z -lt 70 -or $z -gt 200) {
+        Write-SRLog ("  [warn] config zoom is {0}; clamped to 70-200." -f $z)
+        $z = [Math]::Max(70, [Math]::Min(200, $z))
+    }
+    $c.zoom = $z
 
     return $c
 }
@@ -3953,6 +3976,165 @@ function Get-SRShellOutput { param([string]$Path, [int]$MaxBytes = 65536)
         return [PSCustomObject]@{ Text = (Remove-SRAnsi $txt); Bytes = $len; Truncated = $trunc }
     } catch { return $null }
     finally { if ($fs) { try { $fs.Dispose() } catch { } } }
+}
+
+# ===========================================================================
+# WHICH BACKGROUND SHELLS ARE RUNNING RIGHT NOW - BY NAME, NOT BY COUNT.
+#
+# 🔴 THE COUNT AND THE IDENTITY CAME FROM DIFFERENT PLACES, AND ONLY THE COUNT
+# EXISTED. The row's square mark is a NUMBER off the session's status line; the
+# pane's shell block is a `Bash (background)` tool_use that happens to be inside
+# the transcript tail. So the mark could say "2 shells" while the pane showed
+# none, and there was no list of what was actually running anywhere - reported
+# as "I cannot see a current running shell other than the icon indicating there
+# is something". This function is the missing list.
+#
+# 🪤 THE TASKS DIRECTORY IS NOT THE ANSWER, AND IT IS THE OBVIOUS WRONG ONE.
+# Every shell that has EVER run leaves its `.output` there - measured, 1,475 of
+# them on this machine across all sessions, with almost none live. Listing that
+# directory is the same mistake that once put 374 dead sub-agents in the spine
+# (07e13c3): a file on disk is a receipt, not a heartbeat.
+#
+# 🪤 NEITHER IS THE `$open` TRACKER ABOVE. It opens on a tool_use and closes on
+# the matching tool_result, which is exactly right for a Task agent and exactly
+# wrong for a shell: MEASURED, 52 of 52 background bashes got their tool_result
+# IMMEDIATELY - that is where the id is handed back - while the shell carried on
+# running. So its shell branch can never retain anything and `Shells` from that
+# parse is always 0. Only the agent half of it works.
+#
+# 🔑 WHAT ACTUALLY MARKS THE END IS A task-notification. Claude Code writes one
+# when the shell stops, carrying <task-id>, <output-file> and <status>. So the
+# rule is exact and needs no heuristic, no mtime guess, no freshness window:
+#
+#     running  =  launched, and no task-notification for that id since.
+#
+# Verified against a finished conversation: 114 launches, 129 notifications
+# (the extra ones are Task agents, which notify the same way), 0 left open -
+# which is the right answer for a session that is no longer running.
+$script:SR_ShellCache = @{}
+$SR_RxShellNew = [regex]::new('background with ID:\s*([A-Za-z0-9_-]+)')
+$SR_RxShellEnd = [regex]::new('<task-id>\s*([A-Za-z0-9_-]+)\s*</task-id>')
+
+# 🔴 THE WINDOW IS 24 MB, NOT THE 512 KB THIS FIRST SHIPPED WITH, AND THE FIRST
+# NUMBER WAS NOT A CONSERVATIVE GUESS - IT WAS A BROKEN TEST.
+#
+# A shell that has been running for an hour was LAUNCHED an hour ago, so a tail
+# sized for "recent activity" is exactly the wrong shape: the longer a shell
+# runs - which is precisely when you want to see it - the further back its only
+# launch record sits. Measured on the largest transcript here (112 MB), a
+# 512 KB tail covers 0.5% of the file and the last launch was 988 KB from the
+# end, OUTSIDE it. The first version of this function passed its test by
+# returning 0 from a window that contained no launches at all, in either
+# direction. A green check is not evidence until you know it can go red.
+#
+# 🔑 SIZED FROM THE ACTUAL DISTRIBUTION, not from caution: of 373 transcripts on
+# this machine the median is 0.4 MB, p90 is 8 MB, and only 17 are over 20 MB. At
+# 24 MB, 356 of 373 are read WHOLE and the giants still get a window fifty times
+# what they had. The cost is bounded by the pre-filter below, not by this.
+function Get-SRLiveShells { param([string]$JsonlPath, [int]$MaxTailBytes = 25165824)
+    if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return @() }
+
+    # Same stamp-keyed cache as the vitals read, for the same reason: this is
+    # called on the sweep, and re-parsing an unchanged transcript is pure cost.
+    $stamp = ''
+    $fi = $null
+    try {
+        $fi = Get-Item -LiteralPath $JsonlPath
+        $stamp = '{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks
+    } catch { return @() }
+    $key = $JsonlPath.ToLower()
+    if ($script:SR_ShellCache.ContainsKey($key) -and $script:SR_ShellCache[$key].Stamp -eq $stamp) {
+        return $script:SR_ShellCache[$key].Value
+    }
+
+    $text = ''
+    try {
+        $fs = [System.IO.File]::Open($JsonlPath, 'Open', 'Read', 'ReadWrite')
+        try {
+            $take = [int][Math]::Min($fi.Length, $MaxTailBytes)
+            $null = $fs.Seek(-$take, 'End')
+            $buf = New-Object byte[] $take
+            $read = $fs.Read($buf, 0, $take)
+            $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        } finally { $fs.Dispose() }
+    } catch { return @() }
+
+    $open = [ordered]@{}
+    $pend = @{}          # tool_use id -> what it was asked to do, until its result names the shell
+
+    # 🔑 THE PRE-FILTER IS WHAT MAKES A 24 MB WINDOW AFFORDABLE. ConvertFrom-Json
+    # on every line of a big transcript is the whole cost of this function, and
+    # all three records it cares about carry a distinctive literal. A substring
+    # test is orders of magnitude cheaper than a parse, and on a transcript with
+    # a hundred background shells it leaves a few hundred lines to parse instead
+    # of a few hundred thousand.
+    foreach ($ln in ($text -split "`n")) {
+        if (-not ($ln.Contains('run_in_background') -or $ln.Contains('background with ID:') -or
+                  $ln.Contains('<task-notification>'))) { continue }
+        # 🪤 THE BOM IS NOT WHITESPACE. `.Trim()` leaves it, so StartsWith('{')
+        # is FALSE on the first line of any UTF-8 file written with one, and
+        # ConvertFrom-Json would refuse it anyway - either way the record is
+        # skipped in silence. Caught by the negative control in state-driver:
+        # it rewrote the fixture through a StreamWriter (BOM by default), the
+        # first line happened to be a shell's LAUNCH, and this reported one
+        # running shell instead of two. A dropped record looks exactly like a
+        # correct answer, which is what makes it worth a line of defence.
+        $ln = $ln.Trim([char]0xFEFF, ' ', "`t", "`r", "`n")
+        if (-not $ln.StartsWith('{')) { continue }
+        $r = $null
+        try { $r = $ln | ConvertFrom-Json } catch { continue }
+
+        $when = $null
+        if ($r.PSObject.Properties['timestamp']) {
+            try { $when = [datetime]::Parse("$($r.timestamp)", [System.Globalization.CultureInfo]::InvariantCulture,
+                                            [System.Globalization.DateTimeStyles]::AdjustToUniversal) } catch { }
+        }
+
+        # A completion can arrive as a queue-operation record or as the user
+        # record the same notification becomes once it comes off the queue, so
+        # the whole line is searched rather than one field. Cheap: the guard is
+        # a substring test, and the regex only runs on lines that pass it.
+        if ($ln.Contains('<task-notification>')) {
+            foreach ($m in $SR_RxShellEnd.Matches($ln)) {
+                $id = $m.Groups[1].Value
+                if ($open.Contains($id)) { $open.Remove($id) }
+            }
+        }
+
+        $msg = $r.message
+        if (-not $msg) { continue }
+        foreach ($b in @($msg.content)) {
+            if (-not $b -or -not $b.type) { continue }
+            if ($b.type -eq 'tool_use' -and "$($b.name)" -eq 'Bash' -and $b.input -and
+                $b.input.PSObject.Properties['run_in_background'] -and $b.input.run_in_background) {
+                $pend["$($b.id)"] = @{
+                    Cmd  = "$($b.input.command)"
+                    Desc = "$($b.input.description)"
+                    At   = $when
+                }
+            } elseif ($b.type -eq 'tool_result') {
+                $uid = "$($b.tool_use_id)"
+                if (-not $pend.ContainsKey($uid)) { continue }
+                $t = $b.content
+                if ($t -isnot [string]) { $t = ($t | ForEach-Object { "$($_.text)" }) -join "`n" }
+                $hit = $SR_RxShellNew.Match("$t")
+                if (-not $hit.Success) { $pend.Remove($uid); continue }
+                $info = $pend[$uid]
+                $pend.Remove($uid)
+                $open[$hit.Groups[1].Value] = [PSCustomObject]@{
+                    Shell   = $hit.Groups[1].Value
+                    Command = $info.Cmd
+                    Desc    = $info.Desc
+                    At      = $info.At
+                    ToolUse = $uid
+                }
+            }
+        }
+    }
+
+    $out = @($open.Values)
+    $script:SR_ShellCache[$key] = @{ Stamp = $stamp; Value = $out }
+    return $out
 }
 
 # ===========================================================================
