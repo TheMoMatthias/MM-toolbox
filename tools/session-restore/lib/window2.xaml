@@ -5,7 +5,7 @@
         Width="1480" Height="980" MinWidth="620" MinHeight="420"
         WindowStartupLocation="CenterScreen"
         UseLayoutRounding="True"
-        TextOptions.TextFormattingMode="Ideal"
+        TextOptions.TextFormattingMode="Display"
         TextOptions.TextRenderingMode="Grayscale"
         Background="#08080A">
 
@@ -24,8 +24,25 @@
          look hand-drawn on a grid. UseLayoutRounding stays, so the hairlines
          are still crisp; the text is no longer nailed to the grid.
 
-         TextFormattingMode stays Ideal - Display mode snaps advance widths and
-         throws away the optical spacing Segoe UI Variable exists to provide.
+         TextFormattingMode is DISPLAY, and it used to be Ideal. The reasoning
+         for Ideal was sound and is kept here because it is still true at large
+         sizes: Display snaps advance widths to whole pixels and throws away the
+         optical spacing Segoe UI Variable exists to provide.
+
+         What that reasoning missed is the size this pane actually runs at. Ideal
+         positions glyphs at SUB-PIXEL advances, so at 12px body text the gaps
+         between characters land on different fractions of a pixel and the
+         spacing reads as irregular - reported directly, in those words, after
+         the prose was taken down to 12. Optical spacing is worth having on a
+         28px display face; on 12px running text it buys nothing you can see and
+         costs the evenness you can.
+
+         🪤 This is a DIFFERENT setting from TextRenderingMode above, and only
+         one of the two can be judged from a screenshot. Formatting mode changes
+         advance widths, which a capture shows faithfully. Rendering mode is
+         subpixel colour, and CONTEXT.md records that the test renderer always
+         composites greyscale - so a captured 'cleartype' sample is greyscale
+         wearing a label. That one has to be flipped and looked at.
        ================================================== -->
 
   <!-- ================== THE FRAME ==================
@@ -322,7 +339,16 @@
       <Setter Property="FontSize" Value="12"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
-      <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
+      <!-- 🪤 THE ONE PLACE Ideal HAD A SECOND REASON, and it is worth naming
+           because it is not the same reason as the window-wide setting. These
+           captions are TRACKED - Get-TrackedText builds them by joining each
+           character with a THIN SPACE (U+2009), about 1.9px at this size - and
+           Ideal kept that fractional advance intact. Display snaps it to 2px.
+           Checked in a render at 9.5px: the tracking survives, because a thin
+           space rounding 1.9 -> 2.0 is a tenth of a pixel per gap and the
+           letters were never on the grid to begin with. Consistency wins; if a
+           caption ever looks wrong, this is the line to suspect. -->
+      <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
     </Style>
     <Style x:Key="Body" TargetType="TextBlock">
       <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>

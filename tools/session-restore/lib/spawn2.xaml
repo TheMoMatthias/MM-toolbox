@@ -6,7 +6,7 @@
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
         UseLayoutRounding="True"
-        TextOptions.TextFormattingMode="Ideal"
+        TextOptions.TextFormattingMode="Display"
         TextOptions.TextRenderingMode="Grayscale"
         Background="{DynamicResource Ink}">
 
