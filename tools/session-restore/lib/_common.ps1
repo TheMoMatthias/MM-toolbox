@@ -3978,8 +3978,65 @@ function Get-SRShellOutput { param([string]$Path, [int]$MaxBytes = 65536)
     finally { if ($fs) { try { $fs.Dispose() } catch { } } }
 }
 
+# THE LAST THING A RUNNING SUB-AGENT SAID, for the panel's live line.
+#
+# 🔑 ITS TRANSCRIPT IS NAMED AFTER THE ID ITS LAUNCH HANDED BACK. The result of
+# an Agent call says `agentId: ada3d4c7c2d6fb5d1`, and the file on disk is
+# `subagents/agent-ada3d4c7c2d6fb5d1.jsonl` - verified by finding that exact
+# pair. That is what makes a running agent watchable at all: no process to ask,
+# no pid, but a file it is actively writing.
+#
+# 🪤 THE .meta.json EXISTS BEFORE THE .jsonl DOES. Measured: a spawned agent has
+# its meta written immediately and its transcript only once it produces
+# something, so "no file" means STARTING, not missing - the caller shows the
+# description in that gap rather than an empty row.
+function Get-SRAgentLastLine { param([string]$JsonlPath, [string]$AgentId, [int]$MaxTailBytes = 65536)
+    if (-not $JsonlPath -or -not $AgentId) { return '' }
+    if ($AgentId -notmatch '^[A-Za-z0-9_-]{1,64}$') { return '' }
+    $dir = Get-SRSubAgentDir -JsonlPath $JsonlPath
+    if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { return '' }
+    $f = Join-Path $dir ('agent-' + $AgentId + '.jsonl')
+    if (-not (Test-Path -LiteralPath $f)) { return '' }
+    $text = ''
+    try {
+        $fs = [System.IO.File]::Open($f, 'Open', 'Read', 'ReadWrite')
+        try {
+            $len = $fs.Length
+            $take = [int][Math]::Min($len, $MaxTailBytes)
+            $null = $fs.Seek($len - $take, 'Begin')
+            $buf = New-Object byte[] $take
+            $read = $fs.Read($buf, 0, $take)
+            $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        } finally { $fs.Dispose() }
+    } catch { return '' }
+
+    # Walk BACKWARDS for the newest thing worth showing. An agent's tail is
+    # mostly tool traffic; what answers "what is it doing" is the last thing it
+    # SAID, and failing that the last tool it reached for.
+    $lines = @($text -split "`n")
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        $ln = $lines[$i].Trim([char]0xFEFF, ' ', "`t", "`r")
+        if (-not $ln.StartsWith('{')) { continue }
+        $r = $null
+        try { $r = $ln | ConvertFrom-Json } catch { continue }
+        if ("$($r.type)" -ne 'assistant') { continue }
+        foreach ($b in @($r.message.content)) {
+            if (-not $b -or -not $b.type) { continue }
+            if ($b.type -eq 'text' -and "$($b.text)".Trim()) {
+                return (("$($b.text)".Trim() -split "`n" | Where-Object { $_.Trim() })[0]).Trim()
+            }
+            if ($b.type -eq 'tool_use') { return ('- ' + "$($b.name)") }
+        }
+    }
+    return ''
+}
+
 # ===========================================================================
-# WHICH BACKGROUND SHELLS ARE RUNNING RIGHT NOW - BY NAME, NOT BY COUNT.
+# WHAT IS RUNNING RIGHT NOW - BY NAME, NOT BY COUNT.
+#
+# Background shells AND sub-agents, because they are the same problem and Claude
+# Code reports them the same way: both launch with run_in_background, both hand
+# an id straight back, and both end with a task-notification naming that id.
 #
 # 🔴 THE COUNT AND THE IDENTITY CAME FROM DIFFERENT PLACES, AND ONLY THE COUNT
 # EXISTED. The row's square mark is a NUMBER off the session's status line; the
@@ -4013,6 +4070,7 @@ function Get-SRShellOutput { param([string]$Path, [int]$MaxBytes = 65536)
 # which is the right answer for a session that is no longer running.
 $script:SR_ShellCache = @{}
 $SR_RxShellNew = [regex]::new('background with ID:\s*([A-Za-z0-9_-]+)')
+$SR_RxAgentNew = [regex]::new('agentId:\s*([A-Za-z0-9_-]+)')
 $SR_RxShellEnd = [regex]::new('<task-id>\s*([A-Za-z0-9_-]+)\s*</task-id>')
 
 # 🔴 THE WINDOW IS 24 MB, NOT THE 512 KB THIS FIRST SHIPPED WITH, AND THE FIRST
@@ -4031,7 +4089,7 @@ $SR_RxShellEnd = [regex]::new('<task-id>\s*([A-Za-z0-9_-]+)\s*</task-id>')
 # this machine the median is 0.4 MB, p90 is 8 MB, and only 17 are over 20 MB. At
 # 24 MB, 356 of 373 are read WHOLE and the giants still get a window fifty times
 # what they had. The cost is bounded by the pre-filter below, not by this.
-function Get-SRLiveShells { param([string]$JsonlPath, [int]$MaxTailBytes = 25165824)
+function Get-SRLiveTasks { param([string]$JsonlPath, [int]$MaxTailBytes = 25165824)
     if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return @() }
 
     # Same stamp-keyed cache as the vitals read, for the same reason: this is
@@ -4070,7 +4128,7 @@ function Get-SRLiveShells { param([string]$JsonlPath, [int]$MaxTailBytes = 25165
     # of a few hundred thousand.
     foreach ($ln in ($text -split "`n")) {
         if (-not ($ln.Contains('run_in_background') -or $ln.Contains('background with ID:') -or
-                  $ln.Contains('<task-notification>'))) { continue }
+                  $ln.Contains('agentId:') -or $ln.Contains('<task-notification>'))) { continue }
         # 🪤 THE BOM IS NOT WHITESPACE. `.Trim()` leaves it, so StartsWith('{')
         # is FALSE on the first line of any UTF-8 file written with one, and
         # ConvertFrom-Json would refuse it anyway - either way the record is
@@ -4105,10 +4163,16 @@ function Get-SRLiveShells { param([string]$JsonlPath, [int]$MaxTailBytes = 25165
         if (-not $msg) { continue }
         foreach ($b in @($msg.content)) {
             if (-not $b -or -not $b.type) { continue }
-            if ($b.type -eq 'tool_use' -and "$($b.name)" -eq 'Bash' -and $b.input -and
-                $b.input.PSObject.Properties['run_in_background'] -and $b.input.run_in_background) {
+            if ($b.type -eq 'tool_use' -and $b.input -and
+                $b.input.PSObject.Properties['run_in_background'] -and $b.input.run_in_background -and
+                ("$($b.name)" -eq 'Bash' -or "$($b.name)" -eq 'Agent' -or "$($b.name)" -eq 'Task')) {
+                # 🪤 BOTH KINDS CARRY run_in_background, so the NAME is what
+                # tells them apart, not the flag. An Agent launch that fell into
+                # the shell branch would be listed as a background command with
+                # an empty command line.
                 $pend["$($b.id)"] = @{
-                    Cmd  = "$($b.input.command)"
+                    Kind = $(if ("$($b.name)" -eq 'Bash') { 'shell' } else { 'agent' })
+                    Cmd  = $(if ("$($b.name)" -eq 'Bash') { "$($b.input.command)" } else { "$($b.input.subagent_type)" })
                     Desc = "$($b.input.description)"
                     At   = $when
                 }
@@ -4117,12 +4181,18 @@ function Get-SRLiveShells { param([string]$JsonlPath, [int]$MaxTailBytes = 25165
                 if (-not $pend.ContainsKey($uid)) { continue }
                 $t = $b.content
                 if ($t -isnot [string]) { $t = ($t | ForEach-Object { "$($_.text)" }) -join "`n" }
-                $hit = $SR_RxShellNew.Match("$t")
-                if (-not $hit.Success) { $pend.Remove($uid); continue }
                 $info = $pend[$uid]
+                # Each kind hands its id back in its own words: a shell says
+                # "background with ID: <id>", an agent says "agentId: <id>". The
+                # id is what the completion notification will name, and for an
+                # agent it is also the name of its own transcript on disk.
+                $rx = $(if ($info.Kind -eq 'agent') { $SR_RxAgentNew } else { $SR_RxShellNew })
+                $hit = $rx.Match("$t")
+                if (-not $hit.Success) { $pend.Remove($uid); continue }
                 $pend.Remove($uid)
                 $open[$hit.Groups[1].Value] = [PSCustomObject]@{
                     Shell   = $hit.Groups[1].Value
+                    Kind    = $info.Kind
                     Command = $info.Cmd
                     Desc    = $info.Desc
                     At      = $info.At
@@ -4456,7 +4526,15 @@ function Get-SRTranscriptBlocks {
                         if ($to -match '^uds:' -or $to -match '\\pipe\\') { $to = 'another session' }
                         $argShort = $to
                         $arg = "$($i.message)".Trim()
-                    } elseif ($name -eq 'Task') {
+                    } elseif ($name -eq 'Agent' -or $name -eq 'Task') {
+                        # 🪤 IT IS 'Agent', AND THIS ONLY SAID 'Task'. Counted
+                        # across every transcript on this machine: 'Task'
+                        # appears in ZERO files and 'Agent' in 40, so this
+                        # branch had never once run and every sub-agent call in
+                        # the pane was labelled with the generic argument
+                        # instead of what it was asked to do.
+                        # Both are accepted because 'Task' costs nothing to keep
+                        # and this cannot know what an older build wrote.
                         $argShort = "$($i.description)".Trim()
                     } elseif ($name -eq 'Bash' -and $i -and
                               $i.PSObject.Properties['run_in_background'] -and $i.run_in_background) {
@@ -4871,9 +4949,30 @@ function Get-SRSessionVitals {
             }
             foreach ($b in @($m.content)) {
                 if (-not $b -or -not $b.type) { continue }
+                # 🔴 THIS COUNTER CANNOT WORK AND HAS ALWAYS RETURNED ZERO. Both
+                # facts were measured 2026-09-01, and both are recorded here
+                # rather than quietly fixed, because "fixing" it would make it
+                # count things it must not:
+                #
+                #   1. The name is 'Agent', never 'Task' - 'Task' appears in 0
+                #      of the transcripts on this machine, 'Agent' in 40. So the
+                #      agent branch has never once matched.
+                #   2. Opening on tool_use and closing on tool_result is the
+                #      wrong rule for BOTH kinds. Measured: 52 of 52 background
+                #      bashes and 10 of 10 agents got their tool_result with a
+                #      median AND MAXIMUM gap of 0.0s - that is where the id is
+                #      handed back, not where the work ends. So even with the
+                #      name corrected, every entry closes on the next record.
+                #
+                # 🪤 AND THE ZERO IS LOAD-BEARING. The SCREEN owns these numbers
+                # (see the run-file: the screen is the source of truth, not the
+                # transcript). A transcript-derived count would keep reporting
+                # shells and agents for a session that is no longer running -
+                # the same defect as the 374 dead sub-agents in 07e13c3. What is
+                # genuinely running, by name, is Get-SRLiveTasks.
                 if ($b.type -eq 'tool_use') {
                     $nm = "$($b.name)"
-                    if ($nm -eq 'Task') { $open["$($b.id)"] = 'agent' }
+                    if ($nm -eq 'Agent' -or $nm -eq 'Task') { $open["$($b.id)"] = 'agent' }
                     elseif ($nm -eq 'Bash' -and $b.input -and
                             $b.input.PSObject.Properties['run_in_background'] -and $b.input.run_in_background) {
                         $open["$($b.id)"] = 'shell'

@@ -1680,7 +1680,7 @@
                the pane's shell block is a Bash(background) call that happens to
                be inside the transcript tail. Two sources, so they could
                disagree, and neither is a list. This panel is the list, and it
-               comes from Get-SRLiveShells, which pairs each launch with the
+               comes from Get-SRLiveTasks, which pairs each launch with the
                task-notification that ends it - so it names the same shells the
                mark is counting.
 
@@ -1719,7 +1719,7 @@
                           <ColumnDefinition Width="*"/>
                           <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="&#x25A0;" Foreground="{StaticResource HueTool}"
+                        <TextBlock Grid.Column="0" Text="{Binding ShMark}" Foreground="{StaticResource HueTool}"
                                    FontSize="{DynamicResource SzMicro}"
                                    VerticalAlignment="Top" Margin="0,3,9,0"/>
                         <StackPanel Grid.Column="1">

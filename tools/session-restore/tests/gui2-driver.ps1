@@ -2768,7 +2768,7 @@ try {
 if (-not $askShown) { Note 'the question card could not be shown - the sweep below does not cover it' }
 $ui.ShellList.ItemsSource = @([PSCustomObject]@{
     ShDesc = 'Run the full suite'; ShCmd = 'pytest -q'; ShOut = 'collected 412 items'
-    ShOutVis = 'Visible'; ShAge = '1m 4s'; ShTip = ''
+    ShOutVis = 'Visible'; ShAge = '1m 4s'; ShMark = ([string][char]0x25A0); ShTip = ''
 })
 $ui.ShellHead.Text = (Get-TrackedText '1 SHELL RUNNING')
 $ui.ShellBox.Visibility = 'Visible'
@@ -2885,15 +2885,24 @@ if (-not $ui.ShellBox -or -not $ui.ShellList) {
     if ("$($ui.ShellBox.Visibility)" -ne 'Collapsed') { Fail 'the shells panel starts visible - it must appear only when something is running' }
     else { Pass 'it starts collapsed' }
 
-    $ui.ShellList.ItemsSource = @([PSCustomObject]@{
-        ShDesc = 'Rebuild the bundle'; ShCmd = 'npm run build'; ShOut = 'webpack: compiling...'
-        ShOutVis = 'Visible'; ShAge = '2m 14s'; ShTip = 'tip'
-    })
+    # Both kinds at once - the panel exists to show them side by side, and the
+    # mark is the only thing that tells them apart.
+    $ui.ShellList.ItemsSource = @(
+        [PSCustomObject]@{
+            ShDesc = 'Rebuild the bundle'; ShCmd = 'npm run build'; ShOut = 'webpack: compiling...'
+            ShOutVis = 'Visible'; ShAge = '2m 14s'; ShMark = ([string][char]0x25A0); ShTip = 'tip'
+        },
+        [PSCustomObject]@{
+            ShDesc = 'Audit the panel'; ShCmd = '@code-reviewer'; ShOut = 'reading sessions-window.ps1'
+            ShOutVis = 'Visible'; ShAge = '51s'; ShMark = ([string][char]0x25CF); ShTip = 'tip'
+        }
+    )
     $ui.ShellBox.Visibility = 'Visible'
     Lay
     $shTexts = @(Get-TextBlocks $ui.ShellList | ForEach-Object { "$($_.Text)" } | Where-Object { $_ })
     $missing = @()
-    foreach ($want in @('Rebuild the bundle', 'npm run build', 'webpack: compiling...', '2m 14s')) {
+    foreach ($want in @('Rebuild the bundle', 'npm run build', 'webpack: compiling...', '2m 14s',
+                        'Audit the panel', '@code-reviewer', 'reading sessions-window.ps1')) {
         if ($shTexts -notcontains $want) { $missing += $want }
     }
     if (-not $shTexts.Count) {
@@ -2909,6 +2918,18 @@ if (-not $ui.ShellBox -or -not $ui.ShellList) {
                  Where-Object { "$($_.FontFamily.Source)" -notlike '*Cascadia*' -and "$($_.FontFamily.Source)" -notlike '*Consolas*' })
     if ($monoOff.Count) { Fail ('{0} machine-text line(s) in the shells panel are not in the machine face' -f $monoOff.Count) }
     else { Pass 'the command and its output are in the machine face' }
+
+    # 🔴 AND THE TWO KINDS MUST LOOK DIFFERENT. A square is machinery and a
+    # round mark is a sub-agent, everywhere else in this window; if the template
+    # ever drew one glyph for both, the panel would say two things are running
+    # and refuse to say what kind either was.
+    $marks = @(Get-TextBlocks $ui.ShellList | ForEach-Object { "$($_.Text)" } |
+               Where-Object { $_ -eq ([string][char]0x25A0) -or $_ -eq ([string][char]0x25CF) })
+    if (@($marks | Sort-Object -Unique).Count -ne 2) {
+        Fail ('the shells panel drew {0} distinct mark(s) for a shell and a sub-agent - they must differ' -f @($marks | Sort-Object -Unique).Count)
+    } else {
+        Pass 'a shell draws a square and a sub-agent draws a round mark'
+    }
 
     $ui.ShellList.ItemsSource = $null
     $ui.ShellBox.Visibility = 'Collapsed'

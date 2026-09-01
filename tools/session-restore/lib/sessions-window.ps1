@@ -2380,7 +2380,7 @@ function Register-LiveShell { param($Label, $Body, $Panel, [string]$Shell, [stri
 # ===========================================================================
 # THE PINNED LIST OF WHAT IS RUNNING BEHIND THE SELECTED CONVERSATION.
 #
-# 🔴 THE COST OF THIS IS THE WHOLE DESIGN. Get-SRLiveShells parses up to 24 MB
+# 🔴 THE COST OF THIS IS THE WHOLE DESIGN. Get-SRLiveTasks parses up to 24 MB
 # of JSONL - measured at 273 ms on an 11 MB transcript - and its cache is keyed
 # on the transcript's size and mtime, which on a LIVE session changes every time
 # it writes. So calling it from the one-second tick would miss the cache every
@@ -2412,9 +2412,14 @@ function Update-ShellPanel {
     if ($it -and $it.Kind -eq 'session') {
         $id = "$($it.Row.Id)"
         $jsonl = "$($it.Row.S.jsonl)"
-        # The same number the square on the row is drawn from, so the panel and
-        # the mark can no longer disagree about whether anything is running.
-        if ($script:chipVitals) { try { $n = [int]$script:chipVitals.Shells } catch { $n = 0 } }
+        # The same numbers the marks on the row are drawn from, so the panel and
+        # the marks can no longer disagree about whether anything is running.
+        # Agents count too: the operator asked for sub-agent sessions to be no
+        # less visible than shells, and a running one had no view at all.
+        if ($script:chipVitals) {
+            try { $n = [int]$script:chipVitals.Shells } catch { $n = 0 }
+            try { $a = [int]$script:chipVitals.Agents; if ($a -gt 0) { $n += $a } } catch { }
+        }
     }
 
     if (-not $id -or $n -le 0) {
@@ -2431,7 +2436,7 @@ function Update-ShellPanel {
     if ($script:shellFor -ne $id) { $script:shellHidden = $false }
     if ($stale) {
         $got = @()
-        try { $got = @(Get-SRLiveShells -JsonlPath $jsonl) } catch { $got = @() }
+        try { $got = @(Get-SRLiveTasks -JsonlPath $jsonl) } catch { $got = @() }
         $script:shellList = $got
         $script:shellFor = $id
         $script:shellCount = $n
@@ -2446,14 +2451,23 @@ function Update-ShellPanel {
     $rows = @()
     foreach ($s in $script:shellList) {
         $out = ''
+        $isAgent = ("$($s.Kind)" -eq 'agent')
         try {
-            $p = Get-SRShellOutputPath -SessionId $id -Shell "$($s.Shell)"
-            if ($p) {
-                # A small tail: this is a one-line preview, not the log.
-                $o = Get-SRShellOutput -Path $p -MaxBytes 4096
-                if ($o) {
-                    $ls = @("$($o.Text)" -split "`n" | Where-Object { $_.Trim() })
-                    if ($ls.Count) { $out = $ls[-1].Trim() }
+            if ($isAgent) {
+                # An agent has no .output file - it writes a TRANSCRIPT, and the
+                # last thing it said there is the equivalent of a shell's last
+                # printed line.
+                $out = Get-SRAgentLastLine -JsonlPath $jsonl -AgentId "$($s.Shell)"
+                if (-not $out) { $out = 'starting' }
+            } else {
+                $p = Get-SRShellOutputPath -SessionId $id -Shell "$($s.Shell)"
+                if ($p) {
+                    # A small tail: this is a one-line preview, not the log.
+                    $o = Get-SRShellOutput -Path $p -MaxBytes 4096
+                    if ($o) {
+                        $ls = @("$($o.Text)" -split "`n" | Where-Object { $_.Trim() })
+                        if ($ls.Count) { $out = $ls[-1].Trim() }
+                    }
                 }
             }
         } catch { }
@@ -2469,17 +2483,43 @@ function Update-ShellPanel {
         if (-not $desc) { $desc = $s.Shell }
         $rows += [PSCustomObject]@{
             ShDesc   = $desc
-            ShCmd    = $cmd
+            # An agent's "command" is the kind of agent it is, which is the
+            # nearest thing it has to one and the thing you actually want to
+            # read beside the task it was given.
+            ShCmd    = $(if ($isAgent -and $cmd) { '@' + $cmd } else { $cmd })
             ShOut    = $out
             ShOutVis = $(if ($out) { 'Visible' } else { 'Collapsed' })
             ShAge    = $age
-            ShTip    = ("{0}`n`n{1}`n`nshell {2} - output in %TEMP%\claude\...\tasks\{2}.output" -f $desc, $cmd, $s.Shell)
+            # 🪤 A ROUND MARK IS A SUB-AGENT AND A SQUARE ONE IS MACHINERY. That
+            # convention is already what the row marks and the reading pane use,
+            # and it is the one thing the operator can read here at a glance.
+            ShMark   = $(if ($isAgent) { [string][char]0x25CF } else { [string][char]0x25A0 })
+            ShTip    = $(if ($isAgent) {
+                            "{0}`n`nsub-agent {1}, id {2}`n`nits own transcript is in subagents\agent-{2}.jsonl - select it in the list to read the whole thing" -f $desc, $cmd, $s.Shell
+                        } else {
+                            "{0}`n`n{1}`n`nshell {2} - output in %TEMP%\claude\...\tasks\{2}.output" -f $desc, $cmd, $s.Shell
+                        })
         }
     }
     $ui.ShellList.ItemsSource = $rows
-    $w = 'shells'; if ($n -eq 1) { $w = 'shell' }
-    $head = '{0} {1} running' -f $n, $w
-    if ($rows.Count -lt $n) { $head = '{0} {1} running - {2} named' -f $n, $w, $rows.Count }
+    # 🪤 THE HEADING COUNTS WHAT THE STATUS LINE SAYS, and names the two kinds
+    # separately because they mean different things to the person reading: a
+    # shell is machinery you wait for, an agent is work someone else is doing.
+    $nsh = @($rows | Where-Object { "$($_.ShMark)" -ne [string][char]0x25CF }).Count
+    $nag = $rows.Count - $nsh
+    $parts = @()
+    if ($nsh) { $parts += ('{0} shell{1}' -f $nsh, $(if ($nsh -eq 1) { '' } else { 's' })) }
+    if ($nag) { $parts += ('{0} sub-agent{1}' -f $nag, $(if ($nag -eq 1) { '' } else { 's' })) }
+    if (-not $parts.Count) { $parts += ('{0} running' -f $n) }
+    # 🪤 A CHAR CODE, NEVER A LITERAL. PowerShell 5.1 reads a BOM-less
+    # UTF-8 file as ANSI, so a middot typed here reaches the screen as two
+    # mojibake characters - the trap the marker table already carries a
+    # warning about, and I walked into it in this very function.
+    $sep = '  ' + [string][char]0x00B7 + '  '
+    $head = ($parts -join $sep) + ' running'
+    # Saying "2 running - 1 named" is honest; listing one and calling it the
+    # total is not. They differ when something started before the read window.
+    if ($rows.Count -lt $n) { $head += (' - {0} of {1} named' -f $rows.Count, $n) }
     $ui.ShellHead.Text = (Get-TrackedText $head.ToUpper())
     $ui.ShellBox.Visibility = 'Visible'
 }

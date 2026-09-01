@@ -77,16 +77,25 @@ if ($env:SR_SHOT_SHELLS) {
             ShDesc = 'Run the full suite'
             ShCmd  = 'cd "C:/repo" && pytest -q tests/ --maxfail=1'
             ShOut  = 'tests/test_engine.py ......................  [ 62%]'
-            ShOutVis = 'Visible'; ShAge = '4m 12s'; ShTip = ''
+            ShOutVis = 'Visible'; ShAge = '4m 12s'
+            ShMark = [string][char]0x25A0; ShTip = ''
         },
         [PSCustomObject]@{
             ShDesc = 'Rebuild the bundle'
             ShCmd  = 'npm run build -- --profile'
             ShOut  = 'webpack: compiling...'
-            ShOutVis = 'Visible'; ShAge = '38s'; ShTip = ''
+            ShOutVis = 'Visible'; ShAge = '38s'
+            ShMark = [string][char]0x25A0; ShTip = ''
+        },
+        [PSCustomObject]@{
+            ShDesc = 'Audit: the new panel'
+            ShCmd  = '@code-reviewer'
+            ShOut  = 'Reading lib/sessions-window.ps1 - 3 findings so far'
+            ShOutVis = 'Visible'; ShAge = '1m 51s'
+            ShMark = [string][char]0x25CF; ShTip = ''
         }
     )
-    $ui.ShellHead.Text = (Get-TrackedText '2 SHELLS RUNNING')
+    $ui.ShellHead.Text = (Get-TrackedText ('2 SHELLS  ' + [string][char]0x00B7 + '  1 SUB-AGENT RUNNING'))
     $ui.ShellBox.Visibility = 'Visible'
 }
 

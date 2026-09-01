@@ -1487,12 +1487,23 @@ if (-not (Test-Path -LiteralPath $shReal)) { $shReal = Join-Path $PSScriptRoot '
 if (-not (Test-Path -LiteralPath $shReal)) {
     Fail "the shells fixture is missing: $shReal"
 } else {
-    $shGot = @(Get-SRLiveShells -JsonlPath $shReal)
-    if ($shGot.Count -ne 1) {
-        Fail ('expected exactly 1 running shell, got {0}: {1}' -f $shGot.Count, (($shGot | ForEach-Object { $_.Shell }) -join ', '))
+    $shAll = @(Get-SRLiveTasks -JsonlPath $shReal)
+    $shGot = @($shAll | Where-Object { "$($_.Kind)" -ne 'agent' })
+    $agGot = @($shAll | Where-Object { "$($_.Kind)" -eq 'agent' })
+    if ($shGot.Count -ne 1 -or $agGot.Count -ne 1) {
+        Fail ('expected 1 running shell and 1 running sub-agent, got {0} and {1}: {2}' -f
+              $shGot.Count, $agGot.Count, (($shAll | ForEach-Object { "$($_.Kind):$($_.Shell)" }) -join ', '))
     } else {
-        Pass 'the finished shell is dropped and the running one is kept'
+        Pass 'the finished shell and the finished sub-agent are dropped; the running one of each is kept'
     }
+    # 🔴 THE TWO KINDS MUST NOT BE CONFUSED, and only the NAME separates
+    # them: an Agent launch carries run_in_background exactly like a Bash one,
+    # so a filter written on the flag alone would list every sub-agent as a
+    # background command with an empty command line.
+    $ag = @($agGot)[0]
+    if ($ag -and ("$($ag.Shell)" -ne 'alivefeed02' -or "$($ag.Command)" -ne 'Explore')) {
+        Fail ("the live sub-agent is wrong or carries no type: '{0}' / '{1}'" -f $ag.Shell, $ag.Command)
+    } elseif ($ag) { Pass 'the live sub-agent is the un-notified one and carries its agent type' }
     $one = @($shGot)[0]
     if ($one -and "$($one.Shell)" -ne 'brunning02') {
         Fail ("the wrong shell is reported as live: '{0}' - the completion was out of order and moved the wrong one" -f $one.Shell)
@@ -1520,11 +1531,11 @@ if (-not (Test-Path -LiteralPath $shReal)) {
             if (-not $ln.Contains('<task-notification>')) { $w.WriteLine($ln) }
         }
         $w.Dispose()
-        $shNone = @(Get-SRLiveShells -JsonlPath $shTmp)
-        if ($shNone.Count -ne 2) {
-            Fail ('with every completion stripped the reader still says {0} running, not 2 - it cannot go red' -f $shNone.Count)
+        $shNone = @(Get-SRLiveTasks -JsonlPath $shTmp)
+        if ($shNone.Count -ne 4) {
+            Fail ('with every completion stripped the reader still says {0} running, not 4 - it cannot go red' -f $shNone.Count)
         } else {
-            Pass 'with the completions stripped it reports both, so the green above means something'
+            Pass 'with the completions stripped it reports all four, so the green above means something'
         }
     } finally { Remove-Item -LiteralPath $shTmp -Force -ErrorAction SilentlyContinue }
 }
