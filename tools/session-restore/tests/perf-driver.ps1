@@ -474,6 +474,9 @@ $null = Bench 'the send-to-many text box' {
     $ui.CastSend.IsEnabled = (@($script:castPick.Keys).Count -gt 0 -and "$($ui.CastText.Text)".Trim().Length -gt 0)
 } 'GESTURE'
 $null = Bench 'is the registry stale? (what Save checks first)' { Get-SRRegistryStamp } 'GESTURE'
+# All the Sign in button does before it opens a terminal: read one file's
+# timestamp, so it knows what "changed" means afterwards.
+$null = Bench 'Get-SRCredStamp (what Sign in costs before the terminal opens)' { Get-SRCredStamp } 'INSTANT'
 # 🪤 WHAT THE BUTTON DOES, NOT A HARSHER THING I INVENTED. This first measured
 # Get-LaunchBlock across all 202 conversations - 227 ms - but the handler calls
 # it once per TICKED one, from inside Get-TickedPlan. Benching work the tool
@@ -533,6 +536,13 @@ $COVERAGE = @{
     'WinClose'         = 'the window frame'
     'SaveBtn'          = 'is the registry stale? (what Save checks first)'
     'RelaunchSessions' = 'Get-TickedPlan'
+    # 🔴 EXCUSED, AND FOR THE STRONGEST REASON ON THIS LIST. Pressing it opens
+    # a real terminal for an interactive sign-in and then RAISES THE RELAUNCH
+    # BUTTON, which kills live claude processes. Running it in a benchmark would
+    # sign the operator out of their own machine and restart their work. What it
+    # costs before any of that is one file stat - measured below as its own
+    # line, which is the only part of it a benchmark may honestly touch.
+    'SignIn'           = 'EXCUSED: opens an interactive sign-in and then relaunches. Its gesture cost is Get-SRCredStamp, benched.'
     'OpenNotRunning'   = 'open everything not running (up to the launch)'
     # Excused, with what is measured in their place.
     # 🔴 THE MOST CONSEQUENTIAL CONTROL IN THE WINDOW, and it was outside this

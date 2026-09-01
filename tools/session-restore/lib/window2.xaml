@@ -1105,6 +1105,12 @@
           <TextBlock x:Name="Stamp" Style="{StaticResource Meta}" Margin="0,0,14,0" VerticalAlignment="Center"/>
           <Button x:Name="NewSession" Content="New session" Style="{StaticResource BtnPrimary}" Margin="0,0,8,0"
                   ToolTip="Start a fresh conversation (Ctrl+N)"/>
+          <!-- 🔑 SIGN IN, THEN BRING THE SESSIONS BACK. A running claude reads
+               the login token AT STARTUP, so signing in does not reach anything
+               already open - which is why re-logging in was always followed by
+               relaunching everything by hand. One button does both. -->
+          <Button x:Name="SignIn" Content="Sign in" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                  ToolTip="Open a terminal to sign in, then relaunch the ticked conversations onto the new login"/>
           <Button x:Name="Rescan" Content="Rescan" Style="{StaticResource Btn}"/>
         </StackPanel>
 

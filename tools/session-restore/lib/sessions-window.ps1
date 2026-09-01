@@ -135,7 +135,7 @@ foreach ($n in @(
     'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
-    'OpenNotRunning','RelaunchSessions',
+    'OpenNotRunning','RelaunchSessions','SignIn',
     'HdrLogon','HdrName','HdrLane','HdrSaid','HdrAge',
     'MgrAll','MgrTicked','MgrRunning','MgrNeeds','MgrFilterNote',
     'Scrim','Sheet','SheetTitle','SheetBody','SheetB1','SheetB2','SheetB3',
@@ -5282,6 +5282,92 @@ $ui.OpenNotRunning.Add_Click({
         Set-Status 'nothing opened'; return
     }
     Start-LaunchQueue $go
+})
+
+# ===========================================================================
+# SIGNING IN, AND THEN ACTUALLY BEING SIGNED IN.
+#
+# 🔴 SIGNING IN DOES NOT REACH A RUNNING SESSION. A running claude reads the
+# login token AT STARTUP - CONTEXT.md's `relaunch` entry records it - so after a
+# token expiry every open session sits at its own login prompt and signing in
+# once reaches none of them. That is the whole of the chore this replaces:
+# operator signs in, then relaunches everything by hand.
+#
+# 🪤 AND MEASURED 2026-09-01, THE DAILY RE-LOGIN SHOULD NOT BE NEEDED AT ALL.
+# The access token lives EIGHT HOURS but the refresh token lasts 27 DAYS, so
+# claude is meant to renew it silently. What is actually seen on this machine is
+#   "Could not refresh your login because another Claude Code process is
+#    refreshing it (or exited mid-refresh)"
+# - sixteen concurrent sessions contending over one credentials file, losing the
+# refresh between them. This button automates the chore; it does not fix that,
+# and the fix is not a button. See also Get-SRBridgeSuppression, which records
+# the OTHER thing that looks identical from the outside.
+$script:signInWatch = $null
+$script:signInFrom = $null
+
+function Get-SRCredStamp {
+    $p = Join-Path (Join-Path $env:USERPROFILE '.claude') '.credentials.json'
+    if (-not (Test-Path -LiteralPath $p)) { return $null }
+    try { return (Get-Item -LiteralPath $p).LastWriteTimeUtc } catch { return $null }
+}
+
+# 🪤 THE FILE IS THE EVIDENCE, NOT THE TERMINAL CLOSING. A login terminal can be
+# closed without signing in, and it can sit open long after a successful one -
+# so watching the window would relaunch on a login that never happened, and
+# kill live sessions for nothing. `.credentials.json` is rewritten exactly when
+# a sign-in succeeds, which is the only fact worth acting on.
+function Stop-SignInWatch {
+    if ($script:signInWatch) { try { $script:signInWatch.Stop() } catch { } }
+    $script:signInWatch = $null
+    $script:signInFrom = $null
+}
+
+$ui.SignIn.Add_Click({
+    if ($script:signInWatch) { Set-Status 'already waiting for the sign-in to finish' 'warn'; return }
+    $script:signInFrom = Get-SRCredStamp
+    # A sign-in that never happens must not leave a timer running for the life
+    # of the window, polling a file every two seconds forever.
+    $script:signInUntil = (Get-Date).AddMinutes(10)
+    $why = ''
+    try {
+        # A REAL, VISIBLE terminal: signing in is an interactive flow with a
+        # browser round trip, and it is the operator's to complete.
+        $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
+        if ($wt) {
+            Start-Process 'wt.exe' -ArgumentList @(
+                'new-tab', '--title', 'Claude sign-in',
+                'powershell', '-NoExit', '-NoProfile', '-Command', 'claude /login') | Out-Null
+        } else {
+            Start-Process 'powershell.exe' -ArgumentList @(
+                '-NoExit', '-NoProfile', '-Command', 'claude /login') | Out-Null
+        }
+    } catch { $why = $_.Exception.Message }
+    if ($why) { Set-Status ('could not open a terminal to sign in: ' + $why) 'bad'; return }
+    Set-Status 'signing in - finish it in the terminal that just opened, then the ticked conversations relaunch'
+    $t = New-Object System.Windows.Threading.DispatcherTimer
+    $t.Interval = [TimeSpan]::FromSeconds(2)
+    $t.Add_Tick({
+        try {
+            if ((Get-Date) -gt $script:signInUntil) {
+                Stop-SignInWatch
+                Set-Status 'stopped waiting for the sign-in - press Sign in again when you have finished it' 'warn'
+                return
+            }
+            $now = Get-SRCredStamp
+            if (-not $now) { return }
+            if ($script:signInFrom -and $now -le $script:signInFrom) { return }
+            Stop-SignInWatch
+            Set-Status 'signed in - relaunching the ticked conversations onto the new login' 'ok'
+            # 🔑 THE EXISTING BUTTON, RAISED. Relaunch already names what it will
+            # close, honours the cap, refuses anything mid-turn and asks first.
+            # Duplicating any of that here would be a second relaunch with its
+            # own guards to keep in step - and this one KILLS LIVE PROCESSES.
+            $ui.RelaunchSessions.RaiseEvent(
+                (New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+        } catch { Write-SRLog ('sign-in watch failed: ' + $_.Exception.Message) }
+    })
+    $script:signInWatch = $t
+    $t.Start()
 })
 
 $ui.RelaunchSessions.Add_Click({
