@@ -92,13 +92,13 @@ ticking something does not launch it. `S` starts a new named session in that row
 directory, `X` opens everything ticked. The panel marks what is already live and
 refuses to open it twice.
 
-**Double-click** `Sessions.bat` — that is the entry point, and the only file you
-need for day-to-day use. The others each do one specific job: `Restore Sessions.bat`
-reopens the ticked conversations without showing the panel, `Install Session
-Restore.bat` sets up the logon task, `Enable Auto Logon.bat` makes the machine sign
-in by itself. The desktop buttons point at the same files.
+**There are exactly two files** in `tools/session-restore`: `Install.bat` sets the
+machine up (tasks, desktop buttons, builds the app), and `Sessions.bat` opens the
+tool — building `Sessions.exe` if it is missing and falling back to the same
+window through `powershell.exe` if it will not build. Everything else lives in
+`lib\`, and the desktop buttons point at the built app.
 
-**Auto-logon.** `Enable Auto Logon.bat` lets the PC sign itself in, so the restore
+**Auto-logon.** `Install.bat -AutoLogon` lets the PC sign itself in, so the restore
 runs with nobody at the keyboard — power on, and the tabs are there. The password
 goes into the encrypted LSA store, never the registry in plaintext, and is verified
 before anything is written. `-LockAfterLogon` starts the sessions and then locks the

@@ -20,6 +20,8 @@
 # rewrite thousands of lines for no benefit, and PowerShell does not care.
 *.bat text eol=crlf
 
-# Same, for the same reason: a Windows Script Host file is a Windows file, and
-# "Sessions GUI.vbs" is now the normal way the GUI is opened.
+# Same, for the same reason: a Windows Script Host file is a Windows file. The
+# rule is kept although session-restore no longer ships one -- "Sessions GUI.vbs"
+# was folded into Sessions.bat's own fallback branch when the tool went down to
+# two entry points. A .vbs added anywhere in this repo still wants CRLF.
 *.vbs text eol=crlf

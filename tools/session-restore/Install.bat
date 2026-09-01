@@ -20,11 +20,25 @@ REM   4. two desktop buttons                  - both pointing at Sessions.exe, o
 REM                                             of them with -Restore, both carrying
 REM                                             its icon
 REM
-REM ...then seeds the registry so the picker has something to show immediately.
+REM ...then seeds the registry so the picker has something to show immediately,
+REM and reports whether the machine is set to sign itself in.
+REM
+REM   Install.bat              install / repair, and report the auto-logon state
+REM   Install.bat -AutoLogon   also enable auto-logon, so the logon restore runs
+REM                            with nobody at the keyboard. Elevates, and stores
+REM                            a password in the registry -- which is exactly why
+REM                            it is opt-in and never the default.
+REM
+REM THERE ARE EXACTLY TWO FILES HERE, and this is one of them. Sessions.bat opens
+REM the tool; this installs it. There used to be FIVE -- a separate restore
+REM launcher, an auto-logon launcher and a .vbs -- and every one was a thin
+REM wrapper around a script in lib\ that something else could call directly. The
+REM scheduled tasks never went through any of them: they run
+REM lib\restore-sessions.ps1 themselves, which is why removing the wrappers
+REM changed nothing about the unattended path.
 REM
 REM It does NOT touch your PowerShell profile and does NOT install the cc/ccr/ccs
-REM shell functions -- those come only from the repo-wide install.ps1. This tool is
-REM driven by the two .bat files here and the desktop buttons.
+REM shell functions -- those come only from the repo-wide install.ps1.
 REM
 REM Safe to run again: the tasks are re-registered with -Force and the buttons are
 REM rewritten, so this is also how you REPAIR a broken install or point the tasks

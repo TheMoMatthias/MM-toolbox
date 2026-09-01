@@ -615,11 +615,13 @@ under two paths. Reference only what the response file does not: here, just
 `System.Management.Automation`.
 
 **ONE GUARD PER DOOR IS NOT ONE GUARD.** The host took a named mutex to stay
-single-instance, which is correct and was not enough: `Sessions.bat` and
-`Sessions GUI.vbs` run the same script under `powershell.exe` and never touch
-that mutex. Measured 2026-08-27 — launching the exe alongside a `.vbs`-started
-window opened a SECOND view of one `sessions-registry.json`. The fix is that the
-host also looks for a window titled `Claude sessions` and raises it. Whenever a
+single-instance, which is correct and was not enough: `Sessions.bat`'s fallback
+branch runs the same script under `powershell.exe` and never touches that mutex.
+Measured 2026-08-27 — launching the exe alongside a PowerShell-started window
+opened a SECOND view of one `sessions-registry.json`. (It was a separate
+`Sessions GUI.vbs` then; the branch is inside `Sessions.bat` now, and the hazard
+is identical.) The fix is that the host also looks for a window titled
+`Claude sessions` and raises it. Whenever a
 guard keys off something only one entry path has, check what the other paths do.
 
 ## Two traps about measuring Windows, not about this code
@@ -748,9 +750,10 @@ offender, the `tray` suite, is retired.
 way in.** A freshly compiled, unsigned binary that starts consoles and
 synthesises keystrokes is the exact shape a behavioural engine scores, and this
 machine has an engine that has already quarantined files from this repo once. So:
-the exe is never the only route (`Sessions GUI.vbs` opens the same window through
-`powershell.exe`), the installer treats a failed build as non-fatal and points
-the desktop button back at `Sessions.bat`, and nothing was deleted to make room
+the exe is never the only route (`Sessions.bat`'s last branch opens the same
+window through `powershell.exe`), the installer treats a failed build as
+non-fatal and points the desktop button back at `Sessions.bat`, and nothing was
+deleted to make room
 for it. If the app stops launching, check the quarantine before you check the
 code — `C:\ProgramData\Bitdefender\Desktop\Quarantine\cache.db`, as above.
 

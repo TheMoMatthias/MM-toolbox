@@ -48,6 +48,9 @@
 [CmdletBinding()]
 param(
     [switch]$Install,
+    # Opt in to auto-logon as part of installing, rather than through a launcher
+    # of its own. Elevates and stores a password, so it is never the default.
+    [switch]$AutoLogon,
     [switch]$Uninstall,
     [switch]$Scan,
     [switch]$New,
@@ -431,11 +434,18 @@ function Invoke-Install {
     # behind a freshly compiled unsigned binary, on a machine whose antivirus
     # has quarantined this repo before, risks a logon that silently restores
     # nothing -- and nobody is at the keyboard to see it fail.
+    # 🪤 THE NO-EXE FALLBACK TARGETS THE SCRIPT, NOT A WRAPPER. It used to point
+    # at 'Restore Sessions.bat', which existed only to run this very file
+    # through powershell.exe - one of five launchers in a folder that needs two.
+    # The shortcut can invoke powershell directly, so the wrapper is gone and
+    # nothing about the fallback is lost.
+    $psExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $restoreArgs = ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f (Join-Path $SR_LibDir 'restore-sessions.ps1'))
     $l1 = New-SRShortcut -LinkName $LnkRestore `
-            -Target $(if ($haveExe) { $exe } else { Join-Path $SR_Root 'Restore Sessions.bat' }) `
-            -Arguments $(if ($haveExe) { '-Restore' } else { '' }) -Icon $iconFrom `
+            -Target $(if ($haveExe) { $exe } else { $psExe }) `
+            -Arguments $(if ($haveExe) { '-Restore' } else { $restoreArgs }) -Icon $iconFrom `
             -Description 'Restore the Claude conversations you have selected'
-    Write-SROk ("desktop: $LnkRestore" + $(if ($haveExe) { ' -> Sessions.exe -Restore' } else { ' -> Restore Sessions.bat' }))
+    Write-SROk ("desktop: $LnkRestore" + $(if ($haveExe) { ' -> Sessions.exe -Restore' } else { ' -> restore-sessions.ps1' }))
     $l2 = New-SRShortcut -LinkName $LnkSelect `
             -Target $(if ($haveExe) { $exe } else { Join-Path $SR_Root 'Sessions.bat' }) `
             -Arguments '' -Icon $iconFrom `
@@ -458,11 +468,38 @@ function Invoke-Install {
         Write-SRFail "registry seed failed: $($_.Exception.Message)"
     }
 
+    # 🔑 AUTO-LOGON IS PART OF INSTALLING, so it is reported here rather than
+    # living in a fourth launcher of its own. It is NOT enabled automatically
+    # and never will be by default: it needs elevation and it stores a password
+    # in the registry, which is not something an installer may decide on the
+    # operator's behalf. -AutoLogon opts in explicitly; without it this says
+    # where the machine stands and what the one command is.
+    # 🪤 A CHILD PROCESS, NOT `&`. enable-autologon.ps1 ends its branches with
+    # `exit 0`, and `&` on a .ps1 does not isolate that - calling it inline would
+    # have terminated the INSTALLER the moment it printed the status, half way
+    # through, with everything after this line silently skipped. Its own wrapper
+    # always invoked it as `powershell.exe -File`, and that is why.
+    Write-Host ""
+    $alScript = Join-Path $SR_LibDir 'enable-autologon.ps1'
+    $alArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $alScript)
+    if ($AutoLogon) {
+        Write-Host "  auto-logon: enabling (this needs administrator)..."
+        try {
+            & powershell.exe @alArgs -Elevate -LockAfterLogon
+        } catch {
+            Write-SRFail "auto-logon could not be enabled: $($_.Exception.Message)"
+        }
+    } else {
+        try { & powershell.exe @alArgs -Status } catch { }
+        Write-Host "  to let the PC sign itself in so the logon restore runs unattended:"
+        Write-Host ("    '{0}' -AutoLogon" -f (Join-Path $SR_Root 'Install.bat'))
+    }
+
     Write-Host ""
     Write-Host ("  The control panel   :  double-click '{0}'          (or the desktop button)" -f $(if ($haveExe) { 'Sessions.exe' } else { 'Sessions.bat ' }))
     Write-Host "                         see what is live, L opens any conversation now, S starts a new one,"
     Write-Host "                         and the ticks decide what comes back at logon"
-    Write-Host ("  Bring back the ticked:  {0}  (or the desktop button)" -f $(if ($haveExe) { "'Sessions.exe -Restore'      " } else { "double-click 'Restore Sessions.bat'" }))
+    Write-Host ("  Bring back the ticked:  {0}  (or the desktop button)" -f $(if ($haveExe) { "'Sessions.exe -Restore'" } else { 'the desktop button' }))
     Write-Host "  Open one by name    :  open the panel, then type in the search box and press Open"
     if ($haveExe) {
     Write-Host "  When something is wrong: Sessions.bat runs the same window with a console attached"

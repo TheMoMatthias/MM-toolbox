@@ -151,13 +151,15 @@ namespace MMToolbox.SessionRestore
             using (Mutex single = new Mutex(true, MutexName, out createdNew))
             {
                 // TWO GUARDS, because there are two ways in. The mutex catches a
-                // second Sessions.exe. The window search catches an instance
-                // started the OLD way -- Sessions.bat and Sessions GUI.vbs run
-                // the same script under powershell.exe, which never touches this
-                // mutex, and a machine mid-migration has both routes on the
-                // desktop. Measured 2026-08-27: with only the mutex, launching
-                // the exe alongside a .vbs-started window opened a second view
-                // of one sessions-registry.json.
+                // second Sessions.exe. The window search catches one started
+                // through PowerShell instead -- Sessions.bat falls back to
+                // running the script directly when this exe will not build or an
+                // antivirus has taken it, and that path never touches this
+                // mutex. Measured 2026-08-27: with only the mutex, launching the
+                // exe alongside a PowerShell-started window opened a second view
+                // of one sessions-registry.json. (The fallback was a separate
+                // Sessions GUI.vbs then; it is a branch of Sessions.bat now, and
+                // the hazard is identical.)
                 //
                 // Raising the existing window is what every other desktop app
                 // does; two views of one registry file is how you end up with

@@ -9,21 +9,35 @@ them reopen is **your choice**.
 
 ## Quick start
 
-**Double-click `Install Session Restore.bat` in this folder.** That is the whole
-install: it registers the two scheduled tasks, creates the two desktop buttons, and
-seeds the registry so the picker has something to show straight away. It does *not*
-touch your PowerShell profile.
+**There are exactly two files in this folder.** One installs the tool, the other
+opens it — everything else lives in `lib\`.
 
-Re-run it any time — the tasks are re-registered with `-Force`, so it doubles as the
-repair when a checkout moves. To remove all of it: `restore-sessions.ps1 -Uninstall`.
+| file | does |
+|---|---|
+| `Install.bat` | **run once per machine.** Registers the two scheduled tasks, builds `Sessions.exe`, creates the two desktop buttons, seeds the registry, and reports whether the PC signs itself in. `Install.bat -AutoLogon` also enables that. |
+| `Sessions.bat` | **opens the tool.** Builds `Sessions.exe` if it is missing, launches it, and falls back to the same window through `powershell.exe` if the exe will not build or an antivirus has taken it. |
 
-From then on the tool is two double-clicks:
+After installing, the desktop buttons and `Sessions.exe` are the day-to-day way
+in — `Sessions.bat` is the route that still works when the exe does not, and the
+one to reach for when something is wrong (`SR_GUI_SHOW=1` keeps a console).
+
+Re-run `Install.bat` any time — the tasks are re-registered with `-Force`, so it
+doubles as the repair when a checkout moves. To remove all of it:
+`restore-sessions.ps1 -Uninstall`.
 
 | double-click | does |
 |---|---|
 | `Sessions.exe` | **the session console** — every conversation, what each last said, what is waiting on you |
 | `Sessions.exe -Restore` | bring back everything you ticked, in one go (the second desktop button) |
-| `Enable Auto Logon.bat` | let the PC sign itself in, so the restore runs with nobody at the keyboard |
+
+**It used to be five files.** `Restore Sessions.bat`, `Enable Auto Logon.bat` and
+`Sessions GUI.vbs` were each a thin wrapper around a script in `lib\` that
+something else could call directly, and **the scheduled tasks never went through
+any of them** — they run `lib\restore-sessions.ps1` themselves, which is why
+removing the wrappers changed nothing about the unattended path. Restoring on
+demand is a desktop button and the Relaunch control in the window; auto-logon is
+a switch on the installer; the no-exe fallback is the last branch of
+`Sessions.bat`.
 
 Both desktop buttons are that one binary, so there is one launch path and one
 icon. They pass arguments through (`Sessions.exe -Restore -DryRun`), and the
@@ -83,16 +97,18 @@ window appears, so anything drawn there would be a frozen rectangle. It closes b
 *watching for the real window*, so it needs no cooperation from the PowerShell and
 there is nothing to keep in sync when that script changes.
 
-Build it with `app\build.ps1` — `Install Session Restore.bat` already does. It
+Build it with `app\build.ps1` — `Install.bat` already does, and so does
+`Sessions.bat` when the exe is missing. It
 compiles with `csc.exe`, which ships with the .NET Framework, so there is no SDK and
 nothing to fetch, and the icon is *drawn* by the build rather than checked in. The
 exe is a build output and is gitignored: `app\SessionsHost.cs` is the source.
 
-`Sessions GUI.vbs` opens the same window through `powershell.exe` with no console
-flash, and is the fallback for a machine where the exe will not build or an
-antivirus has taken it (see CONTEXT.md — that has happened to this repo). Run
-`Sessions.bat` from a terminal when something is wrong: `SR_GUI_SHOW=1` keeps a
-console up so a startup error is on screen rather than in `.state\restore.log`.
+**The fallback is the last branch of `Sessions.bat`**, not a file of its own. If
+the exe will not build, or an antivirus has taken it (see CONTEXT.md — that has
+happened to this repo), the same window still opens through `powershell.exe`.
+One launcher that degrades rather than fails. Run `Sessions.bat` from a terminal
+when something is wrong: `SR_GUI_SHOW=1` keeps a console up so a startup error is
+on screen rather than in `.state\restore.log`.
 
 ## The session console
 
@@ -283,7 +299,7 @@ returned `0`. A session that never appears is now named, and the run exits non-z
 
 ## Auto-logon
 
-The logon task cannot fire until someone signs in. `Enable Auto Logon.bat` removes
+The logon task cannot fire until someone signs in. `Install.bat -AutoLogon` removes
 that step: power on → Windows signs in → the restore runs → the tabs are there.
 
 ```powershell
@@ -324,7 +340,7 @@ cd MM-toolbox
 
 That does everything above **plus** links the skills and agents into `~/.claude` and
 adds three shell functions. The functions are optional — skip them entirely with
-`Install Session Restore.bat` above. Open a new terminal:
+`Install.bat` above. Open a new terminal:
 
 | command | does |
 |---|---|
@@ -583,13 +599,10 @@ this folder, because they are yours and not the tool's.
 
 | file | |
 |---|---|
-| `Install Session Restore.bat` | double-click to install just this tool — tasks + buttons, builds the app, no profile changes |
-| `Sessions.exe` | **the entry point** — the session console as an application. Built, not committed; the desktop button points here |
+| `Install.bat` | **one of the two files here** — install or repair: tasks, buttons, builds the app, seeds the registry. `-AutoLogon` also enables auto-logon. No profile changes |
+| `Sessions.bat` | **the other one** — opens the tool: builds `Sessions.exe` if missing, launches it, and falls back to the same window through `powershell.exe` if the exe is unavailable. `SR_GUI_SHOW=1` keeps a console for when something is wrong |
+| `Sessions.exe` | the session console as an application. **Built, not committed**; the desktop buttons point here |
 | `app/` | what it is built from — `SessionsHost.cs` (hosts the runspace) · `build.ps1` (draws the icon, runs `csc.exe`) |
-| `Sessions.bat` | the same window with a console attached — the one to run when something is wrong (`SR_GUI_SHOW=1`) |
-| `Sessions GUI.vbs` | the same window with no console flash, through `powershell.exe` — the fallback when the exe is unavailable |
-| `Restore Sessions.bat` | the same restore through `powershell.exe` — the fallback, and what the logon task still runs |
-| `Enable Auto Logon.bat` | self-elevating wrapper for `enable-autologon.ps1` |
 | `lib/_common.ps1` | discovery, registry, the rolling auto-tick, guards, launching — shared, so there is one copy |
 | `lib/restore-sessions.ps1` | restore · `-Scan` · `-New` · `-Install` · `-Uninstall` |
 | `lib/sessions-window.ps1` | the window: model, surfaces, handlers, the control plane |

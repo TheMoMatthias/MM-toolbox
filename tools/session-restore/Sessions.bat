@@ -3,20 +3,26 @@ REM Double-click for the Claude session console: every conversation across every
 REM repo, what each one last said, what is waiting on you, and the ticks that
 REM decide what comes back at logon.
 REM
-REM THIS IS THE ENTRY POINT. The others each do one specific job:
-REM "Install Session Restore.bat" sets up the logon task, "Restore Sessions.bat"
-REM reopens the ticked conversations without showing anything, "Enable Auto
-REM Logon.bat" makes the machine sign in by itself.
+REM THIS IS THE ONE WAY IN, and there is exactly one other file beside it:
+REM Install.bat, which sets this machine up. Everything else lives in lib\.
 REM
-REM "Sessions.exe" is now the normal way in, and is what the desktop button
-REM points at: it hosts the PowerShell runspace itself, so there is no
-REM powershell.exe underneath the window, it carries the app's own icon in
-REM Alt-Tab and the taskbar, and it opens ONCE however many times you
-REM double-click it. Build it with app\build.ps1; the installer already does.
+REM There used to be five launchers here. "Restore Sessions.bat", "Enable Auto
+REM Logon.bat" and "Sessions GUI.vbs" were each a thin wrapper around a script
+REM in lib\ that something else could call directly -- and the scheduled tasks
+REM never went through any of them, they run lib\restore-sessions.ps1
+REM themselves. Restoring on demand is a desktop button and the Relaunch control
+REM in the window; auto-logon is "Install.bat -AutoLogon".
 REM
-REM "Sessions GUI.vbs" opens the SAME window with no console flash, through
-REM powershell.exe, and is the fallback for a machine where the exe will not
-REM build or an antivirus has quarantined it.
+REM "Sessions.exe" is the normal way in and what the desktop button points at:
+REM it hosts the PowerShell runspace itself, so there is no powershell.exe
+REM underneath the window, it carries the app's own icon in Alt-Tab and the
+REM taskbar, and it opens ONCE however many times you double-click it. It is a
+REM BUILD OUTPUT, not committed -- this file builds it on demand below.
+REM
+REM THE FALLBACK IS THE LAST BRANCH OF THIS FILE, not a separate .vbs. If the
+REM exe will not build, or an antivirus has quarantined it -- which has happened
+REM to this repo, see CONTEXT.md -- the same window still opens through
+REM powershell.exe. One launcher, and it degrades instead of failing.
 REM
 REM USE THIS FILE WHEN SOMETHING IS WRONG. It is the only route that attaches a
 REM console, so set SR_GUI_SHOW=1 and a startup error lands on screen instead of

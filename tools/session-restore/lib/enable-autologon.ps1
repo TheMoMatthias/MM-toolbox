@@ -89,6 +89,27 @@ $LockTask    = 'ClaudeSessionLockAfterLogon'
 # SecureString and no message carries it.
 # $SR_StateDir rather than $here: this script moved into lib\ and its log
 # belongs beside the tool's other state, not beside its source.
+#
+# 🔴 AND THAT MOVE BROKE THE WHOLE SCRIPT, ON EVERY INVOCATION. $SR_StateDir is
+# defined in _common.ps1, which this file dot-sources only INSIDE the -Elevate
+# branch far below - so at script scope it was $null, Join-Path refused it, and
+# the script died on this line before doing anything at all:
+#
+#   Cannot bind argument to parameter 'Path' because it is null.
+#
+# Auto-logon had been dead since the file moved into lib\, which matters more
+# than it sounds: auto-logon is what lets the logon restore run with nobody at
+# the keyboard. Found while folding this script into the installer - the
+# installer called it, and it threw.
+#
+# 🪤 Derived rather than sourced. This script deliberately does NOT load
+# _common.ps1 at the top (it runs elevated, in a hidden window, and keeps its
+# dependencies to what it needs), so it computes the same path _common.ps1
+# would: $SR_Root is the parent of lib\, and the state dir sits under it. The
+# guard leaves an already-set value alone for the branch that DOES source it.
+if (-not $SR_StateDir) {
+    $SR_StateDir = Join-Path (Split-Path -Parent $here) '.state'
+}
 $ALogPath = Join-Path $SR_StateDir 'autologon.log'
 function Write-ALog {
     param([string]$Message)
@@ -355,7 +376,7 @@ if ($Elevate) {
         } catch {
             Write-Fail "could not elevate: $($_.Exception.Message)"
             Write-Host ""
-            Write-Host "  Right-click 'Enable Auto Logon.bat' -> Run as administrator instead."
+            Write-Host "  Run 'Install.bat -AutoLogon' from an ADMINISTRATOR terminal instead."
             Write-Host ""
             exit 1
         }
@@ -369,7 +390,7 @@ if (-not (Test-Admin)) {
     Write-Host ""
     Write-Fail "this needs an elevated shell - it writes HKLM and the LSA secret store."
     Write-Host ""
-    Write-Host "  Right-click 'Enable Auto Logon.bat' -> Run as administrator."
+    Write-Host "  Run 'Install.bat -AutoLogon' from an ADMINISTRATOR terminal."
     # One STRING, not an array: -ArgumentList @(...) joins with spaces and quotes
     # nothing, so an array form breaks the moment the path has a space in it.
     Write-Host "  Or:  Start-Process powershell -Verb RunAs -ArgumentList '-NoExit -NoProfile -File `"$PSCommandPath`"'"
@@ -400,7 +421,7 @@ if (-not $hasConsole -and -not $Status -and -not $Disable -and -not $RemoveLock)
     Write-Host "  other non-interactive parent: it elevates, reaches the prompt, reads end-of-file"
     Write-Host "  and exits looking like you declined."
     Write-Host ""
-    Write-Host "  Run it YOURSELF instead:  right-click 'Enable Auto Logon.bat' -> Run as administrator"
+    Write-Host "  Run it YOURSELF instead:  'Install.bat -AutoLogon' from an ADMINISTRATOR terminal"
     Write-Host ""
     exit 1
 }
