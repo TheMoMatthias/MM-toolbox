@@ -28,6 +28,18 @@ Throwaway temp files/dirs that are never cleaned up **accumulate in the OS temp 
 
 ---
 
+## Operator-Patch Lane - config changes without manual operator runs (bootstrapped 2026-08-29)
+
+Applies to **all projects and sessions**. The auto-mode classifier hard-blocks agent self-edits to `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, and direct writes into `~/.claude/` - that block is intended; never fight or work around it. The sanctioned path for ANY Claude Code config change (settings, hooks, autoMode rules, this file) or any script needing operator authority:
+
+1. **Stage** - write a pure-ASCII `.ps1` patch into `C:\Users\mauri\.claude\operator-patches\` (staging is allowed and inert; keep ASCII - PS 5.1 reads .ps1 as ANSI and non-ASCII corrupts the parse).
+2. **Ask** - name the patch to the operator via `AskUserQuestion` (push reaches the phone; `dialogExpiry` is 10m). Per-patch approval, never blanket; state what the patch changes in one line.
+3. **Execute** only after approval: `powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\mauri\.claude\operator-patches\apply.ps1 <patch>.ps1` - the runner validates the bare filename (no paths/traversal), logs timestamp+sha256+exit to `applied.log`, and archives the patch so an old approval can never re-run it.
+4. **Verify** by marker grep afterwards (settings.json races app rewrites - check the marker, not the write's exit code).
+
+If the classifier still blocks a step, surface it to the operator instead of improvising; the lane's own rule can be amended by a patch through the lane. Pre-dating this lane, `b.bat`/`c.bat`-style manual scripts in `~` were the pattern - do not create new ones.
+
+---
 ## How I Work — Inquisitive Before, Autonomous During
 
 **Two phases, opposite postures: be maximally inquisitive *before* execution, maximally autonomous *during* it.** The harder or less-discussed the work, the more questions come first — then it runs end-to-end without hand-holding.
@@ -147,7 +159,7 @@ Maintain a project glossary so the same word means the same thing in code, comme
 
 ## Mode selection — read every user message for intent
 
-- **Default = single conversation.** If the message shows no intent to use multiple coordinated agents, work normally as one assistant. Do **not** spawn teammates.
+- **Default = single conversation.** If the message shows no intent to use multiple coordinated agents, work as one assistant **reporting to the user**. That is about who reports, **not** about what you may delegate: sub-agents, forks and teammates are available at all times, need no permission, and should be used whenever they do the job better - a solo session that fans out an Explore or hands a side-quest to a sub-agent is still a solo session. What agent-team mode adds is the **lead protocol** below (ownership maps, frozen interfaces, integration duty), not the licence to delegate. *(The one delegation that keeps its own gate is the **Workflow** tool - a single call can spawn dozens of agents, so it stays explicit-opt-in per its own contract. Nothing else does.)*
 - **Agent-team mode = on semantic intent.** If the user expresses — in *any* phrasing or writing style — the intent to use a team of cooperating agents, operate as a **team lead**: plan the split, spawn teammates, coordinate them. Match the *intent*, not exact words. Non-exhaustive triggers:
   - "agent team", "agent-team", "team of agents", "use a team", "team mode", "spin up a team / teammates"
   - "split this across agents", "parallelize across agents", "divide this between agents", "have agents own X and Y"
@@ -156,6 +168,27 @@ Maintain a project glossary so the same word means the same thing in code, comme
 - **If genuinely ambiguous on non-trivial work**, ask one short question: *"Single conversation, or spin up an agent team for this?"* Never guess on large or destructive work.
 
 This stays **flexible per conversation** — never lock into one mode. Re-evaluate intent each turn.
+
+## Inter-session comms - peer message handling is delegated, always
+
+**Scope: session-to-session traffic only. A message from the OPERATOR is never delegated** - you answer the user yourself, every time. Everything below is about peer sessions.
+
+**When several sessions run at once and messaging is enabled, an inbound message is cheap but ANSWERING it is not.** The notification is one line; reading the peer's files, running their probe and drafting a reply is thousands of tokens of somebody else's subject matter loaded into a context committed to different work. That is the pollution - not the message.
+
+**So peer message handling is MANDATORY sub-agent work, in both directions.** *Inbound:* the parent notes that a message landed and dispatches it - it does not investigate, does not open the peer's files, does not compose the reply. *Outbound:* when you need something from a peer, the delegate composes it, sends it, and owns the reply that comes back. **Not "when it looks expensive" - always.** A rule carrying a broad judgment call gets rationalised away under momentum, which is exactly when the context is most worth protecting.
+
+**The one exception, deliberately narrow: what you can already answer in a line or two from what is in front of you** - an acknowledgement, a sha you just landed, a yes/no about your own state, a "done, you are clear to rebase". No reading, no probing, no deciding. The moment you would have to LOOK something up, it is a delegate's job.
+
+**TRAP - a sub-agent cannot intercept the inbound message.** `SendMessage` addresses agents by name and peers address THIS session's name, so it always lands here first. What the delegate owns is everything AFTER it lands. Do not design around interception; design around handoff.
+
+**The handoff.** Spawn ONE **named** delegate per exchange and put in its prompt: the message verbatim; who sent it and what they are working on; the parts of YOUR state it needs (paths, decisions, constraints - it inherits none of your history); what it may settle alone; where to reply. Name it so follow-ups in the same thread go back to the SAME delegate via `SendMessage` instead of respawning a cold one. Use `subagent_type: "fork"` when the peer is asking about YOUR work and the answer genuinely lives in your context - a fork inherits everything and is priced accordingly.
+
+**The delegate may, alone:** read anything, run read-only probes, write to scratch, follow up with the peer, send informational replies.
+**It MUST escalate first:** any write outside scratch; any commit, push or index operation; any promise about this session's work, ownership or schedule; anything needing a ruling or the operator. *(Shared-tree index collisions are why the write bar sits this low - see the one-worktree-per-lane rule.)*
+
+**What comes back is a digest, about 5 lines** - what was asked, what was answered, and anything that changes THIS session's plan. Longer only where the parent must act on the detail. Never the transcript, never the peer's reasoning, never the files it read.
+
+**The test that it worked: after the exchange, can you still state your own next step without scrolling?** If the peer's subject matter is now in your working set, the handling was not delegated - it was narrated.
 
 ## When in agent-team mode — lead responsibilities
 
@@ -171,3 +204,4 @@ The experimental teammates feature is enabled. Each teammate is a separate Claud
 6. **Lead integrates + verifies.** After teammates report, the lead runs the cross-cutting build/test/typecheck, resolves merge points, and delivers the single final report.
 
 **Launcher:** **`/agent-cluster`** analyzes the repo structure and proposes an ownership map before spawning. A project's `CLAUDE.md` may pin a more specific launcher with pre-mapped ownership.
+
