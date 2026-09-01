@@ -2749,6 +2749,31 @@ if ($xh.Count -eq 2) {
     Note 'one of the two faces is not installed - the x-height parity check is skipped'
 }
 
+# 🔴 SHOW THE PANELS THAT ARE COLLAPSED BY DEFAULT FIRST, OR THE SWEEP BELOW IS
+# A LIE. A collapsed panel realises no children, so walking the tree as the
+# window opens covers the list, the rail and the pane - and silently SKIPS the
+# question card and the running-shells panel, which are exactly the two surfaces
+# the operator named ("consider all types of text and assess all possible
+# outputs even questions"). The first version of this reported "all 278 blocks
+# are on the scale" having never once looked at a question.
+# The round is the real captured one, the same fixture the shot harness draws.
+$askShown = $false
+try {
+    $askRound = Get-AskShot 'round-single-answered.txt'
+    if ($askRound) {
+        Show-Ask $askRound
+        $askShown = ("$($ui.AskBox.Visibility)" -eq 'Visible')
+    }
+} catch { }
+if (-not $askShown) { Note 'the question card could not be shown - the sweep below does not cover it' }
+$ui.ShellList.ItemsSource = @([PSCustomObject]@{
+    ShDesc = 'Run the full suite'; ShCmd = 'pytest -q'; ShOut = 'collected 412 items'
+    ShOutVis = 'Visible'; ShAge = '1m 4s'; ShTip = ''
+})
+$ui.ShellHead.Text = (Get-TrackedText '1 SHELL RUNNING')
+$ui.ShellBox.Visibility = 'Visible'
+Lay
+
 # Every size actually on screen has to BE one of the six. This is the assertion
 # the old "one scale" comment claimed and never made: counted at the time it was
 # written, sixteen distinct sizes were live, many half a pixel apart.
@@ -2774,6 +2799,14 @@ if (-not $blocks.Count) {
 } else {
     Pass ('all {0} realised text blocks are on the six-step scale' -f $blocks.Count)
 }
+
+# Put both panels back the way they were found. The shells-panel block below
+# asserts that it STARTS collapsed, and a sweep that leaves its own scaffolding
+# standing fails the next assertion instead of the code.
+$ui.ShellList.ItemsSource = $null
+$ui.ShellBox.Visibility = 'Collapsed'
+$ui.AskBox.Visibility = 'Collapsed'
+Lay
 
 # And the zoom. Measured on a control, before and after, then put back.
 $zWas = $script:Zoom
