@@ -109,6 +109,7 @@ concrete first task on top of the handover.
 | `-RemoteControl`  | (alias `-Rc`) No-op affirmation — Remote Control is the default.                              |
 | `-Pwsh`           | Force a PowerShell window instead of Windows Terminal.                                        |
 | `-TurnTimeoutSec` | How long to wait for the first turn to land in the transcript (default 180).                  |
+| `-RetryHeadless`  | **F-226 hardening (chain/automation callers should pass this).** If the prompt produces no transcript turn inside `-TurnTimeoutSec` (the measured pre-transcript freeze: live pid, window open, zero turns), the frozen spawn is killed (our pid, by session id) and relaunched headless (`claude -p`, same env scrub, fresh session id, hidden window) with its own verify window of max(TurnTimeoutSec, 60)s. Measured working end-to-end 2026-08-28 (forced 2s window: kill + headless retry + verified turn). Exit codes are honest either way: 0 only when a turn was verified for the prompt given, 2 when every spawn path failed. |
 | `-AllowDuplicate` | Spawn even though a live session already holds this directory or this name. **Prints itself** — an override is a visible act. |
 | `-DryRun`         | Print the resolved command, transcript path and opening prompt; launch nothing.               |
 
