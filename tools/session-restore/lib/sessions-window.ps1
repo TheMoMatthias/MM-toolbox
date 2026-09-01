@@ -135,7 +135,7 @@ foreach ($n in @(
     'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
-    'OpenNotRunning','RelaunchSessions','SignIn',
+    'OpenNotRunning','RelaunchSessions','SignIn','BridgeNote',
     'HdrLogon','HdrName','HdrLane','HdrSaid','HdrAge',
     'MgrAll','MgrTicked','MgrRunning','MgrNeeds','MgrFilterNote',
     'Scrim','Sheet','SheetTitle','SheetBody','SheetB1','SheetB2','SheetB3',
@@ -1474,9 +1474,19 @@ function Update-Surface {
     # System.Collections.Generic.List[object] on PowerShell 5.1 - full or empty,
     # either way. Piping is fine, .Count is fine, @() is not. It is the trap this
     # repo documents and it cost the first render of this window.
-    $live = @($script:model | Where-Object { $_.Live }).Count
+    # 🪤 A foreach, not a pipeline. Where-Object invokes a scriptblock per item
+    # through the pipeline machinery, and this runs over every conversation in
+    # the registry - 240 of them here - on a function that is already the sum of
+    # two list builds and sits within a millisecond of the gesture budget. Same
+    # cost class as the ForEach-Object in Get-TrackedText, which was 6.9x.
+    $live = 0
+    foreach ($m in $script:model) { if ($m.Live) { $live++ } }
     $ui.LiveCount.Text = ('{0} live of {1} conversations across {2} projects' -f `
         $live, $script:model.Count, @($script:dirs).Count)
+    # Also here, not only on the 6-second pass: the window has to be right the
+    # moment it opens, and the fast pass has not run yet at first paint. Cheap -
+    # Get-SRBridgeState caches on the file's timestamp.
+    try { Update-BridgeNote } catch { }
     $ui.Stamp.Text = ('as of {0}' -f (Get-Date).ToString('HH:mm:ss'))
 }
 
@@ -5305,6 +5315,43 @@ $ui.OpenNotRunning.Add_Click({
 $script:signInWatch = $null
 $script:signInFrom = $null
 
+# 🔴 THE ONE THING THAT WAS NEVER ON SCREEN. Measured across the operator's
+# transcripts: eleven `401 OAuth access token has expired` all between 07:30 and
+# 07:35 on four consecutive mornings, up to five sessions in the same minute -
+# the logon restore relaunching the ticked set and every process racing to
+# refresh one overnight-expired token. None since the launches were staggered.
+#
+# What remains is the OTHER failure, and it is the one that reads as being
+# logged out: Claude Code counts consecutive Remote Control bridge failures and
+# stops trying on the seventh. While that holds, sessions run perfectly and do
+# not register, so the phone shows nothing. It sat at SIX on the day this was
+# written. Nothing anywhere said so.
+#
+# 🪤 Quiet until it matters. A healthy bridge draws nothing at all - a chip that
+# is always there is a chip nobody reads, and this row is deliberately sparse.
+function Update-BridgeNote {
+    $b = $null
+    try { $b = Get-SRBridgeState } catch { }
+    if (-not $b -or -not $b.Ok) { $ui.BridgeNote.Visibility = $V_Hide; return }
+    if ($b.Suppressed) {
+        $ui.BridgeNote.Text = ('remote control off until {0:HH:mm}' -f $b.Until)
+        $ui.BridgeNote.Foreground = $window.FindResource('HueBad')
+        $ui.BridgeNote.ToolTip = ('Claude Code has stopped trying to register sessions with Remote Control after {0} consecutive failures, until {1:HH:mm}. The sessions are running normally - they are just not visible on your phone. Signing in does not change this.' -f $b.Fails, $b.Until)
+        $ui.BridgeNote.Visibility = $V_Show
+        return
+    }
+    # Climbing but not yet tripped is the moment worth knowing about: one more
+    # failure and Remote Control goes quiet.
+    if ($b.Fails -ge ($b.Limit - 2)) {
+        $ui.BridgeNote.Text = ('remote control {0}/{1}' -f $b.Fails, $b.Limit)
+        $ui.BridgeNote.Foreground = $window.FindResource('HueWarn')
+        $ui.BridgeNote.ToolTip = ('{0} consecutive Remote Control registration failures. At {1} Claude Code stops trying, and your sessions stop appearing on your phone even though they are running. This is not a login problem.' -f $b.Fails, $b.Limit)
+        $ui.BridgeNote.Visibility = $V_Show
+        return
+    }
+    $ui.BridgeNote.Visibility = $V_Hide
+}
+
 function Get-SRCredStamp {
     $p = Join-Path (Join-Path $env:USERPROFILE '.claude') '.credentials.json'
     if (-not (Test-Path -LiteralPath $p)) { return $null }
@@ -7190,6 +7237,11 @@ function Invoke-FastPass {
     # The stamp is the one thing that must move every tick: it is how you know
     # the window is still watching rather than frozen.
     $ui.Stamp.Text = ('as of {0}' -f $script:probeAt.ToString('HH:mm:ss'))
+    # 🪤 BEFORE the surface return below. The bridge is a machine-wide fact, not
+    # a property of the work surface, and behind that return it would never
+    # update while the session manager was open - which is exactly where an
+    # operator goes when their sessions have stopped appearing on their phone.
+    try { Update-BridgeNote } catch { }
     $moved = Update-LiveWriters
     if ($script:surface -ne 'work') { return }
     $fp = Get-ModelFingerprint

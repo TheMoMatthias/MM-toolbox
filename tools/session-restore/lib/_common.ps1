@@ -1833,6 +1833,61 @@ function Close-SRTabsByName {
 # has read as an account problem for so long.
 #
 # So the restore now WAITS for the bridge instead of racing it.
+# 🔴 THE COUNTER, NOT JUST THE SUPPRESSION - because the useful moment is
+# BEFORE it trips, and by the time it has tripped the damage is done for the
+# rest of the window.
+#
+# MEASURED 2026-09-01: `bridgeOauthDeadFailCount` sat at 6 with the threshold at
+# 7, so Remote Control was one failure from going quiet again. That is exactly
+# the state the operator reads as "I am not logged in" - the sessions run
+# perfectly and simply stop registering, the phone shows nothing, and signing in
+# appears to fix it because the suppression window expires around the same time.
+#
+# 🪤 READ-ONLY, DELIBERATELY. `~/.claude.json` is Claude Code's own state file;
+# this tool does not own it and does not write it. Showing the number is the
+# whole feature - it converts an invisible fault into a visible one, which is
+# what months of mornings were actually missing.
+$SR_BridgeFailLimit = 7
+
+# 🪤 CACHED ON THE FILE'S OWN TIMESTAMP, because `.claude.json` is 107 KB on
+# this machine and this is read on a repeating tick. Parsing 107 KB of JSON
+# every six seconds to look at two integers is the kind of cost that never
+# shows up as a stall and quietly heats the whole window - the same shape as
+# the pipeline in Update-Surface that measured 17 ms. Re-read only when Claude
+# Code has actually rewritten it.
+$script:SR_BridgeCache = $null
+$script:SR_BridgeAt = $null
+
+function Get-SRBridgeState {
+    $out = [PSCustomObject]@{ Fails = 0; Limit = $SR_BridgeFailLimit; Until = $null; Suppressed = $false; Ok = $false }
+    $p = Join-Path $env:USERPROFILE '.claude.json'
+    if (-not (Test-Path -LiteralPath $p)) { return $out }
+    $stamp = $null
+    try { $stamp = (Get-Item -LiteralPath $p).LastWriteTimeUtc } catch { }
+    if ($script:SR_BridgeCache -and $stamp -and $script:SR_BridgeAt -eq $stamp) {
+        # 🪤 Suppressed is TIME-dependent, so it is recomputed even on a cache
+        # hit - the file does not change when the window simply expires, and a
+        # cached `true` would leave Remote Control looking dead for hours after
+        # it came back.
+        $c = $script:SR_BridgeCache
+        $c.Suppressed = ($c.Until -and $c.Until -gt (Get-Date))
+        return $c
+    }
+    try {
+        $j = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json
+        $out.Ok = $true
+        if ($j.PSObject.Properties['bridgeOauthDeadFailCount']) { $out.Fails = [int]$j.bridgeOauthDeadFailCount }
+        if ($j.bridgeOauthDeadExpiresAt) {
+            $t = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$j.bridgeOauthDeadExpiresAt).LocalDateTime
+            $out.Until = $t
+            $out.Suppressed = ($t -gt (Get-Date))
+        }
+        $script:SR_BridgeCache = $out
+        $script:SR_BridgeAt = $stamp
+    } catch { }
+    return $out
+}
+
 function Get-SRBridgeSuppression {
     # The time the bridge is suppressed until, or $null when it is not.
     $p = Join-Path $env:USERPROFILE '.claude.json'

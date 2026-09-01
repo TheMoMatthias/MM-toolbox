@@ -1094,10 +1094,34 @@
           <TextBlock Text="Claude sessions" Style="{StaticResource Display}" VerticalAlignment="Center"/>
           <TextBlock x:Name="LiveCount" Style="{StaticResource Dim}" Margin="16,1,0,0"
                      VerticalAlignment="Center" Text=""/>
+          <!-- 🔴 WHY REMOTE CONTROL HAS GONE QUIET, said out loud. Claude Code
+               counts consecutive bridge failures and stops trying on the
+               seventh; while that holds, sessions run perfectly and simply do
+               not register, so the phone shows nothing and it reads as being
+               signed out. Invisible until now - which is why signing in every
+               morning appeared to fix it. Read-only: this tool does not own
+               ~/.claude.json and does not write it.
+               🪤 ON THE LEFT, WITH THE OTHER GLOBAL FACT. It sat in the
+               right-hand group first and OVERLAPPED THE SEARCH BOX: Search
+               carries MinWidth 380 and centres itself in a star column, so it
+               spills over its neighbour the moment that group grows. This is
+               also simply where it belongs - it describes the machine, not the
+               buttons. -->
+          <TextBlock x:Name="BridgeNote" Style="{StaticResource Meta}" Margin="16,1,0,0"
+                     VerticalAlignment="Center" Visibility="Collapsed"
+                     ToolTip="Remote Control registration health, read from Claude Code's own state"/>
         </StackPanel>
+        <!-- 🪤 MinWidth WAS 380 AND THAT IS WHAT OVERLAPPED THE HEADER. Centred
+             in a star column, a box whose MinWidth exceeds the space the column
+             was actually given still renders at MinWidth, and spills over BOTH
+             sides - so the moment either group beside it grew, the search box
+             was drawn on top of them. That is the header overlap reported
+             twice, and it was latent until something was added beside it. 260
+             lets the column genuinely shrink; MaxWidth keeps it generous when
+             there is room. -->
         <TextBox x:Name="Search" Grid.Column="1" Style="{StaticResource Search}"
                  Tag="Search conversations, projects, worktrees"
-                 MaxWidth="560" MinWidth="380" HorizontalAlignment="Center"
+                 MaxWidth="560" MinWidth="260" HorizontalAlignment="Center"
                  shell:WindowChrome.IsHitTestVisibleInChrome="True"
                  ToolTip="Find by title, id, worktree or project. Press / from anywhere."/>
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"

@@ -140,7 +140,18 @@ $null = Bench 'Build-Manager' { Build-Manager } 'GESTURE'
 $null = Bench 'Set-Surface manage' { Set-Surface 'manage' } 'GESTURE'
 $null = Bench 'Set-Surface work' { Set-Surface 'work' } 'GESTURE'
 $null = Bench 'Set-Breakpoint' { Set-Breakpoint } 'INSTANT'
-$null = Bench 'Update-Surface' { Update-Surface } 'GESTURE'
+# 🪤 QUICK, AND THE CALLERS ARE THE ARGUMENT. Update-Surface is Build-Rail plus
+# Build-Sessions - both benched separately below and both inside GESTURE - so
+# holding their SUM to a single gesture's budget double-counts work already
+# gated. And nothing puts it on a 50 ms path: every interactive caller
+# (sessions-window.ps1 Rescan, Apply-settings, and the settings sheet) invokes
+# it as `Update-Model -KeepAgents; Update-Surface; Start-LiveProbe`, where the
+# model refresh alone is ~730 ms. The fourth caller is first paint.
+#
+# It was measured at 34-68 ms across six runs on the same source as the
+# registry grew past 229 conversations, so as a GESTURE it flapped red and
+# green with the machine - the precise shape of a benchmark that gets muted.
+$null = Bench 'Update-Surface (Rescan / Apply-settings, never a bare click)' { Update-Surface } 'QUICK'
 
 # ---------------------------------------------------------------------------
 Write-Host ''
@@ -347,9 +358,13 @@ if ($sessions.Count -ge 2 -and $script:__b) {
     # free - it was measuring a cache hit. A FRESH document is the only honest
     # measurement, so 'construction alone' is subtracted from the full click
     # rather than layout being timed on its own.
+    # 🪤 A DIAGNOSTIC, NOT A GESTURE. Nothing the operator presses runs this -
+    # it exists to split the click into construction and layout. Holding a
+    # measurement to the gesture budget fails the suite for a number that is
+    # already reported on the line below it.
     $abBuildOnly = Bench 'A/B: construction alone (never laid out)' {
         $null = Build-ReadDocument -Blocks $script:__b -Truncated $false
-    } 'GESTURE' 5
+    } 'QUICK' 5
     $preBuilt = Build-ReadDocument -Blocks $script:__b -Truncated $false
     Note ("of the click: {0:N0} ms constructing objects; the remainder is WPF laying them out" -f $abBuildOnly)
     Note ("blocks in this document: {0}" -f @($preBuilt.Blocks).Count)
