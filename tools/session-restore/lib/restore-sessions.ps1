@@ -451,10 +451,18 @@ function Invoke-Install {
             -Arguments '' -Icon $iconFrom `
             -Description 'Every conversation across every repo: see what is live, open any of them now, and choose what reopens at logon'
     Write-SROk ("desktop: $LnkSelect" + $(if ($haveExe) { ' -> Sessions.exe' } else { ' -> Sessions.bat' }))
-    $old = Join-Path ([Environment]::GetFolderPath('Desktop')) $LnkSelectOld
-    if (Test-Path -LiteralPath $old) {
-        [System.IO.File]::Delete($old)
-        Write-SROk "desktop: $LnkSelectOld removed (replaced by '$LnkSelect')"
+    # 🪤 EVERY BUTTON THIS TOOL HAS EVER MADE IS REMOVED HERE, not just the last
+    # one. Found on this machine after the launchers were consolidated: a
+    # 'Claude Sessions (window).lnk' still pointing at Sessions GUI.vbs, a file
+    # that no longer exists - a dead shortcut on the desktop that the installer
+    # had no idea about, because it only ever knew the ONE name it had renamed.
+    # A launcher that is deleted has to take its button with it.
+    foreach ($stale in @($LnkSelectOld, 'Claude Sessions (window).lnk')) {
+        $old = Join-Path ([Environment]::GetFolderPath('Desktop')) $stale
+        if (Test-Path -LiteralPath $old) {
+            [System.IO.File]::Delete($old)
+            Write-SROk "desktop: $stale removed (replaced by '$LnkSelect')"
+        }
     }
 
     # Seed the registry so the picker has something to show immediately.
@@ -490,7 +498,21 @@ function Invoke-Install {
             Write-SRFail "auto-logon could not be enabled: $($_.Exception.Message)"
         }
     } else {
-        try { & powershell.exe @alArgs -Status } catch { }
+        # 🪤 NOT `catch { }`. The first version swallowed whatever went wrong
+        # here and the status simply never appeared - an installer reporting
+        # nothing about auto-logon looks identical to one where auto-logon is
+        # off. A silent catch on a diagnostic is the defect the diagnostic
+        # exists to prevent.
+        try {
+            $alOut = & powershell.exe @alArgs -Status 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-SRSkip ("auto-logon status could not be read (exit {0}): {1}" -f $LASTEXITCODE, (@($alOut) -join ' '))
+            } else {
+                @($alOut) | ForEach-Object { Write-Host "$_" }
+            }
+        } catch {
+            Write-SRSkip ("auto-logon status could not be read: " + $_.Exception.Message)
+        }
         Write-Host "  to let the PC sign itself in so the logon restore runs unattended:"
         Write-Host ("    '{0}' -AutoLogon" -f (Join-Path $SR_Root 'Install.bat'))
     }

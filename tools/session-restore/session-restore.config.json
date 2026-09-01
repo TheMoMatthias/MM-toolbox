@@ -148,7 +148,7 @@
     "registryWindowDays":  30,
     "maxSessions":  30,
     "transcriptTools":  "full",
-    "textRendering":  "cleartype",
+    "textRendering":  "grayscale",
     "readingWidth":  "measured",
     "//panelScanMaxAgeSeconds":  [
                                      "How fresh the registry has to be for the panel to skip its opening scan.",
