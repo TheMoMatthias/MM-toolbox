@@ -2265,6 +2265,71 @@ else {
             Fail 'the document is EMPTY - the pane would show nothing at all'
         } else {
             Pass ("the document carries {0} block(s)" -f $docBlocks.Count)
+
+            # ===============================================================
+            # 🔴 THE GUTTER HAS TO ACTUALLY LINE UP, AND NOTHING CHECKED IT.
+            #
+            # Reported twice as "the text is not aligned". The whole reading
+            # pane is built on one claim - that every block kind starts its
+            # content at the same x - and that claim was only ever verified by
+            # looking at screenshots, which is how a 4px drift survived.
+            #
+            # Two different constructions have to agree:
+            #   a PROSE paragraph hangs off a negative TextIndent with a
+            #   fixed-width gutter box as its first inline;
+            #   a RAIL block is a BlockUIContainer whose Grid column 0 is that
+            #   same width.
+            # Measured here in RENDERED coordinates rather than argued about:
+            # GetCharacterRect for the text, TransformToAncestor for the panel.
+            # ===============================================================
+            $ui.PaneDoc.Document = $doc
+            $ui.PaneDoc.Measure((New-Object System.Windows.Size 900, 600))
+            $ui.PaneDoc.Arrange((New-Object System.Windows.Rect 0, 0, 900, 600))
+            $ui.PaneDoc.UpdateLayout()
+            [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
+                [System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
+
+            $proseX = $null
+            $railX  = $null
+            foreach ($blk in @($doc.Blocks)) {
+                if ((-not $proseX) -and $blk -is [System.Windows.Documents.Paragraph]) {
+                    # The first REAL run of prose - skip the gutter box itself,
+                    # which is an InlineUIContainer, and any empty spacer.
+                    foreach ($inl in @($blk.Inlines)) {
+                        if ($inl -is [System.Windows.Documents.Run] -and "$($inl.Text)".Trim().Length -gt 3) {
+                            try {
+                                $r = $inl.ContentStart.GetCharacterRect([System.Windows.Documents.LogicalDirection]::Forward)
+                                if ($r.X -gt 0) { $proseX = [double]$r.X }
+                            } catch { }
+                            break
+                        }
+                    }
+                }
+                if ((-not $railX) -and $blk -is [System.Windows.Documents.BlockUIContainer]) {
+                    $g = $blk.Child
+                    if ($g -and $g.Children.Count -ge 2) {
+                        # Child 0 is the marker in column 0; the LAST child is
+                        # the content that sits in column 1.
+                        $content = $g.Children[$g.Children.Count - 1]
+                        try {
+                            $t = $content.TransformToAncestor($ui.PaneDoc)
+                            $railX = [double]($t.Transform((New-Object System.Windows.Point 0, 0))).X
+                        } catch { }
+                    }
+                }
+            }
+            if ($null -eq $proseX -or $null -eq $railX) {
+                Note "could not measure both a prose paragraph and a rail block in this tail - alignment unchecked"
+            } else {
+                $drift = [Math]::Abs($proseX - $railX)
+                # One pixel of tolerance for glyph bearing and rounding. Four is
+                # what was on screen and is plainly visible in a column of them.
+                if ($drift -gt 1.5) {
+                    Fail ("the gutter does not line up: prose starts at {0:N1}px, a rail block at {1:N1}px - {2:N1}px apart" -f $proseX, $railX, $drift)
+                } else {
+                    Pass ("prose and rail blocks start at the same x ({0:N1} vs {1:N1})" -f $proseX, $railX)
+                }
+            }
             # Pull every run of text out of the flow, whatever it is nested in.
             $docText = New-Object System.Text.StringBuilder
             $stack = New-Object System.Collections.Generic.Stack[object]

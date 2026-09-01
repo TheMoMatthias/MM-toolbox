@@ -1960,8 +1960,8 @@ function Get-RunSummary { param($Calls)
 $script:ReadMeasureChars = 100
 # The size the last layout settled on. The renderer reads it rather than a
 # literal, so type and measure can never disagree about how wide a line is.
-$script:readSize = 13.0
-$script:readLead = 18.0
+$script:readSize = 12.0
+$script:readLead = 16.5
 
 # THE GUTTER, in device-independent pixels.
 #
@@ -2633,7 +2633,11 @@ function Set-ReadMeasure { param($Doc, [double]$Size = 0, [double]$PadL = 44)
     try { $avail = [double]$ui.PaneDoc.ActualWidth } catch { }
     if ($avail -lt 200) { $avail = 900.0 }
 
-    $size = 13.0
+    # 12, down from 13: the operator asked for the general text smaller again
+    # after living with it. Machine text is NOT tied to this - it is pinned at
+    # $script:MonoSize to match the terminal exactly - so the gap between prose
+    # and command output widens on purpose.
+    $size = 12.0
     if ($Size -gt 0) { $size = $Size }
     $script:readSize = $size
     $script:readLead = [Math]::Round($size * 1.38, 1)
@@ -3051,17 +3055,68 @@ function Add-ReadTurn { param($Doc, $Turn)
 # The follow tick already refused to read a busy session (see its own guard);
 # Update-Ask and the background probe did not, so both paths could put a
 # fabricated question on screen. This is the one gate all three now pass.
+# 🔴 A QUESTION THAT CANNOT BE READ USED TO SHOW NOTHING AT ALL.
+#
+# Reported from a fresh clone on another machine: "it is getting asked a
+# question but the tool does not show me the question". Every path here failed
+# SILENTLY - Test-AskAllowed returned false and the panel was simply hidden, so
+# a conversation the list itself was marking NEEDS YOU had an empty foot and no
+# way to find out why. The reason is always known at the point of the refusal;
+# it was just thrown away.
+#
+# 🪤 The reason is only DRAWN for a conversation that is actually waiting on
+# you. Every idle session in the list also has no question, and putting an
+# explanation under each of them would be noise on the surface this pane exists
+# to keep quiet.
+function Get-AskBlocker { param($R)
+    if (-not $R) { return 'nothing is selected' }
+    if (-not $R.A -or -not $R.A.Pid) {
+        return 'this conversation is not running, so there is no screen to read a question from'
+    }
+    if ("$($R.A.Status)" -eq 'busy') {
+        return 'it is mid-turn - a question can only be read once it stops'
+    }
+    return ''
+}
+
 function Test-AskAllowed { param($R)
-    if (-not $R -or -not $R.A -or -not $R.A.Pid) { return $false }
-    if ("$($R.A.Status)" -eq 'busy') { return $false }
-    return $true
+    return (-not (Get-AskBlocker $R))
+}
+
+# Does the list think this conversation is waiting on the operator? That is what
+# makes an unreadable question worth explaining rather than ignoring.
+function Test-AskExpected { param($R)
+    if (-not $R) { return $false }
+    return ("$($R.Band)" -eq 'needs')
+}
+
+function Show-AskWhy { param($R, [string]$Why)
+    Show-Ask $null
+    if (-not $Why -or -not (Test-AskExpected $R)) { return }
+    $ui.AskHeader.Text = 'waiting on you'
+    $ui.AskText.Text = 'Its question could not be read from the screen.'
+    $ui.AskNote.Text = $Why
+    $ui.AskNote.Visibility = $V_Show
+    $ui.AskBox.Visibility = $V_Show
 }
 
 function Update-Ask { param($R)
-    if (-not (Test-AskAllowed $R)) { Show-Ask $null; return }
+    $why = Get-AskBlocker $R
+    if ($why) { Show-AskWhy -R $R -Why $why; return }
     $q = $null
-    try { $q = Get-SRScreenQuestion -ProcessId ([int]$R.A.Pid) } catch { }
-    Show-Ask $q
+    $err = ''
+    try { $q = Get-SRScreenQuestion -ProcessId ([int]$R.A.Pid) } catch { $err = "$($_.Exception.Message)" }
+    if ($q) { Show-Ask $q; return }
+    # 🪤 READING THE SCREEN IS THE PART THAT BREAKS ON A NEW MACHINE. The reader
+    # is a small C# helper compiled into .state\ on demand, and .state\ is
+    # gitignored - so a fresh clone builds it on first use and a machine without
+    # csc.exe falls back to a slower PowerShell path. When neither works there
+    # is no question and, until now, no explanation either.
+    Show-AskWhy -R $R -Why $(if ($err) {
+        "the screen reader failed: $err"
+    } else {
+        'nothing that looks like a question is on its screen - it may have just been answered, or the screen could not be read (see .state\restore.log)'
+    })
 }
 
 # ===========================================================================
@@ -7395,7 +7450,10 @@ function Start-AskProbe { param($R)
         try { $script:askRs.Close(); $script:askRs.Dispose() } catch { }
         $script:askPs = $null; $script:askRs = $null; $script:askHandle = $null
     }
-    if (-not (Test-AskAllowed $R)) { $script:askFor = ''; return }
+    # Same refusal, same duty to say so: this is the path the window actually
+    # takes on a selection, so a silent return here is the one the operator sees.
+    $whyProbe = Get-AskBlocker $R
+    if ($whyProbe) { $script:askFor = ''; Show-AskWhy -R $R -Why $whyProbe; return }
     try {
         $rs = [runspacefactory]::CreateRunspace()
         $rs.ApartmentState = 'MTA'
@@ -7439,8 +7497,20 @@ function Complete-AskProbe {
     # conversation it was read from and to no other.
     if ("$($script:askFor)" -ne "$($script:selId)") { return }
     $row = Get-SelectedRow
-    if (-not (Test-AskAllowed $row)) { Show-Ask $null; return }
-    Show-Ask $res.Ask
+    $whyDone = Get-AskBlocker $row
+    if ($whyDone) { Show-AskWhy -R $row -Why $whyDone; return }
+    if ($res.Ask) { Show-Ask $res.Ask }
+    else {
+        # 🪤 THE READ CAME BACK AND FOUND NOTHING, which is a different fact from
+        # "the read was refused" and used to look identical - both drew an empty
+        # foot. $res.Read is the screen reader's own answer about whether it
+        # could see the console at all, so the two are told apart here.
+        Show-AskWhy -R $row -Why $(if ($res.Read) {
+            'its screen was read, and there is no question on it - it may have just been answered'
+        } else {
+            'its screen could not be read - the reader is built into .state\ on first use, and a failure is logged in .state\restore.log'
+        })
+    }
     # The counts the session printed about itself. -1 means the screen could not
     # be read, which is not the same as zero and must not overwrite anything.
     if ($res.Read) {

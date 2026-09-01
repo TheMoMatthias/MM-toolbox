@@ -220,6 +220,22 @@ if ($ui.PaneDoc.Document) {
     Write-Host ("  measure: pane {0:N0}px, readingWidth={1}" -f $ui.PaneDoc.ActualWidth, $script:readWidth)
 }
 
+# 🔑 SR_SHOT_TFM=Display renders with glyph advances SNAPPED TO PIXELS instead
+# of positioned at sub-pixel offsets. Ideal is what the window ships (see the
+# note at the top of window2.xaml) and it is the better choice for a display
+# face at large sizes; at 12px it is also what makes the spacing between
+# characters look uneven, which is what the operator reported. This is
+# capturable, unlike TextRenderingMode - see CONTEXT.md, a screenshot of
+# 'cleartype' is greyscale wearing a label - so the two can be compared in a
+# shot and judged rather than argued about.
+if ($env:SR_SHOT_TFM) {
+    [System.Windows.Media.TextOptions]::SetTextFormattingMode($window, "$env:SR_SHOT_TFM")
+    $root.UpdateLayout()
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
+        [System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
+    Write-Host ("  TextFormattingMode = {0}" -f $env:SR_SHOT_TFM)
+}
+
 if ($env:SR_SHOT_TOP) {
     $svTop = Get-PaneScroller
     if ($svTop) {
