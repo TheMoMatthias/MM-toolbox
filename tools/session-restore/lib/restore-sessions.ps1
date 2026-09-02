@@ -141,7 +141,28 @@ function Invoke-Restore {
     # Not on a dry run: nothing is launched, so there is nothing to protect, and
     # stalling a preview the operator is watching would be its own bug.
     if (-not $DryRun) {
-        $null = Wait-SRBridgeReady -MaxWaitSeconds 300
+        # 🔴 A FAILED GATE NOW STOPS THE RESTORE. It used to be advisory - the
+        # return value was discarded and the queue launched regardless - and
+        # that is what produced the morning the operator kept reporting: two
+        # dozen sessions up, none of them able to register with Remote Control,
+        # all of them needing to be killed and relaunched by hand after a manual
+        # sign-in. Launching into a dead token does not save the morning, it is
+        # what costs it.
+        #
+        # 🪤 ONLY AUTH STOPS IT. Bridge suppression on its own is survivable -
+        # the sessions come up and work, they simply are not reachable from the
+        # phone for a while - so that is still a warning and not a refusal. The
+        # difference is that a dead TOKEN makes every launched session useless,
+        # and a suppressed bridge does not.
+        if (-not (Wait-SRBridgeReady -MaxWaitSeconds 300)) {
+            if (-not (Test-SRTokenLive)) {
+                $exp = Get-SRTokenExpiry
+                $when = $(if ($exp) { " It expired at {0:HH:mm}." -f $exp } else { '' })
+                Write-SRFail ("NOT RESTORING: the access token is not live.{0} Every session launched now would come up unauthorized and need relaunching by hand. Press Sign in (or run: claude auth login), then restore again - your refresh token is what expires monthly, not daily, so this should be rare." -f $when)
+                return 1
+            }
+            Write-SRWarn 'the remote bridge is not ready - restoring anyway; the sessions will work but may not reach Remote Control for a while'
+        }
     } else {
         $sup = Get-SRBridgeSuppression
         if ($sup) { Write-SRWarn ("the remote bridge is suppressed until {0} - a real restore would wait for it" -f $sup.ToString('HH:mm:ss')) }

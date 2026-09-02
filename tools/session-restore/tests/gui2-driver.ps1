@@ -1545,7 +1545,28 @@ else {
         Fail ("Show-Spawn has no {0} parameter - the worktree button would throw when pressed" -f ($missing -join ' or '))
     } else { Pass 'the new-session dialog takes the project and the worktree tick the button passes it' }
 
-    $wireSrc = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-window.ps1') -Raw -Encoding UTF8
+    
+# 🔴 THE SIGN-IN MUST NOT CREATE A CONVERSATION. `claude /login` starts an
+# interactive session and types a slash command into it, so every press left a
+# real transcript behind - found by tracing a nameless, blank, "live"
+# conversation back to this morning's sign-in. In a tool that decides which
+# conversations reopen at logon, manufacturing one per sign-in is a defect that
+# compounds: each ghost is a candidate for tomorrow's restore.
+# 🪤 STRIP THE COMMENTS FIRST - and this assertion failed on its own
+# explanation the moment it was written, which is the trap this suite already
+# carries a warning about further down. The comment above the fix NAMES the
+# broken command, so a raw match on the file finds it forever.
+$signSrc = ((Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-window.ps1') -Encoding UTF8) |
+            Where-Object { -not ($_.TrimStart().StartsWith('#')) }) -join "`n"
+if ($signSrc -match "claude\s+/login") {
+    Fail 'the Sign in button runs `claude /login`, which starts a conversation and leaves a transcript behind'
+} elseif ($signSrc -notmatch "claude\s+auth\s+login") {
+    Fail 'the Sign in button does not run `claude auth login` - the only form that signs in without creating a session'
+} else {
+    Pass 'the Sign in button uses `claude auth login`, which leaves no conversation behind'
+}
+
+$wireSrc = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-window.ps1') -Raw -Encoding UTF8
     foreach ($wire in @(
         @('$ui.PaneWorktree.Add_Click', 'the worktree button'),
         @('$ui.PaneTools.Add_Click',    'the steps button'))) {

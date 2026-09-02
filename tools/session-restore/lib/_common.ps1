@@ -2003,6 +2003,14 @@ function Invoke-SRNativeText {
 function Test-SRAuthReady {
     # `claude auth status` prints JSON and is the account's own answer, rather
     # than this tool guessing from a credentials file it does not own.
+    #
+    # 🔴 IT ANSWERS "ARE THERE CREDENTIALS", NOT "IS THE TOKEN ALIVE", AND THAT
+    # DISTINCTION IS THE DAILY SIGN-IN. Measured 2026-09-02: the whole payload is
+    # loggedIn / authMethod / apiProvider / email / org / subscriptionType - there
+    # is NO expiry field in it. So this returns $true just as readily for a token
+    # that died ten hours ago, and the restore gate it guards has been waving
+    # through a queue of two dozen sessions into a dead token every morning.
+    # Test-SRTokenLive is the other half; both are required before launching.
     try {
         $exe = Get-Command claude -ErrorAction Stop
         $r = Invoke-SRNativeText -FilePath $exe.Source -Arguments @('auth', 'status')
@@ -2012,15 +2020,130 @@ function Test-SRAuthReady {
     } catch { return $false }
 }
 
+# ===========================================================================
+# IS THE ACCESS TOKEN ACTUALLY ALIVE - the question `auth status` cannot answer.
+#
+# 🔑 THE SHAPE OF THE PROBLEM, MEASURED ON 2026-09-02. The access token lives 8
+# HOURS and the refresh token 30 DAYS. This machine is switched off overnight,
+# so at every single boot the access token is already dead while the refresh
+# token still has weeks on it. Nothing was signed out - it just needed ONE
+# refresh, and instead 24 sessions were launched a second apart to each discover
+# that for themselves. That morning read: booted 07:32:16, restore launched
+# 07:37:25-07:37:48, and the credentials were not rewritten until 07:38:41 -
+# AFTER every session had already started against the stale token.
+#
+# 🪤 THE MARGIN IS NOT DECORATION. A token with forty seconds left passes a bare
+# expiry test and is dead by the time the twentieth session starts. Ten minutes
+# comfortably covers a staggered queue.
+$SR_TokenMarginSeconds = 600
+
+function Get-SRCredentialsPath {
+    return (Join-Path (Join-Path $env:USERPROFILE '.claude') '.credentials.json')
+}
+
+# Returns the access token's expiry as local time, or $null when it cannot be
+# read. $null is deliberately NOT treated as expired by the caller: this tool
+# does not own that file, and a shape it does not recognise must not become a
+# reason to refuse to restore the operator's morning.
+function Get-SRTokenExpiry {
+    $p = Get-SRCredentialsPath
+    if (-not (Test-Path -LiteralPath $p)) { return $null }
+    try {
+        $j = Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json
+        $o = $j.claudeAiOauth
+        if (-not $o -or -not $o.PSObject.Properties['expiresAt']) { return $null }
+        $ms = [double]$o.expiresAt
+        if ($ms -le 0) { return $null }
+        # Epoch milliseconds; guarded so a seconds-based value cannot read as 1970.
+        if ($ms -lt 1e11) { $ms = $ms * 1000 }
+        return ([DateTimeOffset]::FromUnixTimeMilliseconds([long]$ms)).LocalDateTime
+    } catch { return $null }
+}
+
+function Test-SRTokenLive { param([int]$MarginSeconds = 0)
+    if ($MarginSeconds -le 0) { $MarginSeconds = $SR_TokenMarginSeconds }
+    $exp = Get-SRTokenExpiry
+    # Unreadable is not a verdict - see above.
+    if (-not $exp) { return $true }
+    return ((New-TimeSpan -Start (Get-Date) -End $exp).TotalSeconds -gt $MarginSeconds)
+}
+
+# ===========================================================================
+# WARM THE TOKEN EXACTLY ONCE, BEFORE ANYTHING ELSE IS LAUNCHED.
+#
+# 🔴 ONE REFRESH, NOT TWENTY-FOUR. This is the whole fix. Every session that
+# starts against an expired access token refreshes for itself, and OAuth refresh
+# tokens rotate - the first use invalidates the one the other twenty-three are
+# holding. Serialising it here means the queue starts against a token that is
+# already good for another eight hours.
+#
+# 🪤 IT IS PROVED BY expiresAt MOVING, NOT BY AN EXIT CODE. A `claude` command
+# can succeed for reasons that have nothing to do with the token, so the check
+# is that the credential file now says something later than it did.
+#
+# 🔴 AND THERE IS NO `claude auth refresh` TO CALL. Checked: the auth command
+# offers login, logout and status, and nothing else. Whether `status` performs a
+# refresh or only reads the file is not documented, so this does not assume it -
+# it calls status and then CHECKS whether the expiry actually moved.
+#
+# 🪤 AND THE OBVIOUS FALLBACK IS A TRAP I BUILT AND THEN REMOVED. `claude -p`
+# unquestionably reaches the API and so unquestionably refreshes - and it WRITES
+# A TRANSCRIPT. Measured: one `claude -p 'ok'` left an 85 KB conversation in the
+# project directory. In a tool whose entire job is deciding which conversations
+# exist and which reopen at logon, a warm-up that MANUFACTURES conversations is
+# worse than the problem: they land in the registry, they can be auto-ticked,
+# and they come back tomorrow morning. (It also exits 1 on --max-turns 1.)
+# If status turns out not to refresh, the honest outcome is the message below
+# and a held restore - not a queue of doomed sessions and a litter of ghosts.
+function Invoke-SRTokenWarm { param([int]$TimeoutMs = 90000)
+    $exe = $null
+    try { $exe = Get-Command claude -ErrorAction Stop } catch {
+        Write-SRLog '  [skip] claude is not on PATH - cannot warm the token'
+        return $false
+    }
+    $before = Get-SRTokenExpiry
+    Write-SRLog '  [step] warming the access token once, before any session starts'
+    try {
+        $null = Invoke-SRNativeText -FilePath $exe.Source -Arguments @('auth', 'status') -TimeoutMs $TimeoutMs
+    } catch { }
+
+    $after = Get-SRTokenExpiry
+    if ($after -and (-not $before -or $after -gt $before)) {
+        Write-SRLog ('  [ok]   token refreshed - good until {0:HH:mm}' -f $after)
+        return $true
+    }
+    if (Test-SRTokenLive) {
+        # It did not move because it did not need to.
+        Write-SRLog ('  [ok]   token is live until {0:HH:mm} - no refresh was needed' -f $after)
+        return $true
+    }
+    Write-SRLog '  [fail] the access token is expired and did not refresh - press Sign in'
+    return $false
+}
+
 function Wait-SRBridgeReady {
     param([int]$MaxWaitSeconds = 300)
 
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $said = $false
+    $warmed = $false
     while ($sw.Elapsed.TotalSeconds -lt $MaxWaitSeconds) {
         $sup  = Get-SRBridgeSuppression
         $auth = Test-SRAuthReady
-        if (-not $sup -and $auth) {
+
+        # 🔴 THE TOKEN IS WARMED HERE, ONCE, AND BEFORE ANY SESSION EXISTS. An
+        # account can be signed in and its access token still be eight hours
+        # dead - which is the state of this machine at every boot. Doing it in
+        # one place, in one process, is the entire point: left to the queue,
+        # two dozen sessions each refresh for themselves and rotation means
+        # only the first can win.
+        if ($auth -and -not $warmed -and -not (Test-SRTokenLive)) {
+            $warmed = $true
+            $null = Invoke-SRTokenWarm
+        }
+        $live = Test-SRTokenLive
+
+        if (-not $sup -and $auth -and $live) {
             if ($said) { Write-SRLog ("  [ok]   the bridge is ready after {0:N0}s of waiting" -f $sw.Elapsed.TotalSeconds) }
             return $true
         }
@@ -2028,15 +2151,24 @@ function Wait-SRBridgeReady {
             $why = @()
             if ($sup)       { $why += ("the remote bridge is suppressed until {0}" -f $sup.ToString('HH:mm:ss')) }
             if (-not $auth) { $why += 'claude does not report a signed-in account yet' }
+            if ($auth -and -not $live) {
+                $exp = Get-SRTokenExpiry
+                $why += ("the access token is not live{0}" -f $(if ($exp) { " (expired {0:HH:mm})" -f $exp } else { '' }))
+            }
             Write-SRLog ("  [wait] holding the restore - {0}" -f ($why -join '; '))
             $said = $true
         }
         Start-Sleep -Seconds 10
     }
-    # 🔴 LAUNCH ANYWAY AT THE CAP. Sessions back without Remote Control is a far
-    # better morning than no sessions at all, and the cap keeps this well inside
-    # the scheduled task's execution limit.
-    Write-SRLog ("  [skip] the bridge was still not ready after {0}s - launching regardless" -f $MaxWaitSeconds)
+    # 🔴 THIS USED TO SAY "LAUNCH ANYWAY", AND THAT REASONING PREDATED KNOWING
+    # WHAT WAS ACTUALLY BROKEN. It read: sessions back without Remote Control is
+    # a far better morning than no sessions at all. It is not - it is the WORSE
+    # morning, and it is the one the operator kept having. Two dozen sessions
+    # that look alive, cannot reach Remote Control, and have to be killed and
+    # relaunched by hand is strictly more work than an empty desktop and one
+    # press of Sign in. The caller decides what to do with $false now; this only
+    # reports the truth.
+    Write-SRLog ("  [fail] auth was still not ready after {0}s" -f $MaxWaitSeconds)
     return $false
 }
 

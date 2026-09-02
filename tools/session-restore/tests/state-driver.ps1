@@ -1541,6 +1541,69 @@ if (-not (Test-Path -LiteralPath $shReal)) {
 }
 
 Write-Host ''
+Write-Host ''
+Write-Host '--- the access token gate that stops a doomed restore ---'
+# ===========================================================================
+# 🔴 THE DAILY SIGN-IN, DIAGNOSED 2026-09-02. `claude auth status` answers
+# "are there credentials", never "is the token alive" - measured, its payload
+# carries no expiry field at all. The access token lives 8 HOURS and this
+# machine is off overnight, so at every boot it is already dead while the
+# refresh token still has weeks on it. The restore gate passed on loggedIn:true
+# and launched 24 sessions a second apart into that dead token; each refreshed
+# for itself, and the operator re-signed-in and relaunched by hand every
+# morning. Get-SRTokenExpiry / Test-SRTokenLive are the missing half.
+#
+# 🪤 SANDBOXED, BECAUSE THE REAL ONE MUST NOT BE TOUCHED. These read
+# $env:USERPROFILE, so the test points that at a temp home holding a crafted
+# credential. A test that can reach the live credential file is one that can
+# sign the operator out, and the dead-token branch is the whole point of the
+# feature - it can never be exercised against a healthy machine.
+$authWas = $env:USERPROFILE
+$authTmp = Join-Path $SR_StateDir ('authgate-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+try {
+    $null = New-Item -ItemType Directory -Path (Join-Path $authTmp '.claude') -Force
+    $credP = Join-Path (Join-Path $authTmp '.claude') '.credentials.json'
+    function Set-TestCred { param([double]$HoursFromNow)
+        $ms = [DateTimeOffset]::new((Get-Date).AddHours($HoursFromNow)).ToUnixTimeMilliseconds()
+        $o = @{ claudeAiOauth = @{ accessToken = 'x'; refreshToken = 'y'; expiresAt = $ms } }
+        $o | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $credP -Encoding UTF8
+    }
+    $env:USERPROFILE = $authTmp
+
+    Set-TestCred -HoursFromNow 8
+    $e8 = Get-SRTokenExpiry
+    if (-not $e8) { Fail 'a healthy credential read back as unreadable' }
+    elseif (-not (Test-SRTokenLive)) { Fail 'a token with 8 hours left was called not-live' }
+    else { Pass 'a token with 8 hours left is live' }
+
+    # The state this machine is in at EVERY boot.
+    Set-TestCred -HoursFromNow -2
+    if (Test-SRTokenLive) { Fail 'a token that expired two hours ago was called live - this is the daily defect' }
+    else { Pass 'a token that expired two hours ago is not live' }
+
+    # 🔴 AND THE MARGIN, which is the difference between a gate that works
+    # and one that passes a token dead before the queue finishes launching.
+    Set-TestCred -HoursFromNow 0.05
+    if (Test-SRTokenLive) { Fail 'a token with 3 minutes left passed a 10-minute margin' }
+    else { Pass 'a token inside the margin is refused, so a staggered queue cannot outlive it' }
+
+    # 🪤 UNREADABLE IS NOT A VERDICT. This tool does not own that file, and a
+    # shape it does not recognise must not become a reason to refuse the
+    # operator's morning - it falls through to the account check instead.
+    Set-Content -LiteralPath $credP -Value '{"something":"else"}' -Encoding UTF8
+    if (-not (Get-SRTokenExpiry)) { Pass 'an unrecognised credential shape reads as unknown' }
+    else { Fail 'an unrecognised credential shape produced an expiry' }
+    if (Test-SRTokenLive) { Pass 'and unknown does not block the restore' }
+    else { Fail 'an unreadable credential blocked the restore - that would strand a machine this tool cannot read' }
+
+    Remove-Item -LiteralPath $credP -Force -ErrorAction SilentlyContinue
+    if (Test-SRTokenLive) { Pass 'a missing credential file likewise does not block it' }
+    else { Fail 'a missing credential file blocked the restore' }
+} finally {
+    $env:USERPROFILE = $authWas
+    Remove-Item -LiteralPath $authTmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host '--- the answered-question card, from real records ---'
 # 🪤 NOT $PSScriptRoot. The runner SPLICES each driver into a generated harness
 # under .state\ and runs THAT, so inside a suite $PSScriptRoot is .state and not

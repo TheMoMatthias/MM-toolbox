@@ -5654,6 +5654,22 @@ $script:signInFrom = $null
 # 🪤 Quiet until it matters. A healthy bridge draws nothing at all - a chip that
 # is always there is a chip nobody reads, and this row is deliberately sparse.
 function Update-BridgeNote {
+    # 🔴 THE TOKEN COMES FIRST, BECAUSE IT IS THE ONE THAT ACTUALLY STOPS THE
+    # MORNING. Diagnosed 2026-09-02: the access token lives 8 hours, this
+    # machine is off overnight, and NOTHING on this surface ever said so - the
+    # window looked perfectly signed in while every session launched at boot
+    # came up unauthorized. A suppressed bridge is survivable; a dead token is
+    # not, so it outranks the bridge note and uses the same one line.
+    $exp = $null
+    try { $exp = Get-SRTokenExpiry } catch { }
+    if ($exp -and -not (Test-SRTokenLive)) {
+        $ui.BridgeNote.Text = 'signed in - token expired'
+        $ui.BridgeNote.Foreground = $window.FindResource('HueBad')
+        $ui.BridgeNote.ToolTip = ('Your account is signed in, but its access token expired at {0:HH:mm} and every new session would come up unauthorized. It refreshes on its own once something asks it to - press Sign in if it does not. Your REFRESH token is good until well into next month, so this is not a real sign-out.' -f $exp)
+        $ui.BridgeNote.Visibility = $V_Show
+        return
+    }
+
     $b = $null
     try { $b = Get-SRBridgeState } catch { }
     if (-not $b -or -not $b.Ok) { $ui.BridgeNote.Visibility = $V_Hide; return }
@@ -5703,14 +5719,26 @@ $ui.SignIn.Add_Click({
     try {
         # A REAL, VISIBLE terminal: signing in is an interactive flow with a
         # browser round trip, and it is the operator's to complete.
+        #
+        # 🔴 `claude auth login`, NOT `claude /login`. The second one STARTS AN
+        # INTERACTIVE CONVERSATION and types a slash command into it - so every
+        # single sign-in left a real transcript behind. Found by tracing a
+        # nameless, blank conversation that the window was listing as live: it
+        # was this morning's sign-in, seven records long, containing /login and
+        # "Login successful". In a tool whose whole job is deciding which
+        # conversations exist and which reopen at logon, the sign-in button was
+        # quietly manufacturing one every time it was pressed, and each one is
+        # then a candidate for tomorrow's restore.
+        # `auth login` is the dedicated command - same browser round trip, no
+        # session, no transcript.
         $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
         if ($wt) {
             Start-Process 'wt.exe' -ArgumentList @(
                 'new-tab', '--title', 'Claude sign-in',
-                'powershell', '-NoExit', '-NoProfile', '-Command', 'claude /login') | Out-Null
+                'powershell', '-NoExit', '-NoProfile', '-Command', 'claude auth login') | Out-Null
         } else {
             Start-Process 'powershell.exe' -ArgumentList @(
-                '-NoExit', '-NoProfile', '-Command', 'claude /login') | Out-Null
+                '-NoExit', '-NoProfile', '-Command', 'claude auth login') | Out-Null
         }
     } catch { $why = $_.Exception.Message }
     if ($why) { Set-Status ('could not open a terminal to sign in: ' + $why) 'bad'; return }
