@@ -1604,6 +1604,47 @@ try {
     Remove-Item -LiteralPath $authTmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+Write-Host ''
+Write-Host '--- the restore warms the token by launching ONE, then waits ---'
+# ===========================================================================
+# 🔴 SOURCE-SHAPE, AND SAYING SO. The thing this guards is a BOOT with a
+# dead token, which cannot be staged here: it would mean expiring the
+# operator's real credential. So this asserts the SEQUENCE in the script rather
+# than the behaviour, and is deliberately narrow - it checks the three
+# properties that were each, at some point today, wrong.
+$rsSrc = ((Get-Content -LiteralPath (Join-Path $SR_LibDir 'restore-sessions.ps1') -Encoding UTF8) |
+          Where-Object { -not ($_.TrimStart().StartsWith('#')) }) -join "`n"
+
+# 1. It must not refuse BEFORE launching anything - that was the first version,
+#    and it meant a dead token produced no sessions at all even though one
+#    session is exactly what refreshes it.
+$loopAt = $rsSrc.IndexOf('foreach ($e in $wanted)')
+$stopAt = $rsSrc.IndexOf('STOPPING after 1 conversation')
+if ($loopAt -lt 0 -or $stopAt -lt 0) {
+    Fail 'the restore no longer has the launch loop or the warm-up stop - the sequence cannot be checked'
+} elseif ($stopAt -lt $loopAt) {
+    Fail 'the restore refuses BEFORE it launches anything - but launching one is what refreshes the token'
+} else {
+    Pass 'the stop happens inside the launch loop, after the first conversation'
+}
+
+# 2. It must WAIT for the token to go live. Launching one and carrying straight
+#    on leaves the other 23 racing the same dead token, which is the original
+#    defect with one extra step in front of it.
+if ($rsSrc -notmatch 'while[^
+]*Test-SRTokenLive') {
+    Fail 'nothing waits for the token to go live after the first launch - the rest would race it exactly as before'
+} else { Pass 'it holds the queue until the token is actually live' }
+
+# 3. And a hold has to be audible, because the restore runs at logon when
+#    nobody is watching a console.
+if ($rsSrc -notmatch 'Show-SRDesktopNote') {
+    Fail 'a held restore raises no desktop notification - an empty desktop with the reason only in a log file'
+} else { Pass 'a held restore raises a desktop notification' }
+
+if (Get-Command Show-SRDesktopNote -ErrorAction SilentlyContinue) { Pass 'Show-SRDesktopNote is defined' }
+else { Fail 'Show-SRDesktopNote is not defined' }
+
 Write-Host '--- the answered-question card, from real records ---'
 # 🪤 NOT $PSScriptRoot. The runner SPLICES each driver into a generated harness
 # under .state\ and runs THAT, so inside a suite $PSScriptRoot is .state and not

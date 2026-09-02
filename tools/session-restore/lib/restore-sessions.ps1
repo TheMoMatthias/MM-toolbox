@@ -155,13 +155,24 @@ function Invoke-Restore {
         # difference is that a dead TOKEN makes every launched session useless,
         # and a suppressed bridge does not.
         if (-not (Wait-SRBridgeReady -MaxWaitSeconds 300)) {
-            if (-not (Test-SRTokenLive)) {
-                $exp = Get-SRTokenExpiry
-                $when = $(if ($exp) { " It expired at {0:HH:mm}." -f $exp } else { '' })
-                Write-SRFail ("NOT RESTORING: the access token is not live.{0} Every session launched now would come up unauthorized and need relaunching by hand. Press Sign in (or run: claude auth login), then restore again - your refresh token is what expires monthly, not daily, so this should be rare." -f $when)
-                return 1
+            if (Test-SRTokenLive) {
+                Write-SRWarn 'the remote bridge is not ready - restoring anyway; the sessions will work but may not reach Remote Control for a while'
             }
-            Write-SRWarn 'the remote bridge is not ready - restoring anyway; the sessions will work but may not reach Remote Control for a while'
+        }
+        # 🔴 WARM BY LAUNCHING THE FIRST SESSION, NOT BY GUESSING WHICH COMMAND
+        # REFRESHES. There is no `claude auth refresh`, and whether `auth status`
+        # refreshes is undocumented - so this no longer DEPENDS on it. What is
+        # certain is that a real session refreshes, because that is precisely
+        # what all 24 of them were doing every morning and racing each other to
+        # do. So: launch ONE, wait until the token is actually live, then
+        # release the rest. The warm-up is work that was wanted anyway - no
+        # extra call, and above all NO GHOST CONVERSATION, which is what ruled
+        # out `claude -p`.
+        $script:warmNeeded = -not (Test-SRTokenLive)
+        if ($script:warmNeeded) {
+            $exp0 = Get-SRTokenExpiry
+            Write-SRStep ("the access token is not live{0} - launching one conversation first to refresh it, then the rest" -f `
+                          $(if ($exp0) { " (expired {0:HH:mm})" -f $exp0 } else { '' }))
         }
     } else {
         $sup = Get-SRBridgeSuppression
@@ -196,6 +207,10 @@ function Invoke-Restore {
         Write-SRStep "capped at $cap most recent - $dropped conversation$(if($dropped -eq 1){''}else{'s'}) not restored this run (raise maxSessions in the config if you want more)"
     }
 
+    # 🪤 RESET IT EXPLICITLY. The window calls this in-process, so a
+    # $script: variable left true by an earlier run would make the next restore
+    # stop after one conversation for no reason at all.
+    if (-not $script:warmNeeded) { $script:warmNeeded = $false }
     $launched = 0; $skipped = 0; $failed = 0
     $staleDays = [double]$cfg.recencyDays
     # Ids we opened a tab for, so it can be PROVED they came up rather than assumed.
@@ -273,6 +288,36 @@ function Invoke-Restore {
                 Write-SRLog "         STALE - $label ticked but untouched for ${ageDays}d"
             }
             $launched++
+
+            # 🔴 THE GATE, AND IT IS HERE RATHER THAN BEFORE THE LOOP BECAUSE
+            # THE FIRST LAUNCH IS THE THING THAT WARMS IT. Hold the queue until
+            # this one has actually refreshed the token, then let the rest go.
+            # Without this wait the other 23 start against the same dead token
+            # and race exactly as before - the launch alone is not the fix, the
+            # WAITING is.
+            if ($script:warmNeeded) {
+                $warmSw = [Diagnostics.Stopwatch]::StartNew()
+                while ($warmSw.Elapsed.TotalSeconds -lt 120 -and -not (Test-SRTokenLive)) {
+                    Start-Sleep -Seconds 3
+                }
+                if (Test-SRTokenLive) {
+                    $script:warmNeeded = $false
+                    Write-SRLog ('  [ok]   the token went live after {0:N0}s - releasing the other conversations' -f $warmSw.Elapsed.TotalSeconds)
+                } else {
+                    # 🪤 STOP HERE. One session up and unauthorized is a nuisance;
+                    # two dozen is the morning the operator kept having, and every
+                    # one of them has to be killed and relaunched by hand.
+                    $exp = Get-SRTokenExpiry
+                    $when = $(if ($exp) { " It expired at {0:HH:mm}." -f $exp } else { '' })
+                    Write-SRFail ("STOPPING after 1 conversation: the access token would not refresh.{0} The rest are NOT being launched, because they would come up unauthorized and need relaunching by hand. Press Sign in in the Sessions window (or run: claude auth login), then restore again." -f $when)
+                    try {
+                        $null = Show-SRDesktopNote -Title 'Claude sessions - not restored' `
+                                   -Message 'Your access token could not be refreshed, so the conversations were not reopened. Open Sessions and press Sign in.'
+                    } catch { }
+                    return 1
+                }
+            }
+
             # Breathing room between tabs so Windows Terminal does not race itself.
             # Was 1200 ms, which at the 12-session cap was 14 seconds of pure sleeping
             # at every logon; 500 ms keeps a margin and cuts that to five.

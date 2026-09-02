@@ -2037,6 +2037,52 @@ function Test-SRAuthReady {
 # comfortably covers a staggered queue.
 $SR_TokenMarginSeconds = 600
 
+# ===========================================================================
+# SAY IT ON THE DESKTOP, because the restore runs when nobody is watching.
+#
+# 🔑 THE HOLD IS ONLY AN IMPROVEMENT IF IT IS HEARD. Refusing to launch into a
+# dead token is right when the operator is at the machine and useless when they
+# are not: an empty desktop and a line in .state\restore.log they would have to
+# know to open. A toast is waiting for them the moment they sit down.
+#
+# 🪤 A SCHEDULED TASK CANNOT REACH A PHONE. Remote Control is exactly what is
+# broken in the case this fires, so this is the furthest a notification can
+# honestly travel - and saying so here stops the next reader adding a push that
+# could never work.
+function Show-SRDesktopNote { param([string]$Title = 'Claude sessions', [Parameter(Mandatory)][string]$Message)
+    # WinRT first: a real toast, which persists in the Action Center rather than
+    # vanishing after a few seconds like a tray balloon.
+    try {
+        $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+        $tpl = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(
+                   [Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+        $texts = $tpl.GetElementsByTagName('text')
+        $texts.Item(0).AppendChild($tpl.CreateTextNode($Title))   | Out-Null
+        $texts.Item(1).AppendChild($tpl.CreateTextNode($Message)) | Out-Null
+        $toast = [Windows.UI.Notifications.ToastNotification]::new($tpl)
+        # The PowerShell shortcut's AppId - the only one guaranteed to be
+        # registered on a stock machine. A made-up AppId silently shows nothing.
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier(
+            '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe').Show($toast)
+        return $true
+    } catch { }
+    # Tray balloon: no WinRT, no Action Center, but it is seen.
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $ni = New-Object System.Windows.Forms.NotifyIcon
+        $ni.Icon = [System.Drawing.SystemIcons]::Warning
+        $ni.BalloonTipTitle = $Title
+        $ni.BalloonTipText = $Message
+        $ni.Visible = $true
+        $ni.ShowBalloonTip(20000)
+        Start-Sleep -Seconds 6
+        $ni.Dispose()
+        return $true
+    } catch { }
+    Write-SRLog '  [skip] could not raise a desktop notification'
+    return $false
+}
+
 function Get-SRCredentialsPath {
     return (Join-Path (Join-Path $env:USERPROFILE '.claude') '.credentials.json')
 }
