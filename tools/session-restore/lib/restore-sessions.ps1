@@ -307,6 +307,15 @@ function Invoke-Restore {
                     # 🪤 STOP HERE. One session up and unauthorized is a nuisance;
                     # two dozen is the morning the operator kept having, and every
                     # one of them has to be killed and relaunched by hand.
+                    #
+                    # 🔑 AND THE ONE ALREADY LAUNCHED IS LEFT RUNNING - decided
+                    # 2026-09-02, not an accident of where the return sits. It is
+                    # visible in the window, it is one row rather than twenty-four,
+                    # and Relaunch already knows how to swap it onto the new login
+                    # once the sign-in lands. The alternative is killing a live
+                    # claude process from inside a failure handler, which is the
+                    # worst possible place to put a destructive path: a bug there
+                    # takes down something the operator wanted.
                     $exp = Get-SRTokenExpiry
                     $when = $(if ($exp) { " It expired at {0:HH:mm}." -f $exp } else { '' })
                     Write-SRFail ("STOPPING after 1 conversation: the access token would not refresh.{0} The rest are NOT being launched, because they would come up unauthorized and need relaunching by hand. Press Sign in in the Sessions window (or run: claude auth login), then restore again." -f $when)
