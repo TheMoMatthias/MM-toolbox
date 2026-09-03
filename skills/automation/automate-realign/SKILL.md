@@ -6,6 +6,30 @@ argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 
 # automate-realign
 
+> 🔴 **§0 IS MANDATORY AND RUNS FIRST — IT ABSORBS `automate-lane-check`, WHICH IS NO LONGER A
+> SEPARATE SKILL:**
+> ```
+> venv/Scripts/python.exe "$HOME/.claude/skills/automate-lane-check/lane_check.py" --as-realign-input
+> ```
+> **It answers the one thing you CANNOT get from your own context: WHICH RULINGS LANDED WHILE YOU
+> WERE BUSY.** ⚖️ Nothing else in the programme tells a lane a ruling arrived, and silence on a
+> disputed ruling is taken as ASSENT. **Read its `RULINGS` section before writing a single line of
+> your block; a sweep that misses a ruling landed against your own row is not a sweep.**
+>
+> 🔒 **WHEN THIS SKILL RUNS — it is no longer ad-hoc:** **① whenever the orchestrator asks** (they
+> now rotate it across lanes every check-in) · **② ALWAYS before your row closes** — `R-107` §3
+> refuses a closed lane's trailer, so anything you still hold becomes unrecoverable at close ·
+> **③ ALWAYS when you are about to report *nothing outstanding*.** 📏 **Measured across one day that
+> claim was sincere and wrong three times out of three, and what it omitted was never work anyone
+> had forgotten: a promise made mid-message, a question routed once and never answered, and a
+> decision that only ever existed in conversation.**
+>
+> 🔑 **AND GRADE EVERY FIGURE YOUR BLOCK CARRIES (`R-328` ①): `measured-by-me` / `relayed` /
+> `documented`.** `relayed` is not forbidden; publishing it UNLABELLED is. **A block that hands the
+> orchestrator an ungraded number is how a wrong figure reaches another lane's brief — measured
+> four times in one day.**
+
+
 **The deliverable is work resumed correctly, plus one block ORCHESTRATOR can act on without
 asking you anything back.** §0 and §1 make it honest, §5 is the point, §6 is what they read.
 

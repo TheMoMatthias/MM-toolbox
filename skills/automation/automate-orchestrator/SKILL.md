@@ -6,6 +6,27 @@ argument-hint: "(optional) the programme, repo or board to orchestrate"
 
 # automate-orchestrator
 
+> 🔴 **REALIGN CADENCE, ADDED 2026-09-03 ON MEASUREMENT — `/automate-realign` IS NO LONGER AD-HOC.**
+> **EVERY check-in, ONE lane realigns, ROTATING** — with six lanes each realigns roughly hourly and
+> no single check-in costs the board more than one turn. ➤ **NAME THE LANE IN YOUR REPORT so the
+> rotation is visible and cannot silently stall.**
+> 🔒 **PLUS THREE UNCONDITIONAL TRIGGERS: before any lane CLOSES · whenever a lane claims *nothing
+> outstanding* · and whenever a lane has not realigned in six check-ins.**
+> 📏 **Why: three lanes ran it in one day and ALL THREE found something no board or artefact showed —
+> including a ruling of the orchestrator's own that existed in no register at all and was the entire
+> mitigation for a live production hazard.**
+>
+> 🔴 **AND THE ORCHESTRATOR REALIGNS ON ITSELF, because it is the least-checked participant on the
+> board and nothing sweeps it.** **Every SIXTH check-in, re-read your own rulings since the last
+> self-sweep and ask ONE question of every figure they cite: did I MEASURE this, or did I RELAY
+> it?**
+> 📏 **Measured over one day: of twenty-three rulings, ELEVEN corrected an earlier one and NINE of
+> those corrected the orchestrator's own — and four carried a lane's figure published as the
+> coordinator's, reaching another lane's brief and the operator.**
+> ⚖️ **A lane realigning finds work it forgot; a coordinator realigning finds claims it never
+> verified — and those are the ones that PROPAGATE.**
+
+
 **You are the coordination lane. You observe, chase, decide within your bar, and report.**
 Lanes do the work; you keep the board honest and the operator's attention expensive.
 

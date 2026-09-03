@@ -6,6 +6,19 @@ argument-hint: "(optional) lane names to report in full, or --all"
 
 # automate-lane-status
 
+> 🔴 **RETIRED 2026-09-03 — USE THE BOARD.** `python .github/scripts/status.py` now derives every
+> column this skill produced AND prints its own reading time (`R-308` §4), the deployed sha with its
+> age, and `N ruling(s) landed since <lane's last commit>`.
+> 📏 **Measured: invoked ZERO times in eleven hours of continuous orchestration, because the board
+> plus `ListAgents` plus the lane's own last message gave strictly more.**
+> 🔑 **The one column the board does NOT derive is a lane's STATED NEXT ITEM — and that is not a tool
+> problem: it lives in the lane's LAST MESSAGE, so it belongs in the orchestrator's state file
+> (`automate-orchestrator` §7), copied out when the message arrives.**
+> ⚠️ **`lane_status.py` still works and its NEXT extractor was fixed at `ebe22ab`; run the SCRIPT if
+> you want it. Do NOT invoke this as a skill** — a second, weaker view of the board is how a
+> coordinator reports a healthy board with lanes it believes are parked.
+
+
 **The orchestrator's tool.** It reads four sources that nobody maintains by hand, plus each
 lane's own words, and produces the board `automate-orchestrator` §8 step 1 needs — **without
 spending a single lane a turn.**

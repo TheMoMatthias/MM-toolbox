@@ -6,6 +6,15 @@ argument-hint: "(optional) a lane name, and/or --as-realign-input"
 
 # automate-lane-check
 
+> 🔴 **ABSORBED 2026-09-03 — DO NOT INVOKE THIS AS A SKILL.** `lane_check.py` is now
+> `/automate-realign`'s MANDATORY §0, run as `lane_check.py --as-realign-input`.
+> 📏 **Measured over one day: ZERO lanes invoked it standing alone, while `/automate-realign` was
+> run three times and found something real every time — so the TOOL was right and the second ENTRY
+> POINT was the waste.**
+> 🔒 **The SCRIPT is unchanged and is still the only thing that tells a lane which rulings landed
+> while it was busy. Everything below documents the tool; the invocation is realign's.**
+
+
 **The specialist lane's tool.** It answers four questions about *you* and stops.
 
 ```
