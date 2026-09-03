@@ -2126,7 +2126,20 @@ function Get-RunSummary { param($Calls)
 # adaptive breakpoints that change the pane width without the window moving.
 # FlowDocument has no max-width, so the right PagePadding is the only lever -
 # which is why it is arithmetic here rather than a property.
-$script:ReadMeasureChars = 100
+# 🔴 IT IS A CEILING, NOT A WIDTH, and that distinction is the whole of
+# "the text was cut off half the screen although the screen was empty". The
+# arithmetic below already grows the column with the pane and only starts
+# holding it back once the pane is wider than this many characters - so the
+# number was never a fixed column, it was the point at which growing stops.
+# At 100 it stopped at ~780px, which is most of a laptop pane and half of a
+# wide monitor: measured 806px pane -> 718px of text with the rest unused,
+# and that 718px would not have moved on a 2560px screen.
+#
+# 125 is the ceiling now. Past roughly this the eye starts losing the start of
+# the next line on the way back from the end of the last, which is the
+# complaint that put a cap here in the first place - so it is raised, not
+# removed. `readingWidth: full` in the config still takes the cap off entirely.
+$script:ReadMeasureChars = 125
 # The size the last layout settled on. The renderer reads it rather than a
 # literal, so type and measure can never disagree about how wide a line is.
 # 🪤 THESE TWO ARE SET BY Set-SRTypeScale AND ARE ONLY DECLARED HERE. They used

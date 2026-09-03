@@ -3036,6 +3036,32 @@ if ($script:PaneSize -gt 0 -and $script:PaneAdvanceEm -gt 0) { $chars = $colW / 
 Note ('pane {0:N0}px -> text column {1:N0}px (~{2:N0} chars), {3:N0}px unused on the right [readingWidth: {4}]' -f `
       $ui.PaneDoc.ActualWidth, $colW, $chars, $docM.PagePadding.Right, $script:readWidth)
 
+# 🔴 THE COLUMN GROWS WITH THE PANE, AND THEN STOPS. Reported as "the content
+# isn't scaling when we change the window size - the text was cut off half the
+# screen although the screen was empty". ReadMeasureChars is a CEILING, not a
+# width, and at 100 it stopped growing at ~780px - most of a laptop pane and
+# half of a wide monitor. Measured at two real widths rather than reasoned
+# about, because the arithmetic looks like a fixed column and is not.
+$Wwas = $W
+$W = 2600.0
+Lay
+$docW = New-Object System.Windows.Documents.FlowDocument
+Set-ReadMeasure -Doc $docW
+$paneWide = [double]$ui.PaneDoc.ActualWidth
+$colWide  = $paneWide - $docW.PagePadding.Left - $docW.PagePadding.Right
+$W = $Wwas
+Lay
+$ceil = ($script:ReadMeasureChars * $script:PaneSize * $script:PaneAdvanceEm) + $script:GutterW
+Note ('at a {0:N0}px window: pane {1:N0}px -> column {2:N0}px (~{3:N0} chars), ceiling {4:N0}px' -f `
+      2600.0, $paneWide, $colWide, ($colWide / ($script:PaneSize * $script:PaneAdvanceEm)), $ceil)
+if ($colWide -le $colW + 1) {
+    Fail ('the text column did not grow when the pane widened: {0:N0}px at a {1:N0}px pane, {2:N0}px at a {3:N0}px one' -f $colW, $ui.PaneDoc.ActualWidth, $colWide, $paneWide)
+} elseif ($colWide -gt $ceil + 3) {
+    Fail ('the column grew past its ceiling: {0:N0}px against {1:N0}px - long lines are what the cap exists to prevent' -f $colWide, $ceil)
+} else {
+    Pass ('the text column grows with the pane and stops at its ceiling ({0:N0}px -> {1:N0}px, cap {2:N0}px)' -f $colW, $colWide, $ceil)
+}
+
 # 🔴 SHOW THE PANELS THAT ARE COLLAPSED BY DEFAULT FIRST, OR THE SWEEP BELOW IS
 # A LIE. A collapsed panel realises no children, so walking the tree as the
 # window opens covers the list, the rail and the pane - and silently SKIPS the
