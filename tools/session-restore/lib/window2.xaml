@@ -1372,10 +1372,26 @@
                          ToolTip="What comes back at logon: every conversation by project, with the tick that decides."/>
           </StackPanel>
         </Border>
-        <!-- Column 1 is deliberately empty. It carried a row of band chips that
-             was never populated: the band headings inside the list already show
-             every count, and duplicating them in the chrome was the thing the
-             redesign set out to remove. -->
+        <!-- Column 1 carried a row of band chips that was never populated, and
+             stayed empty on purpose: the band headings inside the list already
+             show every count, and duplicating them in the chrome was the thing
+             the redesign set out to remove.
+
+             These two are not that. They are VIEW controls - the only place in
+             the window that says how much room the reading pane has - and they
+             live here rather than in the top bar because that bar has already
+             overlapped itself twice when something was added beside the search
+             box. Their labels say what pressing them DOES, not what is
+             currently true, which is the one thing a toggle must never get
+             backwards. -->
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
+                    Margin="14,0,0,0">
+          <Button x:Name="FoldRail" Content="Hide projects" Style="{StaticResource BtnSlim}"
+                  Margin="0,0,7,0"
+                  ToolTip="Collapse the projects column to give the conversation more room (Ctrl+1)"/>
+          <Button x:Name="FoldList" Content="Hide sessions" Style="{StaticResource BtnSlim}"
+                  ToolTip="Collapse the sessions column to a strip - conversations that need you stay visible (Ctrl+2)"/>
+        </StackPanel>
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
           <Button x:Name="Broadcast" Content="Send to many" Style="{StaticResource Btn}"/>
         </StackPanel>
@@ -1495,6 +1511,48 @@
                      ItemTemplate="{StaticResource SessionRowTpl}"
                      AutomationProperties.Name="sessions"/>
           </Grid>
+        </Border>
+
+        <!-- ============ THE SESSIONS COLUMN, COLLAPSED TO A STRIP ============
+             🔴 NOT TO NOTHING. Collapsing the list entirely reclaims the most
+             width and turns the tool off while you use it: this window's whole
+             job is saying which conversation is waiting on you, and with the
+             list hidden there is nowhere left for it to say so. A conversation
+             could sit needing you for as long as you were reading another one.
+
+             So the column narrows to a rail of dots instead - one per
+             conversation that needs you, in its band's accent, clickable to go
+             straight there. It costs about 44px of the width being reclaimed,
+             which is a twentieth of what the collapse gives back.
+
+             It shares Grid.Column 2 with ListPane and exactly one of them is
+             ever visible; the column's WIDTH is what actually changes. -->
+        <Border x:Name="ListStrip" Grid.Column="2" Visibility="Collapsed"
+                Background="{StaticResource Panel}" CornerRadius="12" Margin="3,4,3,10"
+                SnapsToDevicePixels="True"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+          <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.42" Color="#000000"/>
+          </Border.Effect>
+          <DockPanel Margin="0,11,0,11">
+            <TextBlock x:Name="StripCount" DockPanel.Dock="Top" Style="{StaticResource Caption}"
+                       HorizontalAlignment="Center" Margin="0,0,0,11" Text=""
+                       ToolTip="Conversations waiting on you"/>
+            <ScrollViewer VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
+              <ItemsControl x:Name="StripList"
+                            AutomationProperties.Name="conversations that need you">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border Background="Transparent" Cursor="Hand" Padding="0,6,0,6"
+                            ToolTip="{Binding Tip}">
+                      <Ellipse Width="10" Height="10" Fill="{Binding Accent}"
+                               HorizontalAlignment="Center"/>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </DockPanel>
         </Border>
 
         <GridSplitter x:Name="ListSplit" Grid.Column="3" Width="4" HorizontalAlignment="Stretch"

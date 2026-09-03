@@ -134,6 +134,7 @@ foreach ($n in @(
     'CastBox','CastWho','CastList','CastText','CastCancel','CastSend',
     'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'LivePane','LiveMark','LiveHead','LiveText',
+    'FoldRail','FoldList','ListStrip','StripList','StripCount',
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions','SignIn','BridgeNote',
@@ -307,38 +308,139 @@ function Set-Status { param([string]$Text, [string]$Kind = 'info')
 #
 # Dragged widths survive a squeeze, so widening puts back what was chosen.
 # ---------------------------------------------------------------------------
-function Set-Breakpoint {
+# 🔴 AND THE OPERATOR'S CHOICE OVERRIDES ALL OF IT, ALWAYS. Decided 2026-09-03,
+# asked as: if you collapse a column by hand and then resize across 1180px, what
+# wins? The width rule stops touching a column the moment you set it yourself,
+# until you set it back. The alternative - width wins below the breakpoints -
+# means the window silently undoes something you just did, and the rule for when
+# it will is written down nowhere the operator can see. On a wide monitor, which
+# is where this was asked for, the width rule never fires anyway.
+#
+# 🪤 $null IS A THIRD STATE AND IT IS LOAD-BEARING: unset means "follow the
+# width", which is not the same as "open". A [bool] here would make every
+# freshly-installed window behave as though the operator had pinned both columns
+# open, and the adaptive layout would be dead on a narrow screen.
+$SR_StripWidth = 44.0
+$script:foldRail = $null
+$script:foldList = $null
+# What Update-Columns last actually applied, so a resize that changes nothing
+# costs two property reads instead of a rebind. Deliberately not a bool pair:
+# '' can never equal a real key, so the first call always applies.
+$script:foldApplied = ''
+# Absent from the config means AUTO, not open - so a fresh install keeps the
+# adaptive behaviour and only a deliberate press pins a column either way.
+try {
+    $cfgFold = Get-SRConfig
+    if ($null -ne $cfgFold.PSObject.Properties['foldProjects']) { $script:foldRail = [bool]$cfgFold.foldProjects }
+    if ($null -ne $cfgFold.PSObject.Properties['foldSessions']) { $script:foldList = [bool]$cfgFold.foldSessions }
+} catch { }
+
+function Get-ColumnFold {
     $w = [double]$window.ActualWidth
     if ($w -le 0) { $w = [double]$window.Width }
-    if ($w -le 0) { return }
-
-    $want = $(if ($w -lt 900) { 'both' } elseif ($w -lt 1180) { 'rail' } else { '' })
-    if ($want -eq $script:squeezed) { return }
-
-    if ($script:squeezed -eq '' -and $ui.RailCol.Width.Value -gt 0) { $script:railWidth = [double]$ui.RailCol.Width.Value }
-    if ($script:squeezed -ne 'both' -and $ui.ListCol.Width.Value -gt 0) { $script:listWidth = [double]$ui.ListCol.Width.Value }
-
-    switch ($want) {
-        'both' {
-            $ui.RailPane.Visibility = $V_Hide; $ui.RailSplit.Visibility = $V_Hide
-            $ui.ListPane.Visibility = $V_Hide; $ui.ListSplit.Visibility = $V_Hide
-            $ui.RailCol.Width = New-Object System.Windows.GridLength 0
-            $ui.ListCol.Width = New-Object System.Windows.GridLength 0
-        }
-        'rail' {
-            $ui.RailPane.Visibility = $V_Hide; $ui.RailSplit.Visibility = $V_Hide
-            $ui.ListPane.Visibility = $V_Show; $ui.ListSplit.Visibility = $V_Show
-            $ui.RailCol.Width = New-Object System.Windows.GridLength 0
-            $ui.ListCol.Width = New-Object System.Windows.GridLength $script:listWidth
-        }
-        default {
-            $ui.RailPane.Visibility = $V_Show; $ui.RailSplit.Visibility = $V_Show
-            $ui.ListPane.Visibility = $V_Show; $ui.ListSplit.Visibility = $V_Show
-            $ui.RailCol.Width = New-Object System.Windows.GridLength $script:railWidth
-            $ui.ListCol.Width = New-Object System.Windows.GridLength $script:listWidth
-        }
+    # A window that has not been measured yet must not read as narrow, or the
+    # first layout would collapse both columns and then never put them back.
+    $autoRail = ($w -gt 0 -and $w -lt 1180)
+    $autoList = ($w -gt 0 -and $w -lt 900)
+    return @{
+        Rail = $(if ($null -ne $script:foldRail) { [bool]$script:foldRail } else { $autoRail })
+        List = $(if ($null -ne $script:foldList) { [bool]$script:foldList } else { $autoList })
     }
-    $script:squeezed = $want
+}
+
+function Update-Columns {
+    $s = Get-ColumnFold
+    # Capture a dragged width before it is collapsed away - but only while the
+    # column is actually showing, or the strip's 44px would be remembered as the
+    # sessions column's width and it would come back that wide.
+    if ("$($ui.RailPane.Visibility)" -eq 'Visible' -and $ui.RailCol.Width.Value -gt 0) {
+        $script:railWidth = [double]$ui.RailCol.Width.Value
+    }
+    if ("$($ui.ListPane.Visibility)" -eq 'Visible' -and $ui.ListCol.Width.Value -gt 0) {
+        $script:listWidth = [double]$ui.ListCol.Width.Value
+    }
+
+    # 🪤 THE EARLY RETURN IS NOT AN OPTIMISATION, IT IS THE POINT. This runs on
+    # every SizeChanged, and SizeChanged fires continuously while a window or a
+    # splitter is being dragged - so without this, Update-Strip would filter the
+    # whole model and rebind a list on every frame of a drag. The width capture
+    # above stays OUTSIDE the guard, because remembering a dragged width is
+    # exactly what happens while the state is NOT changing.
+    $key = ('{0}{1}' -f [int][bool]$s.Rail, [int][bool]$s.List)
+    if ($key -eq $script:foldApplied) { return }
+    $script:foldApplied = $key
+
+    if ($s.Rail) {
+        # The rail is a FILTER, not a status surface - nothing in it says a
+        # conversation needs you - so it collapses to nothing rather than to a
+        # strip. That is where the reclaimed width actually comes from.
+        $ui.RailPane.Visibility = $V_Hide; $ui.RailSplit.Visibility = $V_Hide
+        $ui.RailCol.Width = New-Object System.Windows.GridLength 0
+    } else {
+        $ui.RailPane.Visibility = $V_Show; $ui.RailSplit.Visibility = $V_Show
+        $ui.RailCol.Width = New-Object System.Windows.GridLength $script:railWidth
+    }
+
+    if ($s.List) {
+        $ui.ListPane.Visibility  = $V_Hide
+        $ui.ListSplit.Visibility = $V_Hide
+        $ui.ListStrip.Visibility = $V_Show
+        $ui.ListCol.Width = New-Object System.Windows.GridLength $SR_StripWidth
+        Update-Strip
+    } else {
+        $ui.ListStrip.Visibility = $V_Hide
+        $ui.ListPane.Visibility  = $V_Show
+        $ui.ListSplit.Visibility = $V_Show
+        $ui.ListCol.Width = New-Object System.Windows.GridLength $script:listWidth
+    }
+
+    # 🪤 THE LABEL SAYS WHAT PRESSING IT DOES, never what is currently true. A
+    # toggle labelled with its own state is the single most common way one gets
+    # read backwards.
+    $ui.FoldRail.Content = $(if ($s.Rail) { 'Show projects' } else { 'Hide projects' })
+    $ui.FoldList.Content = $(if ($s.List) { 'Show sessions' } else { 'Hide sessions' })
+}
+
+function Set-Breakpoint { Update-Columns }
+
+function Invoke-ColumnFold { param([string]$Which)
+    $s = Get-ColumnFold
+    if ($Which -eq 'rail') {
+        $script:foldRail = -not $s.Rail
+        try { $null = Save-SRConfigValue -Name 'foldProjects' -Value ([bool]$script:foldRail) } catch { }
+    } else {
+        $script:foldList = -not $s.List
+        try { $null = Save-SRConfigValue -Name 'foldSessions' -Value ([bool]$script:foldList) } catch { }
+    }
+    Update-Columns
+}
+
+# THE STRIP'S CONTENT - one dot per conversation that is waiting on you.
+#
+# Built from $script:model, which the sweep already maintains, so this costs a
+# filter over rows that are in memory and nothing on disk. Rebuilt only while
+# the strip is the thing on screen: a collapsed column that keeps re-binding a
+# list nobody can see is the kind of cost that shows up later as "the window
+# feels heavy".
+function Update-Strip {
+    if ("$($ui.ListStrip.Visibility)" -ne 'Visible') { return }
+    $rows = @()
+    try { $rows = @($script:model | Where-Object { "$($_.Band)" -eq 'needs' -and (Test-OnSurface $_) }) } catch { $rows = @() }
+    $acc = $window.FindResource('AccNeeds')
+    $items = New-Object System.Collections.Generic.List[object]
+    foreach ($r in $rows) {
+        $t = ''
+        try { $t = (Get-Title $r.S $r.D).Text } catch { $t = "$($r.Id)" }
+        $items.Add([PSCustomObject]@{
+            Id     = "$($r.Id)"
+            Accent = $acc
+            Tip    = ("{0} - needs you. Click to open it." -f $t)
+        })
+    }
+    $ui.StripList.ItemsSource = $items
+    # The count is the point of the strip, so it is stated even at zero: an
+    # empty rail with no number reads as broken rather than as quiet.
+    $ui.StripCount.Text = $(if ($items.Count) { "$($items.Count)" } else { [string][char]0x00B7 })
 }
 
 function Set-Surface { param([string]$Mode)
@@ -510,8 +612,18 @@ function Build-Manager {
             $cached = $script:mgrItems[$r.Id]
             if ($cached) { $items.Add($cached); continue }
             $t = $r.T
+            # 🔴 THE SAME FALLBACK THE WORK SURFACE ALREADY HAD, and its absence
+            # here is why the manager showed a blank cell for a RUNNING
+            # conversation. Measured on this machine: a live session with 158
+            # records - 24 user prompts, 44 inter-session messages and ZERO
+            # assistant turns. It has genuinely never spoken, so Get-SRLastSaid
+            # is right to return nothing; the row was still blank, which reads
+            # as the broken column this assertion was written for rather than as
+            # a session that has not answered yet. Build-Sessions falls through
+            # to Conv.Detail for exactly this case and this path did not.
             $saidText = ''
             if ($r.Said -and "$($r.Said.Said)".Trim()) { $saidText = ("$($r.Said.Said)".Trim() -replace '\s+', ' ') }
+            elseif ($r.Conv -and "$($r.Conv.Detail)".Trim()) { $saidText = "$($r.Conv.Detail)".Trim() }
             $items.Add([PSCustomObject]@{
                 Kind = 'conv'; Path = $k; Row = $r
                 ProjVis = $V_Hide; ConvVis = $V_Show
@@ -1470,6 +1582,9 @@ function Build-Sessions {
 function Update-Surface {
     Build-Rail
     Build-Sessions
+    # The strip is a second view of the same rows, so it refreshes on the same
+    # pass. It returns immediately when it is not the thing on screen.
+    Update-Strip
     # 🪤 $script:model.Count, NOT @($script:model).Count. The array subexpression
     # @() throws "Argument types do not match" when applied to a
     # System.Collections.Generic.List[object] on PowerShell 5.1 - full or empty,
@@ -2568,12 +2683,22 @@ function Test-SRCompacting { param($R)
         # seconds the session is still 'waiting' and the transcript still says
         # whatever it said before - which looks exactly like "finished" and
         # would close this panel before it ever drew.
-        if ($age -gt 12 -and "$($R.A.Status)" -ne 'busy' -and "$($R.D.State)" -ne 'summarising') {
+        if ($age -gt 12 -and "$($R.A.Status)" -ne 'busy' -and "$($R.Conv.State)" -ne 'summarising') {
             $script:compactSent.Remove($id); return $false
         }
         return $true
     }
-    return ("$($R.D.State)" -eq 'summarising')
+    # 🪤 $R.Conv.State, NOT $R.D.State. D is the DIRECTORY object a row belongs
+    # to and has no State at all, so this branch read an empty string and could
+    # never fire - a compact typed straight into the terminal was invisible here
+    # for exactly as long as the code looked correct. Get-Band:770 is the
+    # authority on where a row's state lives.
+    #
+    # 🔴 AND THE TEST DID NOT CATCH IT, IT ENCODED IT: the fixtures were
+    # hand-built with a D property shaped the way this function expected, so
+    # they proved the two agreed with each other and nothing about the rows the
+    # window actually holds. They are built from Conv now.
+    return ("$($R.Conv.State)" -eq 'summarising')
 }
 
 function Update-LivePane {
@@ -7493,6 +7618,30 @@ $ui.Broadcast.Add_Click({
     if ($script:surface -ne 'work') { $ui.ModeWork.IsChecked = $true; Set-Surface 'work' }
     Show-Cast
 })
+$ui.FoldRail.Add_Click({ Invoke-ColumnFold -Which 'rail' })
+$ui.FoldList.Add_Click({ Invoke-ColumnFold -Which 'list' })
+# A dot on the strip goes straight to that conversation - and opens the list
+# again, because you pressed it in order to do something with the session and
+# the next thing you want is to see it in context.
+$ui.StripList.Add_PreviewMouseLeftButtonUp({
+    param($sender, $e)
+    $el = $e.OriginalSource
+    $id = ''
+    while ($el) {
+        if ($el -is [System.Windows.FrameworkElement] -and $el.DataContext -and
+            $el.DataContext.PSObject.Properties['Id']) { $id = "$($el.DataContext.Id)"; break }
+        $el = [System.Windows.Media.VisualTreeHelper]::GetParent($el)
+    }
+    if (-not $id) { return }
+    # 🪤 SELECT IT, DO NOT RE-OPEN THE LIST. Un-collapsing here would undo the
+    # thing you just asked for the moment you used it - and the list does not
+    # need to be visible to work: Build-Sessions still binds it and restores the
+    # selection from $script:selId, which fires the usual handler and puts the
+    # conversation in the pane.
+    $script:selId = $id
+    Build-Sessions
+    Update-Strip
+})
 $ui.CastCancel.Add_Click({ Hide-Cast; Set-Status 'nothing sent' })
 $ui.CastText.Add_TextChanged({ $ui.CastSend.IsEnabled = (@($script:castPick.Keys).Count -gt 0 -and "$($ui.CastText.Text)".Trim().Length -gt 0) })
 $ui.CastList.Add_PreviewMouseLeftButtonDown({
@@ -7684,6 +7833,13 @@ $window.Add_PreviewKeyDown({
     # wants Ctrl+N for itself.
     if ($e.Key -eq 'N' -and ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control)) {
         Show-Spawn; $e.Handled = $true; return
+    }
+    # Ctrl+1 / Ctrl+2 fold the two columns, checked before the typing guard for
+    # the same reason as Ctrl+N: no text field wants them, and the moment you
+    # most want the pane wider is usually while you are reading something in it.
+    if ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) {
+        if ($e.Key -eq 'D1' -or $e.Key -eq 'NumPad1') { Invoke-ColumnFold -Which 'rail'; $e.Handled = $true; return }
+        if ($e.Key -eq 'D2' -or $e.Key -eq 'NumPad2') { Invoke-ColumnFold -Which 'list'; $e.Handled = $true; return }
     }
     if ($ui.Search.IsKeyboardFocusWithin -or $ui.SendBox.IsKeyboardFocusWithin) { return }
     if ($e.Key -eq 'Oem2') { $null = $ui.Search.Focus(); $e.Handled = $true; return }

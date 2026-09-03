@@ -11,6 +11,8 @@
 #   SR_SHOT_SIZE=1200x800    draw at another size, to see the adaptive breakpoints
 #   SR_SHOT_OUT=<path>       where to write it
 #   SR_SHOT_SHELLS=1         draw the running-shells panel (substituted rows)
+#   SR_SHOT_FOLD=list|rail|both   collapse a column, to see the reading pane
+#                            at the width the collapse actually buys
 #
 # 🪤 RENDER THE CONTENT, NOT THE WINDOW, AND PAINT THE GROUND FIRST. A Window
 # that has never been shown has no rendered visual root, so RenderTargetBitmap
@@ -25,6 +27,17 @@ $out = $env:SR_SHOT_OUT
 if (-not $out) { $out = Join-Path $SR_StateDir ('shots\{0}.png' -f (Get-Date -Format 'yyyyMMdd-HHmmss')) }
 
 if ($env:SR_SHOT_SURFACE -eq 'manage') { $ui.ModeManage.IsChecked = $true; Set-Surface 'manage' }
+
+# 🪤 SET THE STATE AND APPLY, never Invoke-ColumnFold - the button path writes
+# the operator's config, and a screenshot must not change the machine it is a
+# picture of.
+if ($env:SR_SHOT_FOLD) {
+    $f = "$($env:SR_SHOT_FOLD)".Trim().ToLower()
+    if ($f -eq 'rail' -or $f -eq 'both') { $script:foldRail = $true }
+    if ($f -eq 'list' -or $f -eq 'both') { $script:foldList = $true }
+    $script:foldApplied = ''
+    Update-Columns
+}
 
 # 🪤 THE SHEET CANNOT BE SEEN ANY OTHER WAY. It only ever appears while a caller
 # is parked on a nested dispatcher frame, so there is no moment at which a shot

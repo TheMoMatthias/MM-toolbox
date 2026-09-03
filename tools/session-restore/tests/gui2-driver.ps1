@@ -2759,6 +2759,114 @@ if (-not $phC) {
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- collapsing the projects and sessions columns ---'
+# ===========================================================================
+# Asked for: collapse the projects and sessions tabs so the pane where you read
+# a session gets bigger. Three decisions were put up and all three are asserted
+# here: the manual choice overrides the width rule, the sessions column
+# collapses to a STRIP rather than to nothing, and the labels say what pressing
+# them does.
+#
+# 🪤 Update-Columns, NOT Invoke-ColumnFold. The button path calls
+# Save-SRConfigValue, which writes the OPERATOR'S REAL CONFIG - a test that
+# flips a setting on the machine it runs on has changed the thing it was
+# measuring. The decision and the applier are exercised directly; the button is
+# checked for existence and its handler left alone.
+$foldRailWas = $script:foldRail
+$foldListWas = $script:foldList
+
+$absentFold = @(@('FoldRail', 'FoldList', 'ListStrip', 'StripList', 'StripCount') | Where-Object { -not $ui.$_ })
+if ($absentFold.Count) { Fail ("the collapse controls are missing: {0}" -f ($absentFold -join ', ')) }
+else { Pass 'the collapse controls are wired: two toggles, the strip, its list and its count' }
+if (-not (Get-Command Invoke-ColumnFold -ErrorAction SilentlyContinue)) {
+    Fail 'Invoke-ColumnFold is not defined - the buttons and Ctrl+1/Ctrl+2 have nothing to call'
+} else { Pass 'Invoke-ColumnFold is defined for the buttons and the shortcuts' }
+
+# Open, and remember the width it is opened at.
+$script:foldList = $false
+$script:foldApplied = ''
+Update-Columns
+Lay
+$listOpenW = [double]$ui.ListCol.Width.Value
+if ("$($ui.ListPane.Visibility)" -ne 'Visible' -or "$($ui.ListStrip.Visibility)" -eq 'Visible') {
+    Fail 'the sessions column is not showing when it is pinned open'
+} elseif ("$($ui.FoldList.Content)" -ne 'Hide sessions') {
+    Fail ("the toggle reads '{0}' while the column is open - a label that states its own state gets read backwards" -f $ui.FoldList.Content)
+} else { Pass ("open: the sessions column is {0:N0}px and the toggle offers to hide it" -f $listOpenW) }
+
+# 🔴 COLLAPSED TO A STRIP, NOT TO NOTHING. The window's whole job is saying
+# which conversation is waiting on you, and a collapse that hides that turns the
+# tool off while you use it.
+$script:foldList = $true
+$script:foldApplied = ''
+Update-Columns
+Lay
+if ("$($ui.ListPane.Visibility)" -eq 'Visible') {
+    Fail 'the sessions list is still drawn while the column is collapsed'
+} elseif ("$($ui.ListStrip.Visibility)" -ne 'Visible') {
+    Fail 'the column collapsed to nothing - a conversation can now need you with nowhere on screen to say so'
+} elseif ([Math]::Abs([double]$ui.ListCol.Width.Value - $SR_StripWidth) -gt 0.5) {
+    Fail ("the collapsed column is {0:N0}px, not the {1:N0}px strip" -f $ui.ListCol.Width.Value, $SR_StripWidth)
+} elseif ("$($ui.FoldList.Content)" -ne 'Show sessions') {
+    Fail ("the toggle reads '{0}' while the column is collapsed" -f $ui.FoldList.Content)
+} else {
+    Pass ("collapsed: a {0:N0}px strip stands in for the list, and the toggle offers to show it" -f $ui.ListCol.Width.Value)
+}
+$needs = @($script:model | Where-Object { "$($_.Band)" -eq 'needs' -and (Test-OnSurface $_) })
+$onStrip = @($ui.StripList.ItemsSource)
+if ($onStrip.Count -ne $needs.Count) {
+    Fail ("the strip shows {0} dot(s) for {1} conversation(s) that need you" -f $onStrip.Count, $needs.Count)
+} else {
+    Pass ("the strip carries one dot per conversation waiting on you ({0}), and says so: '{1}'" -f $onStrip.Count, $ui.StripCount.Text)
+}
+
+# 🪤 AND THE WIDTH COMES BACK. The strip's 44px must never be mistaken for the
+# column's own width, or re-opening would give you a 44px sessions list.
+$script:foldList = $false
+$script:foldApplied = ''
+Update-Columns
+Lay
+if ([Math]::Abs([double]$ui.ListCol.Width.Value - $listOpenW) -gt 1.0) {
+    Fail ("re-opening gave the column {0:N0}px instead of the {1:N0}px it had - the strip's width was remembered as its own" -f $ui.ListCol.Width.Value, $listOpenW)
+} else { Pass ("re-opening restores the width it had ({0:N0}px)" -f $listOpenW) }
+
+# The projects rail collapses to NOTHING, deliberately: it is a filter, and
+# nothing in it says a conversation needs you.
+$script:foldRail = $true
+$script:foldApplied = ''
+Update-Columns
+Lay
+if ("$($ui.RailPane.Visibility)" -eq 'Visible') { Fail 'the projects rail is still drawn while collapsed' }
+elseif ([double]$ui.RailCol.Width.Value -gt 0.5) { Fail ("the collapsed rail still takes {0:N0}px" -f $ui.RailCol.Width.Value) }
+else { Pass 'the projects rail collapses to nothing - it is a filter, not a status surface' }
+
+# 🔴 THE MANUAL CHOICE OVERRIDES THE WIDTH RULE. Asked and answered: your choice
+# wins, always. Get-ColumnFold must return what was set regardless of how wide
+# the window happens to be.
+$script:foldRail = $true; $script:foldList = $true
+$gc = Get-ColumnFold
+if (-not $gc.Rail -or -not $gc.List) { Fail 'a pinned-collapsed column reads as open - the width rule is overriding the operator' }
+else {
+    $script:foldRail = $false; $script:foldList = $false
+    $gc2 = Get-ColumnFold
+    if ($gc2.Rail -or $gc2.List) { Fail 'a pinned-open column reads as collapsed' }
+    else { Pass 'a column set by hand keeps that setting whatever the window width says' }
+}
+# 🪤 $null IS A THIRD STATE: unset means "follow the width", not "open". A bool
+# here would kill the adaptive layout on every fresh install.
+$script:foldRail = $null; $script:foldList = $null
+$gc3 = Get-ColumnFold
+if ($null -eq $gc3.Rail -or $null -eq $gc3.List) { Fail 'unset does not resolve to a decision at all' }
+else { Pass 'unset falls back to the width rule rather than to a pinned state' }
+
+$script:foldRail = $foldRailWas
+$script:foldList = $foldListWas
+$script:foldApplied = ''
+Update-Columns
+Lay
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the live screen while a compact runs ---'
 # ===========================================================================
 # 🔴 REPORTED: "when I compact a session, the session is not shown any longer
@@ -2771,14 +2879,39 @@ $missing = @($('LivePane','LiveMark','LiveHead','LiveText') | Where-Object { -no
 if ($missing.Count) { Fail ("the live-screen panel is missing: {0}" -f ($missing -join ', ')) }
 else { Pass 'the live-screen panel is wired: LivePane, LiveMark, LiveHead, LiveText' }
 
+# 🔴 SHAPED LIKE A REAL ROW, AND THAT IS THE WHOLE POINT. The first version of
+# these fixtures carried the state on a `D` property because that is what
+# Test-SRCompacting read - so the test proved the function agreed with the test
+# and nothing about the rows the window holds. D is the DIRECTORY object; the
+# state lives on Conv (see Get-Band). A hand-built fixture can only ever confirm
+# the shape its author believed in, which is why the shape here is copied from
+# Update-Model's own row rather than invented.
 $fakeId  = 'test-compact-0000'
 $rowBusy = [PSCustomObject]@{ Id = $fakeId
-                              A = [PSCustomObject]@{ Pid = 4242; Status = 'busy' }
-                              D = [PSCustomObject]@{ State = 'working' } }
+                              A    = [PSCustomObject]@{ Pid = 4242; Status = 'busy' }
+                              Conv = [PSCustomObject]@{ State = 'working' } }
 $rowIdle = [PSCustomObject]@{ Id = $fakeId
-                              A = [PSCustomObject]@{ Pid = 4242; Status = 'waiting' }
-                              D = [PSCustomObject]@{ State = 'waiting' } }
+                              A    = [PSCustomObject]@{ Pid = 4242; Status = 'waiting' }
+                              Conv = [PSCustomObject]@{ State = 'waiting' } }
 $script:compactSent.Remove($fakeId)
+
+# 🔑 THE FIXTURE IS CHECKED AGAINST A REAL ROW. This is the assertion that was
+# missing when the defect above shipped: without it, a hand-built row can agree
+# perfectly with a function that is reading the wrong property, and both can be
+# wrong together for as long as nobody looks at the window.
+$realRow = @($script:model | Where-Object { $_.Conv }) | Select-Object -First 1
+if (-not $realRow) {
+    Note 'no row with a Conv to check the fixture shape against - the shape check is skipped'
+} else {
+    $absent = @(@('Id', 'A', 'Conv') | Where-Object { $null -eq $realRow.PSObject.Properties[$_] })
+    if ($absent.Count) {
+        Fail ("a real row has no {0} - the compact fixtures are shaped like nothing the window holds" -f ($absent -join ', '))
+    } elseif ($null -eq $realRow.Conv.PSObject.Properties['State']) {
+        Fail 'a real row''s Conv carries no State - Test-SRCompacting is reading a property that does not exist'
+    } else {
+        Pass 'the compact fixtures carry the properties a real row actually has'
+    }
+}
 
 if (Test-SRCompacting $rowBusy) { Fail 'a session nobody compacted reads as compacting - the pane would be replaced at random' }
 else { Pass 'a session nobody compacted is left alone' }
@@ -2808,8 +2941,8 @@ $script:compactSent.Remove($fakeId)
 # The other signal: a compact typed straight into the terminal, which this
 # window never saw sent.
 $rowSumm = [PSCustomObject]@{ Id = 'test-compact-other'
-                              A = [PSCustomObject]@{ Pid = 4242; Status = 'busy' }
-                              D = [PSCustomObject]@{ State = 'summarising' } }
+                              A    = [PSCustomObject]@{ Pid = 4242; Status = 'busy' }
+                              Conv = [PSCustomObject]@{ State = 'summarising' } }
 if (-not (Test-SRCompacting $rowSumm)) { Fail 'a compact typed in the terminal is invisible here' }
 else { Pass 'a compact typed in the terminal is picked up from the transcript' }
 
