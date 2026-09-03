@@ -78,14 +78,40 @@ BIND = {
         "CLOSE BAR (R-229 s3, as amended R-235/R-236): DONE-WHEN - every finding you raised",
         "dispositioned - no red on main attributable to you - a qualifying R-148 run OR every",
         "deciding-job failure PROVEN FOREIGN by baseline subset. Show the subset, do not assert it.",
-        "R-235: the DISPOSITION field is not built yet, so this is a THREE-condition bar today.",
     ],
+    # R-343 s1: this line ASSERTED "the DISPOSITION field is not built yet, so this is a
+    # THREE-condition bar today" and was WRONG from the moment R-235 landed it -- every lane
+    # running this skill was handed a stale blocker and told its bar was one condition shorter
+    # than it is. Caught by SUITE-1, who BUILT the field. It is derived now, so it cannot rot
+    # the same way: the ceilings file is the authority and this reads it.
+    "disposition_ceilings": ("docs/refactor/ratchet_ceilings.json",
+                             ("c8_no_disposition", "c8_bad_disposition")),
 }
 # ════════════════════════════════════════════════════════════════════════════════════════
 # ██  END PROJECT BINDINGS  ██
 # ════════════════════════════════════════════════════════════════════════════════════════
 
 REPO = os.environ.get("AUTOMATE_LANE_REPO") or os.getcwd()
+
+
+def disposition_bar_line():
+    """R-343 s1: DERIVE whether the DISPOSITION condition is live, never assert it.
+
+    Returns the 4th close-bar line, read from ratchet_ceilings.json at HEAD, so a
+    future build or retirement moves it by itself instead of rotting in a literal.
+    """
+    path, keys = BIND["disposition_ceilings"]
+    try:
+        blob = json.loads(git("show", "origin/main:" + path) or "{}")
+    except Exception:
+        return "  DISPOSITION condition UNKNOWN (could not read %s) -- do not assume." % path
+    ceil = blob.get("ceilings", blob)
+    live = [k for k in keys if k in ceil]
+    if not live:
+        return "  DISPOSITION field NOT PRESENT in %s -- three-condition bar." % path
+    vals = ", ".join("%s=%s" % (k, ceil[k].get("value")) for k in live)
+    return ("  DISPOSITION field IS LIVE (" + vals + ") -- FOUR-condition bar. Every OPEN "
+            "finding you raised needs IN-SCOPE / ROUTED / REFUTED in its own cell.")
 
 
 def git(*a):
@@ -192,6 +218,7 @@ def report(d):
     print("-" * 66)
     for line in BIND["close_bar"]:
         print(line)
+    print(disposition_bar_line())
 
 
 def report_realign(d):
@@ -253,6 +280,7 @@ def report_realign(d):
     print("")
     for n, line in enumerate(BIND["close_bar"]):
         print("%-11s %s" % ("CLOSE-BAR" if n == 0 else "", line))
+    print("%-11s %s" % ("", disposition_bar_line().strip()))
     print("")
     print("UNSWEPT     THIS BLOCK IS STEP 1 ONLY. It sweeps ARTEFACTS. It has NOT read your")
     print("            conversation, so step 0's five lines -- UNANSWERED, PROMISED,")
