@@ -3218,6 +3218,53 @@ if ($colWide -le $colW + 1) {
     Pass ('the text column grows with the pane and stops at its ceiling ({0:N0}px -> {1:N0}px, cap {2:N0}px)' -f $colW, $colWide, $ceil)
 }
 
+# ===========================================================================
+Write-Host ''
+Write-Host '--- every derived metric, against the thing it derives from ---'
+# ===========================================================================
+# 🔴 THIS BLOCK EXISTS BECAUSE THE SAME DEFECT HAPPENED FOUR TIMES IN ONE DAY,
+# and every instance was a number or a name that outlived what it was measured
+# from, with no symptom until something adjacent was touched:
+#
+#   0.52 em   Manrope's average advance, still in the measure after the pane
+#             went monospaced - a column asked for 100 characters, built for 87.
+#   1.38      a second copy of the leading factor inside Set-ReadMeasure, which
+#             runs on every layout, silently beating the 1.48 the scale sets.
+#   'Manrope' named in three test assertions, which then failed on twelve
+#             controls that were drawing exactly what they should.
+#   $R.D.State  a property read off the wrong object, with a hand-built fixture
+#             shaped to match the mistake.
+#
+# The rule this encodes: a derived value is asserted against its SOURCE, never
+# against a literal. Three of the four above are caught here and by the advance
+# and leading checks above; the fourth is caught by the fixture-shape assertion
+# in the compact block. Adding a metric means adding its check here.
+
+# The gutter must hold the marker it exists for. It is a fixed pixel column and
+# the glyph inside it is sized from the face - so a wider face silently pushes
+# the marker out of its own column, and the prose would no longer line up with
+# the rail blocks beside it.
+$glyphW = $script:PaneSize * $script:PaneAdvanceEm
+if ($script:GutterW -lt ($glyphW * 1.5)) {
+    Fail ('the gutter is {0:N1}px but one marker glyph is {1:N1}px in this face - the marker will not fit its column' -f $script:GutterW, $glyphW)
+} else {
+    Pass ('the gutter holds its marker with room after it ({0:N1}px column, {1:N1}px glyph)' -f $script:GutterW, $glyphW)
+}
+
+# 🔴 ONE SIZE MEANS ONE SIZE. The six-step scale is collapsed by decision, so
+# every Sz* resource must carry the same number - if one is ever given its own
+# value again, the window is back to a scale nobody chose.
+$sizes = @()
+foreach ($k in @('Micro', 'Caption', 'Body', 'Mono', 'Strong', 'Display', 'Pane')) {
+    $sizes += [double]$window.Resources["Sz$k"]
+}
+$distinct = @($sizes | Sort-Object -Unique)
+if ($distinct.Count -ne 1) {
+    Fail ('the window draws {0} different sizes ({1}) - the scale was collapsed to one' -f $distinct.Count, ($distinct -join ', '))
+} else {
+    Pass ('every size resource in the window carries the same value ({0}px)' -f $distinct[0])
+}
+
 # 🔴 SHOW THE PANELS THAT ARE COLLAPSED BY DEFAULT FIRST, OR THE SWEEP BELOW IS
 # A LIE. A collapsed panel realises no children, so walking the tree as the
 # window opens covers the list, the rail and the pane - and silently SKIPS the
