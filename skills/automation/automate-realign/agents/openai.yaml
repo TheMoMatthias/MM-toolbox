@@ -1,0 +1,5 @@
+interface:
+  display_name: "Automate Realign"
+  short_description: "Realign, but the block goes to the orchestrator instead of a question to the user"
+policy:
+  allow_implicit_invocation: false

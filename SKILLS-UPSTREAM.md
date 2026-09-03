@@ -67,11 +67,17 @@ set, not this one. It needs adapting before it is useful here.
 ⚠️ `migrate-to-shoehorn` and `scaffold-exercises` are specific to upstream's
 TypeScript-course tooling and are unlikely to apply to this repo's work.
 
-### Local — no upstream counterpart (10)
+### Local — no upstream counterpart (12)
 
 `agent-cluster` · `audit` · `audit-loop` · `audit-loop-codebase` · `diagnose` ·
 `reevaluate` · `spawn-claude-session` · `wrap-up` · `write-a-skill` ·
-`writing-great-skills`
+`writing-great-skills` · `automate-orchestrator` · `automate-realign`
+
+⚠️ `automate-realign` is a deliberate FORK of `workflow/realign`, which does track
+upstream. **A sync of `realign` must not be applied to it** — they diverge on purpose at
+step 4 (route the decision to an orchestrator, do not ask the user) and step 6 (emit a
+structured block, and never end by stopping). `automate-realign` additionally adds a
+mandatory conversation sweep that `realign` has no equivalent of.
 
 ---
 

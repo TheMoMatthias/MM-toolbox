@@ -11,6 +11,7 @@ Skills are user-invocable workflows that Claude Code can run via the `Skill` too
 | [diagnosis/](diagnosis/) | Bug hunting, audits, debugging loops | `diagnose`, `audit`, `audit-loop`, `audit-loop-codebase`, `diagnosing-bugs`, `code-review` |
 | [architecture/](architecture/) | Codebase-wide refactor / shape work | `improve-codebase-architecture`, `codebase-design` |
 | [orchestration/](orchestration/) | Multi-agent coordination | `agent-cluster` |
+| [automation/](automation/) | Unattended multi-session programmes; decisions route to an orchestrator, never straight to the operator | `automate-orchestrator`, `automate-realign` |
 
 ## When to add a new skill vs. an agent
 

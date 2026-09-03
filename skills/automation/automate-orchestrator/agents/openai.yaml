@@ -1,0 +1,5 @@
+interface:
+  display_name: "Automate Orchestrator"
+  short_description: "Hold the board, push every lane onto its next item, decide within a stated bar"
+policy:
+  allow_implicit_invocation: false
