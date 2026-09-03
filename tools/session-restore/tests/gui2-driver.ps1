@@ -2688,6 +2688,87 @@ Lay
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the live screen while a compact runs ---'
+# ===========================================================================
+# 🔴 REPORTED: "when I compact a session, the session is not shown any longer
+# or I do not see the progress of what is happening when I compact something."
+# The cause is not a bug in the pane - it is that a compact writes NOTHING to
+# the transcript until it finishes, so for 30-90s there is nothing on disk to
+# draw. The fix reads the session's screen instead, and the whole question is
+# WHEN to do that. This exercises that decision without needing a real compact.
+$missing = @($('LivePane','LiveMark','LiveHead','LiveText') | Where-Object { -not $ui.$_ })
+if ($missing.Count) { Fail ("the live-screen panel is missing: {0}" -f ($missing -join ', ')) }
+else { Pass 'the live-screen panel is wired: LivePane, LiveMark, LiveHead, LiveText' }
+
+$fakeId  = 'test-compact-0000'
+$rowBusy = [PSCustomObject]@{ Id = $fakeId
+                              A = [PSCustomObject]@{ Pid = 4242; Status = 'busy' }
+                              D = [PSCustomObject]@{ State = 'working' } }
+$rowIdle = [PSCustomObject]@{ Id = $fakeId
+                              A = [PSCustomObject]@{ Pid = 4242; Status = 'waiting' }
+                              D = [PSCustomObject]@{ State = 'waiting' } }
+$script:compactSent.Remove($fakeId)
+
+if (Test-SRCompacting $rowBusy) { Fail 'a session nobody compacted reads as compacting - the pane would be replaced at random' }
+else { Pass 'a session nobody compacted is left alone' }
+
+$script:compactSent[$fakeId] = Get-Date
+if (-not (Test-SRCompacting $rowBusy)) { Fail 'a compact we just sent is not being watched' }
+else { Pass 'a compact we just sent is watched' }
+
+# 🪤 THE 12-SECOND FLOOR. /compact is typed into a terminal and takes a moment
+# to be picked up, so for the first seconds the session still reads 'waiting'
+# and the transcript still says whatever it said before - which is
+# indistinguishable from "finished" and would close the panel before it drew.
+if (-not (Test-SRCompacting $rowIdle)) {
+    Fail 'a compact sent a second ago was called finished because the session had not picked it up yet'
+} else { Pass 'the floor holds: a compact is not called finished before it has started' }
+
+$script:compactSent[$fakeId] = (Get-Date).AddSeconds(-30)
+if (Test-SRCompacting $rowIdle) { Fail 'a finished compact is still being watched' }
+elseif ($script:compactSent.ContainsKey($fakeId)) { Fail 'a finished compact was not forgotten - the table would grow for the life of the window' }
+else { Pass 'a finished compact stops being watched, and is forgotten' }
+
+$script:compactSent[$fakeId] = (Get-Date).AddSeconds(-($SR_CompactWatch + 5))
+if (Test-SRCompacting $rowBusy) { Fail 'a compact that never returns is watched forever' }
+else { Pass ('a compact is abandoned after {0}s even while the session stays busy' -f $SR_CompactWatch) }
+$script:compactSent.Remove($fakeId)
+
+# The other signal: a compact typed straight into the terminal, which this
+# window never saw sent.
+$rowSumm = [PSCustomObject]@{ Id = 'test-compact-other'
+                              A = [PSCustomObject]@{ Pid = 4242; Status = 'busy' }
+                              D = [PSCustomObject]@{ State = 'summarising' } }
+if (-not (Test-SRCompacting $rowSumm)) { Fail 'a compact typed in the terminal is invisible here' }
+else { Pass 'a compact typed in the terminal is picked up from the transcript' }
+
+# 🔑 THE SHOWING PATH, ON THE REAL CONTROLS. Everything above tests a decision;
+# this tests the thing the operator actually sees. The row is made up and its
+# pid does not exist, so the screen read fails and the panel falls back to its
+# waiting text - which is the point: no probe is pointed at a real conversation,
+# and the visibility switch is still exercised end to end.
+$script:compactSent[$fakeId] = Get-Date
+Update-LivePane -Row $rowBusy
+if ("$($ui.LivePane.Visibility)" -eq 'Collapsed') {
+    Fail 'a compact is in flight and the live pane did not appear'
+} elseif ("$($ui.PaneDoc.Visibility)" -ne 'Collapsed') {
+    Fail 'the live pane appeared but the transcript is still drawn underneath it'
+} elseif (-not "$($ui.LiveText.Text)".Trim()) {
+    Fail 'the live pane is showing an empty box - a failed screen read left nothing to look at'
+} else {
+    Pass ("a compact in flight puts the screen in the pane: '{0}'" -f "$($ui.LiveHead.Text)")
+}
+$script:compactSent.Remove($fakeId)
+
+# ...and it has to LEAVE again. A panel that shows itself and never goes away
+# would hide every transcript for the rest of the session.
+Update-LivePane
+if ("$($ui.LivePane.Visibility)" -ne 'Collapsed') { Fail 'the live pane is still showing with nothing to watch' }
+elseif ("$($ui.PaneDoc.Visibility)" -eq 'Collapsed') { Fail 'the transcript never came back after the compact finished' }
+else { Pass 'and when it finishes the cell goes back to the transcript' }
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the seam, and the frame ---'
 # ===========================================================================
 # The window paints its own caption, so the OS one is gone and these have to work.

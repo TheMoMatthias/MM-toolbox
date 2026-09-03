@@ -1738,6 +1738,47 @@
             <TextBlock x:Name="PaneEmpty" Style="{StaticResource Dim}" Text=""
                        HorizontalAlignment="Center" VerticalAlignment="Center"
                        TextWrapping="Wrap" MaxWidth="420" TextAlignment="Center"/>
+
+            <!-- ============ WHAT THE SESSION'S OWN SCREEN SAYS, RIGHT NOW ======
+                 🔴 A COMPACT WRITES NOTHING TO THE TRANSCRIPT UNTIL IT FINISHES.
+                 Measured: the summary record and compactMetadata land at the END,
+                 so for the thirty to ninety seconds it runs there is literally
+                 nothing on disk for a transcript reader to draw. Reported as
+                 "when I compact a session, the session is not shown any longer
+                 or I do not see the progress of what is happening".
+
+                 The progress exists - it is on the session's screen, where
+                 claude prints its spinner and its token counts. This reads that
+                 screen and shows it, and it sits in the TRANSCRIPT'S OWN CELL
+                 rather than in a new row: while a compact runs the transcript
+                 has nothing to add, so replacing it costs nothing and the
+                 conversation comes straight back when the summary lands.
+
+                 🪤 IT IS NOT A TERMINAL. No input goes here, nothing is
+                 interpreted; it is a photograph of the last screen, taken every
+                 couple of seconds while something is worth watching. NoWrap
+                 because a console screen is already laid out in columns and
+                 rewrapping it would scramble a spinner into prose. -->
+            <Border x:Name="LivePane" Visibility="Collapsed"
+                    Background="{StaticResource Ink}" CornerRadius="10"
+                    BorderBrush="{StaticResource HueAskEdge}" BorderThickness="1"
+                    Padding="16,13,16,14">
+              <DockPanel>
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
+                  <TextBlock x:Name="LiveMark" Text="&#x2014;" Foreground="{StaticResource HueAsk}"
+                             FontFamily="{DynamicResource FontPane}" FontSize="{DynamicResource SzPane}"
+                             Margin="0,0,12,0"/>
+                  <TextBlock x:Name="LiveHead" Text="" Foreground="{StaticResource HueAsk}"
+                             FontFamily="{DynamicResource FontPane}" FontSize="{DynamicResource SzPane}"/>
+                </StackPanel>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                  <TextBlock x:Name="LiveText" Text="" TextWrapping="NoWrap"
+                             Foreground="{StaticResource TextHigh}"
+                             FontFamily="{DynamicResource FontPane}" FontSize="{DynamicResource SzPane}"
+                             AutomationProperties.Name="what this session's terminal is showing now"/>
+                </ScrollViewer>
+              </DockPanel>
+            </Border>
           </Grid>
 
           <!-- PINNED, not inline. A question that scrolls away on a long

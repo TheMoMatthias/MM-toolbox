@@ -133,6 +133,7 @@ foreach ($n in @(
     'SetToolsFold','SetAllow','SetDeny',
     'CastBox','CastWho','CastList','CastText','CastCancel','CastSend',
     'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
+    'LivePane','LiveMark','LiveHead','LiveText',
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions','SignIn','BridgeNote',
@@ -2488,6 +2489,114 @@ $script:shellCount = -1
 $script:shellList = @()
 $script:shellHidden = $false
 
+# ===========================================================================
+# THE LIVE SCREEN - for the one state the transcript cannot describe
+# ===========================================================================
+# 🔴 A COMPACT WRITES NOTHING UNTIL IT IS DONE. The compact_boundary record and
+# its compactMetadata are written at the END, so Get-SRConversationState can
+# only report 'summarising' once there is nothing left to watch. For the thirty
+# to ninety seconds it actually runs, a transcript reader has no bytes at all -
+# which is exactly the reported "I do not see the progress of what is happening
+# when I compact something".
+#
+# So this does not read the transcript. It reads the session's SCREEN, the same
+# way the question probe does, and draws it where the transcript would be.
+#
+# 🪤 TWO SIGNALS, AND THE WEAKER ONE IS THE OBVIOUS ONE. 'summarising' off the
+# transcript is true only at the finish; what covers the gap is knowing we SENT
+# /compact and it has not come back yet. Both are honoured, because the operator
+# can also type /compact in the terminal, where this window never saw it.
+$SR_LiveRead     = 2      # seconds between screen reads - it is a child process
+$SR_CompactWatch = 420    # stop watching after seven minutes, whatever happened
+$script:compactSent = @{}
+$script:liveAt  = $null
+$script:liveFor = ''
+$script:liveTxt = ''
+
+function Test-SRCompacting { param($R)
+    if (-not $R) { return $false }
+    $id = "$($R.Id)"
+    if ($script:compactSent.ContainsKey($id)) {
+        $age = ((Get-Date) - $script:compactSent[$id]).TotalSeconds
+        if ($age -ge $SR_CompactWatch) { $script:compactSent.Remove($id); return $false }
+        # 🪤 THE 12-SECOND FLOOR IS LOAD-BEARING. /compact is typed into the
+        # terminal and takes a moment to be picked up, so for the first few
+        # seconds the session is still 'waiting' and the transcript still says
+        # whatever it said before - which looks exactly like "finished" and
+        # would close this panel before it ever drew.
+        if ($age -gt 12 -and "$($R.A.Status)" -ne 'busy' -and "$($R.D.State)" -ne 'summarising') {
+            $script:compactSent.Remove($id); return $false
+        }
+        return $true
+    }
+    return ("$($R.D.State)" -eq 'summarising')
+}
+
+function Update-LivePane {
+    # -Row is for the tests: it lets the SHOWING path be exercised against a
+    # made-up row with a pid that does not exist, so the visibility switch is
+    # covered without pointing a screen probe at one of the operator's real
+    # conversations. Live callers pass nothing and get the selection.
+    param($Row)
+    $r = $Row
+    if (-not $r) {
+        $it = $ui.SessionList.SelectedItem
+        if ($it -and $it.Kind -eq 'session') { $r = $it.Row }
+    }
+
+    $want = $false
+    if ($r -and $r.A -and $r.A.Pid) { $want = (Test-SRCompacting $r) }
+
+    if (-not $want) {
+        if ("$($ui.LivePane.Visibility)" -ne 'Collapsed') {
+            $ui.LivePane.Visibility = $V_Hide
+            $ui.PaneDoc.Visibility  = $V_Show
+            $script:liveFor = ''; $script:liveTxt = ''; $script:liveAt = $null
+        }
+        return
+    }
+
+    $id  = "$($r.Id)"
+    $now = Get-Date
+    # Throttled: every read is a child process against a 6-second budget, and
+    # the thing being watched changes about once a second.
+    $stale = ($script:liveFor -ne $id) -or (-not $script:liveAt) -or
+             (($now - $script:liveAt).TotalSeconds -ge $SR_LiveRead)
+    if ($stale) {
+        if ($script:liveFor -ne $id) { $script:liveTxt = '' }
+        $script:liveFor = $id
+        $script:liveAt  = $now
+        $got = ''
+        try { $got = Get-SRScreenText -ProcessId ([int]$r.A.Pid) } catch { $got = '' }
+        # 🪤 KEEP THE LAST GOOD SCREEN. A read can miss - the budget is short and
+        # the child can lose a race - and blanking the panel on a miss makes the
+        # one thing you are watching flicker in and out.
+        if ("$got".Trim()) { $script:liveTxt = $got }
+    }
+
+    $body = ''
+    if ("$($script:liveTxt)".Trim()) {
+        $lines = @("$($script:liveTxt)" -replace "`r", '' -split "`n")
+        # A console screen is padded to its full height with blanks; showing
+        # them would put the spinner at the top of an empty box.
+        $end = $lines.Count - 1
+        while ($end -ge 0 -and -not "$($lines[$end])".Trim()) { $end-- }
+        if ($end -ge 0) {
+            $start = [Math]::Max(0, $end - 26)
+            $body = (($lines[$start..$end]) -join "`n")
+        }
+    }
+    if (-not $body) { $body = 'reading this session''s screen...' }
+
+    $ui.LiveText.Text = $body
+    $who = ''
+    try { $who = "$((Get-Title $r.S $r.D).Text)" } catch { $who = '' }
+    $ui.LiveHead.Text = ('COMPACTING' + $(if ($who) { '   ' + $who } else { '' }))
+    $ui.LivePane.Visibility = $V_Show
+    $ui.PaneDoc.Visibility  = $V_Hide
+    $ui.PaneEmpty.Visibility = $V_Hide
+}
+
 function Update-ShellPanel {
     $id = ''
     $jsonl = ''
@@ -4076,6 +4185,12 @@ function Invoke-Compact {
     if ($why) { Set-Status $why 'bad' } else {
         Set-Status 'sent /compact' 'ok'
         Move-RowToWorking $r
+        # 🔑 REMEMBER THAT WE SENT IT. Nothing reaches the transcript until the
+        # compact finishes, so this timestamp is the only thing that knows a
+        # compact is in flight - and it is what puts the session's own screen in
+        # the pane while it runs. See Test-SRCompacting.
+        $script:compactSent["$($r.Id)"] = Get-Date
+        try { Update-LivePane } catch { }
     }
 }
 
@@ -5010,6 +5125,11 @@ function Invoke-FollowTick {
     # this one is the pinned list of what is running whether or not any block
     # is open. Its own gates keep it free when nothing is.
     try { Update-ShellPanel } catch { }
+    # 🪤 BEFORE the early return below. A compacting session is BUSY, and the
+    # guard further down leaves this tick early for a busy one - which would
+    # have meant the panel that exists to watch a compact never updated while
+    # one was running.
+    try { Update-LivePane } catch { }
     $it = $ui.SessionList.SelectedItem
     if (-not $it -or $it.Kind -ne 'session') { return }
     $r = $it.Row
