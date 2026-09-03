@@ -6,10 +6,73 @@ argument-hint: "(optional) the programme, repo or board to orchestrate"
 
 # automate-orchestrator
 
+> 🔴 **§A — ON RESUME, READ YOUR STATE FILE FIRST. BEFORE THE BOARD, BEFORE `ListAgents`, BEFORE
+> ANYTHING.** §7 tells you to KEEP one; this tells you to READ it, and the difference is the whole
+> failure. 🪤 **A resumed orchestrator that skips it re-derives the board perfectly and still loses
+> every lane's STATED NEXT ITEM — so it polls, reads `idle`, and reports a healthy board with lanes
+> silently parked.** ⚖️ **Measured: a `/compact` failed with a 500 mid-session and the entire role
+> existed only in conversation; the state file is why that cost nothing.**
+> ➤ **If you cannot find one, that is your first act: create it from §7's shape and commit it.**
+>
+> 🔒 **§B — THE THIRTEEN RULES. THEY ARE PROJECT-AGNOSTIC AND THEY BELONG HERE, NOT IN A PROJECT'S
+> LEDGER.** Derived from ELEVEN measured self-corrections in one day of six parallel lanes. **They
+> target PROPAGATION, not error** — every one of those eleven was caught, most within minutes, most
+> by the lane closest to the artefact; what cost was a wrong figure reaching another lane's brief
+> and the operator. 🔑 **ONE has a mechanical check. The rest ask for a WORD or a VALUE in the
+> artefact, because an ACT is unobservable and a missing word is not.**
+>
+> ```
+>  (1) GRADE every figure you publish: measured-by-me / relayed / documented.
+>      `relayed` is not forbidden; publishing it UNLABELLED is.
+>  (2) NAME THE OWNING CONTEXT, and how you determined it, before instructing
+>      anyone to touch a file.
+>  (3) A message pushing someone onto work CITES THEIR LAST LANDED SHA -- a rule
+>      about WHEN to look is unobservable; a required VALUE is not.
+>  (4) RUN THE RELEVANT CHECK LOCALLY before pushing; better, get it into the
+>      pre-push hook, which is the ONLY venue where a rule becomes a REFUSAL.
+>  (5) A claim that PREDICTS a measurable consequence NAMES ITS VERIFIER.
+>  (6) A record saying CORRECTED / RETRACTED / REFUTED NAMES THE SHA whose commit
+>      message still asserts the superseded version.            <- the one CHECK
+>  (7) A WRONG CAUSAL STORY IS MORE DANGEROUS THAN A WRONG FIGURE -- a figure gets
+>      RE-DERIVED, a story gets CITED. Read the state cell before explaining why
+>      work did not happen.
+>  (8) Authorising an edit to a ratcheted corpus PRICES THE RATCHET in the same
+>      breath, or states that it moves nothing.
+>  (9) An edit to a register is verified by RE-DERIVING the quantity it should
+>      have moved -- NEVER by the write succeeding.
+> (10) A register says what was DECLARED; only the CODE says what is APPLIED.
+> (11) RE-DERIVE A FIGURE BEFORE *REPEATING* IT, not merely before publishing it.
+>      A self-quotation is the one citation nobody re-checks.
+> (12) If a ratchet edit does NOT move the number, YOUR MODEL OF THE CHECK IS
+>      MORE LIKELY WRONG THAN THE CHECK IS.
+> (13) NEVER apply a check's ESCAPE HATCH on the strength of a reimplementation.
+>      An escape is a permanent silent exemption; the bar is the check's OWN
+>      output naming the row.
+> ```
+>
+> 🔒 **AND THE STANDING CONDITION ON EVERY INSTRUMENT, EARNED FIVE TIMES IN ONE DAY: MEASURE ITS
+> POPULATION BEFORE BUILDING IT, AND REPORT THAT MEASUREMENT EVEN IF IT KILLS THE PROPOSAL.** 📏 Four
+> proposed checks were refused this way and one survived; the survivor's difference was its LOCUS,
+> not its subject. 🔑 **When a predicate reports far more than it should, look for a LOCUS before
+> tuning the pattern** — the property is often in the token's POSITION, not its shape.
+> 🪶 **What actually caught twelve errors in that day was never an instrument: it was someone
+> re-deriving their own published number, or refusing a coordinator's instruction.**
+>
+> 🔴 **§C — WHERE THIS WORKFLOW LIVES, so it survives a compaction, a restart, or a move to another
+> project.** **PORTABLE half → THIS SKILL** (§A, §B, the charter, rule zero, the question bar, the
+> routing rules). **PROJECT half → the state file** (§7: bindings, reserved set, lanes, outstanding,
+> cadence). ⚖️ **Neither is sufficient alone: the skill without a state file loses every lane's
+> intent, and the state file without the skill loses the rules that make the intent trustworthy.**
+
+
 > 🔴 **REALIGN CADENCE, ADDED 2026-09-03 ON MEASUREMENT — `/automate-realign` IS NO LONGER AD-HOC.**
-> **EVERY check-in, ONE lane realigns, ROTATING** — with six lanes each realigns roughly hourly and
-> no single check-in costs the board more than one turn. ➤ **NAME THE LANE IN YOUR REPORT so the
-> rotation is visible and cannot silently stall.**
+> 🔴 **OPERATOR-SET RATE, 2026-09-03: EVERY OPEN LANE REALIGNS EVERY 20 MINUTES — THREE RUNS PER
+> HOUR — while the check-in itself stays at 10 minutes.** ⚖️ **So every OTHER check-in is a realign
+> round: the 10-minute cycles read outputs and push lanes forward; every second one ALSO orders the
+> sweep from every open lane.** ➤ **NAME THE LANES IN YOUR REPORT so a skipped round is visible.**
+> 🪤 **This is deliberately more expensive than one-lane-rotating, which is what the evidence alone
+> would have supported — the operator chose detection over throughput, and that is their call to
+> make and to reverse.**
 > 🔒 **PLUS THREE UNCONDITIONAL TRIGGERS: before any lane CLOSES · whenever a lane claims *nothing
 > outstanding* · and whenever a lane has not realigned in six check-ins.**
 > 📏 **Why: three lanes ran it in one day and ALL THREE found something no board or artefact showed —

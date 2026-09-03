@@ -9,7 +9,12 @@ argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 > 🔴 **§0 IS MANDATORY AND RUNS FIRST — IT ABSORBS `automate-lane-check`, WHICH IS NO LONGER A
 > SEPARATE SKILL:**
 > ```
-> venv/Scripts/python.exe "$HOME/.claude/skills/automate-lane-check/lane_check.py" --as-realign-input
+> venv/Scripts/python.exe "$HOME/Documents/MM-toolbox/skills/automation/automate-lane-check/lane_check.py" --as-realign-input
+> ```
+> 🪤 **THE PATH IS THE MM-TOOLBOX ONE ON PURPOSE.** `~/.claude/skills/automate-lane-check/` is a
+> SYMLINK that is being removed now the skill is absorbed — pointing §0 through it would break this
+> step the moment the symlink goes. **The script lives in MM-toolbox and is reached directly.**
+> ```text
 > ```
 > **It answers the one thing you CANNOT get from your own context: WHICH RULINGS LANDED WHILE YOU
 > WERE BUSY.** ⚖️ Nothing else in the programme tells a lane a ruling arrived, and silence on a
