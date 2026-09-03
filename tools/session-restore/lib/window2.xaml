@@ -1966,8 +1966,16 @@
                  past the bottom of the pane, and an option you cannot reach is
                  an option you cannot pick. Capped and scrollable; the cap is
                  generous enough that the common three-option question never
-                 scrolls at all. -->
-            <ScrollViewer MaxHeight="380" VerticalScrollBarVisibility="Auto">
+                 scrolls at all.
+
+                 🔴 THE CAP IS SET IN CODE, FROM THE WINDOW HEIGHT. It was a
+                 fixed 380px, which is a third of a tall window and nearly half
+                 of a short one - and the card sits in its own grid row, so
+                 every pixel it takes comes off the transcript above it.
+                 Reported as: the question card takes up a lot of space, and we
+                 still need to read the conversation while it is up. 380 stays
+                 here as the value before the first layout. See Set-AskCap. -->
+            <ScrollViewer x:Name="AskScroll" MaxHeight="380" VerticalScrollBarVisibility="Auto">
               <StackPanel>
                 <!-- ================== THE ROUND ==================
                      🔑 A BATCHED QUESTION IS A ROUND, AND THE TERMINAL DRAWS IT

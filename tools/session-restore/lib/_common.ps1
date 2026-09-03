@@ -4554,6 +4554,11 @@ function New-SRUserBlock { param([string]$Text)
     return (New-Block 'msgin' $who $body.Trim() '')
 }
 
+# How far the reading window may widen when it lands inside a single record.
+# 24 MB against a largest-observed record of 916 KB, so it is roughly 25x the
+# worst case seen and still a bounded read on a 180 MB file.
+$SR_TailCeiling = 25165824
+
 function Get-SRTranscriptBlocks {
     [CmdletBinding()]
     param(
@@ -4571,13 +4576,39 @@ function Get-SRTranscriptBlocks {
         if ($fi.Length -eq 0) { return ,@($out.ToArray()) }
         # ReadWrite sharing: a live session holds this open for writing, and those
         # are exactly the ones worth reading.
+        # 🔴 A TAIL CAN LAND ENTIRELY INSIDE ONE RECORD, AND THEN IT READS AS AN
+        # EMPTY CONVERSATION. Measured 2026-09-03 on a 180 MB transcript: the
+        # records run to 916 KB against a median of 629 bytes, and the reading
+        # window is 96 KB - so whenever the newest record is bigger than the
+        # window, every line in the window is a fragment, the whole-record
+        # filter below keeps none of them, and the pane draws nothing at all.
+        #
+        # It is intermittent by construction, which is why it read as "sometimes
+        # the tool does not show the conversation": it depends entirely on how
+        # big the last few records happen to be. A compact summary and a large
+        # tool result are both exactly that kind of record - which is precisely
+        # when it was reported.
+        #
+        # So the window WIDENS until it contains a whole record, doubling from
+        # whatever was asked for. Bounded: it gives up at $SR_TailCeiling rather
+        # than walking back through a 180 MB file, and a transcript whose last
+        # record is bigger than that is one this pane cannot help with anyway.
         $fs = [System.IO.File]::Open($JsonlPath, 'Open', 'Read', 'ReadWrite')
         try {
             $take = [int][Math]::Min($fi.Length, $MaxTailBytes)
-            $null = $fs.Seek(-$take, 'End')
-            $buf  = New-Object byte[] $take
-            $read = $fs.Read($buf, 0, $take)
-            $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+            while ($true) {
+                $null = $fs.Seek(-$take, 'End')
+                $buf  = New-Object byte[] $take
+                $read = $fs.Read($buf, 0, $take)
+                $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+                # 🪤 THE SAME TEST THE FILTER BELOW USES. Anything else here
+                # would widen on one rule and then keep nothing by another.
+                $whole = 0
+                foreach ($ln in ($text -split "`n")) { if ($ln.Trim().StartsWith('{')) { $whole++; break } }
+                if ($whole -gt 0) { break }
+                if ($take -ge $fi.Length -or $take -ge $SR_TailCeiling) { break }
+                $take = [int][Math]::Min([Math]::Min($fi.Length, $SR_TailCeiling), $take * 2)
+            }
         } finally { $fs.Dispose() }
     } catch {
         return ,@($out.ToArray())

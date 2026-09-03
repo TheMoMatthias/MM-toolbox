@@ -134,7 +134,7 @@ foreach ($n in @(
     'CastBox','CastWho','CastList','CastText','CastCancel','CastSend',
     'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'LivePane','LiveMark','LiveHead','LiveText',
-    'FoldRail','FoldList','ListStrip','StripList','StripCount',
+    'FoldRail','FoldList','ListStrip','StripList','StripCount','AskScroll',
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions','SignIn','BridgeNote',
@@ -401,7 +401,33 @@ function Update-Columns {
     $ui.FoldList.Content = $(if ($s.List) { 'Show sessions' } else { 'Hide sessions' })
 }
 
-function Set-Breakpoint { Update-Columns }
+function Set-Breakpoint { Update-Columns; Set-AskCap }
+
+# 🔴 THE QUESTION CARD NEVER TAKES MORE THAN A THIRD OF THE WINDOW.
+#
+# Reported: "the question card is taking up a lot of space, which isn't
+# necessarily wrong, but we still need to be able to obtain information from the
+# conversation at all times." It sits in its own grid row, so every pixel it
+# takes comes straight off the transcript - and its cap was a FIXED 380px, which
+# is a third of a tall window and nearly half of a short one. A fixed number
+# cannot mean "a third" on two different screens, and this operator has two.
+#
+# 🪤 A FLOOR AS WELL AS A FRACTION. A third of a very short window is not enough
+# to show a question and its options at all, and a card too small to read is
+# worse than one that crowds the transcript - so it never goes below 220px, and
+# on a window that short the operator has bigger problems than the ratio.
+$SR_AskMaxFrac = 0.34
+function Set-AskCap {
+    if (-not $ui.AskScroll) { return }
+    $h = 0.0
+    try { $h = [double]$window.ActualHeight } catch { }
+    if ($h -le 0) { try { $h = [double]$window.Height } catch { } }
+    if ($h -le 0) { return }
+    $cap = [Math]::Round($h * $SR_AskMaxFrac, 0)
+    if ($cap -lt 220) { $cap = 220.0 }
+    if ($cap -gt 620) { $cap = 620.0 }
+    try { $ui.AskScroll.MaxHeight = $cap } catch { }
+}
 
 function Invoke-ColumnFold { param([string]$Which)
     $s = Get-ColumnFold
@@ -4189,6 +4215,8 @@ function Invoke-Answer { param([int]$Index)
         $script:ansPs = $ps
         $script:ansHandle = $ps.BeginInvoke()
         $script:ansFor = @{ Row = $r; Pid = $procId; Index = $Index; Question = $script:lastAsk; At = (Get-Date) }
+        # Watch it at 50 ms rather than waiting for the one-second follow tick.
+        try { $script:ansTimer.Start() } catch { }
     } catch {
         # 🪤 A FALLBACK THAT STILL ANSWERS. If a runspace will not open, sending
         # on this thread is slow but correct; refusing to answer is not.
@@ -4224,6 +4252,36 @@ function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question,
     # screen said once the keys had landed.
     Start-AnswerRecord -SessionId "$($Row.Id)" -Pid_ $Pid_ -Index $Index -Question $Question -Why "$Why"
 }
+
+# 🔴 A SEND IN FLIGHT IS POLLED FAST, NOT ON THE ONE-SECOND FOLLOW TICK.
+#
+# Reported: "when I select an answer, the terminal already shows the next
+# question, but the tool takes a few seconds - and then it repeats." Measured,
+# the wait is two things added together and only one of them is real work:
+#
+#   the send itself - Invoke-SRAnswerOnScreen paces its keystrokes so the TUI
+#   can repaint between them (a 250 ms settle, then 180-220 ms per arrow), so
+#   answering option four is about 1.1 s of deliberate pacing. That is not
+#   waste; dropping it drops keystrokes into somebody's console.
+#
+#   and then UP TO A FULL SECOND of nothing at all, because the completion was
+#   noticed by Invoke-FollowTick, which runs once a second. The keys had landed,
+#   the terminal had already drawn the next question, and the window was simply
+#   not looking yet.
+#
+# This timer removes the second part. It runs only while a send is out, at 50 ms,
+# and stops itself the moment the job is claimed - so it costs nothing at rest
+# and cannot outlive the thing it is watching. The follow tick still calls
+# Complete-AnswerSend as the backstop, which is what makes this an optimisation
+# rather than a new single point of failure.
+$script:ansTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:ansTimer.Interval = [TimeSpan]::FromMilliseconds(50)
+$script:ansTimer.Add_Tick({
+    # Stop on EITHER condition: Complete-AnswerSend returning true means it
+    # claimed the result, and $ansPs going null means somebody else did.
+    if (-not $script:ansPs) { $script:ansTimer.Stop(); return }
+    if (Complete-AnswerSend) { $script:ansTimer.Stop() }
+})
 
 # A send is allowed this long before the panel is given back. Send-SRQuestionAnswer
 # reads another process's console and has its own budget, so anything past this

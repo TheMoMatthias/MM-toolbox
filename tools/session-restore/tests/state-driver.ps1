@@ -1765,6 +1765,52 @@ if ($seen1.Count -lt 1) {
     }
 }
 
+# 3e. 🔴 A TAIL THAT LANDS INSIDE ONE RECORD READ AS AN EMPTY CONVERSATION.
+#     Reported as "the content of a session is not readable ... although it is
+#     fully readable in the terminal", and it was intermittent by construction.
+#     Measured on the operator's own 180 MB transcript: records run to 916 KB
+#     against a median of 629 bytes, while the pane reads a 96 KB tail and keeps
+#     only lines that start with '{'. Whenever the newest record is bigger than
+#     the window, every line in it is a fragment, none survives the filter, and
+#     the pane draws nothing. A compact summary and a large tool result are both
+#     exactly that kind of record - which is when it was reported.
+Write-Host ''
+Write-Host '--- a reading window that lands inside a single record ---'
+$tailTmp = Join-Path $SR_StateDir ('tail-probe-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.jsonl')
+try {
+    # 🪤 BOM-LESS. StreamWriter with [Text.Encoding]::UTF8 writes one, and a BOM
+    # is not whitespace - .Trim().StartsWith('{') would drop the first record and
+    # this test would pass for the wrong reason. The family trap, twice recorded.
+    $swT = New-Object System.IO.StreamWriter($tailTmp, $false, (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        $swT.WriteLine('{"type":"user","message":{"role":"user","content":"the small record before it"}}')
+        $swT.WriteLine('{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"' + ('x' * 300000) + '"}]}}')
+    } finally { $swT.Dispose() }
+
+    # 🪤 Assign, then wrap - the comma guard.
+    $gotT = Get-SRTranscriptBlocks -JsonlPath $tailTmp -MaxTailBytes 98304
+    $arrT = @($gotT)
+    if (-not $arrT.Count) {
+        Fail 'a transcript whose last record is larger than the reading window came back EMPTY - this is the blank pane'
+    } else {
+        Pass ("a record larger than the window still renders: {0} block(s) from a 96 KB window over a 300 KB record" -f $arrT.Count)
+    }
+
+    # 🔑 THE CONTROL. The widening must not be doing something silly like
+    # reading the whole file every time - a window that already holds a whole
+    # record must be left exactly as asked for. Same file, a window big enough
+    # from the start: it must return the same blocks, not more.
+    $gotU = Get-SRTranscriptBlocks -JsonlPath $tailTmp -MaxTailBytes 8388608
+    $arrU = @($gotU)
+    if ($arrU.Count -lt $arrT.Count) {
+        Fail ("a wider window returned FEWER blocks ({0} against {1}) - the widening is losing records" -f $arrU.Count, $arrT.Count)
+    } else {
+        Pass ("and a window that never needed to widen agrees with it ({0} block(s))" -f $arrU.Count)
+    }
+} finally {
+    Remove-Item -LiteralPath $tailTmp -Force -ErrorAction SilentlyContinue
+}
+
 # 4. 🔴 AND ALL OF THAT RAN TOO LATE TO MATTER. Measured in .state\restore.log
 #    on 2026-09-03: the gate blocked at 08:26:12 on a dead token, printed
 #    "press Sign in", and slept in ten-second steps until the operator signed in
