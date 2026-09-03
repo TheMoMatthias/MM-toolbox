@@ -200,7 +200,13 @@ _REALIGN_MARK = "=== REALIGN-AUTOMATE"
 _NEXT_LINE = re.compile(
     r"^NEXT\s{2,}(.+?)(?=\n\s*\n|\n[A-Z][A-Z-]{2,}\s{2,}|\n```|\n===|\Z)", re.M | re.S)
 _STATED = [
-    re.compile(r"(?:^|\n)\s*(?:NEXT|Next up|Next)\s*[:\u2014-]\s*(.+)"),
+    #  🪤 THE MARKUP PREFIX IS LOAD-BEARING. Measured 2026-09-03: two lanes stated their
+    #     next item as clearly as it can be stated -- `▶️ **MY NEXT ITEM: ...` and
+    #     `▶️ Next: ...` -- and BOTH read as `-- NO NAMED ITEM --`, because `\s*` after the
+    #     newline admits whitespace and nothing else. An orchestrator then reports a
+    #     healthy board with lanes it believes are parked. The leading class allows emoji,
+    #     bullets and bold; `(?:MY\s+)?` and `(?:\s+ITEM)?` allow the two forms lanes use.
+    re.compile(r"(?:^|\n)[^\w\n]{0,14}\**\s*(?:MY\s+)?(?:NEXT(?:\s+ITEM)?|Next up|Next)\s*\**\s*[:\u2014-]\s*\**\s*(.+)", re.I),
     re.compile(r"\bnext I(?:'ll| will|'m going to| am going to)\s+(.+?)(?:[.\n]|$)", re.I),
     re.compile(r"\bthen I(?:'ll| will)\s+(.+?)(?:[.\n]|$)", re.I),
     re.compile(r"\bnothing (?:outstanding|named|queued)\b()", re.I),
