@@ -1645,6 +1645,29 @@ if ($rsSrc -notmatch 'Show-SRDesktopNote') {
 if (Get-Command Show-SRDesktopNote -ErrorAction SilentlyContinue) { Pass 'Show-SRDesktopNote is defined' }
 else { Fail 'Show-SRDesktopNote is not defined' }
 
+# 3b. 🔴 THE TWO LOGON TASKS MUST NOT LAND ON EACH OTHER. Both scan the same
+#     391 transcripts. Measured 2026-09-02 they fired in the same second and
+#     collided on the registry mutex: 15,000 ms of blocked waiting inside a
+#     29-second scan, and the loser threw the stamp guard - a full duplicate
+#     scan, discarded, on the one run of the day that is time-critical.
+#     Task Scheduler delays are advisory, so the gap has to be generous.
+function ConvertFrom-SRDelay { param([string]$D)
+    if ($D -match '^PT(\d+)S$') { return [double]$Matches[1] }
+    if ($D -match '^PT(\d+)M$') { return [double]$Matches[1] * 60 }
+    if ($D -match '^PT(\d+)H$') { return [double]$Matches[1] * 3600 }
+    return -1
+}
+$dR = -1; $dS = -1
+if ($rsSrc -match '\$trg\.Delay\s*=\s*''([^'']+)''')      { $dR = ConvertFrom-SRDelay $Matches[1] }
+if ($rsSrc -match '\$trgLogon\.Delay\s*=\s*''([^'']+)''') { $dS = ConvertFrom-SRDelay $Matches[1] }
+if ($dR -lt 0 -or $dS -lt 0) {
+    Fail 'one of the two logon delays could not be read - the collision guard cannot be checked'
+} elseif (($dS - $dR) -lt 300) {
+    Fail ('the scan fires {0:N0}s after the restore - too close. They both scan the same transcripts, and a booting machine does not honour these delays to the second.' -f ($dS - $dR))
+} else {
+    Pass ('the logon scan is {0:N0}s clear of the restore, so they cannot fight over the registry' -f ($dS - $dR))
+}
+
 # 4. 🔴 AND ALL OF THAT RAN TOO LATE TO MATTER. Measured in .state\restore.log
 #    on 2026-09-03: the gate blocked at 08:26:12 on a dead token, printed
 #    "press Sign in", and slept in ten-second steps until the operator signed in

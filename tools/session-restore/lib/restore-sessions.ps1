@@ -467,14 +467,36 @@ function Invoke-Install {
 
     # 2) scan, hourly + at logon. It only refreshes the registry; it launches
     #    nothing, so a new project appears in the picker without any risk.
+    # 🔴 TEN MINUTES, NOT TWO, AND THE GAP IS THE WHOLE REASON. The restore
+    # fires at logon+90s and scans the same 391 transcripts this task does; at
+    # logon+2m the two were meant to be 30 seconds apart. Measured 2026-09-02,
+    # they were not - both logged their header in the SAME SECOND:
+    #
+    #   07:36:30  ---- scan ----
+    #   07:36:30  ---- restore (live) ----
+    #   07:37:11  registry lock timed out after 15000ms - proceeding unlocked
+    #   07:37:25  scan 29002 ms
+    #   07:37:25  [FAIL] FATAL: the registry changed on disk since this window read it
+    #
+    # Task Scheduler delays are advisory and a booting machine does not honour
+    # them to the second, so a 30s design gap is no gap at all. 15,000 ms of
+    # that 29-second scan was pure blocked waiting on the registry mutex, and
+    # the loser then threw the stamp guard - a full duplicate scan, discarded.
+    #
+    # 🪤 THE TRIGGER IS KEPT, NOT DROPPED. Deleting it would be simpler and is
+    # wrong: the hourly trigger runs at :05 past, so a logon at :06 would leave
+    # a new project invisible in the picker for the best part of an hour. Ten
+    # minutes clears the restore (which no longer waits on a human for the
+    # token - see Wait-SRBridgeReady) with room to spare, and still refreshes
+    # the registry while the operator is making coffee.
     $trgLogon  = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
-    $trgLogon.Delay = 'PT2M'
+    $trgLogon.Delay = 'PT10M'
     $trgHourly = New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddMinutes(5) `
                     -RepetitionInterval ([TimeSpan]::FromHours(1)) -RepetitionDuration ([TimeSpan]::FromDays(3650))
     Register-ScheduledTask -TaskName $TaskScan -Force -Principal $principal -Settings $settings -Trigger @($trgLogon, $trgHourly) `
         -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ("-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"{0}`" -Scan" -f $restore)) `
         -Description 'Discover Claude Code project directories. Updates the selection registry only; launches nothing.' | Out-Null
-    Write-SROk "task '$TaskScan' - hourly + at logon (scan only, launches nothing)"
+    Write-SROk ("task '{0}' - hourly + at logon with a {1} delay, clear of the restore (scan only, launches nothing)" -f $TaskScan, $trgLogon.Delay)
 
     # Build the application wrapper. Sessions.exe hosts the PowerShell runspace
     # itself, so the window opens without a powershell.exe underneath it, carries
