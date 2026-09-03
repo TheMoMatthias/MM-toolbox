@@ -1,7 +1,7 @@
 ---
 name: automate-orchestrator
 description: Become the orchestrator for a set of parallel Claude sessions - hold the board, push every lane onto its stated next item rather than polling it, decide everything except a small reserved set, put the reserved decisions to the operator as batched selectable options with a recommendation and its evidence, and record every answer where it binds. Use when running multiple concurrent sessions on one programme, when asked to orchestrate, coordinate or drive parallel lanes, when sessions keep going idle with work outstanding, when decisions are evaporating instead of reaching a register, or when starting a coordination session on any machine.
-argument-hint: "(optional) the programme, repo or board to orchestrate"
+argument-hint: "(optional) the programme, repo or board to orchestrate; and/or realign-every=<minutes> (default 20)"
 ---
 
 # automate-orchestrator
@@ -66,18 +66,17 @@ argument-hint: "(optional) the programme, repo or board to orchestrate"
 
 
 > 🔴 **REALIGN CADENCE, ADDED 2026-09-03 ON MEASUREMENT — `/automate-realign` IS NO LONGER AD-HOC.**
-> 🔴 **OPERATOR-SET RATE, 2026-09-03: EVERY OPEN LANE REALIGNS EVERY 20 MINUTES — THREE RUNS PER
-> HOUR — while the check-in itself stays at 10 minutes.** ⚖️ **So every OTHER check-in is a realign
-> round: the 10-minute cycles read outputs and push lanes forward; every second one ALSO orders the
-> sweep from every open lane.** ➤ **NAME THE LANES IN YOUR REPORT so a skipped round is visible.**
-> 🪤 **This is deliberately more expensive than one-lane-rotating, which is what the evidence alone
-> would have supported — the operator chose detection over throughput, and that is their call to
-> make and to reverse.**
-> 🔒 **PLUS THREE UNCONDITIONAL TRIGGERS: before any lane CLOSES · whenever a lane claims *nothing
-> outstanding* · and whenever a lane has not realigned in six check-ins.**
-> 📏 **Why: three lanes ran it in one day and ALL THREE found something no board or artefact showed —
-> including a ruling of the orchestrator's own that existed in no register at all and was the entire
-> mitigation for a live production hazard.**
+> 🔴 **THE REALIGN FREQUENCY IS A PARAMETER. IT DEFAULTS TO 20 MINUTES AND THE ORCHESTRATOR STATES
+> THE VALUE IN FORCE IN ITS REPORT.** ⚖️ **At the default, with a 10-minute check-in, EVERY OTHER
+> check-in is a realign round: the plain cycles read outputs and push lanes forward; the realign
+> rounds ALSO order the sweep from every open lane — three runs per hour.**
+> ➤ **NAME THE LANES AND THE INTERVAL IN YOUR REPORT so a skipped round is visible.**
+> 🔑 **Set it from the board's shape, not from habit: a programme with two lanes can afford tighter;
+> one with twelve cannot.** ⛔ **Whatever it is set to, it is stated — an unstated cadence is
+> indistinguishable from a forgotten one, which is the failure this parameter exists to remove.**
+> 🪤 **The 20-minute default is DELIBERATELY more expensive than the one-lane-per-check-in rotation
+> the evidence alone supported. It was an operator choice of detection over throughput on
+> 2026-09-03, and it is theirs to reverse.**
 >
 > 🔴 **AND THE ORCHESTRATOR REALIGNS ON ITSELF, because it is the least-checked participant on the
 > board and nothing sweeps it.** **Every SIXTH check-in, re-read your own rulings since the last
