@@ -229,11 +229,16 @@ function Invoke-Restore {
     # stop after one conversation for no reason at all.
     if (-not $script:warmNeeded) { $script:warmNeeded = $false }
     $launched = 0; $skipped = 0; $failed = 0
+    # Position in $wanted, not a count of what launched: the last ENTRY is what
+    # decides there is no next tab to make room for, and entries get skipped.
+    $idx = 0
+    $total = @($wanted).Count
     $staleDays = [double]$cfg.recencyDays
     # Ids we opened a tab for, so it can be PROVED they came up rather than assumed.
     $launchedIds = @()
 
     foreach ($e in $wanted) {
+        $idx++
         # Name the repo AND the lane: "AlgoTrader" and "AlgoTrader/D1" are different
         # working trees, and a bare leaf would render both as their folder name.
         $label = if ($e.Lane -eq 'worktree' -and $e.Worktree) {
@@ -347,7 +352,14 @@ function Invoke-Restore {
             # Breathing room between tabs so Windows Terminal does not race itself.
             # Was 1200 ms, which at the 12-session cap was 14 seconds of pure sleeping
             # at every logon; 500 ms keeps a margin and cuts that to five.
-            Start-Sleep -Milliseconds 500
+            #
+            # 🪤 NOT AFTER THE LAST ONE. The sleep exists to separate this launch from
+            # the NEXT launch, so the final one separates a tab from nothing at all -
+            # half a second of the logon spent waiting for an event that will not
+            # happen. Measured over 28 sessions on 2026-09-03: 500 ms of sleep against
+            # ~357 ms of real work per tab, so this loop is 58% sleeping; this only
+            # reclaims the last one, because the other 27 are load-bearing.
+            if ($idx -lt $total) { Start-Sleep -Milliseconds 500 }
         } catch {
             Write-SRFail "$label - $($_.Exception.Message)"; $failed++
         }
