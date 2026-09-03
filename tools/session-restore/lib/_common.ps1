@@ -229,7 +229,23 @@ function Get-SRConfig {
         # its width - produced 20px body text on a maximised window, which is
         # zooming rather than scaling. A knob the operator turns is predictable;
         # type that moves on its own when you drag a window edge is not.
-        @{ k = 'zoom';                 v = 100 }
+        @{ k = 'zoom';                 v = 100 },
+        # THE PAUSE BETWEEN LAUNCHING ONE TAB AND THE NEXT, in milliseconds.
+        #
+        # 🔴 IT IS THE BIGGEST REMAINING COST OF A LOGON. Measured over 28
+        # sessions on 2026-09-03: 857 ms per session, of which 500 was this
+        # sleep and ~357 ms was wt.exe actually making the tab - so the launch
+        # loop was 58% asleep. Start-Process itself returns in 34 ms (n=5).
+        #
+        # 🪤 IT IS NOT FREE TO SHORTEN. The gap exists so Windows Terminal does
+        # not race itself, and the failure mode is a tab that opens and dies -
+        # which is the morning this whole tool exists to prevent. It has been
+        # tuned down once already (1200 -> 500). What makes 250 safe enough to
+        # try is that the restore VERIFIES: Wait-SRSessionsUp names every
+        # session that never produced a claude.exe, so a race is reported
+        # rather than silent. A key rather than a literal because the right
+        # value is a property of the machine, and this operator has two.
+        @{ k = 'launchGapMs';          v = 250 }
     )) {
         if ($null -eq $c.PSObject.Properties[$kv.k]) {
             $c | Add-Member -NotePropertyName $kv.k -NotePropertyValue $kv.v -Force
@@ -315,6 +331,17 @@ function Get-SRConfig {
         $z = [Math]::Max(70, [Math]::Min(200, $z))
     }
     $c.zoom = $z
+
+    # Clamped for the same reason zoom is: a number out of range is somebody
+    # reaching past the end, not a typo. 0 is allowed and means "no gap at all";
+    # above 2000 a full restore would spend a minute asleep.
+    $g = 250
+    try { $g = [int][Math]::Round([double]"$($c.launchGapMs)") } catch { $g = 250 }
+    if ($g -lt 0 -or $g -gt 2000) {
+        Write-SRLog ("  [warn] config launchGapMs is {0}; clamped to 0-2000." -f $g)
+        $g = [Math]::Max(0, [Math]::Min(2000, $g))
+    }
+    $c.launchGapMs = $g
 
     return $c
 }
@@ -559,8 +586,15 @@ function Test-SRExcluded {
 # $Cache maps sessionId -> @{ Path; Title; Stamp }. A transcript whose stamp
 # (mtime + length) is unchanged since the last scan is not read at all -- the
 # hourly job then costs a directory listing rather than 87 file reads.
+#
+# $SeenIn / $SeenOut are the same idea for the transcripts that are read and then
+# REJECTED - a third of them here. They never reach the registry, so $Cache can
+# never hold them and they were re-opened on every scan forever. SeenIn is last
+# scan's map, SeenOut is filled as this scan rejects; two objects so a deleted
+# transcript prunes itself out rather than accumulating.
 function Get-SRDiscovered {
-    param([Parameter(Mandatory)]$Config, [hashtable]$Cache)
+    param([Parameter(Mandatory)]$Config, [hashtable]$Cache,
+          [hashtable]$SeenIn, [hashtable]$SeenOut)
 
     if (-not (Test-Path -LiteralPath $SR_Projects)) {
         throw "no Claude projects folder at $SR_Projects - has claude ever run on this machine?"
@@ -597,10 +631,18 @@ function Get-SRDiscovered {
             $hit = ($Cache -and $Cache.ContainsKey($f.BaseName) -and
                     $Cache[$f.BaseName].Stamp -eq $stamp -and
                     $null -ne $Cache[$f.BaseName].AutoTitle)
+            # The rejected map is consulted on the same stamp and for the same
+            # reason - it just holds the ones the registry will never carry.
+            $seenHit = ((-not $hit) -and $SeenIn -and $SeenIn.ContainsKey($f.BaseName) -and
+                        $SeenIn[$f.BaseName].Stamp -eq $stamp)
             if ($hit) {
                 $cwd       = $Cache[$f.BaseName].Cwd
                 $title     = $Cache[$f.BaseName].Title
                 $autoTitle = $Cache[$f.BaseName].AutoTitle
+            } elseif ($seenHit) {
+                $cwd       = $SeenIn[$f.BaseName].Cwd
+                $title     = $SeenIn[$f.BaseName].Title
+                $autoTitle = $SeenIn[$f.BaseName].AutoTitle
             } else {
                 $info      = Get-SRSessionInfo -JsonlPath $f.FullName
                 $cwd       = $info.Cwd
@@ -608,17 +650,51 @@ function Get-SRDiscovered {
                 $autoTitle = "$($info.AiTitle)"   # never $null: we looked
             }
 
-            if (-not $cwd) { continue }
-            $cwd = $cwd.TrimEnd('\')
-            if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { continue }
-            if (Test-SRExcluded -Path $cwd -Config $Config) { continue }
-            if ([string]::IsNullOrWhiteSpace($title)) { $title = '(untitled)' }
+            # 🔴 THE ONES THAT ARE READ AND THEN THROWN AWAY - 130 OF 391 HERE.
+            # A row rejected below never enters the registry, so it never enters
+            # $Cache, so its 20.3 MB of transcript is opened again on every scan
+            # and every logon, forever. Measured 2026-09-03: 85 whose cwd folder
+            # is gone, 41 excluded by pattern, 4 with no cwd in the tail - a
+            # third of the corpus, ~250 ms warm and ~2 s of the 9 s logon scan.
+            #
+            # 🪤 WHAT IS REMEMBERED IS WHAT THE FILE SAID, NEVER THE VERDICT.
+            # Caching "this one was rejected" would be smaller and wrong: a
+            # deleted repo that comes back, or an exclusion taken out of the
+            # config, does not change the transcript's mtime, so the
+            # conversation would stay invisible until it was next written to.
+            # Caching the CWD instead means the three cheap predicates below run
+            # on every scan exactly as they do now - only the file read is
+            # skipped - so a restored repo reappears on the next pass and a
+            # config change takes effect immediately.
+            $keep = $true
+            if (-not $cwd) { $keep = $false }
+            else {
+                $cwd = $cwd.TrimEnd('\')
+                if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { $keep = $false }
+                elseif (Test-SRExcluded -Path $cwd -Config $Config) { $keep = $false }
+            }
 
             # A conversation belongs to its REPO, in one of two lanes. Worktree
             # conversations therefore sit under the parent repo rather than beside it
             # as a project of their own.
-            $wt = Get-SRWorktreeInfo -Path $cwd
-            if ($wt.Lane -eq 'worktree' -and -not $Config.includeWorktrees) { continue }
+            $wt = $null
+            if ($keep) {
+                if ([string]::IsNullOrWhiteSpace($title)) { $title = '(untitled)' }
+                $wt = Get-SRWorktreeInfo -Path $cwd
+                if ($wt.Lane -eq 'worktree' -and -not $Config.includeWorktrees) { $keep = $false }
+            }
+            if (-not $keep) {
+                # 🪤 SeenOut IS WRITTEN, SeenIn IS READ, and they are two objects
+                # on purpose: a file that has since been deleted simply never
+                # gets added to the new one, so the map prunes itself instead of
+                # growing for the life of the machine.
+                if ($null -ne $SeenOut) {
+                    $SeenOut[$f.BaseName] = @{
+                        Stamp = $stamp; Cwd = "$cwd"; Title = "$title"; AutoTitle = "$autoTitle"
+                    }
+                }
+                continue
+            }
 
             $found += [PSCustomObject]@{
                 RepoRoot   = $wt.RepoRoot
@@ -1031,7 +1107,38 @@ function Update-SRRegistryCore {
         }
     }
 
-    $disc = Get-SRDiscovered -Config $Config -Cache $cache
+    # And the same for the ones that get read and then rejected - a third of the
+    # corpus here, which the registry can never cache because a rejected row
+    # never lands in it. See the note on Get-SRDiscovered.
+    $seenIn = @{}
+    if ($reg.PSObject.Properties['rejected'] -and $reg.rejected) {
+        foreach ($rp in @($reg.rejected.PSObject.Properties)) {
+            if ($rp.Value -and $rp.Value.stamp) {
+                $seenIn[$rp.Name] = @{
+                    Stamp = $rp.Value.stamp; Cwd = "$($rp.Value.cwd)"
+                    Title = "$($rp.Value.title)"; AutoTitle = "$($rp.Value.autoTitle)"
+                }
+            }
+        }
+    }
+    $seenOut = @{}
+
+    $disc = Get-SRDiscovered -Config $Config -Cache $cache -SeenIn $seenIn -SeenOut $seenOut
+
+    # 🪤 REBUILT FROM THIS PASS, NOT MERGED INTO THE OLD ONE. A transcript that
+    # has since been deleted is simply never added, so the map prunes itself;
+    # merging would grow it for the life of the machine and re-introduce the
+    # 22 GONE-for-weeks rows this is meant to stop paying for.
+    $rejObj = New-Object PSObject
+    foreach ($rk in @($seenOut.Keys)) {
+        $rv = $seenOut[$rk]
+        $rejObj | Add-Member -NotePropertyName $rk -NotePropertyValue ([PSCustomObject]@{
+            stamp = $rv.Stamp; cwd = $rv.Cwd; title = $rv.Title; autoTitle = $rv.AutoTitle
+        }) -Force
+    }
+    if ($null -eq $reg.PSObject.Properties['rejected']) {
+        $reg | Add-Member -NotePropertyName rejected -NotePropertyValue $rejObj -Force
+    } else { $reg.rejected = $rejObj }
     $now  = (Get-Date).ToString('o')
     $dirCutoff  = (Get-Date).AddDays(-1 * [double]$Config.recencyDays)
     $sessCutoff = (Get-Date).AddDays(-1 * [double]$Config.sessionWindowDays)

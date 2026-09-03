@@ -1668,6 +1668,103 @@ if ($dR -lt 0 -or $dS -lt 0) {
     Pass ('the logon scan is {0:N0}s clear of the restore, so they cannot fight over the registry' -f ($dS - $dR))
 }
 
+# 3c. THE GAP BETWEEN TABS IS A SETTING, NOT A LITERAL. Measured over 28
+#     sessions on 2026-09-03: 857 ms per launch, of which 500 was this sleep and
+#     ~357 ms was wt.exe making the tab - the loop was 58% asleep, and that is
+#     the biggest single cost left in a logon. Shortening it is not free (the
+#     gap stops Windows Terminal racing itself, and the failure mode is a tab
+#     that dies), so it is a key the operator can raise per machine rather than
+#     a number in the source.
+$cfgGap = Get-SRConfig
+if ($null -eq $cfgGap.PSObject.Properties['launchGapMs']) {
+    Fail 'launchGapMs has no default - a config without it would sleep $null between tabs'
+} elseif ([int]$cfgGap.launchGapMs -lt 0 -or [int]$cfgGap.launchGapMs -gt 2000) {
+    Fail ("launchGapMs came back {0}, outside the clamp" -f $cfgGap.launchGapMs)
+} else {
+    Pass ("the gap between tabs is a clamped setting ({0} ms)" -f $cfgGap.launchGapMs)
+}
+# 🪤 AND THE LOOP HAS TO READ IT. A setting nothing consults is worse than a
+# literal: it reads as tunable and is not.
+if ($rsSrc -match 'Start-Sleep\s+-Milliseconds\s+\d') {
+    Fail 'the launch loop still sleeps a hard-coded number of milliseconds - the setting is decoration'
+} elseif ($rsSrc -notmatch 'launchGap') {
+    Fail 'the launch loop never reads launchGapMs'
+} else {
+    Pass 'the launch loop sleeps for whatever the setting says, not a literal'
+}
+
+# 3d. THE REJECTED-TRANSCRIPT CACHE. A third of the corpus here (130 of 391) is
+#     read and then thrown away every scan - the cwd folder is gone, or it
+#     matches an exclusion - and because a rejected row never enters the
+#     registry, the registry's own cache can never hold it. Read-only: this
+#     calls Get-SRDiscovered directly, which writes nothing.
+Write-Host ''
+Write-Host '--- the rejected-transcript cache ---'
+$cfgD  = Get-SRConfig
+$seen1 = @{}
+$swD1  = [Diagnostics.Stopwatch]::StartNew()
+$d1 = @(Get-SRDiscovered -Config $cfgD -Cache @{} -SeenIn @{} -SeenOut $seen1)
+$swD1.Stop()
+$seen2 = @{}
+$swD2  = [Diagnostics.Stopwatch]::StartNew()
+$d2 = @(Get-SRDiscovered -Config $cfgD -Cache @{} -SeenIn $seen1 -SeenOut $seen2)
+$swD2.Stop()
+Write-Host ("        {0:N0} ms cold -> {1:N0} ms with the map; {2} kept, {3} remembered as rejected" -f `
+      $swD1.Elapsed.TotalMilliseconds, $swD2.Elapsed.TotalMilliseconds, $d1.Count, $seen1.Count) -ForegroundColor DarkGray
+
+# 🔴 THE ONE THAT MATTERS. This cache may only ever make the scan FASTER. If it
+# can change which conversations are found, it can hide one - and a conversation
+# missing from the picker is the worst failure this tool has.
+if ($d2.Count -ne $d1.Count) {
+    Fail ("the rejected cache changed what the scan FINDS: {0} conversations, then {1}" -f $d1.Count, $d2.Count)
+} else {
+    Pass ("the cache does not change what the scan finds ({0} conversations both passes)" -f $d1.Count)
+}
+$ids1 = @($d1 | ForEach-Object { "$($_.SessionId)" } | Sort-Object)
+$ids2 = @($d2 | ForEach-Object { "$($_.SessionId)" } | Sort-Object)
+if ("$($ids1 -join ',')" -ne "$($ids2 -join ',')") {
+    Fail 'the same NUMBER of conversations came back but not the same ones'
+} else { Pass 'and finds the same ones, not merely the same number' }
+
+if ($seen1.Count -lt 1) {
+    Write-Host '        nothing was rejected on this machine - the rest of this block has nothing to exercise' -ForegroundColor DarkGray
+} else {
+    if ($seen2.Count -ne $seen1.Count) {
+        Fail ("the rejected set is not stable: {0} then {1}" -f $seen1.Count, $seen2.Count)
+    } else { Pass ("the rejected set is stable across passes ({0} transcripts)" -f $seen1.Count) }
+
+    # 🔑 AND IS THE CACHE ACTUALLY CONSULTED? Timing cannot answer it - the page
+    # cache warms between the two passes, so the second is faster either way and
+    # the assertion would pass for the wrong reason. So: poison it. Every cached
+    # cwd is rewritten to a path that does not exist, with the stamps left
+    # alone. If the map is read, those files take the poisoned cwd and it comes
+    # back out in SeenOut; if it is ignored, the transcripts are re-read and the
+    # REAL cwd comes back instead. Nothing is written either way.
+    $poison = 'C:\__sr_cache_probe_does_not_exist__'
+    $seenBad = @{}
+    foreach ($k in @($seen1.Keys)) {
+        $seenBad[$k] = @{ Stamp = $seen1[$k].Stamp; Cwd = $poison
+                          Title = $seen1[$k].Title; AutoTitle = $seen1[$k].AutoTitle }
+    }
+    $seen3 = @{}
+    $d3 = @(Get-SRDiscovered -Config $cfgD -Cache @{} -SeenIn $seenBad -SeenOut $seen3)
+    $tookPoison = @($seen3.Values | Where-Object { "$($_.Cwd)" -eq $poison }).Count
+    if ($tookPoison -lt 1) {
+        Fail 'the rejected map was ignored - every transcript was re-read, so the cache saves nothing'
+    } else {
+        Pass ("the map is genuinely consulted: {0} of {1} took the value from it instead of being re-read" -f $tookPoison, $seen1.Count)
+    }
+    # 🪤 AND POISONING IT MUST NOT LOSE A CONVERSATION. The cached value only
+    # ever decides whether a transcript is re-READ; the predicates that decide
+    # whether it is KEPT run on every pass regardless, which is the whole reason
+    # this caches what the file said rather than the verdict.
+    if ($d3.Count -ne $d1.Count) {
+        Fail ("a poisoned cache changed the result: {0} conversations against {1} - the cache is deciding what is kept, not just what is read" -f $d3.Count, $d1.Count)
+    } else {
+        Pass 'even a poisoned map cannot change which conversations are found'
+    }
+}
+
 # 4. 🔴 AND ALL OF THAT RAN TOO LATE TO MATTER. Measured in .state\restore.log
 #    on 2026-09-03: the gate blocked at 08:26:12 on a dead token, printed
 #    "press Sign in", and slept in ten-second steps until the operator signed in

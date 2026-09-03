@@ -233,6 +233,10 @@ function Invoke-Restore {
     # decides there is no next tab to make room for, and entries get skipped.
     $idx = 0
     $total = @($wanted).Count
+    # Read once, not per iteration: Get-SRConfig is cached but this is a loop
+    # whose whole point is now how little time it spends between tabs.
+    $script:launchGap = 250
+    try { $script:launchGap = [int]$cfg.launchGapMs } catch { $script:launchGap = 250 }
     $staleDays = [double]$cfg.recencyDays
     # Ids we opened a tab for, so it can be PROVED they came up rather than assumed.
     $launchedIds = @()
@@ -359,7 +363,7 @@ function Invoke-Restore {
             # happen. Measured over 28 sessions on 2026-09-03: 500 ms of sleep against
             # ~357 ms of real work per tab, so this loop is 58% sleeping; this only
             # reclaims the last one, because the other 27 are load-bearing.
-            if ($idx -lt $total) { Start-Sleep -Milliseconds 500 }
+            if ($idx -lt $total -and $script:launchGap -gt 0) { Start-Sleep -Milliseconds $script:launchGap }
         } catch {
             Write-SRFail "$label - $($_.Exception.Message)"; $failed++
         }
