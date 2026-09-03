@@ -2812,13 +2812,25 @@ if ("$($ui.ListPane.Visibility)" -eq 'Visible') {
 } else {
     Pass ("collapsed: a {0:N0}px strip stands in for the list, and the toggle offers to show it" -f $ui.ListCol.Width.Value)
 }
-$needs = @($script:model | Where-Object { "$($_.Band)" -eq 'needs' -and (Test-OnSurface $_) })
+$needs   = @($script:model | Where-Object { "$($_.Band)" -eq 'needs'   -and (Test-OnSurface $_) })
+$working = @($script:model | Where-Object { "$($_.Band)" -eq 'working' -and (Test-OnSurface $_) })
 $onStrip = @($ui.StripList.ItemsSource)
-if ($onStrip.Count -ne $needs.Count) {
-    Fail ("the strip shows {0} dot(s) for {1} conversation(s) that need you" -f $onStrip.Count, $needs.Count)
+if ($onStrip.Count -ne ($needs.Count + $working.Count)) {
+    Fail ("the strip shows {0} dot(s) for {1} waiting and {2} working" -f $onStrip.Count, $needs.Count, $working.Count)
+} elseif ("$($ui.StripCount.Text)" -ne "$($needs.Count)" -and $needs.Count -gt 0) {
+    # 🪤 THE COUNT IS THE WAITING ONES. The dots show two states; a number over
+    # them that meant "both" would answer a question nobody asked.
+    Fail ("the count reads '{0}' for {1} conversation(s) waiting on you" -f $ui.StripCount.Text, $needs.Count)
 } else {
-    Pass ("the strip carries one dot per conversation waiting on you ({0}), and says so: '{1}'" -f $onStrip.Count, $ui.StripCount.Text)
+    Pass ("the strip carries {0} waiting + {1} working, and the count is the waiting ones: '{2}'" -f `
+          $needs.Count, $working.Count, $ui.StripCount.Text)
 }
+# 🔑 AND THE TWO STATES ARE TOLD APART. One accent for both would make the
+# second band pure noise - more dots saying nothing new.
+$hues = @(@($onStrip | ForEach-Object { "$($_.Accent)" }) | Sort-Object -Unique)
+if ($needs.Count -gt 0 -and $working.Count -gt 0 -and $hues.Count -lt 2) {
+    Fail 'waiting and working dots are drawn in the same accent - the second band adds nothing'
+} else { Pass ("the strip's dots carry {0} distinct accent(s)" -f $hues.Count) }
 
 # 🪤 AND THE WIDTH COMES BACK. The strip's 44px must never be mistaken for the
 # column's own width, or re-opening would give you a 44px sessions list.
@@ -3031,15 +3043,26 @@ Write-Host '--- the shipped typeface reaches the text, not just the key ---'
 # inside a Setter had already captured the OLD FontFamily object and stopped
 # looking at the key. Every style is a DynamicResource now. Asking the key
 # proves nothing - it passed throughout - so this asks the control.
-if ($script:hasManrope) {
+# 🔴 THE EXPECTED FACE IS ASKED OF THE WINDOW, NOT TYPED IN. This block used to
+# name Manrope, and when the chrome moved to IBM Plex Mono it failed on six
+# controls that were drawing exactly what they should - the assertion had
+# outlived the face it was written for, which is the third time that shape has
+# cost something today. It reads FontPane now, and a separate assertion further
+# up pins FontPane to a real family, so this is not circular: one test says what
+# the shipped face IS, these say the controls reached it.
+$faceWant = ''
+if ($script:hasPlex) { $faceWant = "$($window.Resources['FontPane'].Source)" }
+elseif ($script:hasManrope) { $faceWant = "$($window.Resources['FontText'].Source)" }
+
+if ($faceWant) {
     Lay
     $off = @()
     foreach ($n in @('PaneName', 'Status', 'SheetTitle', 'SheetBody', 'ListCaption', 'PaneState')) {
         $el = $ui.$n
-        if ($el -and "$($el.FontFamily.Source)" -notlike '*Manrope*') { $off += "$n on '$($el.FontFamily.Source)'" }
+        if ($el -and "$($el.FontFamily.Source)" -ne $faceWant) { $off += "$n on '$($el.FontFamily.Source)'" }
     }
-    if ($off.Count) { Fail ('the shipped typeface never reached: ' + ($off -join '; ')) }
-    else { Pass 'the header, the status line, the list and the sheet all draw in the shipped face' }
+    if ($off.Count) { Fail ("the shipped typeface never reached (want '$faceWant'): " + ($off -join '; ')) }
+    else { Pass "the header, the status line, the list and the sheet all draw in the shipped face" }
 
     # And the styles themselves, which is where the break actually was.
     $stale = @()
@@ -3358,12 +3381,19 @@ if (-not $ui.ShellBox -or -not $ui.ShellList) {
     } else {
         Pass 'description, command, live output and elapsed all reach the screen'
     }
-    # The command and its output are the machine voice and must be drawn in it.
-    $monoOff = @(Get-TextBlocks $ui.ShellList |
-                 Where-Object { "$($_.Text)" -eq 'npm run build' -or "$($_.Text)" -eq 'webpack: compiling...' } |
-                 Where-Object { "$($_.FontFamily.Source)" -notlike '*Cascadia*' -and "$($_.FontFamily.Source)" -notlike '*Consolas*' })
-    if ($monoOff.Count) { Fail ('{0} machine-text line(s) in the shells panel are not in the machine face' -f $monoOff.Count) }
-    else { Pass 'the command and its output are in the machine face' }
+    # 🪤 THERE IS NO SEPARATE MACHINE FACE ANY MORE. This asked for Cascadia or
+    # Consolas, which was right while the window had two faces and became wrong
+    # the moment it had one - a command is still the machine voice, it is simply
+    # not told apart by its typeface now. What it must still be is the face the
+    # window ships, so that is what is asserted.
+    $monoWant = $(if ($faceWant) { $faceWant } else { '' })
+    if ($monoWant) {
+        $monoOff = @(Get-TextBlocks $ui.ShellList |
+                     Where-Object { "$($_.Text)" -eq 'npm run build' -or "$($_.Text)" -eq 'webpack: compiling...' } |
+                     Where-Object { "$($_.FontFamily.Source)" -ne $monoWant })
+        if ($monoOff.Count) { Fail ("{0} line(s) in the shells panel are not in the shipped face ('{1}')" -f $monoOff.Count, $monoWant) }
+        else { Pass 'the command and its output are in the shipped face' }
+    }
 
     # 🔴 AND THE TWO KINDS MUST LOOK DIFFERENT. A square is machinery and a
     # round mark is a sub-agent, everywhere else in this window; if the template
@@ -3636,7 +3666,7 @@ elseif (-not [object]::ReferenceEquals($nm.Style, $window.FindResource('Search')
 # .Value.Source off it returns an empty string - which is what the first version
 # of this assertion reported as "not Manrope". The value only exists once the
 # element is measured and the reference is resolved through its parent chain.
-if ($script:hasManrope) {
+if ($faceWant) {
     $spRoot = $spw.Content
     $spRoot.Measure((New-Object System.Windows.Size 540, 900))
     $spRoot.Arrange((New-Object System.Windows.Rect 0, 0, 540, 900))
@@ -3644,9 +3674,9 @@ if ($script:hasManrope) {
     $bad = @()
     foreach ($n in @('SpWarn', 'SpDirPath', 'SpHint', 'SpPermNote')) {
         $t = $spw.FindName($n)
-        if ($t -and "$($t.FontFamily.Source)" -notlike '*Manrope*') { $bad += "$n on '$($t.FontFamily.Source)'" }
+        if ($t -and "$($t.FontFamily.Source)" -ne $faceWant) { $bad += "$n on '$($t.FontFamily.Source)'" }
     }
-    if ($bad.Count) { Fail ('the dialog text never picked up the shipped face: ' + ($bad -join '; ')) }
+    if ($bad.Count) { Fail ("the dialog text never picked up the shipped face (want '$faceWant'): " + ($bad -join '; ')) }
     else { Pass 'the shipped typeface reaches the dialog through the merge' }
 }
 

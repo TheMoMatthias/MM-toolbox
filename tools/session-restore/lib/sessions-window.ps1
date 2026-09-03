@@ -424,23 +424,37 @@ function Invoke-ColumnFold { param([string]$Which)
 # feels heavy".
 function Update-Strip {
     if ("$($ui.ListStrip.Visibility)" -ne 'Visible') { return }
-    $rows = @()
-    try { $rows = @($script:model | Where-Object { "$($_.Band)" -eq 'needs' -and (Test-OnSurface $_) }) } catch { $rows = @() }
-    $acc = $window.FindResource('AccNeeds')
+    # 🔴 TWO BANDS, IN THIS ORDER. Waiting first, in the NEEDS accent, because
+    # that is the question the strip exists to answer. Working below it in the
+    # working accent, because "nothing is waiting on me" and "nothing is
+    # happening at all" are different states and an empty rail said both.
     $items = New-Object System.Collections.Generic.List[object]
-    foreach ($r in $rows) {
-        $t = ''
-        try { $t = (Get-Title $r.S $r.D).Text } catch { $t = "$($r.Id)" }
-        $items.Add([PSCustomObject]@{
-            Id     = "$($r.Id)"
-            Accent = $acc
-            Tip    = ("{0} - needs you. Click to open it." -f $t)
-        })
+    foreach ($band in @('needs', 'working')) {
+        $rows = @()
+        try { $rows = @(Sort-SessionRows @($script:model | Where-Object { "$($_.Band)" -eq $band -and (Test-OnSurface $_) })) }
+        catch { $rows = @() }
+        $acc = $window.FindResource($(if ($band -eq 'needs') { 'AccNeeds' } else { 'AccWorking' }))
+        foreach ($r in $rows) {
+            $t = ''
+            try { $t = (Get-Title $r.S $r.D).Text } catch { $t = "$($r.Id)" }
+            $items.Add([PSCustomObject]@{
+                Id     = "$($r.Id)"
+                Band   = $band
+                Accent = $acc
+                Tip    = ("{0} - {1}. Click to open it." -f $t,
+                          $(if ($band -eq 'needs') { 'waiting on you' } else { 'working' }))
+            })
+        }
     }
     $ui.StripList.ItemsSource = $items
-    # The count is the point of the strip, so it is stated even at zero: an
-    # empty rail with no number reads as broken rather than as quiet.
-    $ui.StripCount.Text = $(if ($items.Count) { "$($items.Count)" } else { [string][char]0x00B7 })
+    # 🪤 THE COUNT IS THE WAITING ONES, NOT THE DOTS. The dots show two states
+    # now, and a number over them that meant "both" would answer a question
+    # nobody asked - the strip is here to say whether anything wants you. Stated
+    # even at zero: an empty rail with no number reads as broken rather than as
+    # quiet, and the tooltip says which number this is.
+    $waiting = @($items | Where-Object { $_.Band -eq 'needs' }).Count
+    $ui.StripCount.Text = $(if ($waiting) { "$waiting" } else { [string][char]0x00B7 })
+    $ui.StripCount.ToolTip = ("{0} waiting on you, {1} working" -f $waiting, ($items.Count - $waiting))
 }
 
 function Set-Surface { param([string]$Mode)
@@ -1773,7 +1787,14 @@ function Install-SRPaneFace {
             return $false
         }
         $window.Resources['FontPane'] = $fam
-        Write-SRLog ('  [ok]   pane face IBM Plex Mono loaded from lib\fonts ({0} faces)' -f $faces.Count)
+        # 🔴 AND THE CHROME TAKES IT TOO. Decided 2026-09-03: one face across
+        # the entire window, not just the transcript. Manrope still loads first
+        # (Install-SRTypeface) and is what these hold if Plex is missing, so a
+        # deleted font file degrades to the previous look rather than to Arial.
+        foreach ($k in @('FontText', 'FontDisplay', 'FontSmall', 'FontMono')) {
+            $window.Resources[$k] = $fam
+        }
+        Write-SRLog ('  [ok]   IBM Plex Mono loaded from lib\fonts ({0} faces) - pane and chrome' -f $faces.Count)
         return $true
     } catch {
         Write-SRLog ('  [skip] IBM Plex Mono would not load ({0}) - the pane keeps Cascadia Mono' -f $_.Exception.Message)
@@ -1823,11 +1844,22 @@ function Set-SRTypeScale { param([int]$Percent = 0)
     if ($Percent -gt 0) { $script:Zoom = [Math]::Max(70, [Math]::Min(200, $Percent)) }
     $f = $script:Zoom / 100.0
     foreach ($k in @($script:TypeBase.Keys)) {
-        # Rounded to a half pixel. Not to a whole one: the scale's own steps are
-        # 9.5 and 12.5, and rounding those to integers would collapse two pairs
-        # of steps into each other at 100% - the exact flattening this rebuild
-        # exists to undo.
-        $v = [Math]::Round(($script:TypeBase[$k] * $f) * 2.0) / 2.0
+        # 🔴 THE SIX-STEP SCALE IS COLLAPSED TO ONE STEP, DELIBERATELY. Decided
+        # 2026-09-03: one face and one size across the ENTIRE window, chrome
+        # included - list rows, buttons, headings, the question panel - and not
+        # only the transcript. Every Sz* resource is given the PANE's value, so
+        # nothing on screen is a different size from anything else.
+        #
+        # 🪤 The consequence was stated when this was chosen and is real: the
+        # six steps existed because a band heading, a row title and its caption
+        # are different things, and size was the cue that separated them. What
+        # carries hierarchy now is weight, hue and position. The six base values
+        # stay in window2.xaml as the record of what the scale was - deleting
+        # the 'Pane' below restores it in one token.
+        #
+        # Still rounded to a half pixel, because the pane step is 13 and a zoom
+        # of 70% or 125% lands between whole numbers.
+        $v = [Math]::Round(($script:TypeBase['Pane'] * $f) * 2.0) / 2.0
         $script:Type[$k] = $v
         # The resource is what every XAML style reads, so assigning it here is
         # what makes the chrome move with the pane rather than only the pane.
