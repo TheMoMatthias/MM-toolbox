@@ -2775,9 +2775,20 @@ Write-Host '--- collapsing the projects and sessions columns ---'
 $foldRailWas = $script:foldRail
 $foldListWas = $script:foldList
 
-$absentFold = @(@('FoldRail', 'FoldList', 'ListStrip', 'StripList', 'StripCount') | Where-Object { -not $ui.$_ })
+# 🔴 FOUR CARETS, TWO ACTIONS. The first attempt put two text buttons in the
+# header row and the operator could not find them - "I still do not see the
+# collapse buttons" - which for a control is the same as not having one. Each
+# column's own header collapses it; the strip it collapses to opens it again,
+# so neither collapse can strand you with no way back.
+$absentFold = @(@('RailFold', 'ListFold', 'RailStrip', 'RailOpen', 'ListOpen',
+                  'ListStrip', 'StripList', 'StripCount') | Where-Object { -not $ui.$_ })
 if ($absentFold.Count) { Fail ("the collapse controls are missing: {0}" -f ($absentFold -join ', ')) }
-else { Pass 'the collapse controls are wired: two toggles, the strip, its list and its count' }
+else { Pass 'four carets are wired: one on each column header, one on each strip' }
+# 🪤 AND THE OLD BUTTONS ARE GONE, not left beside them. Two controls for one
+# action is the smell this replaced.
+if ($ui.FoldRail -or $ui.FoldList) {
+    Fail 'the header fold buttons are still there alongside the carets - two controls for one action'
+} else { Pass 'the header buttons they replace are gone, not kept beside them' }
 if (-not (Get-Command Invoke-ColumnFold -ErrorAction SilentlyContinue)) {
     Fail 'Invoke-ColumnFold is not defined - the buttons and Ctrl+1/Ctrl+2 have nothing to call'
 } else { Pass 'Invoke-ColumnFold is defined for the buttons and the shortcuts' }
@@ -2790,9 +2801,14 @@ Lay
 $listOpenW = [double]$ui.ListCol.Width.Value
 if ("$($ui.ListPane.Visibility)" -ne 'Visible' -or "$($ui.ListStrip.Visibility)" -eq 'Visible') {
     Fail 'the sessions column is not showing when it is pinned open'
-} elseif ("$($ui.FoldList.Content)" -ne 'Hide sessions') {
-    Fail ("the toggle reads '{0}' while the column is open - a label that states its own state gets read backwards" -f $ui.FoldList.Content)
-} else { Pass ("open: the sessions column is {0:N0}px and the toggle offers to hide it" -f $listOpenW) }
+} elseif ("$($ui.ListFold.Text)".Trim() -eq "$($ui.ListOpen.Text)".Trim()) {
+    # 🪤 THE TWO CARETS MUST NOT LOOK THE SAME. One collapses and one opens, and
+    # they are never on screen together - so if they were drawn identically the
+    # only cue for which state you are in would be gone. This replaces a check on
+    # the old buttons' labels, which said what pressing them did; a caret says it
+    # by pointing, and the direction is the thing that can be got backwards.
+    Fail ("both sessions carets draw '{0}' - one collapses and one opens" -f $ui.ListFold.Text)
+} else { Pass ("open: the sessions column is {0:N0}px, and its caret points the other way from the strip's" -f $listOpenW) }
 
 # 🔴 COLLAPSED TO A STRIP, NOT TO NOTHING. The window's whole job is saying
 # which conversation is waiting on you, and a collapse that hides that turns the
@@ -2807,10 +2823,10 @@ if ("$($ui.ListPane.Visibility)" -eq 'Visible') {
     Fail 'the column collapsed to nothing - a conversation can now need you with nowhere on screen to say so'
 } elseif ([Math]::Abs([double]$ui.ListCol.Width.Value - $SR_StripWidth) -gt 0.5) {
     Fail ("the collapsed column is {0:N0}px, not the {1:N0}px strip" -f $ui.ListCol.Width.Value, $SR_StripWidth)
-} elseif ("$($ui.FoldList.Content)" -ne 'Show sessions') {
-    Fail ("the toggle reads '{0}' while the column is collapsed" -f $ui.FoldList.Content)
+} elseif ("$($ui.RailFold.Text)".Trim() -eq "$($ui.RailOpen.Text)".Trim()) {
+    Fail ("both projects carets draw '{0}' - one collapses and one opens" -f $ui.RailFold.Text)
 } else {
-    Pass ("collapsed: a {0:N0}px strip stands in for the list, and the toggle offers to show it" -f $ui.ListCol.Width.Value)
+    Pass ("collapsed: a {0:N0}px strip stands in for the list, with a caret on it to open it again" -f $ui.ListCol.Width.Value)
 }
 $needs   = @($script:model | Where-Object { "$($_.Band)" -eq 'needs'   -and (Test-OnSurface $_) })
 $working = @($script:model | Where-Object { "$($_.Band)" -eq 'working' -and (Test-OnSurface $_) })
@@ -2848,9 +2864,17 @@ $script:foldRail = $true
 $script:foldApplied = ''
 Update-Columns
 Lay
-if ("$($ui.RailPane.Visibility)" -eq 'Visible') { Fail 'the projects rail is still drawn while collapsed' }
-elseif ([double]$ui.RailCol.Width.Value -gt 0.5) { Fail ("the collapsed rail still takes {0:N0}px" -f $ui.RailCol.Width.Value) }
-else { Pass 'the projects rail collapses to nothing - it is a filter, not a status surface' }
+if ("$($ui.RailPane.Visibility)" -eq 'Visible') {
+    Fail 'the projects rail is still drawn while collapsed'
+} elseif ("$($ui.RailStrip.Visibility)" -ne 'Visible') {
+    # 🪤 A CONTROL THAT COLLAPSES ITS OWN COLUMN AND LEAVES NOTHING BEHIND has
+    # removed the only way back. The caret is the whole of the collapsed rail.
+    Fail 'the rail collapsed to nothing at all - there is no caret left to open it again'
+} elseif ([double]$ui.RailCol.Width.Value -gt $SR_RailStripWidth + 0.5) {
+    Fail ("the collapsed rail takes {0:N0}px, more than the {1:N0}px caret" -f $ui.RailCol.Width.Value, $SR_RailStripWidth)
+} else {
+    Pass ("the projects rail collapses to its caret and nothing else ({0:N0}px)" -f $ui.RailCol.Width.Value)
+}
 
 # 🔴 THE MANUAL CHOICE OVERRIDES THE WIDTH RULE. Asked and answered: your choice
 # wins, always. Get-ColumnFold must return what was set regardless of how wide

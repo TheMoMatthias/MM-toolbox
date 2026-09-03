@@ -1384,14 +1384,11 @@
              box. Their labels say what pressing them DOES, not what is
              currently true, which is the one thing a toggle must never get
              backwards. -->
-        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
-                    Margin="14,0,0,0">
-          <Button x:Name="FoldRail" Content="Hide projects" Style="{StaticResource BtnSlim}"
-                  Margin="0,0,7,0"
-                  ToolTip="Collapse the projects column to give the conversation more room (Ctrl+1)"/>
-          <Button x:Name="FoldList" Content="Hide sessions" Style="{StaticResource BtnSlim}"
-                  ToolTip="Collapse the sessions column to a strip - conversations that need you stay visible (Ctrl+2)"/>
-        </StackPanel>
+        <!-- 🪤 THE TWO FOLD BUTTONS THAT WERE HERE ARE GONE, NOT MOVED-AND-KEPT.
+             They were the first attempt and the operator could not find them;
+             the carets now live on the columns' own headers, which is where the
+             looking happens. Leaving both would be two controls for one action
+             and would spend header width that has already overlapped twice. -->
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
           <Button x:Name="Broadcast" Content="Send to many" Style="{StaticResource Btn}"/>
         </StackPanel>
@@ -1444,6 +1441,17 @@
               <Border Padding="16,12,12,6">
                 <Grid>
                   <TextBlock Text="PROJECTS" Style="{StaticResource Caption}" VerticalAlignment="Center"/>
+                  <!-- 🔴 THE CONTROL SITS ON THE THING IT COLLAPSES. It was a
+                       pair of text buttons in the header row and the operator
+                       could not find them - "I still do not see the collapse
+                       buttons" - which for a control is the same as not having
+                       one. A caret in the column's own header needs no label to
+                       be understood, and it is where you look. -->
+                  <TextBlock x:Name="RailFold" Text="&#x2039;" Cursor="Hand"
+                             Style="{StaticResource Caption}" VerticalAlignment="Center"
+                             HorizontalAlignment="Right" Margin="0,0,2,0" Padding="6,0,6,0"
+                             ToolTip="Collapse the projects column (Ctrl+1)"
+                             AutomationProperties.Name="collapse the projects column"/>
                   <TextBlock x:Name="RailClear" Text="clear" Style="{StaticResource Dim}"
                              HorizontalAlignment="Right" VerticalAlignment="Center"
                              Cursor="Hand" Visibility="Collapsed"
@@ -1472,6 +1480,25 @@
           </Grid>
         </Border>
 
+        <!-- ============ THE PROJECTS COLUMN, COLLAPSED ============
+             🪤 NOT TO ZERO, TO A CARET. The rail is a filter and carries no
+             state worth keeping on screen, so almost all of it goes - but a
+             control that collapses its own column and leaves nothing behind
+             has removed the only way back, and the keyboard shortcut is not
+             discoverable enough to be the answer. 26px is the caret and
+             nothing else. -->
+        <Border x:Name="RailStrip" Grid.Column="0" Visibility="Collapsed"
+                Background="{StaticResource Panel}" CornerRadius="12" Margin="10,4,3,10"
+                SnapsToDevicePixels="True"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+          <TextBlock x:Name="RailOpen" Text="&#x203A;" Cursor="Hand"
+                     Style="{StaticResource Caption}"
+                     HorizontalAlignment="Center" VerticalAlignment="Top"
+                     Margin="0,13,0,0" Padding="6,2,6,2"
+                     ToolTip="Show the projects column again (Ctrl+1)"
+                     AutomationProperties.Name="show the projects column"/>
+        </Border>
+
         <GridSplitter x:Name="RailSplit" Grid.Column="1" Width="4" HorizontalAlignment="Stretch"
                       Background="Transparent" ResizeBehavior="PreviousAndNext"/>
 
@@ -1498,8 +1525,17 @@
                              VerticalAlignment="Center" Margin="12,0,0,0"
                              ToolTip="Change the order inside each band"/>
                 </StackPanel>
-                <TextBlock x:Name="ListCount" Style="{StaticResource Dim}"
-                           HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                            VerticalAlignment="Center">
+                  <TextBlock x:Name="ListCount" Style="{StaticResource Dim}"
+                             VerticalAlignment="Center"/>
+                  <!-- Same caret, same reason - see the projects header. -->
+                  <TextBlock x:Name="ListFold" Text="&#x2039;" Cursor="Hand"
+                             Style="{StaticResource Caption}" VerticalAlignment="Center"
+                             Margin="8,0,2,0" Padding="6,0,6,0"
+                             ToolTip="Collapse the sessions column to a strip of marks (Ctrl+2)"
+                             AutomationProperties.Name="collapse the sessions column"/>
+                </StackPanel>
               </Grid>
             </Border>
             <!-- This pane's own search, independent of the header's global one. -->
@@ -1535,6 +1571,12 @@
             <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.42" Color="#000000"/>
           </Border.Effect>
           <DockPanel Margin="0,11,0,11">
+            <!-- The way back, on the strip itself - see the projects strip. -->
+            <TextBlock x:Name="ListOpen" DockPanel.Dock="Top" Text="&#x203A;" Cursor="Hand"
+                       Style="{StaticResource Caption}"
+                       HorizontalAlignment="Center" Margin="0,0,0,9" Padding="6,2,6,2"
+                       ToolTip="Show the sessions column again (Ctrl+2)"
+                       AutomationProperties.Name="show the sessions column"/>
             <TextBlock x:Name="StripCount" DockPanel.Dock="Top" Style="{StaticResource Caption}"
                        HorizontalAlignment="Center" Margin="0,0,0,11" Text=""
                        ToolTip="Conversations waiting on you"/>

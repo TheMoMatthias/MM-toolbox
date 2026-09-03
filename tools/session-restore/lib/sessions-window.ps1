@@ -134,7 +134,7 @@ foreach ($n in @(
     'CastBox','CastWho','CastList','CastText','CastCancel','CastSend',
     'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'LivePane','LiveMark','LiveHead','LiveText',
-    'FoldRail','FoldList','ListStrip','StripList','StripCount','AskScroll',
+    'RailFold','ListFold','RailStrip','RailOpen','ListOpen','ListStrip','StripList','StripCount','AskScroll',
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions','SignIn','BridgeNote',
@@ -321,6 +321,8 @@ function Set-Status { param([string]$Text, [string]$Kind = 'info')
 # freshly-installed window behave as though the operator had pinned both columns
 # open, and the adaptive layout would be dead on a narrow screen.
 $SR_StripWidth = 44.0
+# The projects rail keeps only its caret: no count, no dots, nothing to read.
+$SR_RailStripWidth = 26.0
 $script:foldRail = $null
 $script:foldList = $null
 # What Update-Columns last actually applied, so a resize that changes nothing
@@ -372,12 +374,18 @@ function Update-Columns {
 
     if ($s.Rail) {
         # The rail is a FILTER, not a status surface - nothing in it says a
-        # conversation needs you - so it collapses to nothing rather than to a
-        # strip. That is where the reclaimed width actually comes from.
-        $ui.RailPane.Visibility = $V_Hide; $ui.RailSplit.Visibility = $V_Hide
-        $ui.RailCol.Width = New-Object System.Windows.GridLength 0
+        # conversation needs you - so nearly all of it goes. 🪤 But not ALL of
+        # it: a control that collapses its own column and leaves nothing behind
+        # has removed the only way back, and a keyboard shortcut is not
+        # discoverable enough to be that way. 26px is the caret and nothing else.
+        $ui.RailPane.Visibility  = $V_Hide
+        $ui.RailSplit.Visibility = $V_Hide
+        $ui.RailStrip.Visibility = $V_Show
+        $ui.RailCol.Width = New-Object System.Windows.GridLength $SR_RailStripWidth
     } else {
-        $ui.RailPane.Visibility = $V_Show; $ui.RailSplit.Visibility = $V_Show
+        $ui.RailStrip.Visibility = $V_Hide
+        $ui.RailPane.Visibility  = $V_Show
+        $ui.RailSplit.Visibility = $V_Show
         $ui.RailCol.Width = New-Object System.Windows.GridLength $script:railWidth
     }
 
@@ -394,11 +402,8 @@ function Update-Columns {
         $ui.ListCol.Width = New-Object System.Windows.GridLength $script:listWidth
     }
 
-    # 🪤 THE LABEL SAYS WHAT PRESSING IT DOES, never what is currently true. A
-    # toggle labelled with its own state is the single most common way one gets
-    # read backwards.
-    $ui.FoldRail.Content = $(if ($s.Rail) { 'Show projects' } else { 'Hide projects' })
-    $ui.FoldList.Content = $(if ($s.List) { 'Show sessions' } else { 'Hide sessions' })
+    # The carets do not need re-labelling - each one only ever appears on the
+    # state it acts from, and points the way the column will move.
 }
 
 function Set-Breakpoint { Update-Columns; Set-AskCap }
@@ -7714,8 +7719,13 @@ $ui.Broadcast.Add_Click({
     if ($script:surface -ne 'work') { $ui.ModeWork.IsChecked = $true; Set-Surface 'work' }
     Show-Cast
 })
-$ui.FoldRail.Add_Click({ Invoke-ColumnFold -Which 'rail' })
-$ui.FoldList.Add_Click({ Invoke-ColumnFold -Which 'list' })
+# Four carets, two actions: each column's own header collapses it, and the strip
+# it collapses to opens it again. A TextBlock has no Click, so these are
+# MouseLeftButtonUp - the same gesture ListSort beside them already uses.
+$ui.RailFold.Add_MouseLeftButtonUp({ Invoke-ColumnFold -Which 'rail' })
+$ui.ListFold.Add_MouseLeftButtonUp({ Invoke-ColumnFold -Which 'list' })
+$ui.RailOpen.Add_MouseLeftButtonUp({ Invoke-ColumnFold -Which 'rail' })
+$ui.ListOpen.Add_MouseLeftButtonUp({ Invoke-ColumnFold -Which 'list' })
 # A dot on the strip goes straight to that conversation - and opens the list
 # again, because you pressed it in order to do something with the session and
 # the next thing you want is to see it in context.
