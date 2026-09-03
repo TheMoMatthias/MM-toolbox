@@ -1208,9 +1208,15 @@ function Convert-HslToColor { param([double]$H, [double]$S, [double]$L)
 # The rail's own ordering and its own filter, independent of the sessions column.
 $script:railSort = 'recent'
 $script:RailSorts = @(
-    @{ Key = 'recent';  Label = 'recent first' },
-    @{ Key = 'name';    Label = 'by name' },
-    @{ Key = 'waiting'; Label = 'most waiting' },
+    # 🪤 SHORT ENOUGH FOR THE FACE THEY ARE DRAWN IN. These sit beside the
+    # only-live toggle in a 248px rail, and when the chrome went monospaced at
+    # 13px "recent first  ·  all projects" stopped fitting and clipped to
+    # "all proje" - a control cut off mid-word. The words carry the same meaning
+    # with fewer characters; the alternative was a size step, which is the thing
+    # that was just removed on purpose.
+    @{ Key = 'recent';  Label = 'recent' },
+    @{ Key = 'name';    Label = 'name' },
+    @{ Key = 'waiting'; Label = 'waiting' },
     @{ Key = 'busiest'; Label = 'busiest' }
 )
 $script:railOnlyLive = $false
@@ -1611,7 +1617,7 @@ function Update-Surface {
     # cost class as the ForEach-Object in Get-TrackedText, which was 6.9x.
     $live = 0
     foreach ($m in $script:model) { if ($m.Live) { $live++ } }
-    $ui.LiveCount.Text = ('{0} live of {1} conversations across {2} projects' -f `
+    $ui.LiveCount.Text = ('{0} live of {1} in {2} projects' -f `
         $live, $script:model.Count, @($script:dirs).Count)
     # Also here, not only on the 6-second pass: the window has to be right the
     # moment it opens, and the fast pass has not run yet at first paint. Cheap -
@@ -5701,8 +5707,8 @@ foreach ($pair in @(@('MgrAll', 'all'), @('MgrTicked', 'ticked'),
 # --- the two panes' own controls -------------------------------------------
 function Update-RailLabels {
     $cur = @($script:RailSorts | Where-Object { $_.Key -eq $script:railSort })
-    $ui.RailSort.Text = $(if ($cur.Count) { "$($cur[0].Label)" } else { 'recent first' })
-    $ui.RailOnlyLive.Text = $(if ($script:railOnlyLive) { 'only running' } else { 'all projects' })
+    $ui.RailSort.Text = $(if ($cur.Count) { "$($cur[0].Label)" } else { 'recent' })
+    $ui.RailOnlyLive.Text = $(if ($script:railOnlyLive) { 'running' } else { 'all' })
     $ui.RailOnlyLive.Foreground = $window.FindResource($(if ($script:railOnlyLive) { 'TextMax' } else { 'TextLow' }))
 }
 $ui.RailSort.Add_MouseLeftButtonDown({
@@ -8388,7 +8394,7 @@ function Complete-LiveProbe {
     }
 
     if ($script:surface -eq 'work') { Build-Sessions } else { Build-Manager }
-    $ui.LiveCount.Text = ('{0} live of {1} conversations across {2} projects' -f `
+    $ui.LiveCount.Text = ('{0} live of {1} in {2} projects' -f `
         @($script:model | Where-Object { $_.Live }).Count, $script:model.Count, @($script:dirs).Count)
 
     # The pending question the job read for us, applied only if the pane is
