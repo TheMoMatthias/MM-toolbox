@@ -57,7 +57,13 @@ BIND = {
     # when it is still open. {lane} is substituted.
     "findings": "docs/refactor/FINDINGS.md",
     "finding_row_re": r"^\| \*\*({lane}-\d+)\*\*",
-    "open_state_re": r"\*\*(STILL OPEN|OPEN)\b",
+    # R-345: this was r"\*\*(STILL OPEN|OPEN)\b" and REQUIRED BOLD. Measured by GOV-1
+    # over the whole register: 692 rows say OPEN and 225 of them (33%) are UNBOLDED, so
+    # they were invisible to this tool -- across FOURTEEN lanes, with I8 (19/19) and
+    # AUDIT-4 (12/12) seeing ZERO of their own open findings. Bold is now OPTIONAL and the
+    # marker is anchored at the START of the state cell, which is where a state marker
+    # lives; a mention of the word later in the prose still does not match.
+    "open_state_re": r"^\s*(?:[^\w\s|]+\s*)*\**\s*(STILL OPEN|OPEN)\b",
     # what a lane must do with each OPEN finding it raised
     "open_dispositions": (
         "R-229 s4: each is IN-SCOPE (blocks your DONE-WHEN), ROUTED (file with an\n"
@@ -190,6 +196,10 @@ def report(d):
     print("OPEN     : %d of %d raised%s" % (
         len(d["open_ids"]), d["raised"],
         ("  -> " + ", ".join(d["open_ids"])) if d["open_ids"] else ""))
+    if d["raised"] and not d["open_ids"]:
+        print("           ^ ZERO is a PATTERN MATCH, not a verdict. If that surprises\n"
+              "             you, read the register directly -- R-345: this line read 0\n"
+              "             against a real 12 for two lanes until 2026-09-03.")
     if d["open_ids"]:
         for line in BIND["open_dispositions"].splitlines():
             print("           %s" % line)
@@ -262,6 +272,9 @@ def report_realign(d):
     else:
         print("DEFERRED    0 OPEN of %d findings you raised (register-derived, not recalled)."
               % d["raised"])
+        print("            ^ ZERO is a PATTERN MATCH, not a verdict -- R-345. If that\n"
+              "              surprises you, read the register directly; this line read 0\n"
+              "              against a real 12 for two lanes until 2026-09-03.")
 
     if d["rulings"]:
         print("INBOUND     %d ruling(s) landed since your last commit -- you have NOT"
