@@ -258,6 +258,30 @@
     <sys:Double x:Key="SzMono">12.5</sys:Double>
     <sys:Double x:Key="SzStrong">14</sys:Double>
     <sys:Double x:Key="SzDisplay">17</sys:Double>
+
+    <!-- ================== AND ONE SIZE FOR THE TRANSCRIPT ====================
+         🔴 THE READING PANE IS OFF THE SCALE ON PURPOSE, and it is the only
+         thing in this file that is. The scale above sizes the CHROME, where a
+         hierarchy is the point: a heading outranks a row, a row outranks its
+         caption. A transcript has no such hierarchy. It is one column of
+         things that were said, and drawing a tool name at 10, its argument at
+         12.5, a notice caption at 9.5 and prose at 12 made twelve sizes out of
+         one conversation - reported, twice, as "not unified in size".
+
+         So every category of message is drawn at SzPane, in FontPane, full
+         stop. No step for labels, none for code, none for tool output. What
+         separates a label from prose is its hue and its uppercase, which is
+         what a terminal uses too and is enough.
+
+         🪤 THE ZOOM STILL MOVES IT. This is one number, not a fixed one -
+         Set-SRTypeScale multiplies it like every other step, so the pane zoom
+         keeps working. "One size" means one size AT A GIVEN ZOOM. -->
+    <sys:Double x:Key="SzPane">13</sys:Double>
+    <!-- The transcript's face. IBM Plex Mono ships with the tool (lib\fonts\,
+         SIL OFL) and is loaded privately at startup; the stack behind it is
+         what draws if the file is ever missing. Humanist rather than
+         terminal-drawn, which is the whole reason it is not Cascadia. -->
+    <FontFamily x:Key="FontPane">IBM Plex Mono, Cascadia Mono, Consolas, Courier New</FontFamily>
     <!-- There is no FontUi alias any more. It existed as a bridge during the
          rebuild and became the way two styles quietly stayed off the scale -
          the buttons and the surface switch were still at 12px while everything

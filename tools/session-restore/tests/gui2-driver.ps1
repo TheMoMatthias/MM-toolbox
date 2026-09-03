@@ -2796,46 +2796,52 @@ function Get-TextBlocks { param($El, [int]$Depth = 0)
 }
 
 $scale = @{}
-foreach ($k in @('Micro', 'Caption', 'Body', 'Mono', 'Strong', 'Display')) {
+foreach ($k in @('Micro', 'Caption', 'Body', 'Mono', 'Strong', 'Display', 'Pane')) {
     $scale[$k] = [double]$window.Resources["Sz$k"]
 }
 
-# 🔑 THE PARITY THAT MADE THE VOICES LOOK LIKE DIFFERENT DOCUMENTS. Machine text
-# is Cascadia and prose is Manrope, and the same nominal size draws them at
-# different apparent sizes because their x-heights differ (0.518 vs 0.540 em).
-# Mono was 16 to match the terminal's nominal 12pt, which put its x-height 28%
-# above the prose beside it. This asserts the RATIO, not the number, so it stays
-# true if the scale moves and fails loudly if either face is ever swapped.
-# 🪤 ASK THE RESOURCE FOR THE FAMILY, DO NOT NAME IT. Manrope is loaded from
-# lib\fonts at runtime and is NOT installed on the machine, so
-# [FontFamily]'Manrope' silently resolves to a fallback and TryGetGlyphTypeface
-# fails - which skipped this check with a Note that read like a machine
-# limitation rather than a broken lookup. The window's own resources hold the
-# real families, including the loose-folder Uri that makes Manrope resolvable.
-$xh = @{}
-foreach ($pair in @(@('prose', $window.Resources['FontText'], $scale.Body),
-                    @('machine', $window.Resources['FontMono'], $scale.Mono))) {
-    $fam = $pair[1]
-    if ($fam -isnot [System.Windows.Media.FontFamily]) { continue }
-    $tf = New-Object System.Windows.Media.Typeface $fam,
-              ([System.Windows.FontStyles]::Normal), ([System.Windows.FontWeights]::Normal),
-              ([System.Windows.FontStretches]::Normal)
-    $gt = $null
-    if ($tf.TryGetGlyphTypeface([ref]$gt)) {
-        $xh[$pair[0]] = $gt.XHeight * $pair[2]
-        Note ('{0}: {1} at {2}px - x-height {3:N2}px ({4:N3} em)' -f $pair[0], $fam.Source, $pair[2], ($gt.XHeight * $pair[2]), $gt.XHeight)
+# 🔴 THE PARITY CHECK THAT USED TO LIVE HERE IS GONE, AND ITS REMOVAL IS THE
+# POINT. It asserted that Manrope prose and Cascadia machine text drew the same
+# x-height - 6.48px against 6.47px, which it passed, correctly, right up until
+# the operator reported the pane as "too terminal-like". That was the defect:
+# tool traffic outnumbers prose FIVE TO ONE here, so drawing it exactly as
+# prominent as prose makes five-sixths of the surface read at full strength,
+# which is what a terminal looks like. The test was true and the design was
+# wrong, so a passing parity assertion is not something to preserve.
+#
+# The contract now is stricter and much simpler: ONE face, ONE size, for every
+# category of message. There is no ratio left to get wrong.
+$paneFam = $window.Resources['FontPane']
+if ($paneFam -isnot [System.Windows.Media.FontFamily]) {
+    Fail 'FontPane is not a FontFamily - the transcript has no face of its own'
+} else {
+    $src = "$($paneFam.Source)"
+    if ($src -notlike '*IBM Plex Mono*') {
+        Fail ("the pane face is '{0}', not IBM Plex Mono - lib\fonts did not load and the transcript is on the fallback stack" -f $src)
+    } else {
+        # 🪤 THE FACE COUNT IS THE POINT OF SHIPPING THREE FILES. A family with
+        # only a Regular makes WPF synthesise bold and italic, and a synthesised
+        # bold is exactly the smeared weight the operator called "fat". Fragment
+        # Mono lost the face comparison on this and nothing else.
+        $faceN = @($paneFam.GetTypefaces()).Count
+        if ($faceN -lt 2) {
+            Fail ("IBM Plex Mono exposes {0} face - every bold in the transcript would be synthesised" -f $faceN)
+        } else {
+            Pass ("the transcript has one face of its own: IBM Plex Mono, {0} real typefaces" -f $faceN)
+        }
+        $tf = New-Object System.Windows.Media.Typeface $paneFam,
+                  ([System.Windows.FontStyles]::Normal), ([System.Windows.FontWeights]::Normal),
+                  ([System.Windows.FontStretches]::Normal)
+        $gt = $null
+        if ($tf.TryGetGlyphTypeface([ref]$gt)) {
+            Note ('pane: {0} at {1}px - x-height {2:N2}px ({3:N3} em)' -f $src, $scale.Pane, ($gt.XHeight * $scale.Pane), $gt.XHeight)
+        }
     }
 }
-if ($xh.Count -eq 2) {
-    $d = [Math]::Abs($xh['prose'] - $xh['machine'])
-    if ($d -gt 0.6) {
-        Fail ('prose and machine text are {0:N2}px apart in x-height ({1:N2} vs {2:N2}) - they will read as different sizes' -f
-              $d, $xh['prose'], $xh['machine'])
-    } else {
-        Pass ('prose and machine text sit within {0:N2}px of the same x-height ({1:N2}px)' -f $d, $xh['prose'])
-    }
+if ([Math]::Abs($script:readSize - $script:MonoSize) -gt 0.01) {
+    Fail ('prose and machine text are still two sizes: {0} and {1}' -f $script:readSize, $script:MonoSize)
 } else {
-    Note 'one of the two faces is not installed - the x-height parity check is skipped'
+    Pass ('prose and machine text are one size ({0}px)' -f $script:readSize)
 }
 
 # 🔴 SHOW THE PANELS THAT ARE COLLAPSED BY DEFAULT FIRST, OR THE SWEEP BELOW IS
@@ -2946,11 +2952,11 @@ foreach ($pct in @(100, 150)) {
 Set-SRTypeScale -Percent $ovWas
 Lay
 
-if ([Math]::Abs($script:MonoSize - $scale.Mono) -gt 0.01 -or [Math]::Abs($script:readSize - $scale.Body) -gt 0.01) {
-    Fail ('the document builder is off the scale after a zoom round-trip: mono {0} (want {1}), prose {2} (want {3})' -f
-          $script:MonoSize, $scale.Mono, $script:readSize, $scale.Body)
+if ([Math]::Abs($script:MonoSize - $scale.Pane) -gt 0.01 -or [Math]::Abs($script:readSize - $scale.Pane) -gt 0.01) {
+    Fail ('the document builder is off the pane size after a zoom round-trip: mono {0}, prose {1} (both want {2})' -f
+          $script:MonoSize, $script:readSize, $scale.Pane)
 } else {
-    Pass 'the document builder''s prose and mono sizes come back on the scale too'
+    Pass ('the document builder comes back on the pane size, prose and machine alike ({0}px)' -f $scale.Pane)
 }
 
 # ===========================================================================

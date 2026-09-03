@@ -1622,6 +1622,50 @@ function Install-SRTypeface {
 }
 $script:hasManrope = Install-SRTypeface
 
+# THE TRANSCRIPT'S FACE, on the same terms as Manrope above.
+#
+# 🔴 IT IS MONOSPACED AND THAT IS THE POINT. The pane draws prose, tables, tool
+# arguments and shell output in ONE face at ONE size, so that face has to hold a
+# character grid - a table of file:line rendered proportionally is not a table.
+# What it does NOT have to be is terminal-drawn, and Cascadia Mono is: slashed
+# zero, hard geometry, built for a console. Measured against four candidates on
+# the pane's own ground, IBM Plex Mono is the humanist one, and it is the family
+# Zed derives its default from, so it is already proven for long reading here.
+#
+# 🪤 THREE FILES, NOT ONE. Regular, SemiBold and Italic. A family with only a
+# Regular makes WPF SYNTHESISE the other two - a smeared oblique and a
+# double-struck bold - which is precisely the "fat" the operator reported about
+# the old SemiBold captions. Fragment Mono lost the comparison on exactly this:
+# it ships one weight. The face count is checked below rather than assumed.
+function Install-SRPaneFace {
+    $dir = Join-Path $here 'fonts'
+    $ttf = Join-Path $dir 'IBMPlexMono-Regular.ttf'
+    if (-not (Test-Path -LiteralPath $ttf)) {
+        Write-SRLog '  [skip] lib\fonts\IBMPlexMono-Regular.ttf is not there - the pane keeps Cascadia Mono'
+        return $false
+    }
+    try {
+        $base = [Uri]('file:///' + $dir.Replace('\', '/').TrimEnd('/') + '/')
+        $fams = [System.Windows.Media.Fonts]::GetFontFamilies($base)
+        # The PSObject cast is load-bearing here for the same reason it is in
+        # Install-SRTypeface - see the note there.
+        $fam = [System.Windows.Media.FontFamily](@($fams | Where-Object { "$($_.Source)" -like '*#IBM Plex Mono*' })[0])
+        if (-not $fam) { Write-SRLog '  [skip] no IBM Plex Mono family in lib\fonts - the pane keeps Cascadia Mono'; return $false }
+        $faces = @($fam.GetTypefaces())
+        if ($faces.Count -lt 2) {
+            Write-SRLog ('  [skip] IBM Plex Mono exposes only {0} face - a synthesised bold is worse than Cascadia' -f $faces.Count)
+            return $false
+        }
+        $window.Resources['FontPane'] = $fam
+        Write-SRLog ('  [ok]   pane face IBM Plex Mono loaded from lib\fonts ({0} faces)' -f $faces.Count)
+        return $true
+    } catch {
+        Write-SRLog ('  [skip] IBM Plex Mono would not load ({0}) - the pane keeps Cascadia Mono' -f $_.Exception.Message)
+        return $false
+    }
+}
+$script:hasPlex = Install-SRPaneFace
+
 # ===========================================================================
 # ONE TYPE SCALE, AND ONE KNOB THAT MOVES ALL OF IT.
 #
@@ -1641,13 +1685,13 @@ $script:hasManrope = Install-SRTypeface
 # size together, saved, and the same on both machines.
 $SR_GutterBase = 22.0
 $script:TypeBase = @{}
-foreach ($k in @('Micro', 'Caption', 'Body', 'Mono', 'Strong', 'Display')) {
+foreach ($k in @('Micro', 'Caption', 'Body', 'Mono', 'Strong', 'Display', 'Pane')) {
     # 🪤 CAST, DO NOT TRUST THE LOOKUP. A missing key returns $null and would
     # silently make every size 0 - a window that lays out to nothing. The
     # fallback keeps the shape of the scale if the XAML is ever out of step.
     $v = 0.0
     try { $v = [double]$window.Resources["Sz$k"] } catch { $v = 0.0 }
-    if ($v -le 0) { $v = @{ Micro = 9.5; Caption = 11.0; Body = 12.0; Mono = 12.5; Strong = 14.0; Display = 17.0 }[$k] }
+    if ($v -le 0) { $v = @{ Micro = 9.5; Caption = 11.0; Body = 12.0; Mono = 12.5; Strong = 14.0; Display = 17.0; Pane = 13.0 }[$k] }
     $script:TypeBase[$k] = $v
 }
 $script:Type = @{}
@@ -1667,12 +1711,20 @@ function Set-SRTypeScale { param([int]$Percent = 0)
         # what makes the chrome move with the pane rather than only the pane.
         $window.Resources["Sz$k"] = $v
     }
-    # The document builder's three derived numbers. Leading at 1.38x is the
-    # measured terminal density this pane settled on; mono is the scale's own
-    # step, chosen for x-height parity with the body rather than by its number.
-    $script:readSize = $script:Type.Body
-    $script:readLead = [Math]::Round($script:Type.Body * 1.38, 1)
-    $script:MonoSize = $script:Type.Mono
+    # 🔴 ONE SIZE FOR THE WHOLE TRANSCRIPT, and these two names now point at it.
+    # readSize was Body and MonoSize was Mono - two steps, deliberately chosen
+    # for x-height PARITY so machine text would read as large as prose. It did,
+    # and that was the mistake: tool traffic outnumbers prose five to one in
+    # this pane (measured, see the reading-surface note), so making it equally
+    # prominent is what turned the whole surface into a terminal. Both names
+    # survive because thirty call sites use them; there is one number behind
+    # them now.
+    $script:PaneSize = $script:Type.Pane
+    $script:readSize = $script:PaneSize
+    $script:MonoSize = $script:PaneSize
+    # Mono needs a little more air between lines than a proportional face at
+    # the same size; 1.48 is what the specimen this was chosen from used.
+    $script:readLead = [Math]::Round($script:PaneSize * 1.48, 1)
     # The gutter is a TYPE measure, not a layout constant - it holds one marker
     # glyph and the space after it - so it zooms with the glyph or the marker
     # grows out of its column. Both users of it read this one variable, so the
@@ -1710,6 +1762,12 @@ try {
 # face while everything around it changed.
 $script:UiFace   = $window.FindResource('FontText')
 $script:MonoFace = $window.FindResource('FontMono')
+# 🔴 THE TRANSCRIPT HAS ONE FACE. Every builder below that draws part of a
+# message uses this and nothing else - prose, code, tool names, arguments,
+# results, labels, gutter markers. UiFace and MonoFace survive above for the
+# CHROME that is built in code (the live question panel, the chips), which is
+# not a message and keeps the window's own face.
+$script:PaneFace = $window.FindResource('FontPane')
 $FW_Semi   = [System.Windows.FontWeights]::SemiBold
 $FW_Normal = [System.Windows.FontWeights]::Normal
 
@@ -1731,11 +1789,17 @@ $script:tailBytes = $script:TailBase
 
 
 function New-ReadRun {
-    param([string]$Text, $Brush, [double]$Size = 13, [string]$Weight = 'Normal', [switch]$Mono, [switch]$Italic)
+    # 🪤 -Mono IS NOW A NO-OP, AND IT IS KEPT DELIBERATELY. Every caller that
+    # passed it was asking for "machine text", which is a real distinction and
+    # is still carried - by hue and by the gutter marker, not by the face. The
+    # switch stays so the call sites keep reading as what they mean; removing it
+    # would be a rename across thirty lines that changes nothing on screen.
+    param([string]$Text, $Brush, [double]$Size = 0, [string]$Weight = 'Normal', [switch]$Mono, [switch]$Italic)
+    if ($Size -le 0) { $Size = $script:PaneSize }
     $r = New-Object System.Windows.Documents.Run ([string]$Text)
     if ($Brush) { $r.Foreground = $Brush }
     $r.FontSize = $Size
-    if ($Mono)   { $r.FontFamily = $script:MonoFace }
+    $r.FontFamily = $script:PaneFace
     if ($Italic) { $r.FontStyle = [System.Windows.FontStyles]::Italic }
     $r.FontWeight = $(if ($Weight -eq 'SemiBold') { $FW_Semi } else { $FW_Normal })
     return $r
@@ -1792,13 +1856,15 @@ function Get-TrackedText { param([string]$Text)
 # card is exactly how the old surface started.
 
 function New-ReadText {
-    param([string]$Text, $Brush, [double]$Size = 13, [switch]$Mono, [switch]$Semi,
+    # -Mono is a no-op here too; see New-ReadRun.
+    param([string]$Text, $Brush, [double]$Size = 0, [switch]$Mono, [switch]$Semi,
           [switch]$Wrap, [double]$Line = 0)
+    if ($Size -le 0) { $Size = $script:PaneSize }
     $t = [System.Windows.Controls.TextBlock]::new()
     $t.Text = $Text
     if ($Brush) { $t.Foreground = $Brush }
     $t.FontSize = $Size
-    if ($Mono) { $t.FontFamily = $script:MonoFace } else { $t.FontFamily = $script:UiFace }
+    $t.FontFamily = $script:PaneFace
     if ($Semi) { $t.FontWeight = $FW_Semi }
     if ($Wrap) { $t.TextWrapping = 'Wrap' }
     else { $t.TextWrapping = 'NoWrap'; $t.TextTrimming = 'CharacterEllipsis' }
@@ -1810,8 +1876,10 @@ function New-ReadText {
 # heading, a bullet, and inline `code`. Anything more would be a markdown
 # engine, which is not what this needs to be.
 function Add-ReadProse {
-    param($Doc, [string]$Text, $Brush, [double]$Size = 13, [double]$Line = 18,
+    param($Doc, [string]$Text, $Brush, [double]$Size = 0, [double]$Line = 0,
           [double]$Indent = 0, [string]$Kind = '')
+    if ($Size -le 0) { $Size = $script:PaneSize }
+    if ($Line -le 0) { $Line = $script:readLead }
     $lines = @((Remove-SRAnsi $Text) -replace "`r", '' -split "`n")
     $i = 0
     # The marker is drawn ONCE, on the first line that carries words. A turn is
@@ -1827,7 +1895,7 @@ function Add-ReadProse {
             $i++
             # A fenced block is machine text: mono, on the rail, and NOT in a
             # card. Nothing in this document is in a card any more.
-            $tb = New-ReadText -Text (($code -join "`n").TrimEnd()) -Brush $Pal.TextHigh -Size $script:MonoSize -Mono -Wrap -Line 20
+            $tb = New-ReadText -Text (($code -join "`n").TrimEnd()) -Brush $Pal.TextHigh -Mono -Wrap -Line $script:readLead
             $Doc.Blocks.Add((New-RailBlock -Child $tb -Kind 'result' -Indent $Indent -Top 10 -Bottom 10 -Rail))
             continue
         }
@@ -1843,7 +1911,10 @@ function Add-ReadProse {
             $p.Inlines.Add((New-GutterMark -Glyph ' ' -Brush $Pal.TextLow))
         }
         $body = $ln; $size = $Size; $weight = 'Normal'; $bump = 0
-        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold'; $size = $Size + 2 }
+        # 🪤 A HEADING IS WEIGHT NOW, NOT SIZE. `$Size + 2` was one of the twelve
+        # sizes that made this pane ragged, and it is the easiest one to justify
+        # and still wrong: one size means one size. SemiBold carries it.
+        if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold' }
         elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [string][char]0x2022 + '   ' + $Matches[1]; $bump = 18 }
         elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.   ' + $Matches[2]; $bump = 18 }
         # 🪤 THE GUTTER STAYS IN THE MARGIN. A bullet re-sets the whole Margin,
@@ -1855,7 +1926,11 @@ function Add-ReadProse {
         while ($rest -match '^(.*?)(`([^`]+)`|\*\*([^*]+)\*\*)(.*)$') {
             $before = $Matches[1]; $codeTxt = $Matches[3]; $boldTxt = $Matches[4]; $rest = $Matches[5]
             if ($before)  { $p.Inlines.Add((New-ReadRun -Text $before -Brush $Brush -Size $size -Weight $weight)) }
-            if ($codeTxt) { $p.Inlines.Add((New-ReadRun -Text $codeTxt -Brush $Pal.TextMax -Size ($size - 1.5) -Mono)) }
+            # Inline code was $size - 1.5, i.e. 10.5 against 12 prose - the
+            # smallest thing in the document and the one most often a path you
+            # actually need to read. Same size as everything else; the hue is
+            # what says it is code.
+            if ($codeTxt) { $p.Inlines.Add((New-ReadRun -Text $codeTxt -Brush $Pal.TextMax -Size $size -Mono)) }
             elseif ($boldTxt) { $p.Inlines.Add((New-ReadRun -Text $boldTxt -Brush $Pal.TextMax -Size $size -Weight 'SemiBold')) }
         }
         if ($rest) { $p.Inlines.Add((New-ReadRun -Text $rest -Brush $Brush -Size $size -Weight $weight)) }
@@ -2027,8 +2102,8 @@ $script:ReadMeasureChars = 100
 # Set-ReadMeasure quietly overrode it on every layout, so changing the size here
 # did nothing at all. The scale owns them now; assigning a number to either of
 # them anywhere else is the bug, not the fix.
-$script:readSize = $script:Type.Body
-$script:readLead = [Math]::Round($script:Type.Body * 1.38, 1)
+$script:readSize = $script:Type.Pane
+$script:readLead = [Math]::Round($script:Type.Pane * 1.48, 1)
 
 # THE GUTTER, in device-independent pixels.
 #
@@ -2055,10 +2130,17 @@ $script:GutterW = [Math]::Round($SR_GutterBase * ($script:Zoom / 100.0), 1)
 # bought was invisible anyway, because nothing else in the pane is at terminal
 # scale.
 #
-# Sized by x-height now: Mono is 12.5 against a 12 body, which puts the two
-# within a tenth of a pixel of each other. The number lives in the scale in
-# window2.xaml and moves with the zoom like everything else.
-$script:MonoSize = $script:Type.Mono
+# 🔴 AND THEN X-HEIGHT PARITY TURNED OUT TO BE THE WRONG TARGET TOO. Mono at
+# 12.5 against a 12 body put the two within a tenth of a pixel of each other -
+# machine text exactly as prominent as prose. Tool traffic outnumbers prose five
+# to one here, so "exactly as prominent" means the pane is five-sixths machine
+# text at full strength, which is what a terminal looks like. Reported as
+# "either too terminal-like or something else has happened".
+#
+# The answer was not a third ratio. It is ONE size for every category, in one
+# humanist face - so this is Pane, the same number readSize holds, and the two
+# can no longer disagree. It still moves with the zoom.
+$script:MonoSize = $script:Type.Pane
 
 # 🔴 THE MARKER TABLE - ONE ROW PER BLOCK KIND, AND EVERY KIND HAS ONE.
 #
@@ -2136,13 +2218,13 @@ function Get-SRHeadLine { param([string]$Text, [int]$Max = 88)
 # is exactly GutterW wide under a PROPORTIONAL prose face. Knuth-Plass line
 # breaking measured the same way and is also staying.
 function New-GutterMark { param([string]$Glyph, $Brush, [double]$Size = 0)
-    if ($Size -le 0) { $Size = $script:Type.Caption }
+    if ($Size -le 0) { $Size = $script:PaneSize }
     $tb = [System.Windows.Controls.TextBlock]::new()
     $tb.Text = $Glyph
     $tb.Width = $script:GutterW
     $tb.Foreground = $Brush
     $tb.FontSize = $Size
-    $tb.FontFamily = $script:MonoFace
+    $tb.FontFamily = $script:PaneFace
     $tb.TextAlignment = 'Left'
     $iuc = New-Object System.Windows.Documents.InlineUIContainer $tb
     $iuc.BaselineAlignment = 'Baseline'
@@ -2205,8 +2287,8 @@ function New-RailBlock {
     $mk = [System.Windows.Controls.TextBlock]::new()
     $mk.Text = (Get-MarkGlyph $Kind)
     $mk.Foreground = $Brush
-    $mk.FontSize = $script:Type.Caption
-    $mk.FontFamily = $script:MonoFace
+    $mk.FontSize = $script:PaneSize
+    $mk.FontFamily = $script:PaneFace
     $mk.VerticalAlignment = 'Top'
     $null = $g.Children.Add($mk)
 
@@ -2220,7 +2302,10 @@ function New-RailBlock {
         $ln.Width = 1
         $ln.HorizontalAlignment = 'Left'
         $ln.VerticalAlignment = 'Stretch'
-        $ln.Margin = [System.Windows.Thickness]::new(3, 17, 0, 2)
+        # 🪤 THE CLEARANCE IS THE MARKER'S HEIGHT, so it has to scale with it.
+        # A fixed 17 was tuned against Caption at 100% and, at 150%, left the
+        # rail starting part-way up a marker that had grown past it.
+        $ln.Margin = [System.Windows.Thickness]::new(3, [Math]::Round($script:PaneSize * 1.3, 1), 0, 2)
         $ln.Fill = (New-SRTint $Brush 0.5)
         $null = $g.Children.Add($ln)
     }
@@ -2297,18 +2382,17 @@ function New-FoldHeader {
     $car = New-Object System.Windows.Controls.TextBlock
     $car.Text = [string][char]$(if ($Open) { 0x25BE } else { 0x25B8 })
     $car.Foreground = $Brush
-    $car.FontSize = $script:Type.Micro
-    $car.FontFamily = $script:MonoFace
+    $car.FontSize = $script:PaneSize
+    $car.FontFamily = $script:PaneFace
     $car.VerticalAlignment = 'Center'
     $car.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
     $null = $sp.Children.Add($car)
 
     $cap = New-Object System.Windows.Controls.TextBlock
-    $cap.Text = (Get-TrackedText $Caption)
+    $cap.Text = "$Caption".ToUpper()
     $cap.Foreground = $Brush
-    $cap.FontSize = $script:Type.Micro
-    $cap.FontWeight = $FW_Semi
-    $cap.FontFamily = $script:UiFace
+    $cap.FontSize = $script:PaneSize
+    $cap.FontFamily = $script:PaneFace
     $cap.VerticalAlignment = 'Center'
     $null = $sp.Children.Add($cap)
 
@@ -2316,8 +2400,8 @@ function New-FoldHeader {
         $tr = New-Object System.Windows.Controls.TextBlock
         $tr.Text = $Trailing
         $tr.Foreground = $Pal.TextDim
-        $tr.FontSize = $script:Type.Caption
-        $tr.FontFamily = $script:MonoFace
+        $tr.FontSize = $script:PaneSize
+        $tr.FontFamily = $script:PaneFace
         $tr.VerticalAlignment = 'Center'
         $tr.TextTrimming = 'CharacterEllipsis'
         $tr.Margin = New-Object System.Windows.Thickness 10, 0, 0, 0
@@ -2546,7 +2630,7 @@ function Update-LiveShells {
                 }
             } elseif ($e.Panel) {
                 # It had nothing to show when it was opened and now does.
-                $nb = New-ReadText -Text $txt -Brush $Pal.TextMid -Size $script:MonoSize -Mono -Wrap -Line 20
+                $nb = New-ReadText -Text $txt -Brush $Pal.TextMid -Size $script:MonoSize -Mono -Wrap -Line $script:readLead
                 $nb.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
                 $null = $e.Panel.Children.Add((New-BoundedText $nb))
                 $e.Body = $nb
@@ -2591,7 +2675,7 @@ function Add-MonoDetail { param($Panel, [string]$Text, $Brush)
     if (-not $Brush) { $Brush = $Pal.TextMid }
     $t = "$Text".TrimEnd()
     if (-not $t) { return }
-    $tb = New-ReadText -Text (Compress-SRPath $t) -Brush $Brush -Size $script:MonoSize -Mono -Wrap -Line 20
+    $tb = New-ReadText -Text (Compress-SRPath $t) -Brush $Brush -Size $script:MonoSize -Mono -Wrap -Line $script:readLead
     $null = $Panel.Children.Add((New-BoundedText $tb))
 }
 
@@ -2665,10 +2749,10 @@ function Add-RunDetail { param($Panel, $Calls)
         $head = New-Object System.Windows.Controls.StackPanel
         $head.Orientation = 'Horizontal'
         if ($ck -ne 'run') {
-            $gm = New-ReadText -Text ((Get-MarkGlyph $ck) + '  ') -Brush $hue -Size 11 -Mono -Semi
+            $gm = New-ReadText -Text ((Get-MarkGlyph $ck) + '  ') -Brush $hue -Mono
             $null = $head.Children.Add($gm)
         }
-        $null = $head.Children.Add((New-ReadText -Text $c.Name -Brush $hue -Size 10 -Semi))
+        $null = $head.Children.Add((New-ReadText -Text "$($c.Name)".ToUpper() -Brush $hue))
         $null = $ln.Children.Add($head)
 
         # What it was FOR, above what it was GIVEN. On a Task this is the one
@@ -2676,7 +2760,7 @@ function Add-RunDetail { param($Panel, $Calls)
         # the only human-written description of what was left running.
         $dsc = "$($c.Desc)".Trim()
         if ($dsc -and $ck -ne 'run') {
-            $db = New-ReadText -Text $dsc -Brush $Pal.TextMid -Size 12.5 -Wrap -Line 16.5
+            $db = New-ReadText -Text $dsc -Brush $Pal.TextMid -Wrap -Line $script:readLead
             $db.Margin = New-Object System.Windows.Thickness 0, 3, 0, 0
             $null = $ln.Children.Add($db)
         }
@@ -2709,7 +2793,7 @@ function Add-RunDetail { param($Panel, $Calls)
                 $op.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
                 $op.ToolTip = 'Open this sub-agent''s own conversation'
                 $ot = New-ReadText -Text ((Get-MarkGlyph 'agent') + '  open its conversation  ' + [string][char]0x2192) `
-                                   -Brush (Get-MarkBrush 'agent') -Size $script:Type.Caption -Semi
+                                   -Brush (Get-MarkBrush 'agent')
                 $op.Child = $ot
                 $op.Tag = @{ Sub = $mine[0]; Row = $script:docParentRow }
                 $op.Add_MouseLeftButtonUp({
@@ -2739,7 +2823,7 @@ function Add-RunDetail { param($Panel, $Calls)
             if ($ck -ne 'agent') { $stmts = @(Split-SRCommandLine $argText) }
             foreach ($stmt in $stmts) {
                 $ar = New-ReadText -Text $stmt -Brush $(if ($c.Bad) { $Pal.Bad } else { $Pal.TextHigh }) `
-                                   -Size $script:MonoSize -Mono -Wrap -Line 20
+                                   -Size $script:MonoSize -Mono -Wrap -Line $script:readLead
                 # The hanging indent that makes a wrapped command readable: the
                 # statement starts at the left and its continuation lines sit in
                 # from it, so you can see where one command ends and the next
@@ -2755,7 +2839,12 @@ function Add-RunDetail { param($Panel, $Calls)
         if ($resText) {
             $rg = New-Object System.Windows.Controls.Grid
             $rc0 = New-Object System.Windows.Controls.ColumnDefinition
-            $rc0.Width = New-Object System.Windows.GridLength 14
+            # 🪤 GutterW, NOT 14. Every other block in this document hangs off
+            # $script:GutterW, which scales with the zoom; this column was a
+            # bare 14 and so agreed with them at 100% and drifted at every
+            # other setting - the result marker sitting left of the prose it
+            # belongs under. Reported as "alignment".
+            $rc0.Width = New-Object System.Windows.GridLength $script:GutterW
             $rc1 = New-Object System.Windows.Controls.ColumnDefinition
             $rc1.Width = New-Object System.Windows.GridLength 1, 'Star'
             $null = $rg.ColumnDefinitions.Add($rc0)
@@ -2763,11 +2852,11 @@ function Add-RunDetail { param($Panel, $Calls)
             $rm = New-Object System.Windows.Controls.TextBlock
             $rm.Text = (Get-MarkGlyph 'result')
             $rm.Foreground = $Pal.TextLow
-            $rm.FontSize = $script:Type.Caption
-            $rm.FontFamily = $script:MonoFace
+            $rm.FontSize = $script:PaneSize
+            $rm.FontFamily = $script:PaneFace
             $rm.VerticalAlignment = 'Top'
             $null = $rg.Children.Add($rm)
-            $rt = New-ReadText -Text (Compress-SRPath $resText) -Brush $Pal.TextLow -Size $script:MonoSize -Mono -Wrap -Line 20
+            $rt = New-ReadText -Text (Compress-SRPath $resText) -Brush $Pal.TextLow -Size $script:MonoSize -Mono -Wrap -Line $script:readLead
             $sv = New-BoundedText $rt
             [System.Windows.Controls.Grid]::SetColumn($sv, 1)
             $null = $rg.Children.Add($sv)
@@ -2812,12 +2901,13 @@ function Add-RunDetail { param($Panel, $Calls)
                 $shText = "$($so.Text)"
             }
             $sv2 = New-Object System.Windows.Controls.StackPanel
-            $sv2.Margin = New-Object System.Windows.Thickness 14, 7, 0, 0
-            $hl = New-ReadText -Text (Get-TrackedText $shLabel) -Brush (Get-MarkBrush 'shell') -Size 9.5 -Semi
+            # Same column as the result marker above, for the same reason.
+            $sv2.Margin = New-Object System.Windows.Thickness $script:GutterW, 7, 0, 0
+            $hl = New-ReadText -Text "$shLabel".ToUpper() -Brush (Get-MarkBrush 'shell')
             $null = $sv2.Children.Add($hl)
             $bt = $null
             if ($shText) {
-                $bt = New-ReadText -Text $shText -Brush $Pal.TextMid -Size $script:MonoSize -Mono -Wrap -Line 20
+                $bt = New-ReadText -Text $shText -Brush $Pal.TextMid -Size $script:MonoSize -Mono -Wrap -Line $script:readLead
                 $bt.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
                 $null = $sv2.Children.Add((New-BoundedText $bt))
             }
@@ -2863,7 +2953,7 @@ function Set-ReadMeasure { param($Doc, [double]$Size = 0, [double]$PadL = 44)
     # only this one did anything. It now takes the scale, and the $Size
     # parameter stays as the one legitimate override (the shot harness renders
     # at a fixed size so a picture is comparable between runs).
-    $size = $script:Type.Body
+    $size = $script:PaneSize
     if ($Size -gt 0) { $size = $Size }
     $script:readSize = $size
     $script:readLead = [Math]::Round($size * 1.38, 1)
@@ -2908,13 +2998,20 @@ function Format-TurnTime { param($When)
 function Add-ReadLabel {
     param($Doc, [string]$Text, $Brush, [string]$Trailing = '', $TrailBrush, $When,
           [double]$Size = 0, [double]$Top = 13, [double]$Bottom = 4)
-    if ($Size -le 0) { $Size = $script:Type.Micro }
+    if ($Size -le 0) { $Size = $script:PaneSize }
     $p = New-Object System.Windows.Documents.Paragraph
     # INDENTED INTO THE TEXT COLUMN, not sitting out at the page edge. The
     # speaker label belongs over the words it introduces; at x=0 it hung one
     # gutter to the left of everything below it and read as a separate column.
     $p.Margin = New-Object System.Windows.Thickness $script:GutterW, $Top, 0, $Bottom
-    $p.Inlines.Add((New-ReadRun -Text (Get-TrackedText $Text.ToUpper()) -Brush $Brush -Size $Size -Weight 'SemiBold'))
+    # 🔴 BARE: UPPERCASE AND HUE, NOTHING ELSE. This was tracked (hand-spaced
+    # with thin spaces) AND SemiBold AND a size step below the prose - three
+    # devices to say "label" where the pane already says it twice, in the
+    # marker and the colour. The operator named the weight specifically: asked
+    # which thing read as "fat", the answer was "the SemiBold labels and
+    # captions". A column of small bold capitals on a dark ground blooms, and
+    # there is one over every turn. Uppercase and the hue carry it now.
+    $p.Inlines.Add((New-ReadRun -Text $Text.ToUpper() -Brush $Brush -Size $Size))
     $stamp = Format-TurnTime $When
     if ($stamp) {
         # Dimmer than the speaker and not tracked: it is a reference you look up
@@ -2954,7 +3051,7 @@ function Get-ToolViewLabel {
 function Build-ReadDocument {
     param($Blocks, [bool]$Truncated = $false, $Turns = $null)
     $doc = New-Object System.Windows.Documents.FlowDocument
-    $doc.FontFamily  = $script:UiFace
+    $doc.FontFamily  = $script:PaneFace
     # TRANSPARENT, NOT Ink. The document was painting the GROUND colour - the
     # near-black the window shows *around* its cards - inside an output pane
     # that is painted Panel and has a 12px corner radius. The result was a
@@ -3000,7 +3097,7 @@ function Build-ReadDocument {
         $bb.Cursor = 'Hand'
         $bb.ToolTip = 'Back to the conversation that dispatched this agent'
         $bt2 = New-ReadText -Text ([string][char]0x2190 + '  back to ' + "$($script:agentOpen.Row.T.Text)") `
-                            -Brush $Pal.Ask -Size $script:Type.Caption -Semi
+                            -Brush $Pal.Ask
         $bb.Child = $bt2
         $bb.Add_MouseLeftButtonUp({ param($s, $e) Close-AgentDoc })
         $doc.Blocks.Add((New-RailBlock -Child $bb -Kind 'agent' -Top 0 -Bottom 10))
@@ -3020,16 +3117,16 @@ function Build-ReadDocument {
         $up = New-Object System.Windows.Controls.TextBlock
         $up.Text = [string][char]0x25B4
         $up.Foreground = $Pal.TextLow
-        $up.FontSize = $script:Type.Micro
-        $up.FontFamily = $script:MonoFace
+        $up.FontSize = $script:PaneSize
+        $up.FontFamily = $script:PaneFace
         $up.VerticalAlignment = 'Center'
         $up.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
         $null = $sp.Children.Add($up)
         $lb = New-Object System.Windows.Controls.TextBlock
         $lb.Text = ('load earlier   showing the last {0} KB of a longer conversation' -f [int]($script:tailBytes / 1KB))
         $lb.Foreground = $Pal.TextDim
-        $lb.FontSize = $script:Type.Caption
-        $lb.FontFamily = $script:UiFace
+        $lb.FontSize = $script:PaneSize
+        $lb.FontFamily = $script:PaneFace
         $lb.VerticalAlignment = 'Center'
         $null = $sp.Children.Add($lb)
         $bd.Child = $sp
@@ -3121,9 +3218,9 @@ function Add-ReadTurn { param($Doc, $Turn)
                 # showed nothing happening.
                 $st = New-Object System.Windows.Controls.StackPanel
                 $st.Orientation = 'Horizontal'
-                $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText 'COMPACTED') -Brush $Pal.Ask -Size 9.5 -Semi))
+                $null = $st.Children.Add((New-ReadText -Text 'COMPACTED' -Brush $Pal.Ask))
                 if ("$($t.Body)".Trim()) {
-                    $tb = New-ReadText -Text "$($t.Body)" -Brush $Pal.TextLow -Size $script:Type.Caption
+                    $tb = New-ReadText -Text "$($t.Body)" -Brush $Pal.TextLow
                     $tb.Margin = New-Object System.Windows.Thickness 10, 0, 0, 0
                     $null = $st.Children.Add($tb)
                 }
@@ -3182,19 +3279,23 @@ function Add-ReadTurn { param($Doc, $Turn)
                 # It does NOT fold. What you decided is the one thing in this
                 # document you never want to have to go and open.
                 $st = New-Object System.Windows.Controls.StackPanel
-                $null = $st.Children.Add((New-ReadText -Text (Get-TrackedText 'YOU ANSWERED') -Brush $Pal.Ask -Size 9.5 -Semi))
+                $null = $st.Children.Add((New-ReadText -Text 'YOU ANSWERED' -Brush $Pal.Ask))
                 $first = $true
                 foreach ($line in @("$($t.Body)" -split "`n")) {
                     if (-not "$line".Trim()) { continue }
                     $bits = "$line" -split ([string][char]1), 2
                     $qt = "$($bits[0])".Trim()
                     $at = $(if ($bits.Count -gt 1) { "$($bits[1])".Trim() } else { '' })
-                    $qb = New-ReadText -Text $qt -Brush $Pal.TextMid -Size 12 -Wrap -Line 16.5
+                    $qb = New-ReadText -Text $qt -Brush $Pal.TextMid -Wrap -Line $script:readLead
                     $qb.Margin = New-Object System.Windows.Thickness 0, $(if ($first) { 8 } else { 11 }), 0, 0
                     $null = $st.Children.Add($qb)
                     $first = $false
                     if ($at) {
-                        $ab = New-ReadText -Text $at -Brush $Pal.Ask -Size 13 -Semi -Wrap -Line 17
+                        # -Semi survives here and nowhere else in a label's
+                        # neighbourhood: this is not a label, it is WHAT YOU
+                        # DECIDED, and it is the one thing in the document you
+                        # should never have to hunt for.
+                        $ab = New-ReadText -Text $at -Brush $Pal.Ask -Semi -Wrap -Line $script:readLead
                         $ab.Margin = New-Object System.Windows.Thickness 12, 2, 0, 0
                         $null = $st.Children.Add($ab)
                     }
