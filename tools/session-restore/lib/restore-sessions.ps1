@@ -154,11 +154,6 @@ function Invoke-Restore {
         # phone for a while - so that is still a warning and not a refusal. The
         # difference is that a dead TOKEN makes every launched session useless,
         # and a suppressed bridge does not.
-        if (-not (Wait-SRBridgeReady -MaxWaitSeconds 300)) {
-            if (Test-SRTokenLive) {
-                Write-SRWarn 'the remote bridge is not ready - restoring anyway; the sessions will work but may not reach Remote Control for a while'
-            }
-        }
         # 🔴 WARM BY LAUNCHING THE FIRST SESSION, NOT BY GUESSING WHICH COMMAND
         # REFRESHES. There is no `claude auth refresh`, and whether `auth status`
         # refreshes is undocumented - so this no longer DEPENDS on it. What is
@@ -168,11 +163,33 @@ function Invoke-Restore {
         # release the rest. The warm-up is work that was wanted anyway - no
         # extra call, and above all NO GHOST CONVERSATION, which is what ruled
         # out `claude -p`.
+        #
+        # 🔴 AND IT IS DECIDED *BEFORE* THE GATE, WHICH IS THE WHOLE FIX.
+        # Measured 2026-09-03 in .state\restore.log: with this block sitting
+        # AFTER Wait-SRBridgeReady, the gate blocked at 08:26:12 on a dead token
+        # ("press Sign in"), slept until the operator signed in 104 s later, and
+        # only then did this line run - by which point the token was live, so
+        # $warmNeeded came out FALSE and the launch-one-first path did nothing.
+        # The code that exists to avoid the sign-in was unreachable except after
+        # a five-minute timeout. Deciding here, and telling the gate it need not
+        # wait for the token, is what makes it actually run.
         $script:warmNeeded = -not (Test-SRTokenLive)
         if ($script:warmNeeded) {
             $exp0 = Get-SRTokenExpiry
             Write-SRStep ("the access token is not live{0} - launching one conversation first to refresh it, then the rest" -f `
                           $(if ($exp0) { " (expired {0:HH:mm})" -f $exp0 } else { '' }))
+        }
+        if (-not (Wait-SRBridgeReady -MaxWaitSeconds 300 -TokenMayBeCold:$script:warmNeeded)) {
+            if (Test-SRTokenLive) {
+                Write-SRWarn 'the remote bridge is not ready - restoring anyway; the sessions will work but may not reach Remote Control for a while'
+            }
+        }
+        # The gate runs Invoke-SRTokenWarm on its way through, and it sometimes
+        # works. Re-read rather than assume: warming by launch is only worth
+        # doing while the token is still cold.
+        if ($script:warmNeeded -and (Test-SRTokenLive)) {
+            $script:warmNeeded = $false
+            Write-SRLog '  [ok]   the token is live already - launching the full queue'
         }
     } else {
         $sup = Get-SRBridgeSuppression

@@ -1645,6 +1645,37 @@ if ($rsSrc -notmatch 'Show-SRDesktopNote') {
 if (Get-Command Show-SRDesktopNote -ErrorAction SilentlyContinue) { Pass 'Show-SRDesktopNote is defined' }
 else { Fail 'Show-SRDesktopNote is not defined' }
 
+# 4. 🔴 AND ALL OF THAT RAN TOO LATE TO MATTER. Measured in .state\restore.log
+#    on 2026-09-03: the gate blocked at 08:26:12 on a dead token, printed
+#    "press Sign in", and slept in ten-second steps until the operator signed in
+#    104 s later. Only THEN did $warmNeeded get computed - against a token that
+#    was live by now - so it came out false and every assertion above, all of
+#    which passed, guarded code that never executed. The three properties above
+#    are necessary and were never sufficient: the ORDER is the fourth.
+$warmAt = $rsSrc.IndexOf('$script:warmNeeded = -not (Test-SRTokenLive)')
+$gateAt = $rsSrc.IndexOf('Wait-SRBridgeReady')
+if ($warmAt -lt 0 -or $gateAt -lt 0) {
+    Fail 'the restore no longer computes $warmNeeded or no longer calls the gate - the order cannot be checked'
+} elseif ($warmAt -gt $gateAt) {
+    Fail 'the gate runs BEFORE $warmNeeded is decided - so a dead token waits for a human, and the warm-by-launch path is unreachable except after the 300s timeout. This is the daily sign-in.'
+} else {
+    Pass 'the warm-by-launch decision is made before the gate, not after it'
+}
+
+# 5. And the gate has to be TOLD, or it blocks on the token anyway.
+if ($rsSrc -notmatch 'Wait-SRBridgeReady[^\r\n]*-TokenMayBeCold') {
+    Fail 'the gate is called without -TokenMayBeCold, so it still holds the restore waiting for a human to refresh a token the first launch would have refreshed'
+} else { Pass 'the gate is told the token may be cold, and lets the restore through to warm it' }
+
+# 6. ...and it has to actually honour the switch rather than merely accept it.
+$cmSrc = ((Get-Content -LiteralPath (Join-Path $SR_LibDir '_common.ps1') -Encoding UTF8) |
+          Where-Object { -not ($_.TrimStart().StartsWith('#')) }) -join "`n"
+if ($cmSrc -notmatch '\[switch\]\$TokenMayBeCold') {
+    Fail 'Wait-SRBridgeReady has no -TokenMayBeCold parameter - the caller is passing a switch that does not exist'
+} elseif ($cmSrc -notmatch '\$live\s+-or\s+\$TokenMayBeCold') {
+    Fail 'Wait-SRBridgeReady accepts -TokenMayBeCold but its readiness test still requires a live token - the switch does nothing'
+} else { Pass 'and the gate honours it: a cold token no longer counts against readiness' }
+
 Write-Host '--- the answered-question card, from real records ---'
 # 🪤 NOT $PSScriptRoot. The runner SPLICES each driver into a generated harness
 # under .state\ and runs THAT, so inside a suite $PSScriptRoot is .state and not

@@ -5949,7 +5949,12 @@ $ui.SendBtn.Add_Click({ Invoke-Send })
 $ui.AskFreeSend.Add_Click({ Invoke-AskTyped })
 $ui.AskFree.Add_PreviewKeyDown({
     param($sender, $e)
-    if ($e.Key -eq 'Return') { Invoke-AskTyped; $e.Handled = $true }
+    # Shift+Enter falls through to the box as a newline - see the SendBox
+    # handler below for why both boxes now need this.
+    if ($e.Key -eq 'Return') {
+        if ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Shift) { return }
+        Invoke-AskTyped; $e.Handled = $true
+    }
 })
 $ui.SkillList.Add_MouseLeftButtonUp({ $null = Complete-Skill; $null = $ui.SendBox.Focus() })
 
@@ -5968,7 +5973,20 @@ $ui.SendBox.Add_PreviewKeyDown({
             'Return' { if (Complete-Skill) { $e.Handled = $true; return } }
         }
     }
-    if ($e.Key -eq 'Return' -and $ui.SendBtn.IsEnabled) { Invoke-Send; $e.Handled = $true }
+    # 🔴 ENTER STILL SENDS; SHIFT+ENTER IS THE NEWLINE. The box takes returns
+    # now - that is what lets it wrap and grow instead of scrolling your reply
+    # out of sight sideways - so without this WPF would insert a newline on
+    # Enter and the send gesture would simply be gone. Enter keeps the meaning
+    # it has in the terminal; Shift+Enter is the one that falls through.
+    #
+    # 🪤 A DISABLED SEND SWALLOWS IT TOO. Letting Enter through in that case
+    # would quietly put a newline in a box you cannot send from, and the next
+    # thing you typed would arrive on line two of a message you thought was one.
+    if ($e.Key -eq 'Return') {
+        if ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Shift) { return }
+        if ($ui.SendBtn.IsEnabled) { Invoke-Send }
+        $e.Handled = $true
+    }
 })
 # Losing focus closes it, or it hangs over the window after you click away.
 #

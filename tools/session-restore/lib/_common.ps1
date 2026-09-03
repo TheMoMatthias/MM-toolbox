@@ -2167,8 +2167,23 @@ function Invoke-SRTokenWarm { param([int]$TimeoutMs = 90000)
     return $false
 }
 
+# 🔴 -TokenMayBeCold: THE CALLER CAN WARM IT ITSELF, SO DO NOT WAIT FOR A HUMAN.
+# Measured 2026-09-03, and it is the whole of "I had to sign in again this
+# morning". The order was: gate first, warm-by-launching second. So at 08:26:12
+# this blocked on a dead token, printed "press Sign in", and slept in ten-second
+# steps until the operator signed in 104 seconds later - at which point the
+# launch-one-first path downstream saw a live token, set $warmNeeded = $false,
+# and did nothing at all. The mechanism that exists precisely to avoid the
+# sign-in could only ever engage AFTER this gate had given up, five minutes in.
+#
+# So the token check is now the CALLER's to opt out of. What this still blocks
+# on is unchanged and still right:
+#   - no credentials at all -> only a human can fix that, keep waiting.
+#   - bridge suppressed -> wait; it clears on its own.
+# A dead access token with a good refresh token is the one case a launched
+# session can fix by itself, and it is the case that happens every single day.
 function Wait-SRBridgeReady {
-    param([int]$MaxWaitSeconds = 300)
+    param([int]$MaxWaitSeconds = 300, [switch]$TokenMayBeCold)
 
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $said = $false
@@ -2188,8 +2203,12 @@ function Wait-SRBridgeReady {
             $null = Invoke-SRTokenWarm
         }
         $live = Test-SRTokenLive
+        # With -TokenMayBeCold the token is not part of "ready" at all: the
+        # caller warms it by launching one conversation, and blocking here
+        # would be waiting for a human to do what the next few lines do anyway.
+        $tokenOk = ($live -or $TokenMayBeCold)
 
-        if (-not $sup -and $auth -and $live) {
+        if (-not $sup -and $auth -and $tokenOk) {
             if ($said) { Write-SRLog ("  [ok]   the bridge is ready after {0:N0}s of waiting" -f $sw.Elapsed.TotalSeconds) }
             return $true
         }
@@ -2197,7 +2216,7 @@ function Wait-SRBridgeReady {
             $why = @()
             if ($sup)       { $why += ("the remote bridge is suppressed until {0}" -f $sup.ToString('HH:mm:ss')) }
             if (-not $auth) { $why += 'claude does not report a signed-in account yet' }
-            if ($auth -and -not $live) {
+            if ($auth -and -not $tokenOk) {
                 $exp = Get-SRTokenExpiry
                 $why += ("the access token is not live{0}" -f $(if ($exp) { " (expired {0:HH:mm})" -f $exp } else { '' }))
             }

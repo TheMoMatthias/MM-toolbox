@@ -776,6 +776,64 @@
       </Setter>
     </Style>
 
+    <!-- ================== THE COMPOSER ==================
+         🔴 A BOX YOU TYPE A REPLY INTO IS NOT A SEARCH BOX, and sharing the
+         Search style is what made it unusable. Search pins Height="30" and
+         centres PART_ContentHost, so the composer was physically incapable of
+         growing: with AcceptsReturn="False" and no wrapping, everything past
+         one line's width scrolled out of sight to the left. Reported as "the
+         text is cut off and I cannot see my full reply".
+
+         So this is Search's look with the three properties that made it a
+         single line reversed: no fixed Height (MinHeight instead), a content
+         host that stretches rather than centres, and wrapping on. It grows
+         with what you type and only starts scrolling at MaxHeight, so what is
+         on screen is always the END of what you wrote - the part you are
+         still typing.
+
+         🪤 MaxHeight, not unbounded. The composer sits in an Auto row at the
+         foot of the pane, and a box that grows without limit would push the
+         transcript off the top of the window on a long message. 168px is
+         about seven lines; past that it scrolls. -->
+    <Style x:Key="Composer" TargetType="TextBox" BasedOn="{StaticResource Search}">
+      <Setter Property="Height" Value="NaN"/>
+      <Setter Property="MinHeight" Value="30"/>
+      <Setter Property="MaxHeight" Value="168"/>
+      <Setter Property="Padding" Value="12,6,12,7"/>
+      <Setter Property="VerticalContentAlignment" Value="Top"/>
+      <Setter Property="AcceptsReturn" Value="True"/>
+      <Setter Property="TextWrapping" Value="Wrap"/>
+      <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Border x:Name="b" CornerRadius="8" Background="{StaticResource Ink}"
+                    BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+              <Grid>
+                <TextBlock x:Name="ph"
+                           Text="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=Tag}"
+                           FontFamily="{DynamicResource FontText}" FontSize="{DynamicResource SzBody}"
+                           Foreground="{StaticResource TextLow}" IsHitTestVisible="False"
+                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Top" Margin="12,6,12,7"
+                           Visibility="Collapsed"/>
+                <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                              VerticalAlignment="Stretch"/>
+              </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="Text" Value="">
+                <Setter TargetName="ph" Property="Visibility" Value="Visible"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Focus}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <!-- ================== LIST BASE ==================
          Virtualizing and recycling on purpose: the sessions column can hold
          every conversation in the registry, and a ListBox that realises 214
@@ -1815,10 +1873,11 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                       </Grid.ColumnDefinitions>
-                      <TextBox x:Name="AskFree" Grid.Column="0" Style="{StaticResource Search}"
-                               Tag="Answer in your own words" AcceptsReturn="False" Margin="0,0,8,0"
+                      <TextBox x:Name="AskFree" Grid.Column="0" Style="{StaticResource Composer}"
+                               Tag="Answer in your own words - Shift+Enter for a new line" Margin="0,0,8,0"
                                AutomationProperties.Name="answer this question in your own words"/>
                       <Button x:Name="AskFreeSend" Grid.Column="1" Content="Send"
+                              VerticalAlignment="Bottom"
                               Style="{StaticResource BtnSlim}"
                               ToolTip="Type your answer into this question in the terminal and commit it"/>
                     </Grid>
@@ -1853,9 +1912,9 @@
               </Grid.ColumnDefinitions>
               <TextBlock x:Name="SendNote" Grid.Row="0" Grid.ColumnSpan="2" Style="{StaticResource Dim}"
                          Text="" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="Collapsed"/>
-              <TextBox x:Name="SendBox" Grid.Row="1" Grid.Column="0" Style="{StaticResource Search}"
-                       Tag="Type here to send it into this session's terminal - / for skills"
-                       AcceptsReturn="False" Margin="0,0,8,0"
+              <TextBox x:Name="SendBox" Grid.Row="1" Grid.Column="0" Style="{StaticResource Composer}"
+                       Tag="Type here to send it into this session's terminal - / for skills, Shift+Enter for a new line"
+                       Margin="0,0,8,0"
                        AutomationProperties.Name="type into this session"/>
 
               <!-- THE SKILL PICKER. Opens on '/' at the start of the line, the
@@ -1901,7 +1960,10 @@
                   </StackPanel>
                 </Border>
               </Popup>
+              <!-- Bottom-aligned because the box beside it grows now: stretched,
+                   the button would grow with it and become a tall slab. -->
               <Button x:Name="SendBtn" Grid.Row="1" Grid.Column="1" Content="Send"
+                      VerticalAlignment="Bottom"
                       Style="{StaticResource BtnPrimary}" IsEnabled="False"/>
             </Grid>
           </Border>

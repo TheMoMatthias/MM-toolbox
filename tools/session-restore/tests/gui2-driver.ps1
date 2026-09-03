@@ -2620,6 +2620,74 @@ Update-SkillPop
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the composer grows with what you type ---'
+# ===========================================================================
+# 🔴 REPORTED: "when I enter the text, the text is cut off and I cannot see my
+# full reply ... the text field is not scaling with the amount of input". The
+# composer shared the Search style, which pins Height=30 and centres its
+# content host, so it was structurally INCAPABLE of growing - and with
+# AcceptsReturn="False" and no wrapping, everything past one line's width
+# scrolled off to the left where it could not be read back.
+$long = 'I need to always at all times be shown what I enter in a conversation, and this line is deliberately longer than one line of the composer so that a box which wraps has to grow taller to hold it.'
+
+if (-not [object]::ReferenceEquals($ui.SendBox.Style, $window.FindResource('Composer'))) {
+    Fail 'the composer is not on the Composer style - it is sharing Search again, which pins Height=30'
+} else { Pass 'the composer has its own style rather than the search box''s' }
+
+foreach ($n in 'SendBox', 'AskFree') {
+    $b = $ui.$n
+    if (-not $b.AcceptsReturn) { Fail "$n does not accept returns, so it can never hold a second line" }
+    elseif ("$($b.TextWrapping)" -ne 'Wrap') { Fail "$n does not wrap, so a long line scrolls out of sight sideways" }
+    else { Pass "$n accepts returns and wraps" }
+}
+
+$ui.SendBox.Text = ''
+Lay
+$hEmpty = [double]$ui.SendBox.ActualHeight
+$eLines = [int]$ui.SendBox.LineCount
+$ui.SendBox.Text = $long
+Lay
+$hFull  = [double]$ui.SendBox.ActualHeight
+$fLines = [int]$ui.SendBox.LineCount
+# 🪤 BOTH STATES, READ WHERE THEY HAPPEN. The first version of this note read
+# the box AFTER the long text went in while claiming to describe the empty one,
+# and reported "text len 194" for what it called empty - three separate wrong
+# diagnoses came out of that one misplaced line before the numbers were trusted.
+Note ("empty {0:N1}px / {1} line(s)   ->   full {2:N1}px / {3} line(s) for {4} chars   (Send button {5:N1}px, cap {6:N0}px)" -f `
+      $hEmpty, $eLines, $hFull, $fLines, $long.Length, $ui.SendBtn.ActualHeight, $ui.SendBox.MaxHeight)
+if ($hFull -le $hEmpty + 1) {
+    Fail ("the composer did not grow: {0:N0}px empty, {1:N0}px holding {2} characters" -f $hEmpty, $hFull, $long.Length)
+} else {
+    Pass ("the composer grows: {0:N0}px -> {1:N0}px for {2} characters" -f $hEmpty, $hFull, $long.Length)
+}
+if ($hFull -gt [double]$ui.SendBox.MaxHeight + 1) {
+    Fail ("it grew past its cap: {0:N0}px against MaxHeight {1:N0}px - a long message would push the transcript off the top" -f $hFull, $ui.SendBox.MaxHeight)
+} else { Pass ("and it is capped: MaxHeight {0:N0}px" -f $ui.SendBox.MaxHeight) }
+
+# 🔑 THE NEGATIVE CONTROL, and it is the point of this block. "It grew" on its
+# own only proves ActualHeight returns a number. The SEARCH box is supposed to
+# stay exactly one line high, so the same text through the same measurement has
+# to come back unchanged - otherwise this test cannot tell the composer apart
+# from any other box and would pass just as happily on the broken build.
+$keep = "$($ui.Search.Text)"
+$ui.Search.Text = ''
+Lay
+$sEmpty = [double]$ui.Search.ActualHeight
+$ui.Search.Text = $long
+Lay
+$sFull = [double]$ui.Search.ActualHeight
+$ui.Search.Text = $keep
+Lay
+if ($sFull -ne $sEmpty) {
+    Fail ("the search box grew too ({0:N0} -> {1:N0}px) - this measurement is not telling the composer apart from anything else" -f $sEmpty, $sFull)
+} else {
+    Pass ("negative control: the search box holds {0:N0}px with the very same text" -f $sFull)
+}
+$ui.SendBox.Text = ''
+Lay
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the seam, and the frame ---'
 # ===========================================================================
 # The window paints its own caption, so the OS one is gone and these have to work.
