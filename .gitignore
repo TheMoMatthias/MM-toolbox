@@ -35,3 +35,7 @@ tools/session-restore/sessions-registry.json.tmp
 # source everyone can read.
 tools/session-restore/Sessions.exe
 tools/session-restore/app/sessions.ico
+
+# Python bytecode (the automate-lane-* skills ship .py scripts)
+__pycache__/
+*.pyc

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Automate Lane Status"
+  short_description: "One pass over every lane, including the stated next item nothing else carries"
+policy:
+  allow_implicit_invocation: false

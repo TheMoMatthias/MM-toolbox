@@ -1,0 +1,5 @@
+interface:
+  display_name: "Automate Lane Check"
+  short_description: "Where THIS lane stands, and which rulings landed while it was busy"
+policy:
+  allow_implicit_invocation: false
