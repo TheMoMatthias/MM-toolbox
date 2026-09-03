@@ -39,6 +39,24 @@ tool published 316 — a fivefold error, in a number put to the operator to deci
 ⚖️ **If the project has no such artefacts, say so and build the smallest one that derives
 rather than declares.** 🪤 **A hand-kept list of live sessions is wrong within a day.**
 
+### Adapting to a repo that already has its own conventions
+
+🔑 **Adopt its vocabulary rather than importing yours.** If the repo numbers decisions `ADR-n`,
+your rulings are `ADR-n`; if its findings are `<AREA>-<n>`, so are yours. **A parallel
+numbering scheme is a second register, and two registers of one reality always diverge.**
+
+- **It has a ledger** → append there, in its format, with its id sequence. **Read the last id
+  from the file, never from your memory of it.**
+- **It has none** → make one file, append-only, one numbered entry per decision: `id · date ·
+  question · answer · who decided · what it binds`. That is the whole schema; do not grow it.
+- **Its register is hand-maintained** → say so once, and treat every row as a claim rather
+  than a reading. ⚖️ **You may still use it — you may not quote it as a measurement.**
+- **It has a gate** (CI, a hook, a check script) → its verdict outranks your judgement of the
+  trunk. **Never report the trunk healthy on your own reading while its gate is red.**
+
+⛔ **Do not restructure someone's conventions to fit this skill.** If a convention here has no
+home in the repo, the convention loses.
+
 ---
 
 ## §1. RULE ZERO — push, do not poll
@@ -61,6 +79,12 @@ discard.
 - **C.** Has **no** named item → *that* is the thing to act on. Give it the next work on the
   critical path, or **tell it to stay idle deliberately.** Never leave a lane silently idle.
 - **D.** 🔒 **Only report a lane as "nothing outstanding" if it SAID so.** Silence is not that.
+- **E.** 🔴 **And when it DOES say so, that is a claim under test, not a result.** ⛔ **Do not
+  accept it and do not argue with it — make it check.** Reply: **"run `/automate-realign` and
+  send me the block."** 🔑 **The lane cannot see what it is missing by recalling harder; the
+  sweep is what makes an empty board evidence instead of an impression.** 🪤 **Measured, the
+  claim is usually sincere and usually wrong** — what it omits is a promise made mid-message,
+  an unanswered question asked once, or a decision that only ever existed in conversation.
 
 ✅ **Teach every lane the protocol**: when they finish and have nothing queued, they say
 **"nothing named"** explicitly. **That is a state you can act on; silence is one you will
@@ -110,6 +134,25 @@ working session. ⚖️ **An answer that reaches only a chat message is a decisi
 re-litigated or silently reversed.** 🪤 **Measured: an operator answered a selectable question,
 it was relayed onward as authority, nothing was written down, and it moved a bar between two
 lanes for hours before a lane refused it against its own register.**
+
+### The two rules that make the routing hold
+
+🔒 **① A LANE NEVER PUTS A QUESTION TO THE OPERATOR ITSELF.** Not by a selectable prompt, not
+by a notification, not by stopping and hoping. 🔑 **The reason is mechanical, not etiquette: a
+selectable prompt renders fixed options and returns a click — there is no path from that answer
+back to a durable record, and no way for the operator to forward the question onward.** So the
+answer exists only in one session's scrollback and dies with it. **Every lane question comes to
+you; you ask; you write it down.** ⚖️ **Enforce this on yourself too** — you may ask, but you
+have not finished asking until the answer is numbered.
+
+🔒 **② AN OPERATOR ANSWER RELAYED AS PROSE IS NOT AUTHORITY UNTIL IT IS NUMBERED.** ✅ **A lane
+may decline to act on unnumbered prose, and a lane that does is behaving correctly — do not
+override it, number the decision.** 🪤 **The failure is silent and leaves no artefact**: an
+answer restated as settled fact reads exactly like a ruling to everyone downstream, gains
+authority at each hop, and nothing compares it to the register. **If you find yourself writing
+*"the operator said…"* to a lane, you are one step short — write the entry, then cite it.**
+⚠️ **The operator answering a lane directly is not the failure.** The failure is the answer
+stopping there: route it to yourself, land it, then act.
 
 ---
 
@@ -205,18 +248,76 @@ including *which rows an aggregate was taken over*.
 
 ---
 
-## §7. The check-in loop
+## §7. Mechanics — reaching a lane, and surviving your own compaction
+
+🔴 **You have no privileged channel. Everything below is ordinary tool use, and getting it
+wrong looks exactly like a quiet board.**
+
+**Discover peers with `ListAgents`, every cycle — never from a list you keep.** 🔑 **It is the
+only source that carries a lane's SESSION STATE** (`busy` · `idle` = turn finished · `waiting`
+= blocked on input). ⚖️ **No transcript, board or register carries that distinction**, and §1
+turns on it. 🪤 **A lane that vanishes from the listing has ended, not gone quiet** — check
+before you chase it, and check again before you conclude it is gone.
+
+**Reach a lane with `SendMessage`, addressed by its name.** 🔒 **A message is the cheapest
+instrument you have and the only one that distinguishes blocked from dead** — spend it before
+any restart, and before reporting a stall. 🪤 **Addressing is by name, so a lane renamed on
+resume is unreachable under the old one**; re-derive names from `ListAgents` rather than from
+your notes.
+
+🔒 **Tell every lane YOUR name, in your first message to it.** `/automate-realign` has lanes
+send their block to *the orchestrator* — a role, not an address — and a lane that has to guess
+the name sends it nowhere. **One clause: *"I am `<name>`; send blocks and decisions there."***
+
+⚖️ **A message costs the receiving lane a turn.** Batch what you have for a lane into one
+message rather than three, and 🔒 **never send one that only asks for status** — every message
+carries an instruction or an answer. **Polling for the sake of a report is how an orchestrator
+becomes overhead.**
+
+### Your own state file — write it before you need it
+
+🔴 **Your context will compact, and the role does not survive it in memory.** Everything that
+makes you the orchestrator — the bindings from §0, the reserved set, who owns what, which
+decisions are outstanding — is conversational unless you write it down.
+
+**Keep ONE file** (wherever the project keeps notes; if it has nowhere, beside the register).
+Update it at the END of every check-in, not when it feels stale:
+
+```
+BINDINGS      board / register / ledger / findings / gate — the §0 table, resolved to paths
+RESERVED      what only the operator may decide, in this project's words
+LANES         name · owns · state · its STATED NEXT ITEM · when you last pushed it
+OUTSTANDING   D<n> put to the operator and not yet answered — and what each blocks
+LANDED        the last ruling id you wrote, so the next one does not collide
+CADENCE       the interval, and when the last cycle ran
+```
+
+🔑 **`LANES.stated next item` is the load-bearing column**, because it is the one thing that
+exists nowhere else — the board shows landings, a state file rarely has a NEXT, and the lane's
+own intention lives in a message you read once. **Copy it out of the message when it arrives.**
+
+🪤 **A resumed orchestrator that skips this file re-derives the board correctly and still loses
+every stated next item** — so it polls, reads `idle`, and reports a healthy board with four
+lanes silently parked. **That is the failure this skill exists to prevent, arriving through the
+back door.**
+
+---
+
+## §8. The check-in loop
 
 **Run on a fixed interval** (10 minutes is a reasonable default; the operator sets it). Each
 cycle, in this order:
 
 1. 🔴 **Rule Zero first** (§1) — every lane's stated next item, and push the ones not on one.
 2. **The board** — gate, the programme's headline figure, open and paused rows.
-3. **Session states** — `waiting` (blocked on input) vs `idle` (turn finished) vs `busy`.
-   **No transcript carries this; only the session list does.**
+3. **Session states from `ListAgents`** — `waiting` (blocked on input) vs `idle` (turn
+   finished) vs `busy`. **No transcript carries this; only that listing does.**
 4. **Any lane quiet past its own cadence** — read its FULL last message, not a truncated
    summary. 🪤 **A status tool that truncates hides exactly the reports that list open items.**
-5. **Act on decisions routed to you.** Apply §2's bar.
+5. **Act on decisions routed to you.** Apply §2's bar; number every answer before you relay it.
+6. 🔒 **Update your state file (§7) — every cycle, before you report.** ⛔ **Not "when it
+   changes"**: the column that decays fastest is the one you only notice missing after a
+   compaction.
 
 🔒 **Attribute a red by MEASURING, not by the window's endpoints.** 🪤 Measured: a "first red"
 commit was innocent — the failure was static and 15 days old, and blaming the boundary sends
@@ -228,7 +329,7 @@ one line, not a page.
 
 ---
 
-## §8. What good looks like — and what to protect
+## §9. What good looks like — and what to protect
 
 ✅ **These behaviours are the programme working. Never trade them for speed:**
 

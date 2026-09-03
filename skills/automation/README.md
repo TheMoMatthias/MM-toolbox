@@ -17,6 +17,26 @@ interactive skills in `workflow/`, which are built around asking the operator di
 one? Keep the prefix, and keep the no-`AskUserQuestion` rule - a skill in this folder that
 asks the user directly breaks the pairing for every other lane.
 
+## Installing on a new machine
+
+Nothing here is machine-specific: both skills bind to a project at run time
+(`automate-orchestrator` §0) rather than at install time, so the same two files work on any
+repo and any host.
+
+- **The whole toolbox** - `install.ps1` from the repo root. It walks `skills/<category>/<skill>`
+  and links each skill *flat* into `~/.claude/skills/<skill>`, which is the layout Claude Code
+  reads. A new category is picked up automatically, so this folder needed no installer change.
+  Links, not copies, so an edit here is live immediately.
+- **Just these two** - link (or copy) `skills/automation/<skill>/` to `~/.claude/skills/<skill>/`.
+  The directory name must equal the frontmatter `name:`, or the skill does not resolve.
+- **On a machine where agents may not write into `~/.claude/`** - stage a patch under
+  `~/.claude/operator-patches/` and let the operator apply it. `install-automate-skillset.ps1`
+  is exactly that: it links these two skills and nothing else, falling back to a file copy only
+  when a link cannot be created.
+
+🪤 **Prefer a link over a copy wherever the repo is present.** A copied skill diverges from this
+folder silently, and then an edit here fixes nothing.
+
 ## Relationship to `workflow/realign`
 
 `automate-realign` is a deliberate fork of `workflow/realign`, not a replacement. Use
