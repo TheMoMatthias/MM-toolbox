@@ -781,9 +781,13 @@
                            Text="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=Tag}"
                            FontFamily="{DynamicResource FontText}" FontSize="{DynamicResource SzBody}"
                            Foreground="{StaticResource TextLow}" IsHitTestVisible="False"
-                           VerticalAlignment="Center" Margin="12,0,12,0"
+                           VerticalAlignment="Center" Margin="{TemplateBinding Padding}"
                            Visibility="Collapsed"/>
-                <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                <!-- Padding applied ONCE - see the note in the Composer style
+                     below. Here it put the typed text 12px right of the
+                     placeholder it replaces; invisible in daily use only
+                     because the placeholder vanishes on the first keystroke. -->
+                <ScrollViewer x:Name="PART_ContentHost" Margin="0"
                               VerticalAlignment="Center"/>
               </Grid>
             </Border>
@@ -839,9 +843,20 @@
                            FontFamily="{DynamicResource FontText}" FontSize="{DynamicResource SzBody}"
                            Foreground="{StaticResource TextLow}" IsHitTestVisible="False"
                            TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                           VerticalAlignment="Top" Margin="12,6,12,7"
+                           VerticalAlignment="Top" Margin="{TemplateBinding Padding}"
                            Visibility="Collapsed"/>
-                <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                <!-- 🔴 THE PADDING IS APPLIED ONCE, HERE, BY THE TEXTBOX ITSELF.
+                     Measured: with Margin="{TemplateBinding Padding}" on this
+                     ScrollViewer the caret sat at (26.4, 13.6) against a
+                     placeholder at (12.8, 7.2) - almost exactly one padding out
+                     in each axis, because the inset was applied twice: once as
+                     this margin and again by the TextBox's own text view, which
+                     honours Padding regardless. Reported as "the cursor when
+                     nothing is entered is misaligned with the background
+                     message". No margin here; the placeholder takes the same
+                     Padding by TemplateBinding so the two cannot drift apart
+                     again if it is ever retuned. -->
+                <ScrollViewer x:Name="PART_ContentHost" Margin="0"
                               VerticalAlignment="Stretch"/>
               </Grid>
             </Border>
@@ -1642,7 +1657,13 @@
                   </DataTemplate>
                 </ListBox.ItemTemplate>
               </ListBox>
-              <TextBox x:Name="CastText" Style="{StaticResource Search}"
+              <!-- 🪤 THE COMPOSER STYLE, BUT AcceptsReturn STAYS FALSE. This
+                   wraps and grows so a long message can be read back before it
+                   goes out - which is the whole complaint - but a literal
+                   newline here would be an ENTER in every terminal it reaches,
+                   submitting the message half-typed. Wrapping is visual;
+                   AcceptsReturn is what a keystroke does. -->
+              <TextBox x:Name="CastText" Style="{StaticResource Composer}" AcceptsReturn="False"
                        Tag="The one line every ticked conversation will receive" Margin="0,0,0,12"/>
               <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button x:Name="CastCancel" Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
@@ -1705,11 +1726,15 @@
                         Foreground="{StaticResource TextMid}" FontFamily="{DynamicResource FontText}" FontSize="{DynamicResource SzBody}">
                 <StackPanel Margin="0,8,0,0">
                   <TextBlock Text="Allow only these" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
-                  <TextBox x:Name="SetAllow" Style="{StaticResource Search}" Margin="0,0,0,9"
-                           Tag="e.g.  Read Grep Bash(git *)"/>
+                  <!-- A real allow-list runs well past one line, and it was
+                       clipped: the tools you had granted scrolled off to the
+                       left where they could not be read back. Wraps and grows;
+                       both are parsed on whitespace so a wrap costs nothing. -->
+                  <TextBox x:Name="SetAllow" Style="{StaticResource Composer}" AcceptsReturn="False"
+                           Margin="0,0,0,9" Tag="e.g.  Read Grep Bash(git *)"/>
                   <TextBlock Text="Never these" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
-                  <TextBox x:Name="SetDeny" Style="{StaticResource Search}" Margin="0,0,0,6"
-                           Tag="e.g.  Bash(rm *) Write"/>
+                  <TextBox x:Name="SetDeny" Style="{StaticResource Composer}" AcceptsReturn="False"
+                           Margin="0,0,0,6" Tag="e.g.  Bash(rm *) Write"/>
                   <TextBlock Style="{StaticResource Meta}" TextWrapping="Wrap"
                              Text="Space separated, exactly as claude takes them. Leave both empty for no limits at all."/>
                 </StackPanel>
@@ -1977,7 +2002,12 @@
               </Grid.ColumnDefinitions>
               <TextBlock x:Name="SendNote" Grid.Row="0" Grid.ColumnSpan="2" Style="{StaticResource Dim}"
                          Text="" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="Collapsed"/>
+              <!-- MaxHeight raised from the style's 168: this is the one you
+                   paste a whole prompt into, and nine lines was not enough to
+                   read one back before sending. Sixteen-ish lines, then it
+                   scrolls, and the transcript above it still owns the rest. -->
               <TextBox x:Name="SendBox" Grid.Row="1" Grid.Column="0" Style="{StaticResource Composer}"
+                       MaxHeight="260"
                        Tag="Type here to send it into this session's terminal - / for skills, Shift+Enter for a new line"
                        Margin="0,0,8,0"
                        AutomationProperties.Name="type into this session"/>

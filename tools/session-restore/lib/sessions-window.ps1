@@ -1685,6 +1685,12 @@ $script:hasPlex = Install-SRPaneFace
 # decision away from the person who can see the screen. So: one setting, every
 # size together, saved, and the same on both machines.
 $SR_GutterBase = 22.0
+# 🪤 ONE LEADING FACTOR, IN ONE PLACE, AND DECLARED BEFORE ANYTHING READS IT.
+# Set-SRTypeScale and Set-ReadMeasure each held their own copy; this morning
+# they disagreed (1.48 against 1.38) and the one that runs on EVERY layout won,
+# so the value the scale set was decoration. That is the third time a number in
+# this file has been written down twice and the invisible copy has won.
+$SR_LeadFactor = 1.48
 $script:TypeBase = @{}
 foreach ($k in @('Micro', 'Caption', 'Body', 'Mono', 'Strong', 'Display', 'Pane')) {
     # 🪤 CAST, DO NOT TRUST THE LOOKUP. A missing key returns $null and would
@@ -1724,8 +1730,8 @@ function Set-SRTypeScale { param([int]$Percent = 0)
     $script:readSize = $script:PaneSize
     $script:MonoSize = $script:PaneSize
     # Mono needs a little more air between lines than a proportional face at
-    # the same size; 1.48 is what the specimen this was chosen from used.
-    $script:readLead = [Math]::Round($script:PaneSize * 1.48, 1)
+    # the same size; the factor is $SR_LeadFactor, shared with Set-ReadMeasure.
+    $script:readLead = [Math]::Round($script:PaneSize * $SR_LeadFactor, 1)
     # The gutter is a TYPE measure, not a layout constant - it holds one marker
     # glyph and the space after it - so it zooms with the glyph or the marker
     # grows out of its column. Both users of it read this one variable, so the
@@ -1769,6 +1775,31 @@ $script:MonoFace = $window.FindResource('FontMono')
 # CHROME that is built in code (the live question panel, the chips), which is
 # not a message and keeps the window's own face.
 $script:PaneFace = $window.FindResource('FontPane')
+
+# THE MEASURE'S CHARACTER WIDTH, ASKED OF THE FACE RATHER THAN TYPED IN.
+#
+# 🔴 It was a literal 0.52, described in Set-ReadMeasure as "the measured average
+# advance for this face" - and it was, for MANROPE. The pane is monospaced now,
+# and nothing pointed the constant at the new face, so a column asked to hold 100
+# characters was sized for 87 of them. A hard-coded metric outlives the face it
+# was measured from, silently, and the only symptom is a column narrower than it
+# claims - which is half of "the text was cut off although the screen was empty".
+#
+# 🪤 A monospaced face has ONE advance, so this is exact rather than an average.
+# The fallback is IBM Plex Mono's own 0.6, used only if the glyph typeface cannot
+# be reached (a missing font file, which already degrades to a fallback stack).
+$script:PaneAdvanceEm = 0.6
+try {
+    $tf0 = New-Object System.Windows.Media.Typeface $script:PaneFace,
+               ([System.Windows.FontStyles]::Normal), ([System.Windows.FontWeights]::Normal),
+               ([System.Windows.FontStretches]::Normal)
+    $gt0 = $null
+    if ($tf0.TryGetGlyphTypeface([ref]$gt0)) {
+        $gi = $gt0.CharacterToGlyphMap[[int][char]'0']
+        $adv = [double]$gt0.AdvanceWidths[$gi]
+        if ($adv -gt 0.2 -and $adv -lt 1.5) { $script:PaneAdvanceEm = $adv }
+    }
+} catch { }
 $FW_Semi   = [System.Windows.FontWeights]::SemiBold
 $FW_Normal = [System.Windows.FontWeights]::Normal
 
@@ -2104,7 +2135,7 @@ $script:ReadMeasureChars = 100
 # did nothing at all. The scale owns them now; assigning a number to either of
 # them anywhere else is the bug, not the fix.
 $script:readSize = $script:Type.Pane
-$script:readLead = [Math]::Round($script:Type.Pane * 1.48, 1)
+$script:readLead = [Math]::Round($script:Type.Pane * $SR_LeadFactor, 1)
 
 # THE GUTTER, in device-independent pixels.
 #
@@ -3065,15 +3096,16 @@ function Set-ReadMeasure { param($Doc, [double]$Size = 0, [double]$PadL = 44)
     $size = $script:PaneSize
     if ($Size -gt 0) { $size = $Size }
     $script:readSize = $size
-    $script:readLead = [Math]::Round($size * 1.38, 1)
+    $script:readLead = [Math]::Round($size * $SR_LeadFactor, 1)
 
     $right = 44.0
     if ($script:readWidth -ne 'full') {
-        # 0.52em per character is the measured average advance for this face at
-        # these sizes; it does not need to be exact, only stable. The gutter is
-        # inside the measure, not outside it - the text column is what is being
-        # capped, and it starts one gutter in.
-        $target = ($script:ReadMeasureChars * $size * 0.52) + $script:GutterW
+        # The advance comes from the FACE (see $script:PaneAdvanceEm), not from a
+        # literal. It was 0.52 - Manrope's average - and stayed that way when the
+        # pane went monospaced, so the column held 87 of the 100 characters it
+        # was asked for. The gutter is inside the measure, not outside it: the
+        # text column is what is being capped, and it starts one gutter in.
+        $target = ($script:ReadMeasureChars * $size * $script:PaneAdvanceEm) + $script:GutterW
         $right = [Math]::Max(44.0, $avail - $PadL - $target)
     }
     $Doc.PagePadding = New-Object System.Windows.Thickness $PadL, 24, $right, 34

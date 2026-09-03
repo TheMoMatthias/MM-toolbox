@@ -2634,11 +2634,30 @@ if (-not [object]::ReferenceEquals($ui.SendBox.Style, $window.FindResource('Comp
     Fail 'the composer is not on the Composer style - it is sharing Search again, which pins Height=30'
 } else { Pass 'the composer has its own style rather than the search box''s' }
 
-foreach ($n in 'SendBox', 'AskFree') {
+# 🔴 EVERY BOX YOU TYPE SOMETHING READABLE INTO, not just the composer. Asked
+# for "the input field for every session ... at all times we can always read
+# what we have typed". CastText is a message going to many terminals and
+# SetAllow/SetDeny are permission lists that run well past one line - all three
+# were pinned to 30px and clipped. The three SEARCH boxes and the two NAME
+# fields stay one line on purpose: a filter is not something you read back.
+foreach ($n in 'SendBox', 'AskFree', 'CastText', 'SetAllow', 'SetDeny') {
     $b = $ui.$n
-    if (-not $b.AcceptsReturn) { Fail "$n does not accept returns, so it can never hold a second line" }
-    elseif ("$($b.TextWrapping)" -ne 'Wrap') { Fail "$n does not wrap, so a long line scrolls out of sight sideways" }
-    else { Pass "$n accepts returns and wraps" }
+    if (-not [object]::ReferenceEquals($b.Style, $window.FindResource('Composer'))) {
+        Fail "$n is not on the Composer style - it is pinned to one line and clips what you type into it"
+    } elseif ("$($b.TextWrapping)" -ne 'Wrap') {
+        Fail "$n does not wrap, so a long line scrolls out of sight sideways"
+    } else { Pass "$n wraps and grows with what you type" }
+}
+# 🪤 AND ONLY THE TWO THAT SHOULD take a literal newline do. Wrapping is visual;
+# AcceptsReturn is what the Enter key DOES - and in CastText a newline is an
+# Enter in every terminal the message reaches, submitting it half-typed.
+foreach ($n in 'SendBox', 'AskFree') {
+    if (-not $ui.$n.AcceptsReturn) { Fail "$n cannot hold a second line" }
+    else { Pass "$n takes Shift+Enter as a newline" }
+}
+foreach ($n in 'CastText', 'SetAllow', 'SetDeny') {
+    if ($ui.$n.AcceptsReturn) { Fail "$n accepts a literal newline - in CastText that is an Enter in every terminal it reaches" }
+    else { Pass "$n wraps but never takes a newline" }
 }
 
 $ui.SendBox.Text = ''
@@ -2660,6 +2679,26 @@ if ($hFull -le $hEmpty + 1) {
 } else {
     Pass ("the composer grows: {0:N0}px -> {1:N0}px for {2} characters" -f $hEmpty, $hFull, $long.Length)
 }
+# 🔑 AND THE CASE THE OPERATOR NAMED: "if we paste a lot of text we can either
+# scroll or can also see the text easily". A wall of text must stop growing at
+# the cap AND still be reachable - a box that caps without scrolling has simply
+# eaten the end of what you pasted.
+$wall = ('paste this into the composer and read it back ' * 90)
+$ui.SendBox.Text = $wall
+$ui.SendBox.CaretIndex = $wall.Length
+Lay
+$hWall = [double]$ui.SendBox.ActualHeight
+if ([Math]::Abs($hWall - [double]$ui.SendBox.MaxHeight) -gt 2) {
+    Fail ("{0:N0} characters made the composer {1:N0}px against a {2:N0}px cap - it is not stopping where it should" -f $wall.Length, $hWall, $ui.SendBox.MaxHeight)
+} elseif ($ui.SendBox.ExtentHeight -le $ui.SendBox.ViewportHeight + 1) {
+    Fail ("{0:N0} characters fit the viewport exactly - the end of a big paste is being dropped, not scrolled" -f $wall.Length)
+} else {
+    Pass ("{0:N0} pasted characters stop at the {1:N0}px cap and scroll ({2:N0}px of content in a {3:N0}px window)" -f `
+          $wall.Length, $ui.SendBox.MaxHeight, $ui.SendBox.ExtentHeight, $ui.SendBox.ViewportHeight)
+}
+$ui.SendBox.Text = $long
+Lay
+
 if ($hFull -gt [double]$ui.SendBox.MaxHeight + 1) {
     Fail ("it grew past its cap: {0:N0}px against MaxHeight {1:N0}px - a long message would push the transcript off the top" -f $hFull, $ui.SendBox.MaxHeight)
 } else { Pass ("and it is capped: MaxHeight {0:N0}px" -f $ui.SendBox.MaxHeight) }
@@ -2685,6 +2724,38 @@ if ($sFull -ne $sEmpty) {
 }
 $ui.SendBox.Text = ''
 Lay
+
+# 🔴 THE CARET AND THE PLACEHOLDER MUST START AT THE SAME POINT. Reported after
+# the composer was rebuilt: "the cursor when nothing is entered is misaligned
+# with a background message". They are two different controls drawn in the same
+# cell - a TextBlock and the TextBox's own content host - so nothing makes them
+# agree except giving them identical metrics and identical insets. Asserted in
+# RENDERED coordinates rather than by reading the XAML back, because the whole
+# class of defect here is two things that look equal in markup and are not.
+$phC = $null
+try { $phC = $ui.SendBox.Template.FindName('ph', $ui.SendBox) } catch { }
+if (-not $phC) {
+    Fail 'the composer template has no placeholder to line up with'
+} else {
+    $caret = $ui.SendBox.GetRectFromCharacterIndex(0)
+    $orig  = $phC.TransformToVisual($ui.SendBox).Transform((New-Object System.Windows.Point 0, 0))
+    $dx = [Math]::Abs($caret.X - $orig.X)
+    $dy = [Math]::Abs($caret.Y - $orig.Y)
+    Note ("caret ({0:N1}, {1:N1})   placeholder ({2:N1}, {3:N1})   delta ({4:N1}, {5:N1})" -f `
+          $caret.X, $caret.Y, $orig.X, $orig.Y, $dx, $dy)
+    # 🪤 2px, NOT 0. Measured after the double-padding was removed: 1.6px across
+    # and 0.0px down. That residual is WPF's own doing - a TextBox lays its first
+    # glyph fractionally right of where a TextBlock lays the same character - and
+    # compensating for it would mean a magic number in the template that is wrong
+    # at another size or DPI. The tolerance is set just above the real residual,
+    # so it still catches what it was written for: the defect it found first was
+    # 13.6px across and 6.4px down.
+    if ($dx -gt 2.0 -or $dy -gt 1.0) {
+        Fail ("the caret and the placeholder do not start in the same place - out by {0:N1}px across and {1:N1}px down" -f $dx, $dy)
+    } else {
+        Pass ("the caret starts where the placeholder does ({0:N1}px across, {1:N1}px down)" -f $dx, $dy)
+    }
+}
 
 # ===========================================================================
 Write-Host ''
@@ -2924,6 +2995,46 @@ if ([Math]::Abs($script:readSize - $script:MonoSize) -gt 0.01) {
 } else {
     Pass ('prose and machine text are one size ({0}px)' -f $script:readSize)
 }
+
+# 🔴 THE MEASURE'S CHARACTER WIDTH MUST COME FROM THE FACE THAT IS DRAWN. It was
+# a literal 0.52 - Manrope's average advance - and it stayed that way when the
+# pane went monospaced, so a column asked for 100 characters was sized for 87.
+# A hard-coded metric outlives the face it was measured from, silently.
+$expAdv = -1.0
+try {
+    $tfM = New-Object System.Windows.Media.Typeface $window.Resources['FontPane'],
+               ([System.Windows.FontStyles]::Normal), ([System.Windows.FontWeights]::Normal),
+               ([System.Windows.FontStretches]::Normal)
+    $gtM = $null
+    if ($tfM.TryGetGlyphTypeface([ref]$gtM)) {
+        $expAdv = [double]$gtM.AdvanceWidths[$gtM.CharacterToGlyphMap[[int][char]'0']]
+    }
+} catch { }
+if ($expAdv -lt 0) {
+    Note 'the pane face exposes no glyph typeface here - the advance check is skipped'
+} elseif ([Math]::Abs($script:PaneAdvanceEm - $expAdv) -gt 0.02) {
+    Fail ('the measure uses {0:N3} em per character but the face advances {1:N3} em - the column is sized for a face that is not on screen' -f $script:PaneAdvanceEm, $expAdv)
+} else {
+    Pass ('the measure takes its character width from the face itself ({0:N3} em)' -f $expAdv)
+}
+
+# 🪤 AND THE LEADING HAS EXACTLY ONE OWNER. Set-ReadMeasure runs on every layout
+# and held its own copy of the factor; when the scale moved to 1.48 and this one
+# stayed 1.38, the invisible copy won. Third time a number here has been written
+# down twice, so it is asserted now rather than commented about.
+$docM = New-Object System.Windows.Documents.FlowDocument
+Set-ReadMeasure -Doc $docM
+$leadWant = [Math]::Round($script:PaneSize * $SR_LeadFactor, 1)
+if ([Math]::Abs($script:readLead - $leadWant) -gt 0.05) {
+    Fail ('a layout pass left the leading at {0} instead of {1} - a second copy of the factor is back' -f $script:readLead, $leadWant)
+} else {
+    Pass ('the leading survives a layout pass ({0}px, factor {1})' -f $script:readLead, $SR_LeadFactor)
+}
+$colW = [double]$ui.PaneDoc.ActualWidth - $docM.PagePadding.Left - $docM.PagePadding.Right
+$chars = 0.0
+if ($script:PaneSize -gt 0 -and $script:PaneAdvanceEm -gt 0) { $chars = $colW / ($script:PaneSize * $script:PaneAdvanceEm) }
+Note ('pane {0:N0}px -> text column {1:N0}px (~{2:N0} chars), {3:N0}px unused on the right [readingWidth: {4}]' -f `
+      $ui.PaneDoc.ActualWidth, $colW, $chars, $docM.PagePadding.Right, $script:readWidth)
 
 # 🔴 SHOW THE PANELS THAT ARE COLLAPSED BY DEFAULT FIRST, OR THE SWEEP BELOW IS
 # A LIE. A collapsed panel realises no children, so walking the tree as the
