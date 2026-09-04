@@ -2059,6 +2059,82 @@ else {
             Build-Sessions
         }
 
+        # ===================================================================
+        # 🔴 WHAT IS QUEUED BEHIND IT, ON THE ROW. The complaint this answers is
+        # not being able to see which of twenty sessions is sitting on your
+        # work, so the assertion that matters is not "a number appears" - it is
+        # WHICH number appears, and in which colour.
+        # ===================================================================
+        $qbRow = $probeItem.Row
+        $qbWas = $qbRow.Q
+        function New-QBadgeFixture { param([int]$Mine, [int]$Machine)
+            $qbItems = New-Object System.Collections.Generic.List[object]
+            for ($qbI = 0; $qbI -lt $Mine; $qbI++) {
+                $null = $qbItems.Add([PSCustomObject]@{
+                    Text = "something you typed $qbI"; First = "something you typed $qbI"
+                    At = (Get-Date).AddSeconds(-45); Mine = $true })
+            }
+            for ($qbI = 0; $qbI -lt $Machine; $qbI++) {
+                $null = $qbItems.Add([PSCustomObject]@{
+                    Text = '<cross-session-message from="uds:pipe">x</cross-session-message>'
+                    First = '<cross-session-message from="uds:pipe">x</cross-session-message>'
+                    At = (Get-Date).AddSeconds(-20); Mine = $false })
+            }
+            return [PSCustomObject]@{
+                Items = $qbItems.ToArray(); Count = ($Mine + $Machine)
+                Mine = $Mine; Machine = $Machine; Ok = $true }
+        }
+        function Get-QBadge {
+            Build-Sessions
+            $qbD = @($ui.SessionList.ItemsSource | Where-Object { "$($_.Id)" -eq "$($qbRow.Id)" })
+            if (-not $qbD.Count) { return $null }
+            return $qbD[0]
+        }
+        try {
+            $qbRow.Q = $null
+            $qbNone = Get-QBadge
+            if (-not $qbNone) { Fail 'the conversation under test is not in the list' }
+            elseif ("$($qbNone.QVis)" -eq 'Visible') { Fail 'a session with nothing queued still draws a queue mark' }
+            else { Pass 'nothing queued draws no mark' }
+
+            $qbRow.Q = New-QBadgeFixture -Mine 2 -Machine 0
+            $qbMine = Get-QBadge
+            if ("$($qbMine.QVis)" -ne 'Visible') { Fail 'two of your messages are waiting and the row says nothing' }
+            elseif ("$($qbMine.QText)" -ne '2') { Fail "the queue mark reads '$($qbMine.QText)' rather than 2" }
+            elseif ("$($qbMine.QBrush.Color)" -ne "$(([System.Windows.Media.SolidColorBrush]$window.FindResource('HueOut')).Color)") {
+                Fail 'a queue of your own messages is not drawn in the colour that means you spoke'
+            } else { Pass 'two of your own messages waiting draws an amber >>2 on the row' }
+
+            # 🪤 THE ONE THAT KEEPS THE MARK WORTH LOOKING AT. Measured on this
+            # machine: 1,356 cross-session messages and 1,107 task
+            # notifications against 144 lines a person typed. A row that adds
+            # them together reads ">>16" when SIXTEEN things are waiting and
+            # only two of them could possibly matter - and a mark that is
+            # always lit is a mark you stop seeing.
+            $qbRow.Q = New-QBadgeFixture -Mine 2 -Machine 14
+            $qbMix = Get-QBadge
+            if ("$($qbMix.QText)" -eq '16') {
+                Fail 'the row totalled your 2 messages with 14 machine ones - the count has to be the part you care about'
+            } elseif ("$($qbMix.QText)" -ne '2') {
+                Fail "with 2 yours behind 14 machine ones the mark reads '$($qbMix.QText)', expected 2"
+            } else { Pass 'two of yours behind fourteen machine messages still reads 2, not 16' }
+            if ("$($qbMix.QTip)" -notlike '*14 from the machine*') {
+                Fail "the machine traffic is not mentioned anywhere: '$($qbMix.QTip)'"
+            } else { Pass 'and the machine traffic is in the tooltip rather than in the count' }
+
+            # Machine-only: still worth showing, never worth an accent.
+            $qbRow.Q = New-QBadgeFixture -Mine 0 -Machine 6
+            $qbMach = Get-QBadge
+            if ("$($qbMach.QVis)" -ne 'Visible') { Fail 'six queued messages draw nothing at all' }
+            elseif ("$($qbMach.QText)" -ne '6') { Fail "a machine-only queue reads '$($qbMach.QText)' rather than 6" }
+            elseif ("$($qbMach.QBrush.Color)" -eq "$(([System.Windows.Media.SolidColorBrush]$window.FindResource('HueOut')).Color)") {
+                Fail 'a queue with nothing of yours in it is drawn in the accent that means your words are waiting'
+            } else { Pass 'a machine-only queue is drawn grey - present, not shouting' }
+        } finally {
+            $qbRow.Q = $qbWas
+            Build-Sessions
+        }
+
         # 🪤 AND THE BUSY GATE, on the same live console. Without this the two
         # assertions above would pass on a probe that reads any session at all,
         # which is exactly the defect that drew a numbered list as a menu.

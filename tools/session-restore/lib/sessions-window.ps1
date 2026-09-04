@@ -962,7 +962,7 @@ function Test-Warm { param($S)
 # already did on a background thread, so this costs no I/O when it is called
 # from there.
 function Update-Model {
-    param($Registry, $Agents, [hashtable]$Said, [switch]$KeepAgents)
+    param($Registry, $Agents, [hashtable]$Said, [hashtable]$Queue, [switch]$KeepAgents)
 
     $script:cfg = Get-SRConfig
     if ($Registry) { $script:reg = $Registry } else { $script:reg = Get-SRRegistry }
@@ -1045,8 +1045,22 @@ function Update-Model {
                 if ($null -ne $Said) { $line = $Said[$id] }
                 else { try { $line = Get-SRLastSaid -JsonlPath $s.jsonl } catch { } }
             }
+            # 🔴 HANDED IN, NEVER READ HERE. Unlike the last-said line above there
+            # is no fall-back read: Get-SRQueue takes a 4 MB tail and 42.8 ms cold,
+            # and doing that for every live conversation on the model pass is the
+            # exact mistake the note above records having already made once. No
+            # queue from the probe means no badge until the next probe, which is
+            # fifteen seconds and costs nothing but a slightly late number.
+            #
+            # 🪤 $qrec, NOT $queue - PowerShell is case-insensitive and a local
+            # called $queue IS the [hashtable]$Queue parameter. Same collision
+            # that killed 'what it last said' for the life of the window.
+            $qrec = $null
+            if ($live -and $null -ne $Queue) { $qrec = $Queue[$id] }
             $rows.Add([PSCustomObject]@{
                 Id = $id; S = $s; D = $d; A = $a; Conv = $conv; Said = $line; Live = $live; Band = 'quiet'
+                # What this conversation has waiting behind the turn it is on.
+                Q = $qrec
                 # 🔴 READ HERE, NOT IN Build-Sessions. Build-Sessions runs on
                 # every keystroke in either filter box; this pass runs on a
                 # timer and already reads every transcript. Putting the row
@@ -1414,6 +1428,12 @@ function Build-Sessions {
         $keep.Add($r)
     }
 
+    # 🪤 RESOLVED ONCE, NOT PER ROW. FindResource walks the resource dictionary,
+    # and these two are constants - the same reasoning as Get-Title and the
+    # haystack in Update-Model. Cheap individually and pointless 300 times.
+    $qGrey  = [System.Windows.Media.Brush]$window.FindResource('TextLow')
+    $qAmber = [System.Windows.Media.Brush]$window.FindResource('HueOut')
+
     $items = New-Object System.Collections.Generic.List[object]
     foreach ($b in $script:Bands) {
         $inBand = @(Sort-SessionRows @($keep | Where-Object { $_.Band -eq $b.Key }))
@@ -1433,6 +1453,7 @@ function Build-Sessions {
             # the trace and an empty cell on screen. Named, so it is off.
             CtxVis = $V_Hide; CtxWidth = 0.0; AgentVis = $V_Hide; AgentText = ''
             ShellVis = $V_Hide; ShellText = ''
+            QVis = $V_Hide; QText = ''; QTip = ''; QBrush = $qGrey
             SubVis = $V_Hide; SubName = ''; SubDesc = ''; SubTag = ''; SubAge = ''
             SubOpacity = 1.0; SubTip = ''
             CtxBrush = [System.Windows.Media.Brush][System.Windows.Media.Brushes]::Transparent
@@ -1484,11 +1505,47 @@ function Build-Sessions {
             $rowTok = 0; $rowWin = 0
             if ($scr -and [int]$scr.CtxWindow -gt 0) { $rowTok = [int]$scr.CtxTokens; $rowWin = [int]$scr.CtxWindow }
             $rowFrac = $(if ($rowWin -gt 0) { [double]$rowTok / [double]$rowWin } else { 0.0 })
+
+            # 🔴 WHAT IS QUEUED BEHIND IT. Read off the transcript's own
+            # queue-operation records by the background probe - see Get-SRQueue.
+            #
+            # 🪤 THE COUNT IS YOURS WHEN YOU HAVE ANY, and only falls back to the
+            # total when you have none. A row showing "14" that turns out to be
+            # fourteen cross-session messages teaches you to ignore the mark; a
+            # row showing "2" when two of your own are waiting is the only number
+            # worth interrupting yourself for. Both are in the tooltip, so the
+            # machine traffic is available without being shouted.
+            $qRec = $r.Q
+            $qVis = $V_Hide; $qTxt = ''; $qTip = ''
+            $qBrush = $qGrey
+            if ($qRec -and [int]$qRec.Count -gt 0) {
+                $qVis = $V_Show
+                if ([int]$qRec.Mine -gt 0) {
+                    $qTxt = "$([int]$qRec.Mine)"
+                    $qBrush = $qAmber
+                    $qTip = ('{0} message(s) of yours waiting to be read' -f [int]$qRec.Mine)
+                    if ([int]$qRec.Machine -gt 0) {
+                        $qTip = $qTip + (', behind {0} from the machine' -f [int]$qRec.Machine)
+                    }
+                    # The oldest of yours is the one that has been waiting
+                    # longest, and how long is the whole question.
+                    foreach ($qi in @($qRec.Items)) {
+                        if (-not $qi.Mine) { continue }
+                        if ($qi.At) { $qTip = $qTip + ("`nwaiting {0}: " -f (Get-AgeTicks ([datetime]$qi.At).Ticks)) + "$($qi.First)" }
+                        else { $qTip = $qTip + "`n" + "$($qi.First)" }
+                        break
+                    }
+                } else {
+                    $qTxt = "$([int]$qRec.Count)"
+                    $qTip = ('{0} queued, none of them yours - cross-session messages and task notifications' -f [int]$qRec.Count)
+                }
+            }
             $items.Add([PSCustomObject]@{
                 Kind = 'session'; Id = $r.Id; Row = $r
                 BandVis = $V_Hide; RowVis = $V_Show
                 DotVis = $(if ($b.Key -eq 'needs') { $V_Show } else { $V_Hide })
                 BandLabel = ''; BandCount = ''; Accent = $acc
+                QVis = $qVis; QText = $qTxt; QTip = $qTip; QBrush = $qBrush
                 Name = $t.Text
                 NameWeight = $(if ($b.Key -eq 'needs') { 'SemiBold' } else { 'Normal' })
                 NameStyle  = $(if ($t.Derived) { 'Italic' } else { 'Normal' })
@@ -1628,6 +1685,7 @@ function Build-Sessions {
                     CtxVis = $V_Hide; CtxWidth = 0.0
                     CtxBrush = [System.Windows.Media.Brush][System.Windows.Media.Brushes]::Transparent
                     AgentVis = $V_Hide; AgentText = ''; ShellVis = $V_Hide; ShellText = ''
+                    QVis = $V_Hide; QText = ''; QTip = ''; QBrush = $qGrey
                     SubName = $sa.Label
                     SubDesc = $(if ($sa.Description) { $sa.Description } else { $sa.AgentType })
                     SubTag  = $tag
@@ -8286,7 +8344,7 @@ $script:lastFp = $null
 # run on the dispatcher every 45 seconds.
 $script:ProbeJob = {
     . (Join-Path $SRHere '_common.ps1')
-    $out = @{ Reg = $null; Agents = @{}; Said = @{}; Ask = $null; AskFor = ''; RegStamp = '' }
+    $out = @{ Reg = $null; Agents = @{}; Said = @{}; Queue = @{}; Ask = $null; AskFor = ''; RegStamp = '' }
     try { $out.Reg = Get-SRRegistry; $out.RegStamp = Get-SRRegistryStamp } catch { }
     try { $out.Agents = Get-SRAgentStatus -Refresh } catch { }
 
@@ -8303,6 +8361,19 @@ $script:ProbeJob = {
                 try { $warm = ([datetime]$s.lastActive -gt $cut) } catch { }
                 if (-not ($out.Agents[$id] -or $warm)) { continue }
                 try { $out.Said[$id] = Get-SRLastSaid -JsonlPath $s.jsonl } catch { }
+                # 🔴 THE QUEUE, AND ONLY FOR WHAT IS RUNNING. A conversation with
+                # no process cannot drain a queue, so a backlog drawn on one says
+                # something that will never stop being true - and the read is the
+                # most expensive one here: 42.8 ms cold against a 4 MB tail,
+                # measured over 46 conversations. Live only turns 1,971 ms into a
+                # few hundred, and it is cached against the file stamp, so the
+                # steady state is 29 ms for the whole set.
+                #
+                # 🪤 AND IT BELONGS ON THIS THREAD, not the model pass. That is
+                # the whole lesson of the last-said reads three lines up.
+                if ($out.Agents[$id]) {
+                    try { $out.Queue[$id] = Get-SRQueue -JsonlPath $s.jsonl } catch { }
+                }
             }
         }
     }
@@ -8612,7 +8683,7 @@ function Complete-LiveProbe {
         # own stamp - and the stale-write check would refuse the next save
         # against a file it actually agrees with.
         if ("$($res.RegStamp)") { Set-SRRegistryStamp "$($res.RegStamp)" }
-        Update-Model -Registry $res.Reg -Agents $res.Agents -Said $res.Said
+        Update-Model -Registry $res.Reg -Agents $res.Agents -Said $res.Said -Queue $res.Queue
     } elseif ($res.Agents) {
         $script:agents = $res.Agents
         foreach ($r in $script:model) {
@@ -8621,6 +8692,11 @@ function Complete-LiveProbe {
             $r.Live = [bool]$a
             try { $r.Conv = Resolve-SRSessionState -Agent $a -Conv $null } catch { }
             if ($res.Said -and $res.Said.ContainsKey("$($r.Id)")) { $r.Said = $res.Said["$($r.Id)"] }
+            # The queue too, or the badge would freeze at whatever it said when
+            # the last full model pass ran - which on a machine with unsaved
+            # ticks is every pass, since this branch is the one that runs then.
+            if ($res.Queue -and $res.Queue.ContainsKey("$($r.Id)")) { $r.Q = $res.Queue["$($r.Id)"] }
+            elseif (-not $r.Live) { $r.Q = $null }
             $r.Band = Get-Band $r
         }
     }

@@ -5455,6 +5455,139 @@ function Get-SRWorkingDiff { param([string]$Path)
 $script:SR_SigCache = @{}
 $SR_SigTailBytes = 49152
 
+# ===========================================================================
+# WHAT A CONVERSATION HAS WAITING - the send queue, read off the transcript.
+#
+# 🔑 THE SESSION KEEPS THIS RECORD ITSELF, so none of it is inferred. claude
+# writes a `queue-operation` record the moment anything is queued and again when
+# it leaves:
+#
+#   enqueue   carries the full text - a message joined the queue
+#   remove    carries the text - that specific one left it
+#   dequeue   carries NOTHING - one came off the front
+#   popAll    the queue was cleared
+#
+# Replaying those four in order is the queue, exactly, live. Measured across the
+# operator's 432 transcripts on 2026-09-04: 6,645 messages queued and picked up,
+# a median wait of 7 seconds, 31% waiting longer than 30 and 21% longer than two
+# minutes. It is not a cosmetic feature - a fifth of everything sent this way
+# sits unseen for minutes.
+#
+# 🔴 NOT THE queued_command ATTACHMENT, which is the obvious-looking source and
+# the wrong one. That is appended when the message is PICKED UP, not when it is
+# queued - proved by its own timestamp being older than the records either side
+# of it (11:51:27 sitting after 11:51:39) - so a reader built on it can only ever
+# describe a queue that has already drained. The same trap Get-SRPendingQuestion
+# carries a note about, in the same shape.
+#
+# 🪤 MOST OF THE QUEUE IS NOT THE OPERATOR. Across those transcripts: 1,356
+# cross-session messages, 1,107 task notifications, 144 lines a person actually
+# typed. Anything drawn from this has to tell them apart or a queue indicator
+# means nothing - so Mine and Machine are counted separately, decided by the
+# leading '<' that every machine-generated prompt starts with.
+#
+# 🪤 THE TAIL IS BIG ON PURPOSE. A still-waiting enqueue sits a median 210 KB
+# back and up to 1.3 MB; a 48 KB window like the one above would find 8% of them
+# and a 256 KB window 52%. 4 MB caught all 25 that were pending across the whole
+# machine, and it is affordable because only lines containing the marker are
+# parsed - the rest is a substring scan, and the whole answer is cached against
+# the file stamp, so an unchanged transcript costs one stat.
+#
+# 🔒 A TRUNCATED WINDOW UNDER-REPORTS, NEVER OVER-REPORTS. Starting mid-file this
+# can see a `remove` or `dequeue` for an `enqueue` older than the window; with
+# nothing matching, it is ignored rather than popping the front, so the worst
+# case is a message that is waiting and not shown. Claiming something is queued
+# when it is not would be the damaging direction.
+$script:SR_QueueCache = @{}
+$SR_QueueTailBytes = 4194304
+
+function Get-SRQueue {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$JsonlPath, [int]$MaxTailBytes = 0)
+
+    if ($MaxTailBytes -le 0) { $MaxTailBytes = $SR_QueueTailBytes }
+    $none = [PSCustomObject]@{ Items = @(); Count = 0; Mine = 0; Machine = 0; Ok = $false }
+    if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return $none }
+
+    $stamp = ''
+    try {
+        $fi = Get-Item -LiteralPath $JsonlPath -ErrorAction Stop
+        $stamp = '{0}|{1}|{2}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks, $MaxTailBytes
+    } catch { return $none }
+    $key = "$JsonlPath".ToLower()
+    if ($script:SR_QueueCache.ContainsKey($key) -and $script:SR_QueueCache[$key].Stamp -eq $stamp) {
+        return $script:SR_QueueCache[$key].Value
+    }
+    if ($fi.Length -eq 0) { return $none }
+
+    $text = ''
+    try {
+        $fs = [System.IO.File]::Open($JsonlPath, 'Open', 'Read', 'ReadWrite')
+        try {
+            $take = [int][Math]::Min($fi.Length, $MaxTailBytes)
+            $null = $fs.Seek(-$take, 'End')
+            $buf = New-Object byte[] $take
+            $read = $fs.Read($buf, 0, $take)
+            $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        } finally { $fs.Dispose() }
+    } catch { return $none }
+
+    # The queue is a handful of records in a file of tens of thousands, so the
+    # marker test comes first and almost every line stops there. Only what
+    # survives it is worth a ConvertFrom-Json.
+    $q = New-Object System.Collections.Generic.List[object]
+    foreach ($ln in ($text -split "`n")) {
+        if ($ln.IndexOf('"queue-operation"', [StringComparison]::Ordinal) -lt 0) { continue }
+        $s = $ln.TrimStart([char]0xFEFF, ' ', "`t")
+        if (-not $s.StartsWith('{')) { continue }
+        $r = $null
+        try { $r = $s | ConvertFrom-Json } catch { continue }
+        if ("$($r.type)" -ne 'queue-operation') { continue }
+        $op = "$($r.operation)"
+        $c  = "$($r.content)"
+        switch ($op) {
+            'enqueue' {
+                if (-not "$c".Trim()) { break }
+                $at = $null
+                try { $at = [datetime]$r.timestamp } catch { }
+                $null = $q.Add([PSCustomObject]@{ Text = (Remove-SRAnsi $c); At = $at })
+            }
+            'popAll' { $q.Clear() }
+            'remove' {
+                for ($i = 0; $i -lt $q.Count; $i++) {
+                    if ("$($q[$i].Text)" -eq (Remove-SRAnsi $c)) { $q.RemoveAt($i); break }
+                }
+            }
+            'dequeue' { if ($q.Count) { $q.RemoveAt(0) } }
+            default { }
+        }
+    }
+
+    $items = New-Object System.Collections.Generic.List[object]
+    $mine = 0; $machine = 0
+    foreach ($e in $q) {
+        # Every machine-generated prompt arrives wrapped in a tag -
+        # <task-notification>, <cross-session-message>, <agent-message>,
+        # <system-reminder>. A person's message never starts with one.
+        $t = "$($e.Text)".TrimStart()
+        $isMine = -not $t.StartsWith('<', [StringComparison]::Ordinal)
+        if ($isMine) { $mine++ } else { $machine++ }
+        $null = $items.Add([PSCustomObject]@{
+            Text  = "$($e.Text)"
+            First = (Get-SRFirstLine "$($e.Text)")
+            At    = $e.At
+            Mine  = $isMine
+        })
+    }
+
+    $v = [PSCustomObject]@{
+        Items = $items.ToArray(); Count = $items.Count
+        Mine = $mine; Machine = $machine; Ok = $true
+    }
+    $script:SR_QueueCache[$key] = @{ Stamp = $stamp; Value = $v }
+    return $v
+}
+
 function Get-SRRowSignals { param([string]$JsonlPath)
     $none = [PSCustomObject]@{ Tokens = 0; Window = 200000; Frac = 0.0; Agents = 0; Shells = 0; Ok = $false }
     if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return $none }

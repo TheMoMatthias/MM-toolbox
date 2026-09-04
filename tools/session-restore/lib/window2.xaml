@@ -1005,6 +1005,34 @@
                                Foreground="{StaticResource HueTool}" VerticalAlignment="Center"
                                Margin="4,0,0,0"/>
                   </StackPanel>
+                  <!-- 🔴 WHAT IS WAITING BEHIND THE TURN IT IS ON. A third
+                       shape, for the same reason the two above are two: this
+                       is not a sub-agent and not a shell, it is your own words
+                       not yet read. The guillemet is not a new invention - the
+                       reading pane has used it for queued input since it was
+                       written, so the two surfaces say the same thing with the
+                       same glyph.
+                       🪤 NO PILL. See the note above: a tinted capsule around a
+                       count was removed from this row once already for reading
+                       as a badge competing with the name, and adding one back
+                       here would undo that for the sake of consistency with a
+                       mockup rather than with this row.
+                       🔴 AND IT GOES GREY WHEN THE QUEUE IS NOT YOURS. Measured
+                       on this machine: of everything queued across 432
+                       transcripts, 1,356 were cross-session messages and 1,107
+                       task notifications against 144 lines a person typed - so
+                       a mark that lit up for all of it would be lit almost
+                       always and mean nothing. Amber says YOUR words are
+                       waiting; grey says the machine is talking to itself. -->
+                  <StackPanel Orientation="Horizontal" Visibility="{Binding QVis}"
+                              VerticalAlignment="Center" Margin="10,0,0,0"
+                              ToolTip="{Binding QTip}">
+                    <TextBlock Text="&#187;" Style="{StaticResource Meta}"
+                               Foreground="{Binding QBrush}" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding QText}" Style="{StaticResource Meta}"
+                               Foreground="{Binding QBrush}" VerticalAlignment="Center"
+                               Margin="3,0,0,0"/>
+                  </StackPanel>
                 </StackPanel>
 
                 <!-- how full its context is, once that is worth knowing -->

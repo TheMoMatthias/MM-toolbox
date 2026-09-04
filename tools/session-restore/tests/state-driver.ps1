@@ -1357,6 +1357,108 @@ try {
 # was invisible: the parser drops everything that is not user or assistant, and
 # the first version of this fix hooked the user path and found exactly zero.
 # The fixture is real records lifted verbatim from a transcript.
+# ===========================================================================
+# THE SEND QUEUE - what a conversation has waiting behind the turn it is on.
+#
+# 🔴 THE REPLAY IS THE WHOLE FUNCTION, so the replay is what is tested. Every
+# rule below is one the reader has to get right to avoid claiming a message is
+# waiting when it is not, which is the damaging direction: a queue badge that
+# lies sends the operator to a session that has nothing for them.
+#
+# 🪤 THE REAL CAPTURE FIRST, hand-built cases second. messages-round.jsonl holds
+# three genuine queue-operation records - two enqueue and one remove - so the
+# right answer is ONE still waiting, and it is a number the fixture can be
+# checked against by hand.
+Write-Host ''
+Write-Host '--- the send queue ---'
+$qmsgReal = Join-Path (Join-Path (Split-Path $SR_StateDir -Parent) 'tests') 'messages-round.jsonl'
+if (-not (Test-Path -LiteralPath $qmsgReal)) { $qmsgReal = Join-Path $PSScriptRoot 'messages-round.jsonl' }
+if (-not (Test-Path -LiteralPath $qmsgReal)) {
+    Fail "the captured messages are missing: $qmsgReal"
+} else {
+    $qReal = Get-SRQueue -JsonlPath $qmsgReal
+    if (-not $qReal.Ok) { Fail 'the queue reader failed on the real capture' }
+    elseif ($qReal.Count -ne 1) {
+        Fail "the capture has 2 enqueue and 1 remove, so 1 should be waiting; got $($qReal.Count)"
+    } else {
+        Pass 'two queued and one taken off leaves one waiting, on real records'
+        if ($qReal.Mine -ne 0 -or $qReal.Machine -ne 1) {
+            Fail "a cross-session message is not the operator: got Mine=$($qReal.Mine) Machine=$($qReal.Machine)"
+        } else { Pass 'and it is counted as machine traffic, not as something you typed' }
+    }
+}
+
+$qdir = Join-Path $here ('.state\queue-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$null = New-Item -ItemType Directory -Path $qdir -Force
+try {
+    function New-QueueFixture { param([string]$Name, [string[]]$Records)
+        $fp = Join-Path $qdir ($Name + '.jsonl')
+        [System.IO.File]::WriteAllLines($fp, $Records, (New-Object System.Text.UTF8Encoding($false)))
+        return $fp
+    }
+    function Q-Op { param([string]$Op, [string]$Content = '')
+        if ($Content) {
+            return ('{{"type":"queue-operation","operation":"{0}","timestamp":"2026-09-04T10:00:00.000Z","sessionId":"s1","content":"{1}"}}' -f $Op, $Content)
+        }
+        return ('{{"type":"queue-operation","operation":"{0}","timestamp":"2026-09-04T10:00:00.000Z","sessionId":"s1"}}' -f $Op)
+    }
+    $qNoise = '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+
+    foreach ($qc in @(
+        @{ N = 'two waiting';        R = @((Q-Op 'enqueue' 'alpha'), (Q-Op 'enqueue' 'bravo')); Want = 2; Head = 'alpha' },
+        @{ N = 'dequeue pops the FRONT'; R = @((Q-Op 'enqueue' 'alpha'), (Q-Op 'enqueue' 'bravo'), (Q-Op 'dequeue')); Want = 1; Head = 'bravo' },
+        @{ N = 'remove matches by TEXT, not position'; R = @((Q-Op 'enqueue' 'alpha'), (Q-Op 'enqueue' 'bravo'), (Q-Op 'remove' 'bravo')); Want = 1; Head = 'alpha' },
+        @{ N = 'popAll clears it';   R = @((Q-Op 'enqueue' 'alpha'), (Q-Op 'enqueue' 'bravo'), (Q-Op 'popAll')); Want = 0; Head = '' },
+        @{ N = 'drained is empty';   R = @((Q-Op 'enqueue' 'alpha'), (Q-Op 'remove' 'alpha')); Want = 0; Head = '' },
+        # 🔒 THE ONE THAT KEEPS IT HONEST ACROSS A TRUNCATED TAIL. A remove for
+        # something enqueued before the reading window must NOT pop the front -
+        # that would drop a message that really is waiting and, worse, could
+        # empty a queue that is full. Under-reporting is the safe direction.
+        @{ N = 'a remove for something never seen leaves the queue alone';
+           R = @((Q-Op 'enqueue' 'alpha'), (Q-Op 'remove' 'something-from-before-the-window')); Want = 1; Head = 'alpha' },
+        @{ N = 'noise between the records is ignored';
+           R = @($qNoise, (Q-Op 'enqueue' 'alpha'), $qNoise, (Q-Op 'enqueue' 'bravo'), $qNoise); Want = 2; Head = 'alpha' }
+    )) {
+        $qGot = Get-SRQueue -JsonlPath (New-QueueFixture (($qc.N) -replace '[^A-Za-z]', '_') @($qc.R))
+        if ($qGot.Count -ne $qc.Want) {
+            Fail ("{0}: expected {1} waiting, got {2}" -f $qc.N, $qc.Want, $qGot.Count)
+        } elseif ($qc.Head -and "$($qGot.Items[0].Text)" -ne $qc.Head) {
+            Fail ("{0}: the front of the queue is '{1}', expected '{2}'" -f $qc.N, $qGot.Items[0].Text, $qc.Head)
+        } else {
+            Pass ("{0} -> {1} waiting" -f $qc.N, $qGot.Count)
+        }
+    }
+
+    # 🔴 YOURS VERSUS THE MACHINE'S, which is what decides whether the mark on
+    # the row lights up at all. Measured on this machine: 1,356 cross-session
+    # messages and 1,107 task notifications against 144 lines a person typed, so
+    # a reader that cannot tell them apart makes the badge meaningless.
+    $qMix = Get-SRQueue -JsonlPath (New-QueueFixture 'mixed' @(
+        (Q-Op 'enqueue' '<task-notification>\n<task-id>abc</task-id>'),
+        (Q-Op 'enqueue' 'please also check the free-text fields'),
+        (Q-Op 'enqueue' '<cross-session-message from=\"uds:pipe\">hello</cross-session-message>')
+    ))
+    if ($qMix.Count -ne 3) { Fail "the mixed queue should hold 3, got $($qMix.Count)" }
+    elseif ($qMix.Mine -ne 1 -or $qMix.Machine -ne 2) {
+        Fail "expected 1 yours and 2 machine, got Mine=$($qMix.Mine) Machine=$($qMix.Machine)"
+    } else {
+        Pass 'a typed line is told apart from a task-notification and a cross-session message'
+        $qYours = @($qMix.Items | Where-Object { $_.Mine })
+        if ("$($qYours[0].Text)" -notlike 'please also check*') {
+            Fail "the one counted as yours is: $($qYours[0].Text)"
+        } else { Pass 'and it is the one a person actually typed' }
+    }
+
+    $qEmpty = Get-SRQueue -JsonlPath (New-QueueFixture 'nothing' @($qNoise, $qNoise))
+    if ($qEmpty.Count -ne 0) { Fail "a transcript with no queue records reported $($qEmpty.Count) waiting" }
+    else { Pass 'a conversation that has never queued anything reports nothing' }
+
+    $qGone = Get-SRQueue -JsonlPath (Join-Path $qdir 'no-such-file.jsonl')
+    if ($qGone.Count -ne 0 -or $qGone.Ok) { Fail 'a missing transcript did not come back empty' }
+    else { Pass 'a missing transcript returns empty rather than throwing' }
+}
+finally { Remove-Item -LiteralPath $qdir -Recurse -Force -ErrorAction SilentlyContinue }
+
 Write-Host ''
 Write-Host '--- messages between sessions ---'
 $msgReal = Join-Path (Join-Path (Split-Path $SR_StateDir -Parent) 'tests') 'messages-round.jsonl'
