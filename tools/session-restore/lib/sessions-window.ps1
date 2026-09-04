@@ -4397,6 +4397,7 @@ $script:AnswerJob = {
             'answer' { $why = Send-SRQuestionAnswer -SessionId $SRAns.SessionId -Index $SRAns.Index }
             'move'   { $why = Invoke-SRRoundMove -ProcessId ([int]$SRAns.Pid) -Delta ([int]$SRAns.Delta) }
             'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId ([int]$SRAns.Pid) -Text "$($SRAns.Text)" -Who "$($SRAns.SessionId)" }
+            'send'   { $why = Send-SRSessionInput -SessionId $SRAns.SessionId -Text "$($SRAns.Text)" }
             default  { $why = "nothing was sent - '$($SRAns.Kind)' is not a kind of send this knows" }
         }
     }
@@ -4453,6 +4454,7 @@ function Start-AskSend {
                 'answer' { $why = Send-SRQuestionAnswer -SessionId $Row.Id -Index $Index }
                 'move'   { $why = Invoke-SRRoundMove -ProcessId $procId -Delta $Delta }
                 'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId $procId -Text $Text -Who "$($Row.Id)" }
+                'send'   { $why = Send-SRSessionInput -SessionId $Row.Id -Text $Text }
                 default  { $why = "nothing was sent - '$Kind' is not a kind of send this knows" }
             }
         } catch { $why = $_.Exception.Message }
@@ -4481,6 +4483,22 @@ function Invoke-Answer { param([int]$Index)
 # What used to run straight after the send, now run wherever the send finished.
 function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question, [string]$Why, [string]$Kind = 'answer')
     Set-AskEnabled $true
+
+    # A SENT MESSAGE IS NOT AN ANSWER EITHER. It clears the composer rather than
+    # the question card, and it files no answer record - nothing was chosen.
+    if ($Kind -eq 'send') {
+        if ($Why) { Set-Status $Why 'bad' } else {
+            # 🪤 CLEARED ON LANDING, NOT ON THE CLICK. Same reasoning as the
+            # typed answer: off-thread, clearing it at the click would throw the
+            # message away while the send could still come back refused.
+            try { $ui.SendBox.Text = '' } catch { }
+            Set-Status 'sent' 'ok'
+            # Typed into, so it is not waiting on you any more.
+            Move-RowToWorking $Row
+        }
+        try { Update-SendState } catch { }
+        return
+    }
 
     # A MOVE IS NOT AN ANSWER, and must not be reported or cleaned up as one.
     # Nothing was committed, so there is no record to file and no row to send
@@ -4610,11 +4628,20 @@ function Complete-AnswerSend {
 # parse it threw away is the card. That was the whole gap.
 #
 # 🔑 A READ IS NOW CHEAPER THAN THE TICK THAT SCHEDULES IT. The held-open reader
-# put a screen read at 9.3 ms against a 6.9 ms terminal, so polling the ONE
-# session on the pane at 400 ms costs about 2% of one thread - less than the
-# window already spends on the six-second repaint. That was not true when this
-# was written: a read was 130 ms, and a lane like this would have cost a third
-# of the UI thread.
+# put a screen read at 5.6-9.3 ms against a 6.9 ms terminal. That was not true
+# when this file was written: a read was 130 ms, and a lane like this would have
+# cost a third of the UI thread.
+#
+# 🔴 AND THE FIRST VERSION OF THIS NOTE WAS WRONG ABOUT THE PRICE. It said the
+# lane costs "about 2% of one thread", having counted the READ and omitted the
+# PARSE that followed it on every single tick. Audited: a steady-state tick is
+# 20.69 ms - parse 9.33, read 5.57, signature 0.82, gates and Add-Member the
+# rest - which at four a second is 5-6% of the UI thread, permanently, and
+# three times the bar per tick.
+#
+# It is cheap now because the parse is SKIPPED when the screen has not changed
+# (see below), which is the difference between paying 20.69 ms a tick and
+# paying it only when something actually moved.
 #
 # 🪤 IT MUST NOT REDRAW WHAT IT ALREADY DREW. Show-Ask replaces ItemsSource, so
 # an unconditional redraw every 400 ms would take the focus out from under a
@@ -4627,6 +4654,10 @@ $script:AskPollSlowMs = 2500
 $script:askSig  = ''
 $script:askMiss = 0
 $script:askSlow = $false
+# The last screen this lane read, and whose it was. See the note in the poll:
+# an unchanged screen cannot hold a changed menu, so it skips the parse.
+$script:askText = ''
+$script:askTextPid = 0
 
 function Get-AskSignature { param($Q)
     if (-not $Q) { return '' }
@@ -4684,6 +4715,26 @@ function Invoke-AskPoll {
     # and parsed to nothing is evidence that the menu has gone, and even then it
     # takes two in a row - one dropped frame mid-repaint is normal.
     if (-not $txt) { return }
+
+    # 🔴 THE PARSE IS THE EXPENSIVE HALF, AND IT RAN EVERY TICK REGARDLESS.
+    # Measured across a tick: parse 9.33 ms (45%), read 5.57 (27%), signature
+    # 0.82, the rest gates - 20.7 ms in total, four times a second. The note
+    # that used to sit above this lane claimed "about 2% of one thread"; it
+    # counted the READ and quietly omitted the parse that follows it every time.
+    # The true figure was 5-6%.
+    #
+    # 🔑 THE SCREEN IS ITS OWN CHANGE DETECTOR, and it is free - the text is
+    # already in hand. If not one character moved, no menu moved either, so
+    # there is nothing to parse and nothing to redraw. Only a screen that
+    # actually differs is worth the 9.33 ms.
+    #
+    # 🪤 KEYED ON THE PID. Without it, switching to another session whose screen
+    # happened to match the last one read would skip the parse and leave the
+    # previous conversation's menu on the card - which is the worst bug this
+    # window can have.
+    if ($txt -eq $script:askText -and [int]$row.A.Pid -eq [int]$script:askTextPid) { return }
+    $script:askText = $txt
+    $script:askTextPid = [int]$row.A.Pid
 
     $q = $null
     try { $q = Invoke-SRParseScreenQuestion -Text $txt } catch { }
@@ -4952,16 +5003,24 @@ function Invoke-Send {
     $r = $it.Row
     $msg = "$($ui.SendBox.Text)".Trim()
     if (-not $msg -or -not $r.A -or -not $r.A.Pid) { return }
-    Set-Status 'typing it in...'
-    $why = $null
-    try { $why = Send-SRSessionInput -SessionId $r.Id -Text $msg } catch { $why = $_.Exception.Message }
-    if ($why) { Set-Status $why 'bad' } else {
-        $ui.SendBox.Text = ''
-        Set-Status 'sent' 'ok'
-        # Typed into, so it is not waiting on you any more - same reasoning as
-        # answering a question. See Move-RowToWorking.
-        Move-RowToWorking $r
-    }
+    # 🔴 THIS WAS THE WORST FREEZE IN THE WINDOW, and it was excused rather than
+    # measured. The coverage map recorded this control as "its gesture is a
+    # string trim" - true of the four lines above and of nothing below them.
+    # Send-SRSessionInput runs Get-SRAgentStatus -Refresh, which SPAWNS
+    # `claude agents --json` (528-862 ms), then a CIM process query, then
+    # Start-Sleep 400 between the text and the ENTER that commits it. All of it
+    # was on the thread that draws: roughly 1.0-1.3 SECONDS of frozen window
+    # every time the operator pressed Send.
+    #
+    # The 400 ms pause is right and stays - the input box needs a beat before it
+    # will accept the newline, and without it messages land in the box and sit
+    # there unsent. It just has no business being taken on the UI thread.
+    #
+    # 🔒 THE SAME LANE THE ANSWERS USE, and sharing its in-flight guard is
+    # correct rather than convenient: answering and sending both write keys into
+    # ONE console, and two of those interleaved is a message nobody typed.
+    if ($script:ansPs) { Set-Status 'still sending...' 'warn'; return }
+    $null = Start-AskSend -Kind 'send' -Row $r -Text $msg -Saying 'typing it in...'
 }
 
 # ===========================================================================

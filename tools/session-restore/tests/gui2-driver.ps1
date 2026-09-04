@@ -1420,7 +1420,7 @@ Write-Host '--- all three sends are off the UI thread, and none of them can answ
 # through Start-AskSend.
 $winSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\sessions-window.ps1'))
 
-foreach ($fn in @('Invoke-AskMove', 'Invoke-AskTyped', 'Invoke-Answer')) {
+foreach ($fn in @('Invoke-AskMove', 'Invoke-AskTyped', 'Invoke-Answer', 'Invoke-Send')) {
     if ($winSrc -notmatch [regex]::Escape("function $fn")) { Fail "$fn is gone"; continue }
     # The body, up to the next top-level function.
     $bodyIx = $winSrc.IndexOf("function $fn")
@@ -1439,7 +1439,13 @@ foreach ($fn in @('Invoke-AskMove', 'Invoke-AskTyped', 'Invoke-Answer')) {
     # that read another process's console; every one of them belongs in the
     # runspace, and one left in a click handler is a frozen window.
     $left = @()
-    foreach ($blocking in @('Invoke-SRRoundMove', 'Invoke-SRAnswerTypedOnScreen', 'Send-SRQuestionAnswer', 'Get-SRScreenQuestion')) {
+    # 🔴 Send-SRSessionInput IS ON THIS LIST, and it is the one that mattered
+    # most. Invoke-Send called it inline: Get-SRAgentStatus -Refresh spawns
+    # `claude agents --json` (528-862 ms), then Start-Sleep 400 before the
+    # ENTER - about 1.0-1.3 SECONDS of frozen window per press, excused in the
+    # coverage map as "its gesture is a string trim".
+    foreach ($blocking in @('Invoke-SRRoundMove', 'Invoke-SRAnswerTypedOnScreen', 'Send-SRQuestionAnswer',
+                            'Send-SRSessionInput', 'Get-SRScreenQuestion')) {
         if ($body -match [regex]::Escape($blocking)) { $left += $blocking }
     }
     if ($left.Count) { Fail ("$fn still calls " + ($left -join ', ') + ' on the UI thread') }
