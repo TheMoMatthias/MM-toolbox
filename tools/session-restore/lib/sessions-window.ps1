@@ -7317,6 +7317,11 @@ function Invoke-WriteLane {
     if ($script:sheetDepth -eq 0) {
         # The click asked for a read; this is where it actually starts, so the
         # runspace is opened off the click path.
+        # A selection asks once; this asks again while the answer is still
+        # missing, so a conversation that had not yet printed its context bar
+        # does not wait for the slow rotation. Costs one comparison when the bar
+        # is already there, which is the common case.
+        if (-not $script:askWanted) { try { Request-ContextRetry } catch { } }
         if ($script:askWanted) {
             $script:askWanted = $false
             try { Start-AskProbe (Get-SelectedRow) } catch { }
@@ -8469,6 +8474,53 @@ $script:screenAgents = -1
 # click before the first read starts should read the SECOND conversation, and
 # the lane always reads whatever is selected when it fires.
 $script:askWanted = $false
+
+# ===========================================================================
+# KEEP ASKING UNTIL THE BAR IS THERE
+# ===========================================================================
+# 🔴 THE CONTEXT CHIP COMES FROM THE SESSION'S OWN STATUS BAR AND NOTHING ELSE,
+# and that rule is staying - it was made against measurements and they still
+# hold: the window inferred from the token count drew a 1M session at 122k as
+# 61% instead of 12%, and the transcript count went stale across a compact
+# (123.5k on screen, 619k here). A figure that is confidently wrong is worse
+# than an absent one.
+#
+# But the DELAY was never part of that trade. The screen was read ONCE per
+# selection, so a conversation that had not yet printed a bar - which is every
+# conversation for the first moments after a restore - showed nothing until the
+# slow rotation happened to come round to it. Reported as: I do not see the
+# context on restarting the sessions, only after a while.
+#
+# So the read repeats until it yields a bar. Same single source, asked more
+# than once.
+#
+# 🪤 BOUNDED, AND IT STOPS ON SUCCESS. Each attempt is a child process against
+# another console; a retry with no ceiling would be a spinner nobody can see
+# burning a process every couple of seconds for the life of the window. Eight
+# attempts two seconds apart is sixteen seconds of trying, which covers a
+# session that is still starting, and then it gives up and waits for the
+# rotation exactly as before.
+$SR_CtxRetryMax  = 8
+$SR_CtxRetrySecs = 2.0
+$script:ctxTries = 0
+$script:ctxFor   = ''
+$script:ctxAt    = $null
+
+function Request-ContextRetry {
+    $r = Get-SelectedRow
+    if (-not $r -or -not $r.A -or -not $r.A.Pid) { return }
+    $id = "$($r.Id)"
+    # A different conversation is a fresh budget - the count is per selection,
+    # not per window.
+    if ($script:ctxFor -ne $id) { $script:ctxFor = $id; $script:ctxTries = 0; $script:ctxAt = $null }
+    $sig = Get-RowScreenSig $id
+    if ($sig -and [int]$sig.CtxWindow -gt 0) { return }   # it is on screen; nothing to chase
+    if ($script:ctxTries -ge $SR_CtxRetryMax) { return }
+    if ($script:ctxAt -and ((Get-Date) - $script:ctxAt).TotalSeconds -lt $SR_CtxRetrySecs) { return }
+    $script:ctxAt = Get-Date
+    $script:ctxTries++
+    $script:askWanted = $true
+}
 
 function Start-LiveProbe {
     if ($script:probePs) {

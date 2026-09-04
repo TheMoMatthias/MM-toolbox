@@ -2867,6 +2867,55 @@ if (-not $selIt -or $selIt.Kind -ne 'session') {
     }
 }
 
+# 🔴 THE CONTEXT CHIP IS ASKED FOR AGAIN UNTIL THE BAR ARRIVES. Reported as "I
+# do not see the context upon restarting the sessions, only after a while". The
+# chip comes from the session's own status bar and nothing else - that rule is
+# staying, it was made against measurements - but the screen was read ONCE per
+# selection, so a conversation that had not printed a bar yet waited for the
+# slow rotation. Same single source, asked more than once.
+$ctxRow = Get-SelectedRow
+if (-not $ctxRow -or -not $ctxRow.A -or -not $ctxRow.A.Pid) {
+    Note 'no running session is selected - the context retry is not exercised'
+} else {
+    $cid = "$($ctxRow.Id)"
+    $ctxSigWas = $script:rowScreen[$cid]
+    try {
+        $script:rowScreen.Remove($cid)
+        $script:ctxFor = ''; $script:ctxTries = 0; $script:ctxAt = $null
+        $script:askWanted = $false
+        Request-ContextRetry
+        if (-not $script:askWanted) { Fail 'no context bar is known and nothing asked for one' }
+        else { Pass 'with no context bar known, the screen is asked for again' }
+
+        # 🪤 IT MUST NOT SPIN. This is called from a lane running ten times a
+        # second, and each attempt is a child process against another console.
+        $script:askWanted = $false
+        Request-ContextRetry
+        if ($script:askWanted) { Fail 'it asked twice inside the retry interval - that is a child process ten times a second' }
+        else { Pass ('and not again inside {0:N0}s, so it cannot spin at lane speed' -f $SR_CtxRetrySecs) }
+
+        $script:ctxTries = $SR_CtxRetryMax
+        $script:ctxAt = $null
+        $script:askWanted = $false
+        Request-ContextRetry
+        if ($script:askWanted) { Fail 'it kept asking past its ceiling - a spinner nobody can see, for the life of the window' }
+        else { Pass ('and gives up after {0} attempts rather than chasing forever' -f $SR_CtxRetryMax) }
+
+        # 🔑 AND IT STOPS THE MOMENT THE BAR IS THERE - the whole point of the
+        # retry is that it ENDS.
+        $null = Set-RowScreenSig -Id $cid -Shells 0 -Agents 0 -CtxTokens 1234 -CtxWindow 200000
+        $script:ctxFor = ''; $script:ctxTries = 0; $script:ctxAt = $null
+        $script:askWanted = $false
+        Request-ContextRetry
+        if ($script:askWanted) { Fail 'it is still chasing a context bar it already has' }
+        else { Pass 'once the bar is known it stops asking' }
+    } finally {
+        if ($ctxSigWas) { $script:rowScreen[$cid] = $ctxSigWas } else { $script:rowScreen.Remove($cid) }
+        $script:ctxFor = ''; $script:ctxTries = 0; $script:ctxAt = $null
+        $script:askWanted = $false
+    }
+}
+
 # ===========================================================================
 Write-Host ''
 Write-Host '--- collapsing the projects and sessions columns ---'
