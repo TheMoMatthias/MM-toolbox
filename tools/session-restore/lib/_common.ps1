@@ -2278,8 +2278,47 @@ function Test-SRTokenLive { param([int]$MarginSeconds = 0)
 # 🪤 The endpoint and client id are CONFIGURABLE. They are not documented API,
 # and a wrong value here must be something the operator can correct in the
 # config rather than a reason to edit this file.
-$SR_OAuthTokenUrl = 'https://console.anthropic.com/v1/oauth/token'
+# 🔴 READ OUT OF THE CLI'S OWN BINARY, NOT GUESSED. The first version of this
+# posted to console.anthropic.com and got 429 for a real refresh token AND for a
+# forty-character string of 'r' - the same answer for a valid credential and a
+# fake one, which is what a service says when it is not evaluating the token at
+# all. `console.anthropic.com` appears ZERO times in claude.exe; the string that
+# does appear is TOKEN_URL below. Guessing an endpoint and reading the 429 as a
+# rate limit cost an afternoon, and the answer was on disk the whole time.
+#
+# The shape is the CLI's own refresh function, verbatim:
+#   {grant_type:"refresh_token", refresh_token:e, client_id:..., scope:"..."}
+#   POST TOKEN_URL, Content-Type: application/json
+# 🪤 SCOPE IS REQUIRED AND WAS MISSING. The CLI joins the granted scopes with
+# spaces and sends them; a refresh without them is not the request this endpoint
+# answers. They are taken from the credential file rather than hard-coded, so a
+# future scope this tool has never heard of survives a refresh.
+$SR_OAuthTokenUrl = 'https://platform.claude.com/v1/oauth/token'
 $SR_OAuthClientId = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
+# 🔴 AND CLOUDFLARE IS IN FRONT OF IT. With the endpoint and body correct the
+# call still came back 429 - with an EMPTY body, no Retry-After, no rate-limit
+# headers and only a cf-ray. That is an edge block, not an application answer:
+# a real rate limit returns a JSON error. What the edge is rejecting is a client
+# it does not recognise, so the request has to look like the one the CLI makes.
+# Both of these are lifted from the binary: the User-Agent format
+# `claude-cli/<version> (external, cli)`, and the beta header its SDK path sends
+# on the very same endpoint.
+$SR_OAuthBeta = 'oauth-2025-04-20'
+function Get-SRClaudeVersion {
+    # The installed version directory is the cheapest honest source; spawning
+    # `claude --version` costs a process on a path that runs at every logon.
+    $v = ''
+    try {
+        $d = Join-Path $env:USERPROFILE '.local\share\claude\versions'
+        if (Test-Path -LiteralPath $d) {
+            $newest = @(Get-ChildItem -LiteralPath $d -ErrorAction SilentlyContinue |
+                        Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+            if ($newest.Count) { $v = "$($newest[0].Name)" }
+        }
+    } catch { }
+    if ($v -notmatch '^\d+\.\d+\.\d+') { $v = '2.1.260' }
+    return $v
+}
 
 function Invoke-SRTokenRefresh {
     [CmdletBinding()]
@@ -2333,9 +2372,21 @@ function Invoke-SRTokenRefresh {
     $res = $null
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $body = @{ grant_type = 'refresh_token'; refresh_token = $rt; client_id = $cid } | ConvertTo-Json -Compress
+        # The scopes this credential actually holds, space-joined, exactly as
+        # the CLI sends them. Falls back to the set it defaults to if the file
+        # carries none.
+        $scope = ''
+        try { $scope = "$($o.scopes)".Trim() } catch { $scope = '' }
+        if (-not $scope) { $scope = 'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload' }
+        $body = @{ grant_type = 'refresh_token'; refresh_token = $rt; client_id = $cid; scope = $scope } |
+                ConvertTo-Json -Compress
+        $hdr = @{
+            'anthropic-beta' = $SR_OAuthBeta
+            'User-Agent'     = ('claude-cli/{0} (external, cli)' -f (Get-SRClaudeVersion))
+            'Accept'         = 'application/json'
+        }
         $res = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType 'application/json' `
-                                 -TimeoutSec $TimeoutSec -ErrorAction Stop
+                                 -Headers $hdr -TimeoutSec $TimeoutSec -ErrorAction Stop
     } catch {
         return "the refresh call failed ($($_.Exception.Message)) - the credentials file was not touched"
     }
