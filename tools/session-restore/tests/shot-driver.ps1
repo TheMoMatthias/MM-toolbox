@@ -335,6 +335,51 @@ $enc.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($rtb))
 $fs = [System.IO.File]::Create($out)
 try { $enc.Save($fs) } finally { $fs.Dispose() }
 
+# ===========================================================================
+# 🔴 LOOK AT WHAT WAS WRITTEN. This said "ok drew" over a completely empty PNG
+# for days and nobody noticed, because the one thing it never checked is the one
+# thing it exists to produce. Found on 2026-09-04 while reviewing a layout
+# change: 5,753 bytes against 125,763 for the last good shot on 1 September,
+# alpha 0 at every pixel sampled.
+#
+# 🪤 AND IT IS NOT THE WINDOW. Measured by rendering a plain opaque rectangle
+# through a DrawingVisual with no window in the process at all - also empty, and
+# RenderCapability.Tier reads 0 on a machine with a healthy RTX 4090. So the
+# process this runs in has no GPU access and WPF rasterises nothing; run from a
+# normal interactive terminal it may well be fine. That is exactly why this
+# check names the tier rather than just saying "blank": a shot that fails here
+# and works for the operator is a fact about the SHELL, not about the layout,
+# and the difference has to be readable from the failure itself.
+$ink = 0
+try {
+    $chk = New-Object System.Windows.Media.Imaging.BitmapImage
+    $chk.BeginInit()
+    $chk.CacheOption = 'OnLoad'
+    $chk.UriSource = New-Object System.Uri((Resolve-Path -LiteralPath $out).Path)
+    $chk.EndInit()
+    $cw = [int]$chk.PixelWidth; $ch = [int]$chk.PixelHeight
+    $conv = New-Object System.Windows.Media.Imaging.FormatConvertedBitmap($chk,
+                [System.Windows.Media.PixelFormats]::Bgra32, $null, 0)
+    $stride = $cw * 4
+    $px = New-Object byte[] ($stride * $ch)
+    $conv.CopyPixels($px, $stride, 0)
+    # Step by whole pixels so the sample always lands on the alpha byte - the
+    # first version of this check stepped 4009 and read blue.
+    for ($i = 3; $i -lt $px.Length; $i += 4004) { if ($px[$i] -ne 0) { $ink++ } }
+} catch {
+    Write-Host ("  FAIL  the shot could not be read back: {0}" -f $_.Exception.Message) -ForegroundColor Red
+    exit 1
+}
+if ($ink -eq 0) {
+    $tier = -1
+    try { $tier = [System.Windows.Media.RenderCapability]::Tier -shr 16 } catch { }
+    Write-Host ("  FAIL  {0} was written but every pixel in it is transparent" -f $out) -ForegroundColor Red
+    Write-Host ("        WPF render tier is {0} in this process - 0 means no GPU access and no rasterising," -f $tier) -ForegroundColor Red
+    Write-Host  '        which is a property of the shell this ran in, not of the window. Try it from a' -ForegroundColor Red
+    Write-Host  '        normal interactive terminal before suspecting the layout.' -ForegroundColor Red
+    exit 1
+}
+
 Write-Host ("  ok    drew {0}  {1}x{2}" -f $out, [int]$W, [int]$H)
 Write-Host ("        surface={0}  rail={1}  list={2}  rows={3}" -f `
     $script:surface, $ui.RailCol.Width.Value, $ui.ListCol.Width.Value, @($ui.SessionList.Items).Count)
