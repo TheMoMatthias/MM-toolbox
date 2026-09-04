@@ -963,7 +963,7 @@ function Test-Warm { param($S)
 # already did on a background thread, so this costs no I/O when it is called
 # from there.
 function Update-Model {
-    param($Registry, $Agents, [hashtable]$Said, [hashtable]$Queue, [switch]$KeepAgents)
+    param($Registry, $Agents, [hashtable]$Said, [hashtable]$Queue, [switch]$KeepAgents, [switch]$NoSaid)
 
     $script:cfg = Get-SRConfig
     if ($Registry) { $script:reg = $Registry } else { $script:reg = Get-SRRegistry }
@@ -1043,8 +1043,14 @@ function Update-Model {
             if ($live -or $warm) {
                 # Handed in by the probe when it read them off the background
                 # thread; read here only when nobody did it for us.
-                if ($null -ne $Said) { $line = $Said[$id] }
-                else { try { $line = Get-SRLastSaid -JsonlPath $s.jsonl } catch { } }
+                # 🪤 ContainsKey, NOT merely "was a table handed in". A table
+                # covering most rows but not all blanked the rest outright: the
+                # probe and this pass each decide "live or warm" against their
+                # own clock a moment apart, so a row can be in one set and not
+                # the other, and the column went empty for it instead of being
+                # read. Handed in when it is there, read when it is not.
+                if ($null -ne $Said -and $Said.ContainsKey($id)) { $line = $Said[$id] }
+                elseif (-not $NoSaid) { try { $line = Get-SRLastSaid -JsonlPath $s.jsonl } catch { } }
             }
             # 🔴 HANDED IN, NEVER READ HERE. Unlike the last-said line above there
             # is no fall-back read: Get-SRQueue takes a 4 MB tail and 42.8 ms cold,
@@ -8281,12 +8287,25 @@ $window.Add_PreviewKeyDown({
 # ---------------------------------------------------------------------------
 $script:startupError = $null
 try {
-    # 🪤 STARTUP KEEPS THE FULL REFRESH, deliberately. It is the one caller with
-    # no earlier probe to reuse - there is no list yet - so skipping it would
-    # open the window with every conversation shown as not running and correct
-    # itself a second later, which is worse than opening a second later. The
-    # three GESTURES that had an earlier list now reuse it; this one pays.
-    Update-Model
+    # 🪤 STARTUP KEEPS THE FULL AGENT REFRESH, deliberately. It is the one caller
+    # with no earlier probe to reuse - there is no list yet - so skipping it
+    # would open the window with every conversation shown as not running and
+    # correct itself a second later, which is worse than opening a second later.
+    # The three GESTURES that had an earlier list now reuse it; this one pays.
+    #
+    # 🔴 BUT NOT THE SAID-LINES, AND THAT NOTE ONLY EVER DEFENDED LIVENESS.
+    # Measured 2026-09-04: the cold pass is 1,272 ms and Get-SRLastSaid is 799
+    # of them - 63% of the wait before the window appears, spent on ONE COLUMN
+    # OF TEXT. Liveness is worth opening late for because a wrong answer there
+    # is a lie about what is running; a blank 'what it last said' is visibly
+    # missing rather than wrong, and it fills itself in.
+    #
+    # 🪤 WHICH IS ONLY TRUE BECAUSE THE PROBE IS KICKED AT ContentRendered. The
+    # live timer's first tick is fifteen seconds after the window opens, so
+    # without that kick this trade would be "paint 800 ms sooner, then sit with
+    # an empty column for a quarter of a minute" - which is not the trade being
+    # made here, and would be a bad one.
+    Update-Model -NoSaid
 } catch {
     $script:startupError = "$($_.Exception.Message)"
     Write-SRLog ('  [FAIL] first paint could not read your sessions: {0}' -f $script:startupError)
@@ -8875,6 +8894,17 @@ $window.Add_ContentRendered({
     $script:fastTimer.Start()
     $script:liveTimer.Start()
     $script:pollTimer.Start()
+    # 🔴 THE FIRST PROBE GOES NOW, NOT IN FIFTEEN SECONDS. A DispatcherTimer
+    # fires after its first interval, so the window used to open and then learn
+    # nothing new for a quarter of a minute - which was survivable while the
+    # startup pass read everything itself, and is not now that it hands the
+    # said-lines to this probe (see the note beside Update-Model -NoSaid).
+    #
+    # 🪤 AFTER the timers are started, so a probe that fails cannot stop them.
+    # It is the same call the timer makes and it is already guarded against
+    # running twice, so the tick that lands fifteen seconds from now is a
+    # no-op if this one is still in flight.
+    try { Start-LiveProbe } catch { Write-SRLog ('first probe failed: ' + $_.Exception.Message) }
 })
 $window.Add_Closed({
     # 🪤 ALL SEVEN, NOT FOUR. searchTimer, launchTimer and castTimer were
