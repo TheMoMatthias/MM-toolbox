@@ -70,11 +70,66 @@ try {
 
     Write-Host ''
     Write-Host '--- can Windows move this window? ---'
-    # A point on the title bar, well away from anything interactive.
-    $ptCap = Screen-Of $ui.TitleBar 300 20
+    # 🔴 A POINT FOUND, NOT A POINT ASSUMED. This was a hard-coded x=300, which
+    # is bare caption only for as long as nothing grows into it - and when the
+    # chrome went monospaced the caption BUTTONS got wider, reached x=300, and
+    # the suite reported "the window cannot be dragged at all" about a window
+    # that drags perfectly well two pixels to the left. A fixed probe on a
+    # laid-out surface tests the layout, not the thing it was written for.
+    #
+    # So: walk the strip and find a point that is genuinely over no named
+    # control. If there is NO such point the assertion still fires, and that is
+    # the real version of the failure it was written to catch - a caption with
+    # nowhere left to grab.
+    $capX = -1.0
+    $blocked = @()
+    for ($x = 8.0; $x -lt [Math]::Max(40.0, $ui.TitleBar.ActualWidth - 8.0); $x += 6.0) {
+        $hitEl = $null
+        try {
+            $res0 = [System.Windows.Media.VisualTreeHelper]::HitTest($ui.TitleBar, (New-Object System.Windows.Point $x, 20))
+            $hitEl = $(if ($res0) { $res0.VisualHit } else { $null })
+        } catch { }
+        $named = ''
+        $walk0 = $hitEl
+        while ($walk0 -and -not $named) {
+            if ($walk0 -is [System.Windows.FrameworkElement] -and "$($walk0.Name)" -and "$($walk0.Name)" -ne 'TitleBar') { $named = "$($walk0.Name)" }
+            if ([object]::ReferenceEquals($walk0, $ui.TitleBar)) { break }
+            $walk0 = [System.Windows.Media.VisualTreeHelper]::GetParent($walk0)
+        }
+        if (-not $named) { $capX = $x; break }
+        if ($blocked -notcontains $named) { $blocked += $named }
+    }
+    if ($capX -lt 0) {
+        Fail ("every point across the caption is covered by a control ({0}) - there is nowhere left to grab the window" -f ($blocked -join ', '))
+        $capX = 300.0
+    } else {
+        Note ("probing bare caption at x={0:N0} (controls found on the way: {1})" -f $capX, $(if ($blocked.Count) { $blocked -join ', ' } else { 'none' }))
+    }
+    $ptCap = Screen-Of $ui.TitleBar $capX 20
     $hit = HitTest $ptCap.X $ptCap.Y
+    # 🪤 NAME WHAT IS THERE. This probes a FIXED point on the strip, so any
+    # control that grows or moves into it turns a layout change into an
+    # unexplained "the window cannot be dragged" - which is what happened when
+    # the header labels were shortened and the search box slid left. The
+    # assertion is right; without saying WHICH element it landed on it sends you
+    # looking at WindowChrome instead of at the layout.
+    $who = ''
+    try {
+        $wp = $ui.TitleBar.PointFromScreen($ptCap)
+        $res = [System.Windows.Media.VisualTreeHelper]::HitTest($ui.TitleBar, $wp)
+        $el = $(if ($res) { $res.VisualHit } else { $null })
+        $names = @()
+        while ($el -and $names.Count -lt 6) {
+            if ($el -is [System.Windows.FrameworkElement] -and "$($el.Name)") { $names += "$($el.Name)" }
+            $el = [System.Windows.Media.VisualTreeHelper]::GetParent($el)
+        }
+        $who = ($names -join ' < ')
+    } catch { }
     if ($hit -eq $HTCAPTION) { Pass 'Windows reports the header as CAPTION - it drags, snaps and shakes like any window' }
-    elseif ($hit -eq $HTCLIENT) { Fail 'the header reports as CLIENT - the window cannot be dragged at all' }
+    elseif ($hit -eq $HTCLIENT) {
+        Fail ("the header reports as CLIENT at that point - the window cannot be dragged there. What is under it: {0}" -f `
+              $(if ($who) { $who } else { '<nothing named>' }))
+    }
     else { Fail "the header hit-tests as $hit, neither caption nor client" }
 
     Write-Host ''

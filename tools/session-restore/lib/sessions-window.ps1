@@ -4148,7 +4148,30 @@ function Move-RowToWorking { param($Row)
     # next recompute from deriving 'needs' straight back out of stale evidence.
     $null = Set-AskSeen -Id "$($Row.Id)" -Asking $false
     $Row.Band = 'working'
+    # 🔴 AND SAY SO AT ONCE, RATHER THAN IN FIFTEEN SECONDS. Reported as "I am
+    # missing an indicator that shows the session is currently working".
+    #
+    # The indicator already existed - Set-WorkingPulse breathes the state dot -
+    # but it is driven from $r.A.Status, which is the AGENT PROBE's answer and
+    # is refreshed on its own schedule. So keys were delivered, the row moved to
+    # WORKING in the list, and the pane went on saying 'waiting for you' with a
+    # still dot until the probe caught up. Nothing was wrong except the delay,
+    # and a liveness indicator that lags by fifteen seconds is not one.
+    #
+    # 🪤 MUTATING THE PROBE'S RECORD IS A LIE THE NEXT PROBE CORRECTS, and it is
+    # the RIGHT lie: keys have just been delivered to that console, so it IS
+    # mid-turn - this window knows that before any probe can. The same reasoning
+    # already justifies setting Band above.
+    try { if ($Row.A) { $Row.A.Status = 'busy' } } catch { }
+    try {
+        $sel = $ui.SessionList.SelectedItem
+        if ($sel -and $sel.Kind -eq 'session' -and "$($sel.Row.Id)" -eq "$($Row.Id)") {
+            Set-WorkingPulse $true
+            $ui.PaneState.Text = ('WORKING   |   just sent, waiting for it to start   |   {0}' -f (Get-ProjectLabel "$($Row.D.path)"))
+        }
+    } catch { }
     try { Build-Sessions } catch { }
+    try { Update-SendState } catch { }
     # Restart rather than merely start, so the next scheduled probe is a full
     # interval after THIS one instead of arriving on top of it.
     try {
@@ -4395,17 +4418,35 @@ function Invoke-AskTyped {
 # ===========================================================================
 function Update-SendState {
     $it = $ui.SessionList.SelectedItem
-    $why = ''
+    $why = ''      # a real blocker: the box is disabled
+    $note = ''     # something worth saying while still allowing typing
     if (-not $it -or $it.Kind -ne 'session') { $why = 'nothing is selected' }
     else {
         $r = $it.Row
         if (-not $r.A -or -not $r.A.Pid) { $why = 'this conversation is not running, so there is nothing to type into' }
-        elseif ("$($r.A.Status)" -eq 'busy') { $why = 'it is mid-turn - wait for it to stop before typing' }
         elseif ($r.A.Kind -and $r.A.Kind -ne 'interactive') { $why = 'a background agent has no console to type into' }
+        elseif ($script:askSeen["$($r.Id)"]) {
+            # 🪤 THE ONE CASE STILL REFUSED, and it is not "busy". A session
+            # sitting on a MENU reads keystrokes as menu input, so text typed
+            # here would pick an option rather than queue behind one. The
+            # question panel above is the way to answer that.
+            $why = 'it is waiting on a question - answer it in the panel above'
+        }
+        elseif ("$($r.A.Status)" -eq 'busy') {
+            # 🔴 BUSY IS NO LONGER A BLOCKER. It used to disable the box outright
+            # - "wait for it to stop before typing" - which is why a second
+            # message could not be written while the first was being worked on.
+            # But claude ACCEPTS typed input mid-turn and QUEUES it; that is what
+            # the terminal does, and refusing here made the tool less capable
+            # than the thing it is a window onto. Reported as: writing multiple
+            # messages subsequently and queueing them up is not working.
+            $note = 'it is mid-turn - what you type will be queued behind it'
+        }
     }
     $ui.SendBtn.IsEnabled = (-not $why) -and "$($ui.SendBox.Text)".Trim()
     $ui.SendBox.IsEnabled = (-not $why)
-    if ($why) { $ui.SendNote.Text = $why; $ui.SendNote.Visibility = $V_Show }
+    $msg = $(if ($why) { $why } else { $note })
+    if ($msg) { $ui.SendNote.Text = $msg; $ui.SendNote.Visibility = $V_Show }
     else { $ui.SendNote.Visibility = $V_Hide }
 }
 
@@ -4751,6 +4792,26 @@ function Add-ReadDocumentTail { param($NewTurns)
 }
 
 function Set-ReadDocument { param($Blocks, [bool]$Truncated = $false)
+    # 🔴 NEVER REPLACE A CONVERSATION WITH AN EMPTY ONE. Reported as "the session
+    # loaded up, I could see the conversation, however I then entered something
+    # and the content of the conversation was gone."
+    #
+    # Every reader here is best-effort by design: the parse runs in a runspace
+    # that dot-sources _common.ps1 and swallows its own exceptions, the tail can
+    # miss, a file can be locked mid-write. All of those hand back an EMPTY block
+    # list, which is indistinguishable from "this conversation has nothing in
+    # it" - and the pane dutifully drew that over a conversation that was on
+    # screen and correct a moment earlier.
+    #
+    # 🪤 A CONVERSATION NEVER GETS SHORTER. A transcript is append-only, so zero
+    # blocks where there were blocks before is ALWAYS a failed read and never
+    # news. Keeping the stale document is right even when the read failed for a
+    # good reason: what is on screen was true a second ago, and blank is true of
+    # nothing at all.
+    if (-not @($Blocks).Count -and $ui.PaneDoc.Document -and @($script:docTurns).Count) {
+        Write-SRLog '  [skip] the transcript read came back empty - keeping the conversation that is on screen'
+        return
+    }
     $key = ('{0}|{1}|{2}' -f "$($script:docPath)".ToLower(), $script:tailBytes, $script:toolView)
     $turns = @(Get-ReadTurns $Blocks)
     if ((-not $Truncated) -and (Test-CanAppend -NewTurns $turns -Key $key)) {

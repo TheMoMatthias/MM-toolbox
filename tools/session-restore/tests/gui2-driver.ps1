@@ -2777,6 +2777,98 @@ if (-not $phC) {
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- what happens between pressing Send and the reply ---'
+# ===========================================================================
+# Four reports, one surface: no sign the session started working, no way to
+# write a second message, and the conversation disappearing after typing.
+
+# 🔴 A CONVERSATION NEVER GETS SHORTER. Every reader in the document path is
+# best-effort - the parse runs in a runspace that swallows its own exceptions,
+# a tail can miss, a file can be locked mid-write - and each of those hands back
+# an EMPTY block list that is indistinguishable from "nothing in this
+# conversation". The pane drew that over a conversation that was correct a
+# moment earlier. Reported as: I entered something and the content was gone.
+$docBefore = $ui.PaneDoc.Document
+$turnsBefore = @($script:docTurns).Count
+if ($turnsBefore -lt 1) {
+    Note 'no document is on screen, so the empty-read guard has nothing to protect - not asserted'
+} else {
+    Set-ReadDocument -Blocks @()
+    $turnsAfter = @($script:docTurns).Count
+    if ($turnsAfter -lt $turnsBefore) {
+        Fail ("an empty read replaced a {0}-turn conversation with {1} - this is the vanishing content" -f $turnsBefore, $turnsAfter)
+    } elseif (-not $ui.PaneDoc.Document) {
+        Fail 'an empty read left the pane with no document at all'
+    } else {
+        Pass ("an empty read keeps the {0} turns already on screen" -f $turnsBefore)
+    }
+    # 🔑 THE CONTROL. The guard must not be refusing every update - a real read
+    # with real blocks still has to land, or the pane would freeze on its first
+    # document and never move again.
+    $realBlocks = $null
+    try { $realBlocks = Get-SRTranscriptBlocks -JsonlPath "$($script:docPath)" -MaxRecords 220 -MaxTailBytes $script:tailBytes } catch { }
+    $realArr = @($realBlocks)
+    if ($realArr.Count) {
+        Set-ReadDocument -Blocks $realArr
+        if (@($script:docTurns).Count -lt 1) { Fail 'a real read was refused as well - the pane can no longer update' }
+        else { Pass ("and a real read of {0} block(s) still lands" -f $realArr.Count) }
+    }
+}
+
+# 🔴 BUSY IS NOT A BLOCKER ANY MORE. The box used to be disabled outright while
+# a session was mid-turn, which is why a second message could not be written.
+# claude ACCEPTS typed input mid-turn and queues it - refusing here made the
+# tool less capable than the terminal it is a window onto.
+$selIt = $ui.SessionList.SelectedItem
+if (-not $selIt -or $selIt.Kind -ne 'session') {
+    Note 'no session is selected - the send-state assertions are skipped'
+} else {
+    $selRow = $selIt.Row
+    $statusWas = $(if ($selRow.A) { "$($selRow.A.Status)" } else { '' })
+    $askWas = [bool]$script:askSeen["$($selRow.Id)"]
+    try {
+        if ($selRow.A) {
+            $script:askSeen.Remove("$($selRow.Id)")
+            $selRow.A.Status = 'busy'
+            Update-SendState
+            if (-not $ui.SendBox.IsEnabled) {
+                Fail 'the composer is disabled while the session is mid-turn - a second message cannot be queued'
+            } elseif ("$($ui.SendNote.Visibility)" -ne 'Visible') {
+                Fail 'nothing says the message will be queued'
+            } elseif ("$($ui.SendNote.Text)" -notmatch 'queue') {
+                Fail ("the note does not mention queueing: '{0}'" -f $ui.SendNote.Text)
+            } else {
+                Pass ("mid-turn you can still type, and it says why: '{0}'" -f $ui.SendNote.Text)
+            }
+
+            # 🪤 THE ONE CASE STILL REFUSED. A session sitting on a MENU reads
+            # keystrokes as menu input, so text typed here would PICK AN OPTION
+            # rather than queue behind one.
+            $null = Set-AskSeen -Id "$($selRow.Id)" -Asking $true
+            Update-SendState
+            if ($ui.SendBox.IsEnabled) {
+                Fail 'the composer accepts typing while the session sits on a menu - those keystrokes would pick an option'
+            } else { Pass 'a session waiting on a question still refuses the composer, and says so' }
+            $null = Set-AskSeen -Id "$($selRow.Id)" -Asking $false
+
+            # 🔴 AND THE WORKING INDICATOR STARTS AT ONCE. The pulse existed but
+            # was driven from the agent probe's status, so it began up to fifteen
+            # seconds after the keys were delivered.
+            Set-WorkingPulse $false
+            Move-RowToWorking $selRow
+            if (-not $script:pulseOn) {
+                Fail 'sending did not start the working pulse - nothing moves until the next probe'
+            } else { Pass 'sending starts the working pulse immediately, not on the next probe' }
+        }
+    } finally {
+        if ($selRow.A) { try { $selRow.A.Status = $statusWas } catch { } }
+        $null = Set-AskSeen -Id "$($selRow.Id)" -Asking $askWas
+        Update-SendState
+    }
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- collapsing the projects and sessions columns ---'
 # ===========================================================================
 # Asked for: collapse the projects and sessions tabs so the pane where you read
