@@ -4339,12 +4339,93 @@ $script:ansRs = $null
 $script:ansHandle = $null
 $script:ansFor = $null
 
+# 🔴 ALL THREE SENDS, NOT JUST THE OPTION CLICK. Answering went off the UI
+# thread months ago and the other two never did - and they are the SAME shape of
+# work. Invoke-SRRoundMove reads the screen, then sends up to eight keys and
+# verifies EACH ONE by reading the screen again; the typed answer writes the
+# text, re-reads to confirm the row is holding it, and only then sends ENTER.
+# Both ran on the thread that draws, so "navigating backwards from a question"
+# and "typing an answer" froze the window for as long as all of those reads
+# took - which is exactly the pair the operator named alongside answering.
+#
+# One job with a Kind rather than three lanes: the guard that refuses a second
+# send while one is in flight, the 25-second timeout that gives the panel back,
+# and the collector are all things there must be exactly one of.
 $script:AnswerJob = {
     . (Join-Path $SRHere '_common.ps1')
     $why = ''
-    try { $why = Send-SRQuestionAnswer -SessionId $SRAns.SessionId -Index $SRAns.Index }
+    # 🔴 NO 'default' THAT ANSWERS. The obvious way to write this switch puts the
+    # option click in the default arm - and then ANY kind that does not match,
+    # including one misspelled at a call site, COMMITS AN ANSWER. Pressing "back"
+    # would answer the question. Every arm is named and anything else refuses,
+    # because the failure this shape prevents is silent and irreversible.
+    try {
+        switch ("$($SRAns.Kind)") {
+            'answer' { $why = Send-SRQuestionAnswer -SessionId $SRAns.SessionId -Index $SRAns.Index }
+            'move'   { $why = Invoke-SRRoundMove -ProcessId ([int]$SRAns.Pid) -Delta ([int]$SRAns.Delta) }
+            'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId ([int]$SRAns.Pid) -Text "$($SRAns.Text)" -Who "$($SRAns.SessionId)" }
+            default  { $why = "nothing was sent - '$($SRAns.Kind)' is not a kind of send this knows" }
+        }
+    }
     catch { $why = "$($_.Exception.Message)" }
     @{ Why = "$why" }
+}
+
+# The one place a send is started, whichever gesture asked for it.
+function Start-AskSend {
+    param(
+        [Parameter(Mandatory)][string]$Kind,   # answer | move | typed
+        [Parameter(Mandatory)]$Row,
+        [int]$Index = -1,
+        [int]$Delta = 0,
+        [string]$Text = '',
+        [string]$Saying = 'working...'
+    )
+    $procId = [int]$Row.A.Pid
+    Set-Status $Saying
+    Set-AskEnabled $false
+    $payload = @{
+        Kind = $Kind; SessionId = "$($Row.Id)"; Pid = $procId
+        Index = $Index; Delta = $Delta; Text = $Text
+    }
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'MTA'
+        $rs.ThreadOptions = 'ReuseThread'
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        $rs.SessionStateProxy.SetVariable('SRAns', $payload)
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript($script:AnswerJob)
+        $script:ansRs = $rs
+        $script:ansPs = $ps
+        $script:ansHandle = $ps.BeginInvoke()
+        $script:ansFor = @{
+            Row = $Row; Pid = $procId; Index = $Index; Kind = $Kind
+            Question = $script:lastAsk; At = (Get-Date)
+        }
+        try { $script:ansTimer.Start() } catch { }
+        return $true
+    } catch {
+        # 🪤 A FALLBACK THAT STILL SENDS. If a runspace will not open, doing it
+        # on this thread is slow but correct; refusing the gesture is not.
+        Write-SRLog ('  [skip] sending off-thread failed, sending inline: ' + $_.Exception.Message)
+        $script:ansPs = $null; $script:ansRs = $null; $script:ansHandle = $null
+        $why = $null
+        try {
+            # Named arms only, for the reason spelled out on the job above: a
+            # default that answers turns any unknown kind into a committed answer.
+            switch ($Kind) {
+                'answer' { $why = Send-SRQuestionAnswer -SessionId $Row.Id -Index $Index }
+                'move'   { $why = Invoke-SRRoundMove -ProcessId $procId -Delta $Delta }
+                'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId $procId -Text $Text -Who "$($Row.Id)" }
+                default  { $why = "nothing was sent - '$Kind' is not a kind of send this knows" }
+            }
+        } catch { $why = $_.Exception.Message }
+        Complete-AnswerLanded -Row $Row -Pid_ $procId -Index $Index -Question $script:lastAsk -Why "$why" -Kind $Kind
+        return $false
+    }
 }
 
 function Set-AskEnabled { param([bool]$On)
@@ -4361,41 +4442,28 @@ function Invoke-Answer { param([int]$Index)
     # One in flight at a time. A second click while the first is out is exactly
     # the double-answer this guard exists to refuse.
     if ($script:ansPs) { Set-Status 'still sending the last answer...' 'warn'; return }
-    $procId = [int]$r.A.Pid
-    Set-Status 'answering...'
-    Set-AskEnabled $false
-    try {
-        $rs = [runspacefactory]::CreateRunspace()
-        $rs.ApartmentState = 'MTA'
-        $rs.ThreadOptions = 'ReuseThread'
-        $rs.Open()
-        $rs.SessionStateProxy.SetVariable('SRHere', $here)
-        $rs.SessionStateProxy.SetVariable('SRAns', @{ SessionId = "$($r.Id)"; Index = $Index })
-        $ps = [powershell]::Create()
-        $ps.Runspace = $rs
-        $null = $ps.AddScript($script:AnswerJob)
-        $script:ansRs = $rs
-        $script:ansPs = $ps
-        $script:ansHandle = $ps.BeginInvoke()
-        $script:ansFor = @{ Row = $r; Pid = $procId; Index = $Index; Question = $script:lastAsk; At = (Get-Date) }
-        # Watch it at 50 ms rather than waiting for the one-second follow tick.
-        try { $script:ansTimer.Start() } catch { }
-    } catch {
-        # 🪤 A FALLBACK THAT STILL ANSWERS. If a runspace will not open, sending
-        # on this thread is slow but correct; refusing to answer is not.
-        Write-SRLog ('  [skip] answering off-thread failed, sending inline: ' + $_.Exception.Message)
-        $script:ansPs = $null; $script:ansRs = $null; $script:ansHandle = $null
-        $why = $null
-        try { $why = Send-SRQuestionAnswer -SessionId $r.Id -Index $Index } catch { $why = $_.Exception.Message }
-        Complete-AnswerLanded -Row $r -Pid_ $procId -Index $Index -Question $script:lastAsk -Why "$why"
-    }
+    $null = Start-AskSend -Kind 'answer' -Row $r -Index $Index -Saying 'answering...'
 }
 
 # What used to run straight after the send, now run wherever the send finished.
-function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question, [string]$Why)
+function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question, [string]$Why, [string]$Kind = 'answer')
     Set-AskEnabled $true
+
+    # A MOVE IS NOT AN ANSWER, and must not be reported or cleaned up as one.
+    # Nothing was committed, so there is no record to file and no row to send
+    # back to working - a refused move still leaves the menu somewhere, and the
+    # card's own lane redraws it from the screen within 400 ms either way.
+    if ($Kind -eq 'move') {
+        if ($Why) { Set-Status $Why 'warn' } else { Set-Status '' }
+        # Kicked rather than waited for: the same read the lane does, taken now
+        # so the arrow feels like it moved the menu rather than like it will.
+        try { Invoke-AskPoll } catch { }
+        return
+    }
+
     if ($Why) { Set-Status $Why 'bad' } else {
-        Set-Status 'answered' 'ok'
+        Set-Status $(if ($Kind -eq 'typed') { 'answered in your own words' } else { 'answered' }) 'ok'
+        if ($Kind -eq 'typed') { try { $ui.AskFree.Text = '' } catch { } }
         # 🔑 A ROUND DOES NOT END WITH ONE ANSWER. Measured: answering a
         # single-select AUTO-ADVANCES the terminal to the next question, so
         # closing the panel here left the operator staring at a session that was
@@ -4490,7 +4558,8 @@ function Complete-AnswerSend {
     if (-not $f) { Set-AskEnabled $true; return $false }
     $why = ''
     if ($res) { $why = "$($res.Why)" }
-    Complete-AnswerLanded -Row $f.Row -Pid_ ([int]$f.Pid) -Index ([int]$f.Index) -Question $f.Question -Why $why
+    Complete-AnswerLanded -Row $f.Row -Pid_ ([int]$f.Pid) -Index ([int]$f.Index) -Question $f.Question -Why $why `
+                          -Kind "$(if ($f.Kind) { $f.Kind } else { 'answer' })"
     return $true
 }
 
@@ -4617,15 +4686,13 @@ function Invoke-AskMove { param([int]$Delta)
     if (-not $it -or $it.Kind -ne 'session') { return }
     $r = $it.Row
     if (-not $r.A -or -not $r.A.Pid) { Set-Status 'that conversation is not running any more' 'warn'; return }
-    Set-Status $(if ($Delta -lt 0) { 'going back...' } else { 'going on...' })
-    $why = $null
-    try { $why = Invoke-SRRoundMove -ProcessId ([int]$r.A.Pid) -Delta $Delta } catch { $why = $_.Exception.Message }
-    if ($why) { Set-Status $why 'warn' } else { Set-Status '' }
-    # Redraw from the screen either way: a refused move still leaves the menu
-    # somewhere, and the panel must show where.
-    $seen = $null
-    try { $seen = Get-SRScreenQuestion -ProcessId ([int]$r.A.Pid) } catch { }
-    if ($seen) { Show-Ask $seen }
+    # 🔴 THE SAME GUARD THE OPTION CLICK HAS. A move sends arrows into the same
+    # menu an answer sends arrows into, so two of them in flight together would
+    # interleave exactly as two answers would - and pressing back twice quickly
+    # is far more natural than pressing two options quickly.
+    if ($script:ansPs) { Set-Status 'still sending...' 'warn'; return }
+    $null = Start-AskSend -Kind 'move' -Row $r -Delta $Delta `
+                          -Saying $(if ($Delta -lt 0) { 'going back...' } else { 'going on...' })
 }
 
 # 🔴 THE ONE ORDER THAT CANNOT DECLINE THE ROUND. Text first, screen re-read to
@@ -4639,22 +4706,13 @@ function Invoke-AskTyped {
     if (-not $r.A -or -not $r.A.Pid) { Set-Status 'that conversation is not running any more' 'warn'; return }
     $txt = "$($ui.AskFree.Text)".Trim()
     if (-not $txt) { Set-Status 'type an answer first - sending an empty one would decline the question' 'warn'; return }
-    Set-Status 'typing your answer in...'
-    $procId = [int]$r.A.Pid
-    $why = $null
-    try { $why = Invoke-SRAnswerTypedOnScreen -ProcessId $procId -Text $txt -Who "$($r.Id)" } catch { $why = $_.Exception.Message }
-    if ($why) { Set-Status $why 'bad'; return }
-    Set-Status 'answered in your own words' 'ok'
-    $ui.AskFree.Text = ''
-    # A round has more questions after this one, so the panel redraws rather than
-    # closing: the terminal has already moved on to the next tab.
-    $seen = $null
-    try { $seen = Get-SRScreenQuestion -ProcessId $procId } catch { }
-    if ($seen) { Show-Ask $seen } else {
-        $ui.AskBox.Visibility = $V_Hide
-        $script:lastAsk = $null
-        Move-RowToWorking $r
-    }
+    if ($script:ansPs) { Set-Status 'still sending...' 'warn'; return }
+    # 🪤 THE BOX IS CLEARED WHEN THE SEND LANDS, NOT HERE. It used to be cleared
+    # straight after the call returned, which was safe only because the call was
+    # synchronous; off-thread, clearing it now would throw the text away while
+    # the send could still come back with a refusal - and then there would be
+    # nothing left to try again with. Complete-AnswerLanded clears it on success.
+    $null = Start-AskSend -Kind 'typed' -Row $r -Text $txt -Saying 'typing your answer in...'
 }
 
 # ===========================================================================

@@ -1412,6 +1412,51 @@ else { Pass 'clearing the card clears the signature' }
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- all three sends are off the UI thread, and none of them can answer by accident ---'
+# ===========================================================================
+# Answering went off the UI thread months ago; the round arrows and the typed
+# answer never did, and they do the same shape of work - Invoke-SRRoundMove
+# sends up to eight keys and reads the screen after EACH one. Both now go
+# through Start-AskSend.
+$winSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\sessions-window.ps1'))
+
+foreach ($fn in @('Invoke-AskMove', 'Invoke-AskTyped', 'Invoke-Answer')) {
+    if ($winSrc -notmatch [regex]::Escape("function $fn")) { Fail "$fn is gone"; continue }
+    # The body, up to the next top-level function.
+    $bodyIx = $winSrc.IndexOf("function $fn")
+    $nextIx = $winSrc.IndexOf("`nfunction ", $bodyIx + 10)
+    if ($nextIx -lt 0) { $nextIx = $winSrc.Length }
+    $body = $winSrc.Substring($bodyIx, $nextIx - $bodyIx)
+    # 🪤 COMMENTS OUT FIRST, and the first version of this test failed without
+    # it: the extraction runs to the next `function`, so it swallows the comment
+    # block sitting between two of them - and the note above Invoke-AskTyped
+    # NAMES Invoke-SRAnswerTypedOnScreen while explaining why the order matters.
+    # The assertion is about what the handler CALLS, not what the prose mentions.
+    $body = (($body -split "`n") | ForEach-Object { ($_ -split '#', 2)[0] }) -join "`n"
+    if ($body -notmatch 'Start-AskSend') { Fail "$fn does not go through Start-AskSend - it is still sending on the UI thread" }
+    else { Pass "$fn hands its send to the lane" }
+    # 🔴 AND NOTHING BLOCKING IS LEFT BEHIND IN IT. These are the three calls
+    # that read another process's console; every one of them belongs in the
+    # runspace, and one left in a click handler is a frozen window.
+    $left = @()
+    foreach ($blocking in @('Invoke-SRRoundMove', 'Invoke-SRAnswerTypedOnScreen', 'Send-SRQuestionAnswer', 'Get-SRScreenQuestion')) {
+        if ($body -match [regex]::Escape($blocking)) { $left += $blocking }
+    }
+    if ($left.Count) { Fail ("$fn still calls " + ($left -join ', ') + ' on the UI thread') }
+    else { Pass "$fn does no console work on the thread that draws" }
+}
+
+# 🔴 THE ONE THAT WOULD BE SILENT AND IRREVERSIBLE. Both switches that dispatch
+# a send used to put the option click in the `default` arm, which turns ANY
+# unrecognised kind - including one misspelled at a call site - into a committed
+# answer. Pressing "back" would answer the question, and nothing would say so.
+$dispatchBad = 0
+foreach ($m in [regex]::Matches($winSrc, 'default\s*\{[^}]*Send-SRQuestionAnswer')) { $dispatchBad++ }
+if ($dispatchBad) { Fail "a send dispatch still answers in its default arm ($dispatchBad) - a mistyped kind would commit an answer" }
+else { Pass 'no send dispatch answers by default - an unknown kind refuses instead' }
+
+# ===========================================================================
+Write-Host ''
 # ===========================================================================
 Write-Host ''
 Write-Host '--- the vitals strip, and the clock that must stay cheap ---'
