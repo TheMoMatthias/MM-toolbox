@@ -2997,7 +2997,12 @@ function Wait-SRScreenState {
         # Handed the parsed screen; return $true when the wait is over.
         [Parameter(Mandatory)][scriptblock]$Until,
         [int]$BudgetMs = 1200,
-        [int]$SliceMs = 25
+        # 🔑 EIGHT, NOT 25. The slice was set when a screen read cost ~130 ms and
+        # was therefore free next to it; the held-open reader made a read 5 ms,
+        # so the sleep became the thing being waited on. With the fallback
+        # active a read is ~48 ms and paces the loop by itself, so this only
+        # ever adds where reads are cheap.
+        [int]$SliceMs = 8
     )
     $stop = (Get-Date).AddMilliseconds($BudgetMs)
     $last = $null
@@ -3193,7 +3198,7 @@ function Invoke-SRAnswerMultiOnScreen {
                     if (-not $now) { return 'the menu went away mid-answer' }
                     return 'lost sight of the highlight mid-answer'
                 }
-                Start-Sleep -Milliseconds 25
+                Start-Sleep -Milliseconds 8
                 continue
             }
             $at = [int]$now.CursorAt
@@ -3202,7 +3207,7 @@ function Invoke-SRAnswerMultiOnScreen {
                 # The last arrow has not been drawn yet. Look again; do NOT send
                 # another, or the highlight walks past what was asked for.
                 if ((Get-Date) -ge $stop) { return 'the menu stopped responding mid-answer' }
-                Start-Sleep -Milliseconds 25
+                Start-Sleep -Milliseconds 8
                 continue
             }
             $sentFrom = $at
@@ -3352,14 +3357,14 @@ function Invoke-SRAnswerTypedOnScreen {
                 if (-not $now) { return 'the menu went away mid-answer' }
                 return 'lost sight of the highlight mid-answer'
             }
-            Start-Sleep -Milliseconds 25
+            Start-Sleep -Milliseconds 8
             continue
         }
         $at = [int]$now.CursorAt
         if ($at -eq [int]$now.FreeAt) { break }
         if ($sent -gt 0 -and $at -eq $sentFrom) {
             if ((Get-Date) -ge $walkStop) { return 'the menu stopped responding mid-answer' }
-            Start-Sleep -Milliseconds 25
+            Start-Sleep -Milliseconds 8
             continue
         }
         $sentFrom = $at
@@ -3537,10 +3542,80 @@ public static class SRScreenMain {
     //
     //   SRScreenMain <pid> <out>            one console, as before
     //   SRScreenMain -batch <out> <pid...>  each one in turn, into one file
+    //   SRScreenMain -serve <pipe> <idlems> stay alive, answer reads on a pipe
     //
     // The batch file is split on a sentinel that cannot occur in console text:
     // U+0001, the pid, U+0001, newline.
+    //
+    // 🔴 -serve IS THE SAME WORK WITHOUT THE PROCESS. Starting this exe is 100
+    // of the 130 ms a read costs; the reading is about 30. Batch already proved
+    // one process can walk many consoles - FreeConsole before each AttachConsole
+    // is what makes that legal - so the only thing left to remove is starting it
+    // at all. Answering a question does three or four reads and was paying the
+    // startup every time.
+    //
+    // 🪤 A PIPE, NOT stdin/stdout, AND THAT IS FORCED. This is built
+    // /target:winexe on purpose (see the note beside the compile): a
+    // console-subsystem build gets a conhost from Windows, and a process that
+    // then calls FreeConsole/AttachConsole can end up allocating a fresh VISIBLE
+    // console - which is the "background shell opening up" the operator reported
+    // on launch. A winexe has no standard streams to talk over, so the channel
+    // has to be something else.
+    //
+    // 🔒 IT DIES ON ITS OWN. idlems bounds how long it will sit with nobody
+    // connected, so a server whose owner crashed or was killed cannot outlive it
+    // and become one of the orphan processes that quietly degrade this machine.
+    // The caller kills it too; this is the backstop for when the caller cannot.
+    public static int Serve(string pipe, int idleMs) {
+        while (true) {
+            using (System.IO.Pipes.NamedPipeServerStream srv =
+                       new System.IO.Pipes.NamedPipeServerStream(pipe,
+                           System.IO.Pipes.PipeDirection.InOut, 1,
+                           System.IO.Pipes.PipeTransmissionMode.Byte,
+                           System.IO.Pipes.PipeOptions.Asynchronous)) {
+                System.IAsyncResult ar = srv.BeginWaitForConnection(null, null);
+                if (!ar.AsyncWaitHandle.WaitOne(idleMs)) return 0;
+                try { srv.EndWaitForConnection(ar); } catch { return 0; }
+                System.IO.StreamReader rd = new System.IO.StreamReader(srv, new System.Text.UTF8Encoding(false));
+                System.IO.StreamWriter wr = new System.IO.StreamWriter(srv, new System.Text.UTF8Encoding(false));
+                wr.AutoFlush = true;
+                try {
+                    string line;
+                    while ((line = rd.ReadLine()) != null) {
+                        line = line.Trim();
+                        if (line.Length == 0) continue;
+                        if (line == "-quit") return 0;
+                        uint one;
+                        string got;
+                        if (!uint.TryParse(line, out one)) { got = "!badpid"; }
+                        else {
+                            try { got = SRConLite.Screen(one); }
+                            catch (System.Exception e) { got = "!ex " + e.Message; }
+                        }
+                        // The reply is the text, then a sentinel line that cannot
+                        // occur in it - the same U+0001 the batch file is split on.
+                        wr.Write(got);
+                        wr.Write((char)10);
+                        wr.Write((char)1);
+                        wr.Write("end");
+                        wr.Write((char)1);
+                        wr.Write((char)10);
+                    }
+                } catch { }
+                // The client went away. Loop round and wait for the next one
+                // rather than exiting, so a caller that reconnects does not pay
+                // the startup this whole mode exists to remove.
+            }
+        }
+    }
+
     public static int Main(string[] a) {
+        if (a.Length >= 2 && a[0] == "-serve") {
+            int idle = 120000;
+            if (a.Length >= 3) { int.TryParse(a[2], out idle); }
+            if (idle < 5000) idle = 5000;
+            return Serve(a[1], idle);
+        }
         if (a.Length >= 3 && a[0] == "-batch") {
             System.Text.StringBuilder all = new System.Text.StringBuilder();
             for (int i = 2; i < a.Length; i++) {
@@ -3677,11 +3752,170 @@ function Get-SRScreenTextMany {
     finally { Remove-Item -LiteralPath $outE -Force -ErrorAction SilentlyContinue }
 }
 
+# ===========================================================================
+# THE READER, HELD OPEN.
+#
+# 🔴 STARTING THE EXE IS THE COST, AND IT IS PAID PER READ. Measured in this
+# repo before any of this existed: 129 ms median per console, of which about 30
+# is the console work and the rest is creating a process. Answering a question
+# does three or four reads, the question card does one on every follow tick, and
+# the vitals sweep does one per session - so most of what the operator was
+# waiting for was CreateProcess, not consoles.
+#
+# This keeps ONE reader alive per runspace and talks to it over a named pipe.
+# The exe is /target:winexe and therefore has no stdin or stdout to use, which
+# is why it is a pipe and not the obvious thing.
+#
+# 🔒 IT CAN ONLY EVER BE FASTER, NEVER MORE FRAGILE. Every failure - no exe, the
+# server would not start, the pipe broke, a read that did not come back inside
+# its budget - drops through to the spawn-per-read path that was here before and
+# is still the only path in a runspace that never asks for a server. A wedged
+# reader costs one timeout and then behaves exactly like the old code.
+#
+# 🪤 ONE PER RUNSPACE, NOT ONE PER MACHINE. The probe, the sweep and the UI each
+# dot-source this file into their own runspace and read consoles concurrently; a
+# single shared server would serialise them behind one pipe and turn a
+# parallel-by-construction design into a queue. Each gets its own, and each
+# kills its own.
+$script:SR_ScreenSrv = $null      # the Process
+$script:SR_ScreenPipe = ''
+$script:SR_ScreenCli = $null      # NamedPipeClientStream
+$script:SR_ScreenRd = $null
+$script:SR_ScreenWr = $null
+$script:SR_ScreenOff = $false     # set once the fast path has earned distrust
+$script:SR_ScreenWant = $false    # this runspace asked for a held-open reader
+$SR_ScreenReadMs = 4000
+$SR_ScreenIdleMs = 30000
+# The way out. A test that wants to prove the OLD path still works sets this,
+# and so can a machine where the held-open reader turns out to misbehave -
+# without which "turn it off" would mean editing this file.
+$SR_ScreenNoServe = $false
+
+function Stop-SRScreenServer {
+    foreach ($o in @($script:SR_ScreenRd, $script:SR_ScreenWr, $script:SR_ScreenCli)) {
+        try { if ($o) { $o.Dispose() } } catch { }
+    }
+    $script:SR_ScreenRd = $null; $script:SR_ScreenWr = $null; $script:SR_ScreenCli = $null
+    try {
+        if ($script:SR_ScreenSrv -and -not $script:SR_ScreenSrv.HasExited) { $script:SR_ScreenSrv.Kill() }
+    } catch { }
+    try { if ($script:SR_ScreenSrv) { $script:SR_ScreenSrv.Dispose() } } catch { }
+    $script:SR_ScreenSrv = $null
+    $script:SR_ScreenPipe = ''
+    # Stopping is also giving up wanting one. Otherwise the next read would
+    # start another, which turns "shut it down" into "restart it".
+    $script:SR_ScreenWant = $false
+}
+
+# 🔴 ASKED FOR, NEVER ASSUMED - AND THIS IS THE WHOLE SAFETY OF THE DESIGN.
+#
+# Starting a reader on the first read of any runspace looks obviously right and
+# leaks processes badly: the live probe runs in a runspace that is CREATED AND
+# DISPOSED every fifteen seconds and does exactly ONE screen read in its life.
+# Auto-starting would have it pay a process start to save nothing, then leave
+# the reader idling behind it - and at a 120-second idle against a 15-second
+# probe that is eight of them alive at once, for a tool whose own conventions
+# call orphan processes a thing that quietly degrades the machine.
+#
+# So a runspace that wants one says so. The window asks at startup because it
+# lives for hours and reads constantly; the probe never asks and spawns per read
+# exactly as before, which for a single read is the cheaper thing anyway.
+function Start-SRScreenServer {
+    $script:SR_ScreenWant = $true
+    return (Connect-SRScreenServer)
+}
+
+function Connect-SRScreenServer {
+    if ($script:SR_ScreenOff) { return $false }
+    if ($script:SR_ScreenCli -and $script:SR_ScreenCli.IsConnected -and
+        $script:SR_ScreenSrv -and -not $script:SR_ScreenSrv.HasExited) { return $true }
+    # Nobody asked for one here. Reconnecting a dropped server is still allowed -
+    # that is a runspace that HAD asked - but a first start is not.
+    if (-not $script:SR_ScreenWant) { return $false }
+
+    # Whatever is there is not usable; take it down before making another.
+    Stop-SRScreenServer
+
+    $exe = Get-SRScreenExe
+    if (-not $exe) { $script:SR_ScreenOff = $true; return $false }
+    try {
+        $pipe = 'sr-screen-' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = ('-serve {0} {1}' -f $pipe, $SR_ScreenIdleMs)
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        if (-not $p) { return $false }
+
+        $cli = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe, 'InOut')
+        # 🪤 THE SERVER HAS TO GET THERE FIRST. Connect retries inside this
+        # budget, so a slow machine costs a wait rather than a failure - and a
+        # server that never comes up costs 3 seconds ONCE, after which the fast
+        # path is off for the life of the runspace.
+        $cli.Connect(3000)
+        $script:SR_ScreenSrv = $p
+        $script:SR_ScreenPipe = $pipe
+        $script:SR_ScreenCli = $cli
+        $script:SR_ScreenRd = New-Object System.IO.StreamReader($cli, (New-Object System.Text.UTF8Encoding($false)))
+        $script:SR_ScreenWr = New-Object System.IO.StreamWriter($cli, (New-Object System.Text.UTF8Encoding($false)))
+        $script:SR_ScreenWr.AutoFlush = $true
+        return $true
+    } catch {
+        Stop-SRScreenServer
+        # One failed start is a machine that cannot run it; do not pay for the
+        # attempt again on every read.
+        $script:SR_ScreenOff = $true
+        return $false
+    }
+}
+
+function Get-SRScreenTextServed {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    if (-not (Connect-SRScreenServer)) { return $null }
+    try {
+        $script:SR_ScreenWr.WriteLine([string]$ProcessId)
+        $sb = New-Object System.Text.StringBuilder
+        $stop = [DateTime]::UtcNow.AddMilliseconds($SR_ScreenReadMs)
+        while ($true) {
+            $t = $script:SR_ScreenRd.ReadLineAsync()
+            $left = [int]($stop - [DateTime]::UtcNow).TotalMilliseconds
+            if ($left -le 0 -or -not $t.Wait($left)) {
+                # 🔒 A READER THAT STOPPED ANSWERING IS NOT ASKED AGAIN. The
+                # connection is now out of step - the late reply would be read as
+                # the answer to the NEXT question, which is the one way this
+                # could return the wrong console's screen. Tear it down.
+                Stop-SRScreenServer
+                return $null
+            }
+            $line = $t.Result
+            if ($null -eq $line) { Stop-SRScreenServer; return $null }
+            if ($line -eq ([string][char]1 + 'end' + [string][char]1)) { break }
+            if ($sb.Length -gt 0) { $null = $sb.Append("`n") }
+            $null = $sb.Append($line)
+        }
+        $out = $sb.ToString()
+        if ($out.StartsWith('!')) { return $null }
+        return $out
+    } catch {
+        Stop-SRScreenServer
+        return $null
+    }
+}
+
 function Get-SRScreenText {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
     if ($ProcessId -le 0) { return $null }
     if (-not (Test-Path -LiteralPath $SR_StateDir)) { return $null }
+
+    # The held-open reader first. It returns $null for anything it is not sure
+    # about, and everything below is the path that was here before.
+    if (-not $SR_ScreenNoServe) {
+        $served = Get-SRScreenTextServed -ProcessId $ProcessId
+        if ($served) { return $served }
+    }
 
     # The fast path. Falls through to the powershell child below if the exe
     # cannot be built - a machine without csc still reads screens, slowly.

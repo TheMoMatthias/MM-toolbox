@@ -95,6 +95,42 @@ if (-not ('SRGui2.Dpi' -as [type])) {
 public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 '@
 }
+
+# ---------------------------------------------------------------------------
+# 🔴 THE YELLOW LINE ROUND THE WINDOW IS NOT OURS. Reported as "when the tool is
+# in a windowed mode, I am seeing a yellow border around it", and nothing in
+# window2.xaml draws one - the Shell's border is EdgeLit, white at 14%.
+#
+# It is Windows 11 painting the ACCENT COLOUR on the active window's border,
+# which it does for every window whose personalisation setting allows it. It
+# only shows windowed because a maximised window has no border to paint, which
+# is exactly the shape of the report.
+#
+# DWMWA_BORDER_COLOR (34) with DWMWA_COLOR_NONE turns it off for THIS window
+# only - it changes no setting and affects nothing else the operator runs. On
+# anything before Windows 11 22000 the call simply fails and the border stays,
+# which is why the result is ignored rather than checked.
+#
+# 🪤 IT NEEDS AN HWND, so it cannot run here - the handle does not exist until
+# the source is initialised. Called from Add_SourceInitialized below.
+if (-not ('SRGui2.Dwm' -as [type])) {
+    Add-Type -Namespace SRGui2 -Name Dwm -MemberDefinition @'
+[DllImport("dwmapi.dll", PreserveSig = true)]
+public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+'@
+}
+function Hide-SRAccentBorder { param($Win)
+    try {
+        $h = (New-Object System.Windows.Interop.WindowInteropHelper($Win)).Handle
+        if ($h -eq [IntPtr]::Zero) { return }
+        # DWMWA_COLOR_NONE is 0xFFFFFFFE, which as a signed 32-bit value is -2.
+        # Written as -2 because that is what the API takes and what the marshaller
+        # sends; spelling it 0xFFFFFFFE needs an unchecked cast to say the same
+        # thing less clearly.
+        $none = -2
+        $null = [SRGui2.Dwm]::DwmSetWindowAttribute($h, 34, [ref]$none, 4)
+    } catch { }
+}
 try {
     [System.AppContext]::SetSwitch('Switch.System.Windows.DoNotScaleForDpiChanges', $false)
     $null = [SRGui2.Dpi]::SetProcessDpiAwarenessContext([IntPtr]::new(-4))
@@ -4381,10 +4417,13 @@ function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question,
 # question, but the tool takes a few seconds - and then it repeats." Measured,
 # the wait is two things added together and only one of them is real work:
 #
-#   the send itself - Invoke-SRAnswerOnScreen paces its keystrokes so the TUI
-#   can repaint between them (a 250 ms settle, then 180-220 ms per arrow), so
-#   answering option four is about 1.1 s of deliberate pacing. That is not
-#   waste; dropping it drops keystrokes into somebody's console.
+#   the send itself - Invoke-SRAnswerOnScreen has to let the TUI repaint between
+#   keystrokes or it drops them into somebody's console. It used to do that by
+#   SLEEPING a flat 250 ms and then 180-220 ms per arrow, which is where the
+#   1.1 s came from; it now watches the screen for the highlight to arrive and
+#   goes on the moment it does. With the held-open reader making a screen read
+#   about 5 ms instead of 130, single-select answering measures 142-206 ms
+#   against the 369-421 it was.
 #
 #   and then UP TO A FULL SECOND of nothing at all, because the completion was
 #   noticed by Invoke-FollowTick, which runs once a second. The keys had landed,
@@ -8221,6 +8260,10 @@ function Update-ShellClip {
     }
 }
 $window.Add_StateChanged({ Update-Frame })
+# The handle exists from here on, which is the earliest the accent border can be
+# turned off - and it has to be off before the first paint or it is visible for
+# a frame. See Hide-SRAccentBorder.
+$window.Add_SourceInitialized({ Hide-SRAccentBorder $window })
 $ui.Shell.Add_SizeChanged({ Update-ShellClip })
 Update-Frame
 
@@ -8905,6 +8948,16 @@ $window.Add_ContentRendered({
     # running twice, so the tick that lands fifteen seconds from now is a
     # no-op if this one is still in flight.
     try { Start-LiveProbe } catch { Write-SRLog ('first probe failed: ' + $_.Exception.Message) }
+    # 🔑 THE HELD-OPEN SCREEN READER, asked for once, here. This runspace lives
+    # for hours and reads consoles constantly - the question card on every follow
+    # tick, three or four times per answer - and starting the reader exe was 100
+    # of the 130 ms each of those cost. Measured: a read goes 48 ms to 5.
+    #
+    # 🪤 ONLY THIS RUNSPACE ASKS. The live probe's runspace is built and thrown
+    # away every fifteen seconds and reads one screen in its life; a reader there
+    # would cost a process start to save nothing and then idle behind it. See the
+    # note on Start-SRScreenServer.
+    try { $null = Start-SRScreenServer } catch { Write-SRLog ('screen reader: ' + $_.Exception.Message) }
 })
 $window.Add_Closed({
     # 🪤 ALL SEVEN, NOT FOUR. searchTimer, launchTimer and castTimer were
@@ -8928,6 +8981,12 @@ $window.Add_Closed({
     # flight far more often than it lands on the probe - and it holds a thread
     # and a child process of its own.
     try { Stop-VitalsSweep } catch { }
+    # 🔒 AND THE HELD-OPEN READER, which is a child process this window started
+    # and is therefore this window's to end. It exits on its own after 30 s idle
+    # so a crash cannot strand it, but a backstop is not a substitute for closing
+    # what you opened - the whole reason this machine's conventions single out
+    # orphan processes is that every one of them was somebody's backstop.
+    try { Stop-SRScreenServer } catch { }
 })
 
 $null = $window.ShowDialog()

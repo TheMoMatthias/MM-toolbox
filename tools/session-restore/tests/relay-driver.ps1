@@ -305,6 +305,64 @@ try {
         }
     }
 
+    # --- 7. THE HELD-OPEN READER ---------------------------------------------
+    # 🔴 IT MUST ANSWER EXACTLY WHAT SPAWNING ANSWERED. This is the one change
+    # that could silently return the WRONG console's screen - a reply arriving
+    # late would be read as the answer to the next question - so the assertion
+    # is byte equality against the path it replaces, on the same console, not
+    # "it returned something".
+    Write-Host ''
+    Write-Host '--- the screen reader, held open ---'
+    $r8 = Start-Replica -StartCursor 0
+    $seen8 = Wait-ForMenu -ProcessId $r8.Proc.Id
+    if (-not $seen8) { Fail 'the reader replica never showed a menu' }
+    else {
+        # 🪤 A RUNSPACE THAT NEVER ASKED MUST NOT GET ONE. The live probe is
+        # built and thrown away every fifteen seconds and reads one screen in
+        # its life; auto-starting a reader there would leave eight of them alive
+        # at once. Asserted before anything asks, because afterwards the flag is
+        # set for the rest of this process.
+        $noSrv = @(Get-Process -Name 'srscreen*' -ErrorAction SilentlyContinue).Count
+        $unasked = Get-SRScreenText -ProcessId ([int]$r8.Proc.Id)
+        $noSrv2 = @(Get-Process -Name 'srscreen*' -ErrorAction SilentlyContinue).Count
+        if (-not $unasked) { Fail 'reading a console without asking for a reader returned nothing' }
+        elseif ($noSrv2 -gt $noSrv) { Fail 'a read nobody asked to be served started a reader anyway - that is the leak' }
+        else { Pass 'a runspace that never asks for a reader still reads, and starts nothing' }
+
+        $spawned = Get-SRScreenText -ProcessId ([int]$r8.Proc.Id)
+        if (-not (Start-SRScreenServer)) {
+            Note 'no held-open reader could be started here - the fast path is off and everything falls back'
+        } else {
+            $served = Get-SRScreenText -ProcessId ([int]$r8.Proc.Id)
+            if (-not $served) { Fail 'the held-open reader returned nothing' }
+            elseif ("$served".Trim() -ne "$spawned".Trim()) {
+                Fail ("the held-open reader disagrees with spawning: {0} chars against {1}" -f "$served".Length, "$spawned".Length)
+            } else { Pass ("the held-open reader returns the same {0} characters as spawning" -f "$served".Length) }
+
+            # 🔒 AND IT SURVIVES ITS OWN READER DYING. A wedged or killed child
+            # must cost one read, not the feature - this is what makes the fast
+            # path safe to have at all.
+            try { if ($script:SR_ScreenSrv) { $script:SR_ScreenSrv.Kill() } } catch { }
+            Start-Sleep -Milliseconds 300
+            $afterKill = Get-SRScreenText -ProcessId ([int]$r8.Proc.Id)
+            if (-not $afterKill) { Fail 'killing the reader broke the next read instead of falling back' }
+            elseif ("$afterKill".Trim() -ne "$spawned".Trim()) {
+                Fail 'the read after the reader died came back different'
+            } else { Pass 'killing the reader mid-flight costs one read and nothing else' }
+
+            # The pid of whatever is serving NOW - the read above reconnected, so
+            # it is not the one that was killed.
+            $srvPid = -1
+            if ($script:SR_ScreenSrv) { $srvPid = [int]$script:SR_ScreenSrv.Id }
+            Stop-SRScreenServer
+            Start-Sleep -Milliseconds 200
+            $stillUp = @(Get-Process -Name 'srscreen*' -ErrorAction SilentlyContinue |
+                         Where-Object { $_.Id -eq $srvPid }).Count
+            if ($stillUp) { Fail 'the reader outlived Stop-SRScreenServer' }
+            else { Pass 'and it is gone when it is stopped' }
+        }
+    }
+
     # ===========================================================================
     Write-Host ''
     Write-Host '--- the counts a session prints, read off a REAL console ---'
