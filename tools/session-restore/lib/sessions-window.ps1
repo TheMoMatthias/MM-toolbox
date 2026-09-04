@@ -3996,6 +3996,11 @@ function Show-Ask { param($q)
     # options against this answer. That record exists to settle a wrong reading;
     # one that names the wrong menu is worse than none at all.
     $script:lastAsk = $q
+    # 🔑 AND THE POLL'S SIGNATURE WITH IT. Every other path that draws the card -
+    # the probe, the answer landing, a round move - must leave the fast lane
+    # agreeing with what is now on screen, or its next tick would redraw the
+    # identical menu and take the focus back off whatever the operator was doing.
+    try { $script:askSig = Get-AskSignature $q } catch { $script:askSig = '' }
     if (-not $q -or -not @($q.Options).Count) { return }
 
     $ui.AskHeader.Text = $(if ("$($q.Header)") { "$($q.Header)".ToUpper() } else { 'IT IS ASKING' })
@@ -4487,6 +4492,116 @@ function Complete-AnswerSend {
     if ($res) { $why = "$($res.Why)" }
     Complete-AnswerLanded -Row $f.Row -Pid_ ([int]$f.Pid) -Index ([int]$f.Index) -Question $f.Question -Why $why
     return $true
+}
+
+# ===========================================================================
+# THE QUESTION CARD FOLLOWS THE SCREEN, NOT THE FIFTEEN-SECOND PROBE.
+#
+# 🔴 REPORTED AS "the questions are also not immediately updated", AND MEASURED
+# AT FIFTEEN SECONDS. The card was fed from exactly one place: the live probe,
+# which reads the selected session's screen while it is out there doing the
+# expensive work, and runs on $LiveSeconds. So a question that appeared one
+# second after a probe returned sat unseen for the next fourteen.
+#
+# The vitals sweep already reads EVERY session's screen every 2.5 s and already
+# parses it - but it keeps only a boolean, `Asking`, to drive the band. The
+# parse it threw away is the card. That was the whole gap.
+#
+# 🔑 A READ IS NOW CHEAPER THAN THE TICK THAT SCHEDULES IT. The held-open reader
+# put a screen read at 9.3 ms against a 6.9 ms terminal, so polling the ONE
+# session on the pane at 400 ms costs about 2% of one thread - less than the
+# window already spends on the six-second repaint. That was not true when this
+# was written: a read was 130 ms, and a lane like this would have cost a third
+# of the UI thread.
+#
+# 🪤 IT MUST NOT REDRAW WHAT IT ALREADY DREW. Show-Ask replaces ItemsSource, so
+# an unconditional redraw every 400 ms would take the focus out from under a
+# keyboard user and re-enter the list mid-click. The signature below is built
+# from everything the card actually shows - including the cursor and the ticks,
+# which are what MOVE while a round is being worked - so a redraw happens when
+# the menu changed and at no other time.
+$script:AskPollFastMs = 400
+$script:AskPollSlowMs = 2500
+$script:askSig  = ''
+$script:askMiss = 0
+$script:askSlow = $false
+
+function Get-AskSignature { param($Q)
+    if (-not $Q) { return '' }
+    $parts = New-Object System.Collections.Generic.List[string]
+    $null = $parts.Add("$($Q.Question)")
+    $null = $parts.Add("$($Q.Header)")
+    foreach ($o in @($Q.Options)) { $null = $parts.Add("$o") }
+    # The two that move without the question changing: where the cursor is
+    # sitting and what is already ticked. A round being worked changes only
+    # these, and a card that ignored them would freeze on the first frame.
+    $null = $parts.Add('@' + "$($Q.CursorAt)")
+    $null = $parts.Add('#' + ((@($Q.Ticked) | Sort-Object) -join ','))
+    $null = $parts.Add('*' + "$($Q.Multi)")
+    foreach ($t in @($Q.Tabs)) { $null = $parts.Add('~' + "$($t.Label)" + '=' + "$($t.Answered)") }
+    return ($parts.ToArray() -join '|')
+}
+
+function Invoke-AskPoll {
+    # 🔒 EVERY GATE THE PROBE'S OWN ASK PATH HAS, plus one the probe does not
+    # need: an answer in flight OWNS the card, and Complete-AnswerLanded redraws
+    # it the moment the keys land. A poll landing between the send and that
+    # redraw would draw the menu the answer has already moved past.
+    if ($script:sheetDepth -gt 0) { return }
+    if ($script:ansPs) { return }
+    if ($script:surface -ne 'work') { return }
+
+    $row = Get-SelectedRow
+    if (-not $row -or -not $row.A -or -not $row.A.Pid) { $script:askSig = ''; $script:askMiss = 0; return }
+    if ($row.A.Kind -and "$($row.A.Kind)" -ne 'interactive') { $script:askSig = ''; return }
+    if (-not (Test-AskAllowed $row)) { return }
+
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $txt = $null
+    try { $txt = Get-SRScreenText -ProcessId ([int]$row.A.Pid) } catch { }
+    $sw.Stop()
+
+    # 🪤 BACK OFF IF THE FAST READER IS NOT THERE. This lane is only affordable
+    # because the held-open reader answers in single-digit milliseconds; on the
+    # spawn fallback the same read is ~100 ms, and polling THAT four times a
+    # second would put a fifth of the UI thread into watching one console. The
+    # measurement decides, not an assumption about which path is live.
+    $slow = ($sw.Elapsed.TotalMilliseconds -gt 40)
+    if ($slow -ne $script:askSlow) {
+        $script:askSlow = $slow
+        try {
+            $script:askTimer.Interval = [TimeSpan]::FromMilliseconds(
+                $(if ($slow) { $script:AskPollSlowMs } else { $script:AskPollFastMs }))
+        } catch { }
+        Write-SRLog ('  [ask] screen read {0:N0} ms - question card polling every {1} ms' -f `
+            $sw.Elapsed.TotalMilliseconds, $(if ($slow) { $script:AskPollSlowMs } else { $script:AskPollFastMs }))
+    }
+
+    # 🔴 A FAILED READ IS NOT AN ABSENT MENU, and conflating them is how a live
+    # question would blink out of the card. Only a screen that was actually READ
+    # and parsed to nothing is evidence that the menu has gone, and even then it
+    # takes two in a row - one dropped frame mid-repaint is normal.
+    if (-not $txt) { return }
+
+    $q = $null
+    try { $q = Invoke-SRParseScreenQuestion -Text $txt } catch { }
+    if ($q) { $q | Add-Member -NotePropertyName Screen -NotePropertyValue $txt -Force }
+
+    if (-not $q -or -not @($q.Options).Count) {
+        $script:askMiss++
+        if ($script:askMiss -ge 2 -and $script:askSig) {
+            $script:askSig = ''
+            $ui.AskBox.Visibility = $V_Hide
+            $script:lastAsk = $null
+        }
+        return
+    }
+    $script:askMiss = 0
+
+    $sig = Get-AskSignature $q
+    if ($sig -eq $script:askSig) { return }
+    $script:askSig = $sig
+    Show-Ask $q
 }
 
 # ===========================================================================
@@ -8971,6 +9086,16 @@ $script:pollTimer.Add_Tick({
     if ($script:sheetDepth -gt 0) { return }
     try { Complete-LiveProbe } catch { Write-SRLog ('probe collect failed: ' + $_.Exception.Message) } })
 
+# The question card's own lane. See the note on Invoke-AskPoll: this is the
+# difference between a question appearing in fifteen seconds and in under half
+# of one, and it is only affordable because the held-open reader made a screen
+# read cheaper than the tick that schedules it.
+$script:askTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:askTimer.Interval = [TimeSpan]::FromMilliseconds($script:AskPollFastMs)
+$script:askTimer.Add_Tick({
+    if ($script:sheetDepth -gt 0) { return }
+    try { Invoke-AskPoll } catch { Write-SRLog ('ask poll failed: ' + $_.Exception.Message) } })
+
 $window.Add_ContentRendered({
     Set-Breakpoint
     $null = $ui.SessionList.Focus()
@@ -8978,6 +9103,7 @@ $window.Add_ContentRendered({
     $script:fastTimer.Start()
     $script:liveTimer.Start()
     $script:pollTimer.Start()
+    $script:askTimer.Start()
     # 🔴 THE FIRST PROBE GOES NOW, NOT IN FIFTEEN SECONDS. A DispatcherTimer
     # fires after its first interval, so the window used to open and then learn
     # nothing new for a quarter of a minute - which was survivable while the
@@ -9007,7 +9133,7 @@ $window.Add_Closed({
     # launchTimer is the one that OPENS SESSIONS, so it is not a timer to leave
     # armed on the strength of "the dispatcher probably stops first".
     foreach ($t in @($script:followTimer, $script:fastTimer, $script:liveTimer, $script:pollTimer,
-                     $script:searchTimer, $script:launchTimer, $script:castTimer)) {
+                     $script:searchTimer, $script:launchTimer, $script:castTimer, $script:askTimer)) {
         try { $t.Stop() } catch { }
     }
     # 🔴 STOP BEFORE DISPOSE. A runspace left open holds a thread after the

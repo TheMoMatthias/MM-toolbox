@@ -1352,6 +1352,66 @@ Show-Ask $null
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the question card following the screen at 400 ms ---'
+# ===========================================================================
+# 🔴 THE CARD USED TO BE FED ONLY BY THE FIFTEEN-SECOND PROBE, which is the
+# whole of "the questions are also not immediately updated". Invoke-AskPoll now
+# reads the selected session's screen four times a second and redraws ONLY when
+# the menu actually moved - and the signature that decides that is the one thing
+# here that can fail quietly, in either direction:
+#
+#   too STABLE  the card freezes mid-round: the cursor moves on screen, the
+#               signature does not, and nothing is ever redrawn again.
+#   too VOLATILE  Show-Ask runs every 400 ms, replacing ItemsSource under the
+#               operator's click and taking keyboard focus out of the list.
+#
+# Both are asserted, against the real captures rather than a built question.
+
+$sigFresh = Get-AskSignature $roundFresh
+if (-not $sigFresh) { Fail 'a real parsed question produced no signature at all' }
+else { Pass 'a parsed question has a signature' }
+
+# STABLE: the identical parse must not redraw.
+$sigAgain = Get-AskSignature (Get-AskShot 'round-single-fresh.txt')
+if ($sigAgain -ne $sigFresh) { Fail 'the same screen parsed twice gives two signatures - the card would redraw every tick' }
+else { Pass 'the same screen twice is one signature - no redraw under the click' }
+
+# MOVES WITH THE CURSOR. This is the freeze case, and it is the reason CursorAt
+# is in the signature at all: walking a round changes nothing else about the
+# question, so a signature built from the text alone would never move again.
+$moved = Get-AskShot 'round-single-fresh.txt'
+if ($moved) {
+    $wasAt = [int]$moved.CursorAt
+    $moved.CursorAt = $wasAt + 1
+    if ((Get-AskSignature $moved) -eq $sigFresh) {
+        Fail 'moving the cursor does not change the signature - the card would freeze mid-round'
+    } else { Pass 'the cursor moving changes the signature' }
+}
+
+# MOVES WITH THE TICKS, from two real captures of the same multi-select menu
+# before and after an option was ticked.
+$mFresh  = Get-AskShot 'round-multi-fresh.txt'
+$mTicked = Get-AskShot 'round-multi-ticked.txt'
+if (-not $mFresh -or -not $mTicked) { Fail 'the multi-select captures did not parse' }
+elseif ((Get-AskSignature $mFresh) -eq (Get-AskSignature $mTicked)) {
+    Fail 'ticking an option does not change the signature - the ticks would never redraw'
+} else { Pass 'ticking an option changes the signature' }
+
+# 🔑 AND EVERY OTHER PATH THAT DRAWS THE CARD LEAVES THE LANE AGREEING WITH IT.
+# The probe, the answer landing and a round move all call Show-Ask directly; if
+# any of them left $askSig stale, the very next poll would redraw the identical
+# menu - which is the focus-stealing failure above, arriving 400 ms after every
+# answer instead of continuously.
+Show-Ask $roundFresh
+if ($script:askSig -ne $sigFresh) {
+    Fail 'Show-Ask does not leave the poll signature matching what it drew - the next tick redraws it'
+} else { Pass 'drawing the card from any path leaves the poll agreeing with it' }
+Show-Ask $null
+if ($script:askSig) { Fail 'clearing the card leaves a stale signature behind' }
+else { Pass 'clearing the card clears the signature' }
+
+# ===========================================================================
+Write-Host ''
 # ===========================================================================
 Write-Host ''
 Write-Host '--- the vitals strip, and the clock that must stay cheap ---'
