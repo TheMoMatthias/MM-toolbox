@@ -131,7 +131,7 @@ foreach ($n in @(
     'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
     'SetToolsFold','SetAllow','SetDeny',
-    'CastBox','CastWho','CastList','CastText','CastCancel','CastSend',
+    'CastBox','CastWho','CastList','CastText','CastCancel','CastSend','CastCompact',
     'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'LivePane','LiveMark','LiveHead','LiveText',
     'RailFold','ListFold','RailStrip','RailOpen','ListOpen','ListStrip','StripList','StripCount','AskScroll',
@@ -7747,6 +7747,28 @@ $ui.StripList.Add_PreviewMouseLeftButtonUp({
     $script:selId = $id
     Build-Sessions
     Update-Strip
+})
+# 🔴 ONE LINE, NOT TWO MESSAGES. `/compact` takes instructions, and giving them
+# to it is what makes the compaction aligned rather than a race: a bare
+# /compact summarises whatever happens to be in context, which is exactly the
+# state the morning is trying not to lose. Sending a brief FIRST and compacting
+# second would spend a turn per session and still leave the summariser guessing.
+#
+# 🪤 The wording lives in the config, because it is the whole feature. Changing
+# what a session is told to preserve must not mean editing PowerShell.
+$SR_CompactBrief = '/compact Preserve, in this order: what this lane is working on and where it has got to; every finding or measurement with the evidence behind it; what is still OPEN and owed; the exact next item you will take; and any rulings or decisions that have been made and who they bind. Keep file paths, commit shas, command lines and numbers verbatim - do not paraphrase them. Drop tool output that has already been acted on.'
+function Get-SRCompactBrief {
+    $t = ''
+    try { $t = "$((Get-SRConfig).compactBrief)".Trim() } catch { $t = '' }
+    if (-not $t) { $t = $SR_CompactBrief }
+    return $t
+}
+$ui.CastCompact.Add_Click({
+    $ui.CastText.Text = (Get-SRCompactBrief)
+    $ui.CastText.CaretIndex = $ui.CastText.Text.Length
+    $null = $ui.CastText.Focus()
+    $n = @($script:castPick.Keys).Count
+    Set-Status ("read it, then press Send - it will go to {0} ticked conversation(s)" -f $n)
 })
 $ui.CastCancel.Add_Click({ Hide-Cast; Set-Status 'nothing sent' })
 $ui.CastText.Add_TextChanged({ $ui.CastSend.IsEnabled = (@($script:castPick.Keys).Count -gt 0 -and "$($ui.CastText.Text)".Trim().Length -gt 0) })

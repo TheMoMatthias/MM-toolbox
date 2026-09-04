@@ -39,6 +39,24 @@ function Lay {
     }
 }
 
+# 🔴 THE SUITE OWNS THE LAYOUT IT MEASURES. foldProjects and foldSessions are
+# REAL OPERATOR SETTINGS saved in the config, so a run on a machine where the
+# columns happen to be pinned collapsed measured a 1,365px pane and a projects
+# rail with no realised tiles - and two assertions failed on a build that was
+# entirely correct: the text column "did not grow" because it was already at
+# its ceiling, and the first tile had "no realised container" because the rail
+# was not on screen at all.
+#
+# 🪤 A test that reads an input it does not own is not testing the code, it is
+# testing the machine it runs on. Every block below assumes both columns are
+# open; the collapse block sets and restores its own state on top of this.
+# [[feedback-test-accidents]]
+$script:foldRail = $false
+$script:foldList = $false
+$script:foldApplied = ''
+Update-Columns
+Lay
+
 # ===========================================================================
 Write-Host ''
 Write-Host '--- the logon buttons plan before they act ---'
@@ -2900,6 +2918,38 @@ $script:foldList = $foldListWas
 $script:foldApplied = ''
 Update-Columns
 Lay
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the morning compact, across every ticked conversation ---'
+# ===========================================================================
+# Asked for: a central way to tell all ~20 open sessions to compact and keep
+# the working state, findings, tasks, next items and rulings - so the morning
+# starts small without losing what each lane knows.
+if (-not $ui.CastCompact) {
+    Fail 'Send-to-many has no morning-compact control'
+} else {
+    $castWas = "$($ui.CastText.Text)"
+    $brief = Get-SRCompactBrief
+    # 🔴 ONE LINE, AND IT STARTS WITH THE COMMAND. /compact takes instructions;
+    # a brief sent as a separate message would spend a turn per session and
+    # still leave the summariser guessing at what mattered.
+    if ($brief -notmatch '^/compact\s+\S') {
+        Fail ("the brief is not a /compact with instructions on it: '{0}'" -f $brief.Substring(0, [Math]::Min(60, $brief.Length)))
+    } else { Pass 'the brief is a single /compact carrying its instructions' }
+    foreach ($must in @('OPEN', 'next item', 'verbatim')) {
+        if ($brief -notmatch [regex]::Escape($must)) { Fail ("the brief never mentions '{0}'" -f $must) }
+    }
+    Pass 'it names what to keep: what is open, the next item, and that identifiers stay verbatim'
+    # 🪤 IT FILLS THE BOX, IT DOES NOT SEND. Twenty sessions compacting is not
+    # something to set off with one press and no chance to read what goes out.
+    $ui.CastText.Text = ''
+    $ui.CastCompact.RaiseEvent((New-Object System.Windows.RoutedEventArgs ([System.Windows.Controls.Button]::ClickEvent)))
+    if ("$($ui.CastText.Text)" -ne $brief) {
+        Fail 'pressing it did not put the brief in the box where it can be read'
+    } else { Pass 'pressing it fills the box for review rather than sending' }
+    $ui.CastText.Text = $castWas
+}
 
 # ===========================================================================
 Write-Host ''

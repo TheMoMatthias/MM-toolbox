@@ -1765,10 +1765,21 @@
                    AcceptsReturn is what a keystroke does. -->
               <TextBox x:Name="CastText" Style="{StaticResource Composer}" AcceptsReturn="False"
                        Tag="The one line every ticked conversation will receive" Margin="0,0,0,12"/>
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button x:Name="CastCancel" Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
-                <Button x:Name="CastSend" Content="Send" Style="{StaticResource BtnPrimary}"/>
-              </StackPanel>
+              <Grid>
+                <!-- 🔴 IT FILLS THE BOX, IT DOES NOT SEND. Twenty sessions
+                     compacting is not something to set off with one press and
+                     no chance to read what is going out - and the wording is
+                     the whole point of the feature, so it has to be visible
+                     and editable before it goes. Press this, read it, then
+                     Send, exactly as with anything else typed here. -->
+                <Button x:Name="CastCompact" Content="Morning compact" HorizontalAlignment="Left"
+                        Style="{StaticResource BtnSlim}"
+                        ToolTip="Fill the box with /compact plus the brief that tells each session what to keep. Nothing is sent until you press Send."/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                  <Button x:Name="CastCancel" Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
+                  <Button x:Name="CastSend" Content="Send" Style="{StaticResource BtnPrimary}"/>
+                </StackPanel>
+              </Grid>
             </StackPanel>
           </Border>
 

@@ -2248,7 +2248,159 @@ function Test-SRTokenLive { param([int]$MarginSeconds = 0)
 # and they come back tomorrow morning. (It also exits 1 on --max-turns 1.)
 # If status turns out not to refresh, the honest outcome is the message below
 # and a held restore - not a queue of doomed sessions and a litter of ghosts.
+# ===========================================================================
+# REFRESH THE ACCESS TOKEN OURSELVES, FROM THE REFRESH TOKEN ON DISK.
+#
+# 🔴 EVERY PREVIOUS ATTEMPT FAILED ON THE SAME GUESS: that something else would
+# refresh it. `claude auth status` does not (measured, three mornings). A
+# launched conversation was the next theory and 2026-09-04 disproved it too -
+# the restore launched one, waited 120 s, and stopped because the token was
+# still dead. That is the whole history of this bug: four fixes, each resting on
+# an inference about what triggers a refresh, none of them measured first.
+#
+# There is nothing left to infer. The refresh token is sitting in
+# ~/.claude/.credentials.json, it is valid for thirty days, and the OAuth spec
+# says exactly what to do with it. One POST, about a second, no session
+# involved, no waiting, and it either works or it says why.
+#
+# 🔴 IT WRITES THE OPERATOR'S CREDENTIALS, WHICH IS THE MOST DESTRUCTIVE THING
+# THIS TOOL DOES. A bug here signs them out of Claude Code on this machine. So:
+#
+#   1. the file is BACKED UP first, and the backup is never cleaned up;
+#   2. the response is VALIDATED before anything is written - a token that is
+#      empty, unchanged, or expiring no later than the one we already have is
+#      treated as a failure, not a success;
+#   3. on ANY failure the file is not touched at all;
+#   4. every other field in the file is preserved - this rewrites three values
+#      and copies the rest, rather than constructing a credential from scratch;
+#   5. nothing about a token is ever logged but its length and expiry.
+#
+# 🪤 The endpoint and client id are CONFIGURABLE. They are not documented API,
+# and a wrong value here must be something the operator can correct in the
+# config rather than a reason to edit this file.
+$SR_OAuthTokenUrl = 'https://console.anthropic.com/v1/oauth/token'
+$SR_OAuthClientId = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
+
+function Invoke-SRTokenRefresh {
+    [CmdletBinding()]
+    param([int]$TimeoutSec = 20)
+
+    $p = Get-SRCredentialsPath
+    if (-not $p -or -not (Test-Path -LiteralPath $p)) { return 'there is no credentials file to refresh' }
+
+    $cfgO = $null
+    try { $cfgO = Get-SRConfig } catch { }
+    $url = $SR_OAuthTokenUrl
+    $cid = $SR_OAuthClientId
+    try { if ("$($cfgO.oauthTokenUrl)".Trim()) { $url = "$($cfgO.oauthTokenUrl)".Trim() } } catch { }
+    try { if ("$($cfgO.oauthClientId)".Trim()) { $cid = "$($cfgO.oauthClientId)".Trim() } } catch { }
+
+    $raw = $null
+    $obj = $null
+    try {
+        $raw = [System.IO.File]::ReadAllText($p)
+        $obj = $raw | ConvertFrom-Json
+    } catch { return 'the credentials file could not be read as JSON' }
+    if (-not $obj -or -not $obj.claudeAiOauth) { return 'the credentials file has no claudeAiOauth section' }
+    $o = $obj.claudeAiOauth
+
+    $rt = "$($o.refreshToken)"
+    if (-not $rt) { return 'there is no refresh token on disk - only a sign-in can fix that' }
+
+    # A dead refresh token is the one case where nothing here can help, and
+    # saying so is more useful than a failed POST.
+    try {
+        $rex = [double]$o.refreshTokenExpiresAt
+        if ($rex -gt 0) {
+            if ($rex -lt 1e11) { $rex = $rex * 1000 }
+            $rdt = ([DateTimeOffset]::FromUnixTimeMilliseconds([long]$rex)).LocalDateTime
+            if ($rdt -le (Get-Date)) {
+                return ("the refresh token itself expired on {0:yyyy-MM-dd} - only a sign-in can fix that" -f $rdt)
+            }
+        }
+    } catch { }
+
+    $wasExp = Get-SRTokenExpiry
+
+    # 🪤 THE BACKUP HAPPENS BEFORE THE NETWORK CALL, not after it succeeds. If
+    # this process dies mid-write the copy has to already exist.
+    $bak = ''
+    try {
+        $bak = $p + ('.bak-{0}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        Copy-Item -LiteralPath $p -Destination $bak -Force -ErrorAction Stop
+    } catch { return "could not back up the credentials file, so nothing was changed: $($_.Exception.Message)" }
+
+    $res = $null
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $body = @{ grant_type = 'refresh_token'; refresh_token = $rt; client_id = $cid } | ConvertTo-Json -Compress
+        $res = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType 'application/json' `
+                                 -TimeoutSec $TimeoutSec -ErrorAction Stop
+    } catch {
+        return "the refresh call failed ($($_.Exception.Message)) - the credentials file was not touched"
+    }
+
+    $newAt = ''
+    $newRt = ''
+    $expIn = 0
+    try { $newAt = "$($res.access_token)" } catch { }
+    try { $newRt = "$($res.refresh_token)" } catch { }
+    try { $expIn = [int]$res.expires_in } catch { }
+    if (-not $newAt) { return 'the refresh call returned no access token - the credentials file was not touched' }
+    if ($expIn -le 0) { $expIn = 28800 }   # the observed 8 hours, if it is not stated
+
+    $newExpMs = [long](([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) + ($expIn * 1000L))
+    # 🔴 A "NEW" TOKEN THAT EXPIRES NO LATER THAN THE OLD ONE IS NOT A REFRESH.
+    # Writing it would look like success and leave the morning exactly as broken.
+    if ($wasExp) {
+        $oldMs = [long]([DateTimeOffset]::new($wasExp).ToUnixTimeMilliseconds())
+        if ($newExpMs -le $oldMs) {
+            return 'the refresh returned a token no fresher than the one on disk - the file was not touched'
+        }
+    }
+
+    # Rewrite three fields and copy everything else, rather than building a
+    # credential from scratch: this file carries scopes, subscription and rate
+    # tier that nothing here understands and must not drop.
+    try {
+        $o.accessToken = $newAt
+        if ($newRt) { $o.refreshToken = $newRt }
+        $o.expiresAt = $newExpMs
+        $json = $obj | ConvertTo-Json -Depth 8
+        # 🪤 NO BOM, and no [System.IO.File]::Replace. Replace throws
+        # PermissionError on Windows whenever another process holds the
+        # destination open, which every running claude session does - measured
+        # 4 of 4 in this repo's own findings. A direct write with retries is the
+        # documented lesser evil here, and the backup above is why it is safe.
+        $enc = New-Object System.Text.UTF8Encoding($false)
+        $ok = $false
+        for ($i = 0; $i -lt 4 -and -not $ok; $i++) {
+            try { [System.IO.File]::WriteAllText($p, $json, $enc); $ok = $true }
+            catch { Start-Sleep -Milliseconds 250 }
+        }
+        if (-not $ok) { return "could not write the credentials file - the backup is at $bak" }
+    } catch {
+        return "writing the refreshed credentials failed ($($_.Exception.Message)) - the backup is at $bak"
+    }
+
+    # Verified by re-reading, not by the fact that a write returned.
+    $now = Get-SRTokenExpiry
+    if (-not $now -or $now -le (Get-Date)) {
+        return "the file was written but still does not read as live - the backup is at $bak"
+    }
+    Write-SRLog ('  [ok]   token refreshed directly - good until {0:HH:mm} (backup {1})' -f $now, (Split-Path $bak -Leaf))
+    return $null
+}
+
 function Invoke-SRTokenWarm { param([int]$TimeoutMs = 90000)
+    # 🔴 THE DIRECT REFRESH IS TRIED FIRST, because it is the only step here
+    # that does not rest on an inference about what refreshes a token. If it
+    # works nothing below runs; if it fails it says why and the old path still
+    # gets its turn.
+    $why = 'not attempted'
+    try { $why = Invoke-SRTokenRefresh } catch { $why = $_.Exception.Message }
+    if (-not $why) { return $true }
+    Write-SRLog ("  [skip] the direct refresh did not work: {0}" -f $why)
     $exe = $null
     try { $exe = Get-Command claude -ErrorAction Stop } catch {
         Write-SRLog '  [skip] claude is not on PATH - cannot warm the token'

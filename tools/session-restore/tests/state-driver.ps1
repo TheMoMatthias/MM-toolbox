@@ -1605,6 +1605,76 @@ try {
 }
 
 Write-Host ''
+Write-Host '--- refreshing the access token directly ---'
+# ===========================================================================
+# 🔴 THIS IS THE MOST DESTRUCTIVE THING THE TOOL DOES - it rewrites the
+# operator's credentials, and a bug signs them out of Claude Code on this
+# machine. So every assertion below runs against a SANDBOXED HOME:
+# Get-SRCredentialsPath builds its path from $env:USERPROFILE, so pointing that
+# at a temp directory means the real file is never opened, let alone written.
+# [[feedback-tests-reaching-live-data]]
+#
+# What is asserted is the REFUSALS, not the success - a successful refresh
+# cannot be staged without a live refresh token, and burning the operator's on
+# a test would rotate it and break the very morning this exists to fix.
+if (-not (Get-Command Invoke-SRTokenRefresh -ErrorAction SilentlyContinue)) {
+    Fail 'Invoke-SRTokenRefresh is not defined - the restore has nothing to call'
+} else {
+    $refWas = $env:USERPROFILE
+    $refTmp = Join-Path $env:TEMP ('sr-refresh-test-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+    try {
+        $null = New-Item -ItemType Directory -Force -Path (Join-Path $refTmp '.claude')
+        $env:USERPROFILE = $refTmp
+        $refCp = Join-Path $refTmp '.claude\.credentials.json'
+
+        $r1 = Invoke-SRTokenRefresh
+        if (-not $r1) { Fail 'refreshing with NO credentials file reported success' }
+        else { Pass 'no credentials file is refused, and says so' }
+
+        '{"claudeAiOauth":{"accessToken":"x","expiresAt":1}}' | Set-Content -LiteralPath $refCp -Encoding UTF8
+        $r2 = Invoke-SRTokenRefresh
+        if (-not $r2) { Fail 'refreshing with no refresh token reported success' }
+        elseif ($r2 -notmatch 'sign-in') { Fail ("a missing refresh token does not say a sign-in is needed: {0}" -f $r2) }
+        else { Pass 'a missing refresh token names the one thing that can fix it' }
+
+        # 🪤 THE ONE CASE NOTHING HERE CAN FIX. A dead refresh token must be
+        # reported as such rather than turned into a failed network call the
+        # operator then tries to debug.
+        $pastMs = [DateTimeOffset]::UtcNow.AddDays(-2).ToUnixTimeMilliseconds()
+        ('{"claudeAiOauth":{"accessToken":"x","refreshToken":"' + ('r' * 40) + '","expiresAt":1,"refreshTokenExpiresAt":' + $pastMs + '}}') |
+            Set-Content -LiteralPath $refCp -Encoding UTF8
+        $r3 = Invoke-SRTokenRefresh
+        if (-not $r3) { Fail 'an EXPIRED refresh token reported success' }
+        elseif ($r3 -notmatch 'sign-in') { Fail ("an expired refresh token does not say a sign-in is needed: {0}" -f $r3) }
+        else { Pass 'an expired refresh token is named as the one case only a sign-in fixes' }
+
+        # 🔑 THE ASSERTION THAT MATTERS MOST: a refresh that does not work must
+        # leave the credentials EXACTLY as they were. This points the endpoint at
+        # an address that cannot answer, so nothing leaves the machine.
+        $futMs = [DateTimeOffset]::UtcNow.AddDays(20).ToUnixTimeMilliseconds()
+        ('{"claudeAiOauth":{"accessToken":"a","refreshToken":"' + ('r' * 40) + '","expiresAt":1,"refreshTokenExpiresAt":' + $futMs + ',"scopes":"keep me"}}') |
+            Set-Content -LiteralPath $refCp -Encoding UTF8
+        $before = [System.IO.File]::ReadAllText($refCp)
+        $null = Save-SRConfigValue -Name 'oauthTokenUrl' -Value 'https://127.0.0.1:9/none'
+        $r4 = Invoke-SRTokenRefresh -TimeoutSec 4
+        $after = [System.IO.File]::ReadAllText($refCp)
+        if (-not $r4) { Fail 'an unreachable endpoint reported a successful refresh' }
+        elseif ($before -ne $after) { Fail 'A FAILED REFRESH CHANGED THE CREDENTIALS FILE - this is the sign-out defect' }
+        else { Pass 'a failed refresh leaves the credentials byte-identical' }
+
+        $baks = @(Get-ChildItem -LiteralPath (Join-Path $refTmp '.claude') -Filter '.credentials.json.bak-*' -Force -ErrorAction SilentlyContinue)
+        if (-not $baks.Count) { Fail 'no backup was written before the refresh was attempted' }
+        else { Pass ("the file is backed up before the call, not after it succeeds ({0} backup)" -f $baks.Count) }
+    } finally {
+        # 🪤 RESTORED IN A FINALLY. A leaked USERPROFILE would point every later
+        # test in this suite at a directory that no longer exists.
+        $env:USERPROFILE = $refWas
+        try { $null = Save-SRConfigValue -Name 'oauthTokenUrl' -Value '' } catch { }
+        Remove-Item -LiteralPath $refTmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Write-Host ''
 Write-Host '--- the restore warms the token by launching ONE, then waits ---'
 # ===========================================================================
 # 🔴 SOURCE-SHAPE, AND SAYING SO. The thing this guards is a BOOT with a
