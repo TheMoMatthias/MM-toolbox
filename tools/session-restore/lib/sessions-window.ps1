@@ -1020,18 +1020,31 @@ function Update-Model {
             # from a machine with nothing running, which is why it survived a
             # fix and a green suite. The suite now asserts it against the LIVE
             # set, where a blank cell can only mean this.
+            # lastActive is parsed ONCE, here, and carried as ticks. The 6-second
+            # pass reads it for every conversation; re-parsing a string 184 times
+            # per tick was most of what that pass cost.
+            #
+            # 🔴 AND THE WARM QUESTION IS ANSWERED ONCE FROM IT. This sat BELOW
+            # the two reads that ask it, so both called Test-Warm instead - which
+            # re-parses the same date string AND re-reads the clock, twice per
+            # row. Measured 2026-09-04: 51 ms of a 274 ms pass to answer a
+            # question the next two lines already answer for 0.8 ms.
+            #
+            # 🪤 It is also STRICTLY more correct this way. Test-Warm calls
+            # Get-Date per row, so a pass over 292 conversations compared each
+            # against a slightly different cut-off; $warmCut is one instant for
+            # the whole pass, which is what "recent" is supposed to mean.
+            $at = 0L
+            try { $at = ([datetime]$s.lastActive).Ticks } catch { }
+            $warm = ($at -gt $warmCut)
+
             $line = $null
-            if ($live -or (Test-Warm $s)) {
+            if ($live -or $warm) {
                 # Handed in by the probe when it read them off the background
                 # thread; read here only when nobody did it for us.
                 if ($null -ne $Said) { $line = $Said[$id] }
                 else { try { $line = Get-SRLastSaid -JsonlPath $s.jsonl } catch { } }
             }
-            # lastActive is parsed ONCE, here, and carried as ticks. The 6-second
-            # pass reads it for every conversation; re-parsing a string 184 times
-            # per tick was most of what that pass cost.
-            $at = 0L
-            try { $at = ([datetime]$s.lastActive).Ticks } catch { }
             $rows.Add([PSCustomObject]@{
                 Id = $id; S = $s; D = $d; A = $a; Conv = $conv; Said = $line; Live = $live; Band = 'quiet'
                 # 🔴 READ HERE, NOT IN Build-Sessions. Build-Sessions runs on
@@ -1054,10 +1067,10 @@ function Update-Model {
                 # with no signals at all and showed a bare row until the probe
                 # caught up. Warm means "its transcript moved recently", which a
                 # session that just started satisfies immediately.
-                Sig = $(if ($live -or (Test-Warm $s)) { try { Get-SRRowSignals "$($s.jsonl)" } catch { $null } } else { $null })
+                Sig = $(if ($live -or $warm) { try { Get-SRRowSignals "$($s.jsonl)" } catch { $null } } else { $null })
                 # Filled below, once the project labels exist. See the note there.
                 Hay = ''; HayProj = ''
-                At = $at; Warm = ($at -gt $warmCut)
+                At = $at; Warm = $warm
                 # 🔴 THE TITLE, COMPUTED ONCE PER PASS. It depends only on S and D,
                 # neither of which changes between builds, and it was being
                 # recomputed for every row by every list build AND by two of the
@@ -1091,8 +1104,11 @@ function Update-Model {
     # is exactly here. Two haystacks, because the two boxes ask different
     # questions - the rail's matches the project only.
     foreach ($r in $rows) {
-        $t = ''
-        try { $t = (Get-Title $r.S $r.D).Text } catch { }
+        # 🪤 $r.T, NOT Get-Title AGAIN. The note above says the title is computed
+        # ONCE PER PASS - and then this loop computed it a second time for every
+        # row, which is the exact cost that note exists to prevent. It reads the
+        # value the loop above already stored.
+        $t = "$($r.T.Text)"
         $pl = ''
         if ("$($r.D.path)") { $pl = Get-ProjectLabel "$($r.D.path)" }
         $r.Hay     = ('{0} {1} {2} {3} {4}' -f $t, $r.S.autoTitle, $r.D.path, $r.Id, $pl).ToLower()
@@ -1552,22 +1568,35 @@ function Build-Sessions {
             # ones. An agent that is being READ has usually just gone quiet, and
             # filtering before the check would delete the row under the cursor
             # on the next rebuild.
-            $subsShow = @($subsAll | Where-Object { $_.Live })
+            # 🔴 THE EXPANDED LIST IS BUILT FOR THE ONE ROW THAT EXPANDS. This
+            # ran BEFORE the `$expand` test, so every visible row composed a
+            # Where-Object pipeline over its sub-agents - 45 of them per rebuild
+            # - to answer a question only the SELECTED row ever asks. And the
+            # filter it ran is the one $subsLive twenty lines up already holds,
+            # so it was the same pipeline twice on the same input.
+            #
+            # Two pipelines per row on a rebuild that runs on every keystroke,
+            # every sort click and every 2.5s sweep. Measured 2026-09-04: the
+            # rebuild's parts summed to 24 ms of a 45 ms whole, and this is what
+            # was in the gap.
             $expand = ($script:selId -eq $r.Id)
+            $pickedSub = $null
             if (-not $expand -and "$($script:selId)".StartsWith('agent:')) {
                 foreach ($sa in $subsAll) {
                     if (('agent:' + $sa.Id) -eq "$($script:selId)") {
                         $expand = $true
-                        # Keep the one being read on screen even once it stops
-                        # writing, or selecting it would close it.
-                        if ($subsShow.Count -eq 0 -or -not @($subsShow | Where-Object { $_.Id -eq $sa.Id }).Count) {
-                            $subsShow = @($subsShow) + @($sa)
-                        }
+                        $pickedSub = $sa
                         break
                     }
                 }
             }
             if (-not $expand) { continue }
+            $subsShow = @($subsLive)
+            # Keep the one being read on screen even once it stops writing, or
+            # selecting it would close it.
+            if ($pickedSub -and ($subsShow.Count -eq 0 -or -not @($subsShow | Where-Object { $_.Id -eq $pickedSub.Id }).Count)) {
+                $subsShow = @($subsShow) + @($pickedSub)
+            }
             foreach ($sa in $subsShow) {
                 $tag = $(if ($sa.IsTeammate) { 'teammate' } else { 'task' })
                 $tip = ('{0} - {1}' -f $sa.Label, $(if ($sa.Description) { $sa.Description } else { 'no description recorded' }))

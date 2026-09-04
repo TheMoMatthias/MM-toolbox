@@ -5603,6 +5603,26 @@ function Get-SRSessionVitals {
 # reaches further back, so it can find an OLDER tool call and would otherwise
 # overwrite the current one with a stale one - reporting a session as running
 # something it finished minutes ago.
+# 🔴 AN UNCHANGED TRANSCRIPT CANNOT SAY ANYTHING NEW, and not asking it is 799
+# of the 1,272 ms the refresh pass used to cost. Measured 2026-09-04 across the
+# operator's 292 conversations: this reader was 63% of Update-Model on its own -
+# 44 live-or-warm rows at 18 ms each - because every call re-read a 256 KB tail
+# and ran ConvertFrom-Json over up to 120 records, on the UI thread, for files
+# that had not moved since the last pass. Every other per-row call in that pass
+# put together came to 210 ms.
+#
+# The stamp is the one Get-SRRowSignals already uses - length and last-write
+# together - PLUS the two budgets, so a caller asking for a WIDER read is never
+# handed the narrow answer cached for a cheaper one. That matters here and not
+# in SigCache: this reader escalates its own window on a miss, so the same path
+# is legitimately called at three different sizes.
+#
+# 🪤 THE CACHE IS PER-RUNSPACE, like SR_SigCache, because every runspace dot-
+# sources this file and gets its own copy. That is what makes it safe without a
+# lock; it is also why the window's FIRST pass still pays full price - the
+# background probe warmed its copy, not this one.
+$script:SR_SaidCache = @{}
+
 function Get-SRLastSaid {
     [CmdletBinding()]
     param(
@@ -5610,6 +5630,31 @@ function Get-SRLastSaid {
         [int]$MaxTailBytes = 262144,
         # How many records back to look before giving up. A session that has run
         # a long unbroken chain of tools may genuinely have no prose in the tail.
+        [int]$MaxRecords = 120
+    )
+
+    $stamp = ''
+    try {
+        $sfi = Get-Item -LiteralPath $JsonlPath -ErrorAction Stop
+        $stamp = '{0}|{1}|{2}|{3}' -f $sfi.Length, $sfi.LastWriteTimeUtc.Ticks, $MaxTailBytes, $MaxRecords
+    } catch { }
+    $skey = "$JsonlPath".ToLower()
+    if ($stamp -and $script:SR_SaidCache.ContainsKey($skey) -and $script:SR_SaidCache[$skey].Stamp -eq $stamp) {
+        return $script:SR_SaidCache[$skey].Value
+    }
+
+    $v = Get-SRLastSaidRead -JsonlPath $JsonlPath -MaxTailBytes $MaxTailBytes -MaxRecords $MaxRecords
+    # A file that could not be stat'ed is never cached: there is nothing to
+    # invalidate against, so the entry could never be retired.
+    if ($stamp) { $script:SR_SaidCache[$skey] = @{ Stamp = $stamp; Value = $v } }
+    return $v
+}
+
+function Get-SRLastSaidRead {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$JsonlPath,
+        [int]$MaxTailBytes = 262144,
         [int]$MaxRecords = 120
     )
 
