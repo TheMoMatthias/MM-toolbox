@@ -176,8 +176,35 @@ function Invoke-Restore {
         $script:warmNeeded = -not (Test-SRTokenLive)
         if ($script:warmNeeded) {
             $exp0 = Get-SRTokenExpiry
-            Write-SRStep ("the access token is not live{0} - launching one conversation first to refresh it, then the rest" -f `
+            Write-SRStep ("the access token is not live{0} - refreshing it before anything starts" -f `
                           $(if ($exp0) { " (expired {0:HH:mm})" -f $exp0 } else { '' }))
+            # 🔴 THE REFRESH RUNS HERE, IN FRONT OF EVERY GATE, AND DEPENDS ON
+            # NOTHING BUT THE CREDENTIALS FILE.
+            #
+            # It also runs inside Wait-SRBridgeReady, but ONLY behind
+            # Test-SRAuthReady - which spawns `claude auth status` and returns
+            # false on any non-zero exit, timeout or parse failure. At a boot
+            # with two dozen sessions starting that spawn can lose, and then the
+            # refresh would never be attempted at all: the gate would block for
+            # its full 300 s on "claude does not report a signed-in account
+            # yet", fall through, and hand over to the launch-one path that
+            # 2026-09-04 already proved does not refresh anything.
+            #
+            # That is the same shape as the bug fixed the day before - a working
+            # mechanism placed behind a gate that can refuse - and `auth status`
+            # is the single least trustworthy thing in this whole story: it was
+            # the FIRST wrong premise. Invoke-SRTokenRefresh needs only the file
+            # on disk, so it is asked first and asked unconditionally.
+            $rWhy = 'not attempted'
+            try { $rWhy = Invoke-SRTokenRefresh } catch { $rWhy = $_.Exception.Message }
+            if (-not $rWhy) {
+                $script:warmNeeded = -not (Test-SRTokenLive)
+                if (-not $script:warmNeeded) {
+                    Write-SROk ("the access token was refreshed directly - good until {0:HH:mm}" -f (Get-SRTokenExpiry))
+                }
+            } else {
+                Write-SRWarn ("could not refresh the token directly ({0}) - falling back to launching one conversation first" -f $rWhy)
+            }
         }
         if (-not (Wait-SRBridgeReady -MaxWaitSeconds 300 -TokenMayBeCold:$script:warmNeeded)) {
             if (Test-SRTokenLive) {

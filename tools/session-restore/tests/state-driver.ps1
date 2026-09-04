@@ -1881,6 +1881,31 @@ try {
     Remove-Item -LiteralPath $tailTmp -Force -ErrorAction SilentlyContinue
 }
 
+# 3f. 🔴 AND THE REFRESH MUST BE REACHED WITHOUT ASKING PERMISSION OF ANYTHING.
+#     This is the third time in three days that a correct mechanism has been
+#     found sitting behind a gate that can refuse, so it is asserted rather
+#     than reasoned about:
+#       - the refresh is attempted in restore-sessions BEFORE Wait-SRBridgeReady,
+#         not only inside it, because inside it is guarded by Test-SRAuthReady -
+#         which spawns `claude auth status` and returns false on any timeout,
+#         non-zero exit or parse failure. At a boot with two dozen sessions
+#         starting, that spawn can lose.
+#       - and a failed refresh does NOT stop the restore: it falls back.
+$refAt  = $rsSrc.IndexOf('Invoke-SRTokenRefresh')
+$gateAt2 = $rsSrc.IndexOf('Wait-SRBridgeReady')
+if ($refAt -lt 0) {
+    Fail 'the restore never calls Invoke-SRTokenRefresh itself - the refresh is reachable only from behind Test-SRAuthReady'
+} elseif ($gateAt2 -ge 0 -and $refAt -gt $gateAt2) {
+    Fail 'the refresh is attempted only AFTER the gate - a gate that refuses would skip it entirely'
+} else {
+    Pass 'the token refresh is attempted before any gate, and depends only on the credentials file'
+}
+if ($rsSrc -notmatch 'falling back to launching one conversation') {
+    Fail 'a failed direct refresh does not say it is falling back - it would look like the end of the road'
+} else {
+    Pass 'and a failed refresh falls back to the launch-one path rather than stopping'
+}
+
 # 4. 🔴 AND ALL OF THAT RAN TOO LATE TO MATTER. Measured in .state\restore.log
 #    on 2026-09-03: the gate blocked at 08:26:12 on a dead token, printed
 #    "press Sign in", and slept in ten-second steps until the operator signed in
