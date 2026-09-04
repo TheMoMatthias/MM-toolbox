@@ -2142,18 +2142,65 @@
               <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
               </Grid.RowDefinitions>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
               </Grid.ColumnDefinitions>
-              <TextBlock x:Name="SendNote" Grid.Row="0" Grid.ColumnSpan="2" Style="{StaticResource Dim}"
+
+              <!-- ============ WHAT IS WAITING BEHIND THE TURN IT IS ON ========
+                   🔴 DOCKED HERE, NOT INSIDE THE TRANSCRIPT. The design this
+                   came from drew queued messages as ghost turns at the foot of
+                   the conversation, and the pane will not have it: it appends
+                   new turns to the end of the FlowDocument on a fast path
+                   (Test-CanAppend / Add-ReadDocumentTail), so anything parked at
+                   the bottom ends up ABOVE the replies that arrive after it.
+                   Fighting that would mean stripping and re-adding the ghosts on
+                   every append, to put them somewhere you can only see if you
+                   are already scrolled to the end.
+                   Docked, it is always visible, it costs the transcript nothing,
+                   and it sits exactly where the next message is about to be
+                   typed - which is the one place it is certain to be read.
+
+                   🪤 CAPPED, because a real queue is not two lines. Measured on
+                   this machine: one conversation was holding 57. Four, then a
+                   count - the list is there to tell you what is waiting, not to
+                   become the thing you have to scroll. -->
+              <StackPanel x:Name="QueueBox" Grid.Row="0" Grid.ColumnSpan="2"
+                          Visibility="Collapsed" Margin="0,0,0,9">
+                <TextBlock x:Name="QueueHead" Style="{StaticResource Meta}" Text=""
+                           Margin="0,0,0,5"/>
+                <ItemsControl x:Name="QueueList">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Grid Margin="0,0,0,3">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto"/>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="&#187;" Style="{StaticResource Meta}"
+                                   Foreground="{Binding QiBrush}" Margin="0,0,9,0"
+                                   VerticalAlignment="Top"/>
+                        <TextBlock Grid.Column="1" Text="{Binding QiText}" Style="{StaticResource Meta}"
+                                   Foreground="{Binding QiBrush}" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding QiTip}"/>
+                        <TextBlock Grid.Column="2" Text="{Binding QiWhen}" Style="{StaticResource Meta}"
+                                   Margin="12,0,0,0" VerticalAlignment="Top"/>
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <TextBlock x:Name="SendNote" Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource Dim}"
                          Text="" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="Collapsed"/>
               <!-- MaxHeight raised from the style's 168: this is the one you
                    paste a whole prompt into, and nine lines was not enough to
                    read one back before sending. Sixteen-ish lines, then it
                    scrolls, and the transcript above it still owns the rest. -->
-              <TextBox x:Name="SendBox" Grid.Row="1" Grid.Column="0" Style="{StaticResource Composer}"
+              <TextBox x:Name="SendBox" Grid.Row="2" Grid.Column="0" Style="{StaticResource Composer}"
                        MaxHeight="260"
                        Tag="Type here to send it into this session's terminal - / for skills, Shift+Enter for a new line"
                        Margin="0,0,8,0"
@@ -2204,7 +2251,7 @@
               </Popup>
               <!-- Bottom-aligned because the box beside it grows now: stretched,
                    the button would grow with it and become a tall slab. -->
-              <Button x:Name="SendBtn" Grid.Row="1" Grid.Column="1" Content="Send"
+              <Button x:Name="SendBtn" Grid.Row="2" Grid.Column="1" Content="Send"
                       VerticalAlignment="Bottom"
                       Style="{StaticResource BtnPrimary}" IsEnabled="False"/>
             </Grid>

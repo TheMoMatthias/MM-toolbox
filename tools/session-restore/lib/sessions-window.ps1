@@ -136,6 +136,7 @@ foreach ($n in @(
     'LivePane','LiveMark','LiveHead','LiveText',
     'RailFold','ListFold','RailStrip','RailOpen','ListOpen','ListStrip','StripList','StripCount','AskScroll',
     'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
+    'QueueBox','QueueHead','QueueList',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions','SignIn','BridgeNote',
     'HdrLogon','HdrName','HdrLane','HdrSaid','HdrAge',
@@ -4503,6 +4504,108 @@ function Invoke-AskTyped {
 # So it says why it is disabled rather than silently dropping what was typed,
 # which is the worst outcome available here.
 # ===========================================================================
+# ===========================================================================
+# WHAT IS WAITING, UNDER THE CONVERSATION IT IS WAITING IN.
+#
+# 🔴 THE COUNT ON THE ROW SAYS WHERE, THIS SAYS WHAT. They are the same data
+# read once by the probe (Get-SRQueue) and shown twice, because they answer
+# different questions: the row is scanned across twenty conversations, this is
+# read in the one you have open, next to the box you are about to type in.
+#
+# 🪤 YOURS FIRST, ALWAYS. The queue is mostly not you - measured across this
+# machine, 1,356 cross-session messages and 1,107 task notifications against 144
+# lines a person typed - so a list in queue order would push your own message
+# off the bottom of a cap behind machine chatter you did not write and cannot
+# act on. Ordered yours-first, capped, and the remainder is a count.
+$SR_QueueShow = 4
+
+$script:qSig = $null
+
+function Update-QueuePanel {
+    if (-not $ui.QueueBox) { return }
+    $it = $ui.SessionList.SelectedItem
+    $rec = $null
+    if ($it -and $it.Kind -eq 'session' -and $it.Row) { $rec = $it.Row.Q }
+
+    # 🔴 REBUILT ONLY WHEN THE QUEUE ACTUALLY MOVED. This hangs off
+    # Update-SendState, and one of that function's callers is the composer's
+    # TextChanged - so without this, every KEYSTROKE would rebuild the list and
+    # hand WPF a new ItemsSource. Typing is the one thing in this window that
+    # must never wait for anything, and the panel it would be rebuilding is
+    # identical between one character and the next.
+    #
+    # The signature is what the panel actually draws: which conversation, how
+    # many, how many are yours, and the front of the queue. Anything that
+    # changes the picture changes one of those.
+    $sig = 'none'
+    if ($rec -and [int]$rec.Count -gt 0) {
+        $front = ''
+        if (@($rec.Items).Count) { $front = "$($rec.Items[0].Text)" }
+        $sig = '{0}|{1}|{2}|{3}' -f "$($it.Id)", [int]$rec.Count, [int]$rec.Mine, $front
+    } else {
+        $sig = 'none|{0}' -f "$($it.Id)"
+    }
+    if ($sig -eq $script:qSig) { return }
+    $script:qSig = $sig
+
+    if (-not $rec -or [int]$rec.Count -le 0) {
+        $ui.QueueBox.Visibility = $V_Hide
+        $ui.QueueList.ItemsSource = $null
+        return
+    }
+
+    $amber = [System.Windows.Media.Brush]$window.FindResource('HueOut')
+    $grey  = [System.Windows.Media.Brush]$window.FindResource('TextLow')
+
+    $all = @($rec.Items)
+    $ordered = @(@($all | Where-Object { $_.Mine }) + @($all | Where-Object { -not $_.Mine }))
+    $show = @($ordered | Select-Object -First $SR_QueueShow)
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($qi in $show) {
+        $when = ''
+        if ($qi.At) { try { $when = (Get-AgeTicks ([datetime]$qi.At).Ticks) } catch { } }
+        $txt = "$($qi.First)".Trim()
+        if (-not $txt) { $txt = "$($qi.Text)".Trim() }
+        # A machine message is its envelope; the envelope is not worth reading,
+        # so it is named rather than printed. The pane makes the same call about
+        # inbound messages, for the same reason.
+        if (-not $qi.Mine) { $txt = Get-QueueMachineLabel $txt }
+        $null = $rows.Add([PSCustomObject]@{
+            QiText  = $txt
+            QiWhen  = $when
+            QiBrush = $(if ($qi.Mine) { $amber } else { $grey })
+            QiTip   = "$($qi.Text)"
+        })
+    }
+    $ui.QueueList.ItemsSource = $rows
+
+    $head = ''
+    if ([int]$rec.Mine -gt 0) {
+        $head = ('{0} of yours waiting' -f [int]$rec.Mine)
+        if ([int]$rec.Machine -gt 0) { $head = $head + (', and {0} from the machine' -f [int]$rec.Machine) }
+    } else {
+        $head = ('{0} queued, none of them yours' -f [int]$rec.Count)
+    }
+    $hidden = [int]$rec.Count - $rows.Count
+    if ($hidden -gt 0) { $head = $head + ('   ({0} more not shown)' -f $hidden) }
+    $ui.QueueHead.Text = $head.ToUpper()
+    $ui.QueueBox.Visibility = $V_Show
+}
+
+# The envelope, named rather than printed. <cross-session-message from="uds:\\.\
+# pipe\LOCAL\cc-msg-c08065bfbd7..."> is 60 characters of routing before a word of
+# content, and the pane already refuses to print that where a name goes.
+function Get-QueueMachineLabel { param([string]$Text)
+    $t = "$Text".TrimStart()
+    if ($t.StartsWith('<task-notification', [StringComparison]::OrdinalIgnoreCase)) { return 'a background task reported back' }
+    if ($t.StartsWith('<cross-session-message', [StringComparison]::OrdinalIgnoreCase)) { return 'a message from another session' }
+    if ($t.StartsWith('<agent-message', [StringComparison]::OrdinalIgnoreCase)) { return 'a message from an agent' }
+    if ($t.StartsWith('<system-reminder', [StringComparison]::OrdinalIgnoreCase)) { return 'a system reminder' }
+    if ($t.StartsWith('<', [StringComparison]::Ordinal)) { return 'machine input' }
+    return $t
+}
+
 function Update-SendState {
     $it = $ui.SessionList.SelectedItem
     $why = ''      # a real blocker: the box is disabled
@@ -4530,6 +4633,10 @@ function Update-SendState {
             $note = 'it is mid-turn - what you type will be queued behind it'
         }
     }
+    # Same trigger as the note above it: the queue panel describes the selected
+    # conversation, so it is refreshed exactly when what is selected, or what it
+    # is doing, has changed. Every caller of Update-SendState is one of those.
+    try { Update-QueuePanel } catch { }
     $ui.SendBtn.IsEnabled = (-not $why) -and "$($ui.SendBox.Text)".Trim()
     $ui.SendBox.IsEnabled = (-not $why)
     $msg = $(if ($why) { $why } else { $note })

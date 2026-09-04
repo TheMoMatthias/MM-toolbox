@@ -2130,8 +2130,66 @@ else {
             elseif ("$($qbMach.QBrush.Color)" -eq "$(([System.Windows.Media.SolidColorBrush]$window.FindResource('HueOut')).Color)") {
                 Fail 'a queue with nothing of yours in it is drawn in the accent that means your words are waiting'
             } else { Pass 'a machine-only queue is drawn grey - present, not shouting' }
+            # ===============================================================
+            # 🔴 AND THE PANEL UNDER THE CONVERSATION, which is the other half:
+            # the row says WHERE, this says WHAT.
+            # ===============================================================
+            $ui.SessionList.SelectedItem = @($ui.SessionList.ItemsSource |
+                Where-Object { "$($_.Id)" -eq "$($qbRow.Id)" })[0]
+
+            $qbRow.Q = $null
+            $script:qSig = $null
+            Update-QueuePanel
+            if ("$($ui.QueueBox.Visibility)" -eq 'Visible') {
+                Fail 'the queue panel is showing for a conversation with nothing queued'
+            } else { Pass 'the queue panel stays out of the way when nothing is waiting' }
+
+            $qbRow.Q = New-QBadgeFixture -Mine 2 -Machine 14
+            $script:qSig = $null
+            Update-QueuePanel
+            $qbList = @($ui.QueueList.ItemsSource)
+            if ("$($ui.QueueBox.Visibility)" -ne 'Visible') { Fail 'sixteen queued and the panel says nothing' }
+            elseif ($qbList.Count -ne 4) {
+                Fail "the panel drew $($qbList.Count) rows; it caps at 4 because a real queue reached 57 on this machine"
+            } else { Pass 'a 16-deep queue draws four rows, not sixteen' }
+
+            # 🪤 THE ORDER IS THE POINT. In queue order these two would sit
+            # behind fourteen cross-session messages and fall off the cap -
+            # so the operator would open a session that IS holding their work
+            # and see four lines of machine chatter instead.
+            $qbMineRows = @($qbList | Where-Object { "$($_.QiText)" -like 'something you typed*' })
+            if ($qbMineRows.Count -ne 2) {
+                Fail "both of your messages should be inside the cap; $($qbMineRows.Count) made it"
+            } else { Pass 'your two messages are shown first, ahead of fourteen machine ones' }
+            if ("$($qbList[0].QiText)" -notlike 'something you typed*') {
+                Fail "the top of the panel is '$($qbList[0].QiText)', not something you typed"
+            } else { Pass 'and the first row is yours' }
+            if ("$($ui.QueueHead.Text)" -notlike '*12 MORE NOT SHOWN*') {
+                Fail "the remainder is not accounted for: '$($ui.QueueHead.Text)'"
+            } else { Pass 'and the twelve it did not draw are counted, not dropped' }
+
+            # 🔒 The envelope is NAMED, never printed. A cross-session message is
+            # 60 characters of pipe address before a word of content.
+            $qbMach = @($qbList | Where-Object { "$($_.QiText)" -notlike 'something you typed*' })
+            if ($qbMach.Count -and "$($qbMach[0].QiText)" -like '*uds:*') {
+                Fail "the routing envelope is being printed as the message: '$($qbMach[0].QiText)'"
+            } else { Pass 'a machine message is named rather than having its envelope printed' }
+
+            # 🔴 AND TYPING MUST NOT REBUILD IT. Update-QueuePanel hangs off
+            # Update-SendState, and one of that function's callers is the
+            # composer's TextChanged - so without the signature guard every
+            # keystroke would hand WPF a new ItemsSource.
+            $qbBefore = $ui.QueueList.ItemsSource
+            $qbWasText = "$($ui.SendBox.Text)"
+            try {
+                foreach ($qbCh in @('a','b','c','d','e','f','g','h')) { $ui.SendBox.Text = "$($ui.SendBox.Text)$qbCh" }
+                if (-not [object]::ReferenceEquals($qbBefore, $ui.QueueList.ItemsSource)) {
+                    Fail 'typing in the composer rebuilt the queue panel - eight keystrokes, eight rebuilds'
+                } else { Pass 'eight keystrokes in the composer rebuilt the panel exactly zero times' }
+            } finally { $ui.SendBox.Text = $qbWasText }
         } finally {
             $qbRow.Q = $qbWas
+            $script:qSig = $null
             Build-Sessions
         }
 
