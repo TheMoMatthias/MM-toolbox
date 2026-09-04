@@ -4630,7 +4630,17 @@ function Update-SendState {
             # the terminal does, and refusing here made the tool less capable
             # than the thing it is a window onto. Reported as: writing multiple
             # messages subsequently and queueing them up is not working.
+            # 🪤 AND IT SAYS WHERE IT WILL LAND. "queued behind it" is true and
+            # useless when four things are already waiting: the question the
+            # operator actually has is whether this is the next thing read or
+            # the fifth. The panel above lists them; this one line says where
+            # the message being typed RIGHT NOW joins.
             $note = 'it is mid-turn - what you type will be queued behind it'
+            $qn = 0
+            if ($r.Q) { $qn = [int]$r.Q.Count }
+            if ($qn -gt 0) {
+                $note = ('it is mid-turn - what you type joins the queue at position {0}' -f ($qn + 1))
+            }
         }
     }
     # Same trigger as the note above it: the queue panel describes the selected

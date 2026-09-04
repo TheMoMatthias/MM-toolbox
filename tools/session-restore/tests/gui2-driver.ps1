@@ -2975,6 +2975,35 @@ if (-not $selIt -or $selIt.Kind -ne 'session') {
                 Pass ("mid-turn you can still type, and it says why: '{0}'" -f $ui.SendNote.Text)
             }
 
+            # 🔴 AND IT SAYS WHERE THE MESSAGE WILL LAND. "queued behind it" is
+            # true and useless when four things are already waiting - the real
+            # question is whether this is read next or fifth. With three
+            # queued, what you are typing is number four.
+            $posQWas = $selRow.Q
+            try {
+                $selRow.Q = [PSCustomObject]@{
+                    Items = @(); Count = 3; Mine = 1; Machine = 2; Ok = $true }
+                Update-SendState
+                if ("$($ui.SendNote.Text)" -notmatch 'position 4') {
+                    Fail ("with three already queued the note should place the next at 4: '{0}'" -f $ui.SendNote.Text)
+                } else { Pass 'and with three already waiting it says the next one is position 4' }
+
+                $selRow.Q = $null
+                Update-SendState
+                if ("$($ui.SendNote.Text)" -match 'position') {
+                    Fail ("with nothing queued the note still claims a position: '{0}'" -f $ui.SendNote.Text)
+                } else { Pass 'and it claims no position when nothing is waiting' }
+            } finally {
+                # 🪤 PUT THE PANEL BACK TOO, not just the row. Update-SendState
+                # drives Update-QueuePanel, which caches what it last drew in
+                # $script:qSig - so a test that stages a queue and walks away
+                # leaves both the panel and its cache describing a conversation
+                # that no longer has one, for every assertion that follows.
+                $selRow.Q = $posQWas
+                $script:qSig = $null
+                try { Update-QueuePanel } catch { }
+            }
+
             # 🪤 THE ONE CASE STILL REFUSED. A session sitting on a MENU reads
             # keystrokes as menu input, so text typed here would PICK AN OPTION
             # rather than queue behind one.
