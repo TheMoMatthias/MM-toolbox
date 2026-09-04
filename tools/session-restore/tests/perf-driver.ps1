@@ -434,6 +434,10 @@ $null = Bench 'build the settings dropdowns' { Build-SettingDrops } 'GESTURE'
 $null = Bench 'permission note' { Update-PermNote } 'INSTANT'
 $null = Bench 'open send-to-many' { Show-Cast } 'GESTURE'
 $null = Bench 'build the send-to-many list' { Build-Cast } 'GESTURE'
+# The morning compact only fills the box - it reads the config and assigns a
+# string - but it is a control the operator can press, so it is timed like one.
+$null = Bench 'fill the morning-compact brief' { $ui.CastText.Text = (Get-SRCompactBrief) } 'INSTANT'
+$ui.CastText.Text = ''
 Hide-Cast
 $null = Bench 'read the skills off disk' { Get-SRSkills } 'SLOW' 1
 $ui.SendBox.Text = '/re'
@@ -562,6 +566,7 @@ $COVERAGE = @{
     'ShellFold'        = 'hide the running-shells panel'
     'Broadcast'        = 'open send-to-many'
     'CastCancel'       = 'open send-to-many'
+    'CastCompact'      = 'fill the morning-compact brief'
     'WinMax'           = 'the maximise glyph'
     'WinMin'           = 'the window frame'
     'WinClose'         = 'the window frame'
@@ -667,9 +672,39 @@ $slowGestures = @($script:Results | Where-Object { -not $_.Threw -and $_.Class -
 # by more than 2.5x the operation was contending for the machine and its best
 # sample cannot be trusted either; that is reported, loudly, but it does not
 # fail the suite. A stable number over budget is the code, and that does.
+# 🔴 TWO GATES, AND WHICH ONE APPLIES DEPENDS ON WHY THIS IS RUNNING.
+#
+# This suite now runs as part of the DEFAULT suite, because being by-name-only
+# meant it never ran: fourteen commits landed in one day, each after a green
+# full run, and not one had its effect on responsiveness checked.
+#
+# 🪤 BUT IT RUNS ON THE OPERATOR'S OWN MACHINE, WHICH HAS TWENTY CLAUDE SESSIONS
+# ON IT. Measured twice, minutes apart, on identical source: 10 operations over
+# budget, then 19 - Build-Manager 54 ms then 65, 'sort manager: said' 56 then
+# 82. That is contention, not code, and the existing 2.5x spread guard does not
+# catch it because EVERYTHING is uniformly slower, so best and worst move
+# together. A default suite that goes red because the operator's own work is
+# running is the exact "benchmark that cries wolf" this driver was written
+# against, and it would be switched off within a week.
+#
+# So: run it deliberately (-Only perf) and the 50 ms gesture budget is a HARD
+# GATE, which is what you want when you are working on speed. Run it as part of
+# the full suite and only a STALL fails - a gesture over 250 ms, which is five
+# times the budget and far outside anything load can explain. The table prints
+# either way, so a regression is visible in both.
+$softGate = [bool]$env:SR_PERF_SOFT
+$gestureFailAt = $(if ($softGate) { 250.0 } else { $LIMITS['GESTURE'] })
+if ($softGate) {
+    Write-Host ("  (full-suite run: the table is printed, but only a gesture over {0:N0} ms fails - run -Only perf for the {1:N0} ms gate)" -f `
+        $gestureFailAt, $LIMITS['GESTURE']) -ForegroundColor DarkGray
+}
 foreach ($g in $slowGestures) {
     $spread = 99.0
     if ($g.Ms -gt 0) { $spread = $g.Worst / $g.Ms }
+    if ($g.Ms -le $gestureFailAt) {
+        Write-Host ("  OVER  {0,-42} {1,6:N0} ms against a {2:N0} ms budget" -f $g.Name, $g.Ms, $LIMITS['GESTURE']) -ForegroundColor DarkYellow
+        continue
+    }
     if ($spread -gt 2.5) {
         Write-Host ("  NOISY {0} read {1:N0} ms best / {2:N0} ms worst - over budget, but this machine is contending" -f $g.Name, $g.Ms, $g.Worst) -ForegroundColor Yellow
     } else {

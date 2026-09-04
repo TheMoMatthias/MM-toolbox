@@ -303,14 +303,26 @@ if ($Only -eq 'type') {
 }
 
 # --- perf: every operation the operator can cause, timed ---------------------
-# BY NAME ONLY, like shot, and for the same reason: it runs against the
-# operator's own registry at real size and its output is a table to read rather
-# than a verdict. It fails only on a genuine STALL - see the note in the driver
-# about benchmarks that cry wolf.
-if ($Only -eq 'perf') {
+# 🔴 IT RUNS BY DEFAULT NOW, AND THAT IS THE POINT. It was by-name-only, which
+# meant `run-tests.ps1` never included it - so fourteen commits landed in one
+# day, every one of them after a green full suite, and NOT ONE of them had its
+# effect on responsiveness checked. The operator asked whether the tool reacts
+# instantly; the honest answer required running a suite that had not been run
+# all day. A perf suite nobody runs measures nothing.
+#
+# 🪤 It is a HARD GATE on gestures and a report on everything else, and the
+# operations already over budget are recorded as DEBT in the driver with the
+# number they read today - so this goes red on a regression rather than on
+# history. Every debt line is an unfixed bug, not a raised bar.
+if (-not $Only -or $Only -eq 'perf') {
     Write-Host "`n=== perf (every operation, timed) ===" -ForegroundColor Cyan
+    # Soft only when it is riding along with everything else - see the two-gate
+    # note in the driver. Asked for by name, it is the hard 50 ms gate.
+    if ($Only -eq 'perf') { Remove-Item Env:\SR_PERF_SOFT -ErrorAction SilentlyContinue }
+    else { $env:SR_PERF_SOFT = '1' }
     $h = New-GuiHarness -Driver 'perf-driver.ps1' -OutFile 'perf-test.ps1' -Gui $GuiFile
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $h -NoScan 2>&1
+    Remove-Item Env:\SR_PERF_SOFT -ErrorAction SilentlyContinue
     $out | ForEach-Object { Write-Host $_ }
     Record 'perf' $LASTEXITCODE @($out)
 }
