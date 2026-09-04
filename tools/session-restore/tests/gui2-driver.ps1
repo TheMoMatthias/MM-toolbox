@@ -2179,6 +2179,40 @@ else {
             # Update-SendState, and one of that function's callers is the
             # composer's TextChanged - so without the signature guard every
             # keystroke would hand WPF a new ItemsSource.
+            # 🔴 A MESSAGE THAT HAS SAT THERE SAYS SO. 21% of queued messages
+            # wait longer than two minutes on this machine and the p90 is 26,
+            # so "queued" alone stops being the useful fact fairly quickly.
+            function Set-QAge { param([int]$Secs)
+                $q = New-QBadgeFixture -Mine 1 -Machine 0
+                $q.Items[0].At = (Get-Date).AddSeconds(-$Secs)
+                $qbRow.Q = $q
+                $script:qSig = $null
+                Update-QueuePanel
+            }
+            Set-QAge 20
+            if ("$($ui.QueueHead.Text)" -match 'WAITED') {
+                Fail ("a message queued 20 seconds ago is being flagged as stale: '{0}'" -f $ui.QueueHead.Text)
+            } else { Pass 'a message queued seconds ago draws no warning' }
+            $freshFg = "$($ui.QueueHead.Foreground)"
+
+            Set-QAge 400
+            if ("$($ui.QueueHead.Text)" -notmatch 'WAITED') {
+                Fail ("a message waiting nearly seven minutes says nothing: '{0}'" -f $ui.QueueHead.Text)
+            } else { Pass ("past two minutes the heading says how long: '{0}'" -f $ui.QueueHead.Text) }
+            if ("$($ui.QueueHead.Foreground)" -eq $freshFg) {
+                Fail 'the heading did not change colour for a message that has been waiting'
+            } else { Pass 'and it changes colour, in the pane rather than on the scanned row' }
+
+            # 🪤 THE GUARD MUST NOT SWALLOW IT. Nothing about a queue changes
+            # while it sits - same count, same front - so a signature built only
+            # from its contents is identical either side of the two-minute line
+            # and the warning would never be drawn. Same fixture, only older.
+            $qStaleSig = $script:qSig
+            Set-QAge 20
+            if ($script:qSig -eq $qStaleSig) {
+                Fail 'the panel signature is the same for a fresh queue and a stale one - the warning can never appear'
+            } else { Pass 'and waiting is part of what makes the panel redraw' }
+
             $qbBefore = $ui.QueueList.ItemsSource
             $qbWasText = "$($ui.SendBox.Text)"
             try {

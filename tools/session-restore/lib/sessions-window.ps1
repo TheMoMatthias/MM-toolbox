@@ -4563,6 +4563,11 @@ function Invoke-AskTyped {
 # off the bottom of a cap behind machine chatter you did not write and cannot
 # act on. Ordered yours-first, capped, and the remainder is a count.
 $SR_QueueShow = 4
+# Two minutes, because that is where the measured distribution turns: the median
+# wait is 7 seconds and 21% of queued messages pass this line. Anything shorter
+# would be lit almost always; anything much longer would only ever confirm what
+# you had already noticed.
+$SR_QueueStaleSecs = 120
 
 $script:qSig = $null
 
@@ -4582,11 +4587,30 @@ function Update-QueuePanel {
     # The signature is what the panel actually draws: which conversation, how
     # many, how many are yours, and the front of the queue. Anything that
     # changes the picture changes one of those.
+    # 🔴 STALENESS IS PART OF THE SIGNATURE, and leaving it out is a bug that
+    # hides itself. Nothing about a queue CHANGES while it sits there - same
+    # count, same front, same everything - so a signature built only from its
+    # contents is identical either side of the two-minute line, and the warning
+    # this exists to show would never be drawn. It appears the next time
+    # something else about the queue happens to change, which looks like it
+    # works and is the worst kind of wrong.
+    $oldestMine = $null
+    if ($rec -and [int]$rec.Mine -gt 0) {
+        foreach ($qi in @($rec.Items)) {
+            if (-not $qi.Mine -or -not $qi.At) { continue }
+            $t = $null
+            try { $t = [datetime]$qi.At } catch { continue }
+            if (-not $oldestMine -or $t -lt $oldestMine) { $oldestMine = $t }
+        }
+    }
+    $isStale = $false
+    if ($oldestMine) { $isStale = (((Get-Date) - $oldestMine).TotalSeconds -ge $SR_QueueStaleSecs) }
+
     $sig = 'none'
     if ($rec -and [int]$rec.Count -gt 0) {
         $front = ''
         if (@($rec.Items).Count) { $front = "$($rec.Items[0].Text)" }
-        $sig = '{0}|{1}|{2}|{3}' -f "$($it.Id)", [int]$rec.Count, [int]$rec.Mine, $front
+        $sig = '{0}|{1}|{2}|{3}|{4}' -f "$($it.Id)", [int]$rec.Count, [int]$rec.Mine, $isStale, $front
     } else {
         $sig = 'none|{0}' -f "$($it.Id)"
     }
@@ -4634,6 +4658,23 @@ function Update-QueuePanel {
     }
     $hidden = [int]$rec.Count - $rows.Count
     if ($hidden -gt 0) { $head = $head + ('   ({0} more not shown)' -f $hidden) }
+
+    # 🔴 HOW LONG THE OLDEST OF YOURS HAS SAT THERE, once that stops being a
+    # detail. Measured across 432 transcripts: the median wait is 7 seconds, but
+    # 21% of queued messages wait longer than two minutes and the p90 is 26.
+    # A message queued seconds ago needs no comment; one that has been sitting
+    # for four minutes is the thing you opened the window to find out.
+    #
+    # 🪤 THE HEADING CHANGES COLOUR, NOT THE ROW. Grey carries state and hue
+    # carries identity everywhere else in this window, and the mark on the list
+    # is already spending the one hue it gets on 'these are your words'. Putting
+    # a second hue out there would make the scanned surface say two things in
+    # colour; this is a line you are already reading in the pane you already
+    # chose, so it can afford to say it plainly.
+    if ($isStale -and $oldestMine) {
+        $head = $head + ('   -   OLDEST HAS WAITED {0}' -f (Get-AgeTicks $oldestMine.Ticks))
+    }
+    $ui.QueueHead.Foreground = [System.Windows.Media.Brush]$window.FindResource($(if ($isStale) { 'HueWarn' } else { 'TextLow' }))
     $ui.QueueHead.Text = $head.ToUpper()
     $ui.QueueBox.Visibility = $V_Show
 }

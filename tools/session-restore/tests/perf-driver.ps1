@@ -636,6 +636,50 @@ if ($unmeasured.Count) {
 Write-Host ''
 Write-Host '=== the whole surface, slowest first ==='
 # ---------------------------------------------------------------------------
+# 🔴 HOW BUSY THE MACHINE IS, MEASURED, BECAUSE THE NUMBERS ABOVE ARE NOT
+# COMPARABLE WITHOUT IT.
+#
+# This suite went red twice in one day on changes that were provably innocent.
+# Both times the giveaway was untouched code moving with everything else:
+# Test-OnSurface read 8.8 ms one hour and 25.9 the next, and Update-Model
+# -KeepAgents 149.7 then 399.9, on identical source. Best-of-N does not save
+# you - under real contention every sample is contended, so the floor rises with
+# the ceiling and the fastest run is simply the least-slowed one.
+#
+# So the run states its own conditions. This is a pure CPU loop: no disk, no
+# processes, no allocation to speak of - the only thing it can measure is how
+# much of a core this process is actually getting. The baseline is what it reads
+# on this machine with nothing else running.
+#
+# 🪤 IT REPORTS, IT DOES NOT SCALE THE BUDGETS. Dividing the limits by this
+# would let a genuine regression hide behind a busy afternoon, which is the one
+# thing a gate must never do. The budgets stay where they are; the reader is
+# told what to make of a near miss.
+# 🪤 A NUMBER TO COMPARE BETWEEN RUNS, NOT A LOAD FACTOR. The obvious version of
+# this divides by an idle baseline and prints "2.9x busy" - and there is no
+# honest way to get that baseline on a machine that is never idle. This one is
+# also dominated by PowerShell's own loop cost rather than by contention, so a
+# ratio built on it would be mostly interpreter and partly truth.
+#
+# What it is good for is DIFFERENCE. Run the suite twice and this number tells
+# you whether the table moved because the code did or because the machine did,
+# which is the only question that actually comes up. Recorded here so there is
+# something to compare against: 337 ms on 2026-09-04 with 26 claude sessions
+# running, on a 4090 machine that reads far lower when it is quiet.
+$spinBest = [double]::MaxValue
+for ($rep = 0; $rep -lt 5; $rep++) {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $acc = 0.0
+    for ($i = 1; $i -lt 100000; $i++) { $acc += [Math]::Sqrt($i) }
+    $sw.Stop()
+    if ($sw.Elapsed.TotalMilliseconds -lt $spinBest) { $spinBest = $sw.Elapsed.TotalMilliseconds }
+}
+$spinBusy = @(Get-Process -Name 'claude' -ErrorAction SilentlyContinue).Count
+Write-Host ''
+Write-Host ("  the machine, for comparing this run against another: a fixed CPU loop took {0:N0} ms" -f $spinBest) -ForegroundColor DarkGray
+Write-Host ("  with {0} claude session(s) running. If that number moved and the table moved with it," -f $spinBusy) -ForegroundColor DarkGray
+Write-Host  '  the table moved because of the machine.' -ForegroundColor DarkGray
+
 $over = New-Object System.Collections.Generic.List[object]
 foreach ($r in @($script:Results | Sort-Object -Property Ms -Descending)) {
     $lim = $LIMITS[$r.Class]
