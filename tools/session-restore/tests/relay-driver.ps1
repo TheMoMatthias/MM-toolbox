@@ -264,6 +264,47 @@ try {
         else { Pass "a single-select menu is refused by the multi path: $why7" }
     }
 
+    # --- 6. ANSWERING IN YOUR OWN WORDS, against a live console ---------------
+    # 🔴 THE ONE ANSWER PATH THAT HAD NEVER BEEN DRIVEN. Both other paths have
+    # been proven here since the relay shipped; this one was proven only against
+    # CAPTURED SCREENS, which can show what a filled editor row looks like and
+    # can never show that walking to it, typing into it and committing work as
+    # one sequence. The gap was invisible because the captures are real and the
+    # parser tests against them pass.
+    #
+    # It found a bug the moment it existed. Measured 2026-09-04 against the code
+    # as committed: the walk-down case REFUSED a perfectly good answer - "the
+    # menu went away before the answer could be committed" - because a single
+    # screen read came back empty and an empty read was being taken for a menu
+    # that had gone. The read spawns a child process; on a busy machine it misses
+    # sometimes, which is the exact thing Get-SRScreenQuestion's own retry note
+    # is about.
+    #
+    # 🪤 AND IT IS THE TEXT THAT IS ASSERTED, not merely that something committed.
+    # A relay that walks to the right row and commits an EMPTY editor declines the
+    # whole round, so "it answered" is not the question - "it answered THIS" is.
+    Write-Host ''
+    Write-Host '--- answering in your own words, on a live console ---'
+    foreach ($free in @(
+        @{ From = 0; Text = 'my own words here'; Note = 'walking DOWN to the editor row' },
+        @{ From = 4; Text = 'answered in prose'; Note = 'and UP to it from the last row' }
+    )) {
+        $r7 = Start-Replica -StartCursor ([int]$free.From)
+        $seen7 = Wait-ForMenu -ProcessId $r7.Proc.Id
+        if (-not $seen7) { Fail "the typed-answer replica never showed a menu ($($free.Note))"; continue }
+        if ($seen7.FreeAt -lt 0) { Fail 'the editor row was not found on the live screen'; continue }
+        $why8 = Invoke-SRAnswerTypedOnScreen -ProcessId ([int]$r7.Proc.Id) -Text ([string]$free.Text) -Who 'replica'
+        if ($why8) { Fail "the relay refused to type an answer ($($free.Note)): $why8"; continue }
+        $got7 = Wait-ForAnswer -Proc $r7.Proc -OutFile $r7.Out
+        if ($got7 -eq ('FREE|' + $free.Text)) {
+            Pass ("typed and committed, {0}: '{1}'" -f $free.Note, $free.Text)
+        } elseif ($got7 -eq 'DECLINED') {
+            Fail "the editor row was committed EMPTY - that declines the whole round ($($free.Note))"
+        } else {
+            Fail "the console committed '$got7', expected 'FREE|$($free.Text)'"
+        }
+    }
+
     # ===========================================================================
     Write-Host ''
     Write-Host '--- the counts a session prints, read off a REAL console ---'

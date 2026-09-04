@@ -85,6 +85,37 @@ $options = @(
 
 $sel = [Math]::Max(0, [Math]::Min($Cursor, $options.Count - 1))
 
+# 🔑 "Type something" IS AN INLINE EDITOR, and until now this replica painted it
+# as an inert label - so Invoke-SRAnswerTypedOnScreen, the one answer path that
+# uses it, had never been driven against a real console at all. Both other paths
+# had; this one was proven only against captured screens, which can show what a
+# typed row LOOKS like and can never show that the walking, the typing and the
+# commit work as one sequence.
+#
+# 🔴 THE SHAPE IS THE CAPTURE, tests\screens\round-free-typed.txt: once anything
+# is typed the row IS that text and the placeholder is gone, which is exactly why
+# the parser finds the row by POSITION as well as by name. Painting the text in
+# place of the label is therefore the whole of what a replica has to do.
+#
+# 🔒 The BEHAVIOUR carries the same caveat as -Multi above: that the row accepts
+# characters and commits on ENTER is read off the footer and the captures, not
+# measured against a live TUI. So this proves the relay's NAVIGATION - that it
+# finds the editor row, gets the highlight onto it, and only commits once the row
+# reads back what was sent - and proves nothing about the real TUI's key handling.
+#
+# 🪤 SINGLE-SELECT ONLY, and that is not a shortcut. Under -Multi this same row
+# is an ordinary tickable option as far as this fixture is concerned, and the
+# relay suite's multi test ticks it BY INDEX - options 2 and 4, where 4 is this
+# row. Making it an editor in both shapes would have turned that test's ENTER
+# into a commit and broken a passing assertion to add a new one.
+$freeIx = -1
+if (-not $Multi) {
+    for ($i = 0; $i -lt $options.Count; $i++) {
+        if ($options[$i].Label -eq 'Type something') { $freeIx = $i; break }
+    }
+}
+$typed = ''
+
 # Multi-select adds one more STOP after the last option: the Submit row. It is
 # navigable and unnumbered, exactly as captured.
 $ticked = New-Object 'System.Collections.Generic.HashSet[int]'
@@ -98,6 +129,13 @@ function Show-Menu {
     Write-Host ''
     for ($i = 0; $i -lt $options.Count; $i++) {
         $mark = $(if ($i -eq $sel) { $CUR } else { ' ' })
+        # The editor row holds what has been typed into it, in place of its
+        # placeholder - see the note where $typed is declared.
+        if ($i -eq $freeIx -and "$typed") {
+            Write-Host ("{0} {1}. {2}" -f $mark, ($i + 1), $typed)
+            Write-Host ''
+            continue
+        }
         if ($Multi) {
             # "[ ]" and "[x]", ASCII, as captured. NOT a Unicode box: the real
             # menu uses square brackets, and a parser tuned to U+25A1 would have
@@ -153,7 +191,24 @@ while ((Get-Date) -lt $deadline) {
     switch ($k.Key) {
         'DownArrow' { if ($sel -lt $stops - 1) { $sel++ }; Show-Menu }
         'UpArrow'   { if ($sel -gt 0) { $sel-- }; Show-Menu }
+        'Backspace' {
+            if ($sel -eq $freeIx -and $typed.Length -gt 0) {
+                $typed = $typed.Substring(0, $typed.Length - 1)
+                Show-Menu
+            }
+        }
         'Enter'     {
+            # 🔴 ENTER ON AN EMPTY EDITOR ROW DECLINES THE ROUND - measured twice
+            # by accident during the original capture, and the reason the window
+            # never offers that row as an ordinary button. Recorded here so a
+            # relay that commits an empty answer fails the test loudly instead of
+            # looking like it worked.
+            if ($sel -eq $freeIx) {
+                $body = $(if ("$typed") { "FREE|$typed" } else { 'DECLINED' })
+                [System.IO.File]::WriteAllText($Out, $body,
+                    (New-Object System.Text.UTF8Encoding($false)))
+                exit 0
+            }
             if (-not $Multi) {
                 [System.IO.File]::WriteAllText($Out,
                     ("{0}|{1}" -f ($sel + 1), $options[$sel].Label),
@@ -173,6 +228,18 @@ while ((Get-Date) -lt $deadline) {
             }
             if ($ticked.Contains($sel)) { $null = $ticked.Remove($sel) } else { $null = $ticked.Add($sel) }
             Show-Menu
+        }
+        default {
+            # Typing while the editor row is highlighted replaces the row text.
+            # Printable ASCII only - the relay sends characters one at a time
+            # through WriteConsoleInputW and nothing here needs to be cleverer.
+            if ($sel -eq $freeIx -and $k.KeyChar) {
+                $c = [int][char]$k.KeyChar
+                if ($c -ge 32 -and $c -lt 127) {
+                    $typed = $typed + [string]$k.KeyChar
+                    Show-Menu
+                }
+            }
         }
     }
 }

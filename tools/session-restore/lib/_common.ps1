@@ -2969,6 +2969,51 @@ function Send-SRQuestionAnswer {
 #
 # It deliberately does NOT check what the process is. Its caller does that.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# WAIT FOR THE SCREEN TO SAY SO. DO NOT SLEEP A GUESS.
+#
+# 🔴 EVERY ANSWER PATH BELOW WAS PACED BY THE CLOCK RATHER THAN BY THE SCREEN,
+# and it is the whole of why answering felt slow. The shape was always
+# "send the key, Start-Sleep 180-300, then read and verify" - so the sleep was
+# never what made it safe (the read was), it was only what made it late. The
+# sleeps have to cover the slowest repaint anyone might see, so every answer
+# paid the worst case even when the TUI had finished in a fraction of it.
+#
+# Measured 2026-09-04 against the relay replica: a multi-select answer took
+# 1,769 ms, of which about 1,400 was sleeping. A screen read is 34 ms there and
+# ~130 ms against a real console - in both cases cheaper than the sleep it
+# replaces, so watching costs less than waiting AND proves more.
+#
+# 🔒 THE GUARDS DO NOT MOVE. This returns the last screen it managed to read,
+# satisfying the condition or not, and every caller keeps the same refusal it
+# had before. Nothing here decides to send a key; it only decides when to stop
+# looking. A repaint that never comes still ends in a refusal, exactly as a
+# sleep that was not long enough did - just without the wait when it is not
+# needed.
+function Wait-SRScreenState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$ProcessId,
+        # Handed the parsed screen; return $true when the wait is over.
+        [Parameter(Mandatory)][scriptblock]$Until,
+        [int]$BudgetMs = 1200,
+        [int]$SliceMs = 25
+    )
+    $stop = (Get-Date).AddMilliseconds($BudgetMs)
+    $last = $null
+    while ($true) {
+        $now = Get-SRScreenQuestion -ProcessId $ProcessId
+        if ($now) {
+            $last = $now
+            $done = $false
+            try { $done = [bool](& $Until $now) } catch { $done = $false }
+            if ($done) { return $now }
+        }
+        if ((Get-Date) -ge $stop) { return $last }
+        Start-Sleep -Milliseconds $SliceMs
+    }
+}
+
 function Invoke-SRAnswerOnScreen {
     [CmdletBinding()]
     param(
@@ -3005,22 +3050,28 @@ function Invoke-SRAnswerOnScreen {
     if ($keys.Count) {
         $n = [SRCon]::SendKeys([uint32]$ProcessId, $keys.ToArray())
         if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
-        # THE MOVES MUST LAND BEFORE THE COMMIT. Sent in one burst, ENTER can be
-        # read before the TUI has repainted the highlight, and the answer is
-        # whatever was highlighted when it arrived.
-        Start-Sleep -Milliseconds 250
-
         # 🔴 LOOK BEFORE COMMITTING. Everything above refuses rather than
         # guesses - no cursor, no arrows - and then the commit itself rested on a
         # 250 ms sleep, which is hoping rather than knowing. The screen is read
-        # once more and ENTER is only sent if the highlight is actually on the
-        # option that was asked for. This closes the window between the first
-        # read and the keystroke: the session can finish its turn, the operator
-        # can arrow manually, or the TUI can simply be slower than the sleep, and
-        # in every one of those cases the old code committed whatever happened to
-        # be highlighted. Answering the WRONG question is the failure this whole
+        # and ENTER is only sent if the highlight is actually on the option that
+        # was asked for. This closes the window between the first read and the
+        # keystroke: the session can finish its turn, the operator can arrow
+        # manually, or the TUI can simply be slower than the sleep, and in every
+        # one of those cases the old code committed whatever happened to be
+        # highlighted. Answering the WRONG question is the failure this whole
         # function is written to avoid.
-        $after = Get-SRScreenQuestion -ProcessId $ProcessId
+        #
+        # 🔑 AND IT WATCHES FOR THE HIGHLIGHT RATHER THAN SLEEPING BEFORE ONE
+        # LOOK. The moves must land before the commit - that has not changed -
+        # but "have they landed" is a question the screen answers, and it was
+        # being asked once, 250 ms late, whether or not the repaint took
+        # anything like that long. Now it is asked immediately and again until
+        # the budget runs out. The refusals below are unchanged and still fire
+        # on the last screen actually read, so a highlight that never arrives
+        # still sends nothing.
+        $after = Wait-SRScreenState -ProcessId $ProcessId -BudgetMs 1200 -Until {
+            param($S) ([int]$S.CursorAt -eq $Index)
+        }.GetNewClosure()
         if (-not $after) {
             return 'it stopped asking while the answer was being typed - nothing was sent'
         }
@@ -3100,17 +3151,65 @@ function Invoke-SRAnswerMultiOnScreen {
     $todo = New-Object System.Collections.Generic.List[object]
     foreach ($ix in ($Indexes | Sort-Object -Unique)) { if (-not $already[[int]$ix]) { $null = $todo.Add([int]$ix) } }
 
+    # 🔑 ONE KEY PER REPAINT, PACED BY THE REPAINT. This slept a flat 180 ms
+    # after every arrow, which is what made a multi-select answer take the best
+    # part of two seconds: five moves and two toggles is over a second of pure
+    # sleeping. The read at the top of the loop was always the thing that made
+    # it safe - the sleep only stopped the loop lapping the TUI and sending a
+    # second arrow before the first had landed.
+    #
+    # 🔴 SO THE OVERSHOOT IS PREVENTED DIRECTLY INSTEAD. A key is sent only when
+    # the highlight is somewhere it has not already been sent from; if the screen
+    # still reads where it did last time, the key is in flight and this looks
+    # again rather than sending another. That is the guarantee the sleep was
+    # standing in for, made explicit, and it costs a 34-130 ms read instead of a
+    # flat 180.
+    #
+    # 🪤 THE BUDGET COUNTS KEYS, NOT LOOKS. Counting iterations would let a
+    # slow repaint burn the move budget without the highlight having moved at
+    # all, and the answer would fail on a busy machine rather than being late on
+    # one. The wall clock is what bounds the looking.
+    # 🔴 A FAILED READ IS NOT A MISSING MENU, and treating it as one is a bug
+    # this loop has always had - it just never showed while the loop read once
+    # every 180 ms. Reading more often exposed it immediately: the screen read
+    # spawns a child process with its own budget, so on a busy machine it
+    # sometimes comes back empty about a menu that is plainly still there.
+    # Measured 2026-09-04 - the multi-select cases refused with "the menu went
+    # away mid-answer" on a machine running twenty sessions, while the
+    # single-select path, which waits through Wait-SRScreenState and tolerates
+    # a miss, passed every time. Get-SRScreenQuestion makes exactly this point
+    # about its own retry.
+    #
+    # So a miss is looked at again, and only the wall clock ends it.
     function Step-ToStop {
         param([int]$Target, [int]$Pid2, [int]$Budget)
-        for ($i = 0; $i -lt $Budget; $i++) {
+        $sent = 0
+        $sentFrom = -999
+        $stop = (Get-Date).AddSeconds(15)
+        while ($sent -lt $Budget) {
             $now = Get-SRScreenQuestion -ProcessId $Pid2
-            if (-not $now) { return 'the menu went away mid-answer' }
-            if ($now.CursorAt -lt 0) { return 'lost sight of the highlight mid-answer' }
-            if ([int]$now.CursorAt -eq $Target) { return $null }
-            $vk = $(if ($Target -gt [int]$now.CursorAt) { [uint16]0x28 } else { [uint16]0x26 })
+            if (-not $now -or $now.CursorAt -lt 0) {
+                if ((Get-Date) -ge $stop) {
+                    if (-not $now) { return 'the menu went away mid-answer' }
+                    return 'lost sight of the highlight mid-answer'
+                }
+                Start-Sleep -Milliseconds 25
+                continue
+            }
+            $at = [int]$now.CursorAt
+            if ($at -eq $Target) { return $null }
+            if ($sent -gt 0 -and $at -eq $sentFrom) {
+                # The last arrow has not been drawn yet. Look again; do NOT send
+                # another, or the highlight walks past what was asked for.
+                if ((Get-Date) -ge $stop) { return 'the menu stopped responding mid-answer' }
+                Start-Sleep -Milliseconds 25
+                continue
+            }
+            $sentFrom = $at
+            $vk = $(if ($Target -gt $at) { [uint16]0x28 } else { [uint16]0x26 })
             $r = [SRCon]::SendKeys([uint32]$Pid2, [uint16[]]@($vk))
             if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
-            Start-Sleep -Milliseconds 180
+            $sent++
         }
         return 'could not get the highlight where it needed to go'
     }
@@ -3120,7 +3219,19 @@ function Invoke-SRAnswerMultiOnScreen {
         if ($why) { return $why }
         $r = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@(0x0D))       # toggle, on the inferred reading
         if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
-        Start-Sleep -Milliseconds 220
+        # 🔴 AND THE TICK IS WATCHED FOR, WHICH IS NEW. This slept 220 ms and
+        # checked nothing at all, so a toggle that did not land was carried all
+        # the way to Submit and committed an answer missing an option - silently,
+        # because the only evidence would have been on a screen nobody read.
+        # Waiting for the box to actually tick is both the faster thing and the
+        # first time this step has been verified.
+        $ticked = Wait-SRScreenState -ProcessId $ProcessId -BudgetMs 1500 -Until {
+            param($S) (@($S.Ticked) -contains [int]$ix)
+        }.GetNewClosure()
+        if (-not $ticked) { return 'the menu went away mid-answer' }
+        if (-not (@($ticked.Ticked) -contains [int]$ix)) {
+            return ("option {0} would not tick - nothing was submitted" -f ($ix + 1))
+        }
     }
 
     # COMMIT LAST, and only after re-reading: Submit's index is one past the last
@@ -3172,11 +3283,19 @@ function Invoke-SRRoundMove {
         $was = "$($seen.Question)"
         $r = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@($vk))
         if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
-        Start-Sleep -Milliseconds 220
         # 🔴 VERIFIED BY WHAT IS DRAWN, not by the key having been sent. The tab
         # bar does not say which tab is active - the question underneath it does -
         # so a move is only a move if the question changed.
-        $now = Get-SRScreenQuestion -ProcessId $ProcessId
+        #
+        # 🔑 AND IT WAITS FOR THE CHANGE RATHER THAN FOR 220 ms. That number was
+        # doing two jobs and doing the second one badly: it paced the move, and
+        # it also decided when an unchanged question meant "the round ends here".
+        # A repaint slower than 220 ms therefore reported the end of the round
+        # when the round had not ended. Watching for the change is faster when
+        # there is one and more patient when there is not.
+        $now = Wait-SRScreenState -ProcessId $ProcessId -BudgetMs 900 -Until {
+            param($S) ("$($S.Question)" -ne $was)
+        }.GetNewClosure()
         if (-not $now) { return 'the round went away mid-move' }
         if ("$($now.Question)" -eq $was) {
             return 'that is as far as the round goes in that direction'
@@ -3217,16 +3336,37 @@ function Invoke-SRAnswerTypedOnScreen {
     if ($seen.CursorAt -lt 0) { return 'cannot tell which option is highlighted - answer it in the terminal' }
 
     # Walk to the editor row the same way the multi path walks to Submit: one key
-    # at a time, re-reading, never a burst against a repainting TUI.
-    for ($i = 0; $i -lt $MaxMoves; $i++) {
+    # at a time, re-reading, never a burst against a repainting TUI - and, like
+    # that path, paced by the repaint rather than by a flat 180 ms sleep. A key
+    # goes out only when the highlight is somewhere it has not already been sent
+    # from, so the loop cannot lap the TUI and overshoot the row; a read that
+    # comes back empty is looked at again rather than being taken for a menu
+    # that has gone. See the notes on Step-ToStop, which this mirrors.
+    $sent = 0
+    $sentFrom = -999
+    $walkStop = (Get-Date).AddSeconds(15)
+    while ($sent -lt $MaxMoves) {
         $now = Get-SRScreenQuestion -ProcessId $ProcessId
-        if (-not $now) { return 'the menu went away mid-answer' }
-        if ($now.CursorAt -lt 0) { return 'lost sight of the highlight mid-answer' }
-        if ([int]$now.CursorAt -eq [int]$now.FreeAt) { break }
-        $vk = $(if ([int]$now.FreeAt -gt [int]$now.CursorAt) { [uint16]0x28 } else { [uint16]0x26 })
+        if (-not $now -or $now.CursorAt -lt 0) {
+            if ((Get-Date) -ge $walkStop) {
+                if (-not $now) { return 'the menu went away mid-answer' }
+                return 'lost sight of the highlight mid-answer'
+            }
+            Start-Sleep -Milliseconds 25
+            continue
+        }
+        $at = [int]$now.CursorAt
+        if ($at -eq [int]$now.FreeAt) { break }
+        if ($sent -gt 0 -and $at -eq $sentFrom) {
+            if ((Get-Date) -ge $walkStop) { return 'the menu stopped responding mid-answer' }
+            Start-Sleep -Milliseconds 25
+            continue
+        }
+        $sentFrom = $at
+        $vk = $(if ([int]$now.FreeAt -gt $at) { [uint16]0x28 } else { [uint16]0x26 })
         $r = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@($vk))
         if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
-        Start-Sleep -Milliseconds 180
+        $sent++
     }
     $atRow = Get-SRScreenQuestion -ProcessId $ProcessId
     if (-not $atRow) { return 'the menu went away mid-answer' }
@@ -3235,12 +3375,19 @@ function Invoke-SRAnswerTypedOnScreen {
     # Characters only. enter=$false is the point of this call.
     $n = [SRCon]::Send([uint32]$ProcessId, $Text, $false)
     if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
-    Start-Sleep -Milliseconds 300
 
     # 🔒 THE ROW MUST BE HOLDING IT. Committing on faith is exactly the failure
     # this guards: an ENTER that lands on a row the text never reached declines
     # the round instead of answering it.
-    $ready = Get-SRScreenQuestion -ProcessId $ProcessId
+    #
+    # 🔑 WATCHED FOR, NOT SLEPT THROUGH. This slept a flat 300 ms and then read
+    # once - so a long answer that took longer than that to appear was refused
+    # for no reason, and a short one waited 300 ms for nothing. The check below
+    # is unchanged and still the only thing that permits the ENTER; this just
+    # stops guessing how long the row takes to fill.
+    $ready = Wait-SRScreenState -ProcessId $ProcessId -BudgetMs 2000 -Until {
+        param($S) ("$($S.FreeText)".Trim() -eq "$Text".Trim())
+    }.GetNewClosure()
     if (-not $ready) { return 'the menu went away before the answer could be committed' }
     if ($ready.FreeAt -lt 0 -or -not "$($ready.FreeText)") {
         return 'what was typed did not reach that row - nothing was committed'
