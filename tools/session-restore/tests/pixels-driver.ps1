@@ -566,6 +566,19 @@ Write-Host '--- the gestures the operator named ---'
 # chain is home - which is exactly the moment perf-driver never waits for.
 $pxDocHome = { -not $script:docPs }
 
+# Whether a sub-agent link was actually present in the profiled conversation's
+# tail today. It is a real control with a real cost; whether the operator's
+# largest conversation happens to have spawned an agent inside the last 200 KB
+# is not something this harness gets to decide, so the inventory says
+# NOT PRESENT TODAY rather than failing or quietly claiming coverage.
+$pxAgentSeen = $false
+
+# The device a synthesized mouse event needs. Looked up once, here, rather than
+# inside the first block that happens to want it - the agent link needs it too
+# and would have found it undefined whenever the fold block found no headers.
+$pxDev = $null
+try { $pxDev = [System.Windows.Input.Mouse]::PrimaryDevice } catch { }
+
 if (-not $pxBig) { Note 'not enough conversations to profile a selection' }
 else {
     # ── SWITCHING CONVERSATION ──────────────────────────────────────────────
@@ -639,8 +652,6 @@ else {
         # routing: the handler was on MouseLeftButtonUp and the FlowDocument's
         # text editor captured the mouse, so it never fired. Calling
         # Invoke-FoldToggle directly would pass a control that is wired wrong.
-        $pxDev = $null
-        try { $pxDev = [System.Windows.Input.Mouse]::PrimaryDevice } catch { }
         if (-not $pxDev) {
             Huh 'no mouse device in this process - cannot raise a real click on the fold header.'
         } else {
@@ -719,6 +730,90 @@ else {
     $pxWaitSw2 = [Diagnostics.Stopwatch]::StartNew()
     while ($script:docPs -and $pxWaitSw2.Elapsed.TotalMilliseconds -lt 15000) { Pump-Px; [System.Threading.Thread]::Sleep(1) }
     Lay-Px
+
+    # ── HOLDING THE DOWN ARROW ──────────────────────────────────────────────
+    # 🔴 "navigating up and down feels laggy" IS THIS, AND IT IS THE WORST
+    # GESTURE IN THE TOOL. There is no arrow handler at window level for the
+    # sessions column - the ListBox moves the selection itself, which raises
+    # SelectionChanged, which is Show-Selected, which is a whole transcript
+    # parse and document build. So every row you pass through on the way to the
+    # one you want starts a parse and abandons it.
+    #
+    # Eight rows, back to back, as fast as the code will take them, then the
+    # wait for the document that finally survives.
+    $null = Measure-Px 'hold the down arrow: step through 8 conversations' `
+        {
+            for ($pxAi = 0; $pxAi -lt 8; $pxAi++) {
+                $pxNext = $ui.SessionList.SelectedIndex + 1
+                if ($pxNext -lt @($ui.SessionList.Items).Count) { $ui.SessionList.SelectedIndex = $pxNext }
+            }
+        } `
+        -Settled $pxDocHome `
+        -Before { $script:selId = $null; $ui.SessionList.SelectedItem = (Get-PxRow $pxOtherId); Pump-Px } `
+        -Runs 3
+
+    # ── LOAD EARLIER ────────────────────────────────────────────────────────
+    # The one deliberately expensive gesture, wired twice: an 'L' keypress and a
+    # clickable line at the top of the document. Both double the tail.
+    $pxTailKeep = $script:tailBytes
+    $null = Measure-Px 'load earlier (doubles the transcript tail)' `
+        { $script:tailBytes = $script:tailBytes * 2; Update-Document } `
+        -Settled $pxDocHome `
+        -Before { $script:tailBytes = $pxTailKeep; Pump-Px } -Runs 3
+    $script:tailBytes = $pxTailKeep
+    $script:docKey = ''
+    Update-Document
+    $pxW1 = [Diagnostics.Stopwatch]::StartNew()
+    while ($script:docPs -and $pxW1.Elapsed.TotalMilliseconds -lt 15000) { Pump-Px; [System.Threading.Thread]::Sleep(1) }
+
+    # ── DRILLING INTO A SUB-AGENT AND BACK OUT ──────────────────────────────
+    # 🔴 THE AGENT LINK IS ONE OF THE CONTROLS perf-driver's COVERAGE CHECK
+    # CANNOT SEE. It is built in code and wired with
+    # `$op.Add_PreviewMouseLeftButtonDown`, and that suite's pattern only
+    # recovers a code-built control when the handler is Add_Click AND names a
+    # function. So this, the fold header, 'load earlier' and the drill-out
+    # button are outside its count entirely - not on its debt list, not in its
+    # total. Opening a sub-agent reads a whole second transcript.
+    function Find-PxTagged { param([string]$Prop)
+        $pxHits = New-Object System.Collections.Generic.List[object]
+        $pxSt2 = New-Object System.Collections.Generic.Stack[object]
+        $pxSt2.Push($ui.PaneDoc)
+        while ($pxSt2.Count) {
+            $pxE3 = $pxSt2.Pop()
+            $pxTg = $null
+            try { $pxTg = $pxE3.Tag } catch { }
+            if ($pxTg -and $pxTg.PSObject -and $pxTg.PSObject.Properties[$Prop]) { $null = $pxHits.Add($pxE3) }
+            $pxC2 = 0
+            try { $pxC2 = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($pxE3) } catch { }
+            for ($pxCj = 0; $pxCj -lt $pxC2; $pxCj++) { $pxSt2.Push([System.Windows.Media.VisualTreeHelper]::GetChild($pxE3, $pxCj)) }
+        }
+        return ,$pxHits
+    }
+    $pxAgents = Find-PxTagged 'Sub'
+    if ($pxAgents.Count) { $pxAgentSeen = $true }
+    if (-not $pxAgents.Count) {
+        Note 'no sub-agent link in this conversation tail - the drill-in cannot be measured on this machine today'
+    } elseif (-not $pxDev) {
+        Huh 'no mouse device - cannot raise a real click on the agent link'
+    } else {
+        $pxLink = $pxAgents[0]
+        $null = Measure-Px 'open a sub-agent transcript (drill in)' `
+            {
+                $pxE4 = New-Object System.Windows.Input.MouseButtonEventArgs($pxDev, 0, [System.Windows.Input.MouseButton]::Left)
+                $pxE4.RoutedEvent = [System.Windows.UIElement]::PreviewMouseLeftButtonDownEvent
+                $pxLink.RaiseEvent($pxE4)
+            } -Settled $pxDocHome -Runs 2
+        if ($script:agentOpen) {
+            $null = Measure-Px 'come back out of the sub-agent' { Close-AgentDoc } -Settled $pxDocHome -Runs 2
+        } else {
+            Huh 'the agent link did not open a sub-agent - the drill-out could not be measured'
+        }
+        $script:docKey = ''
+        Show-Selected -Force
+        $pxW3 = [Diagnostics.Stopwatch]::StartNew()
+        while ($script:docPs -and $pxW3.Elapsed.TotalMilliseconds -lt 15000) { Pump-Px; [System.Threading.Thread]::Sleep(1) }
+        Lay-Px
+    }
 
     # ── SCROLLING THE READING PANE ──────────────────────────────────────────
     $pxSv = Get-PaneScroller
@@ -799,7 +894,435 @@ $null = Measure-Px 'open the settings panel' `
 try { $ui.SetCancel.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))) } catch { }
 Pump-Px
 
+# ---------------------------------------------------------------------------
+# THE REST OF THE SURFACE. Everything above is a control the operator named;
+# these are the rest of the ones that can be pressed without writing anything.
+# ---------------------------------------------------------------------------
+function Click-Px { param($El)
+    $El.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+}
+# The strip controls are TextBlocks wired to mouse events, not Buttons, so they
+# take the routed mouse event rather than Click. Same shape as the fold header.
+$pxMouse = $null
+try { $pxMouse = [System.Windows.Input.Mouse]::PrimaryDevice } catch { }
+function Tap-Px { param($El, [string]$Ev)
+    if (-not $pxMouse) { return }
+    $pxMe = New-Object System.Windows.Input.MouseButtonEventArgs($pxMouse, 0, [System.Windows.Input.MouseButton]::Left)
+    switch ($Ev) {
+        'up'      { $pxMe.RoutedEvent = [System.Windows.UIElement]::MouseLeftButtonUpEvent }
+        'down'    { $pxMe.RoutedEvent = [System.Windows.UIElement]::MouseLeftButtonDownEvent }
+        default   { $pxMe.RoutedEvent = [System.Windows.UIElement]::PreviewMouseLeftButtonDownEvent }
+    }
+    $El.RaiseEvent($pxMe)
+}
+
+# --- the two pane strips: sort, filter, fold, clear -------------------------
+$null = Measure-Px 'rail strip: change the project sort order' { Tap-Px $ui.RailSort 'down' } -Runs 5
+$null = Measure-Px 'rail strip: show only projects with something live' { Tap-Px $ui.RailOnlyLive 'down' } -Runs 4
+Tap-Px $ui.RailOnlyLive 'down'; Pump-Px
+$null = Measure-Px 'rail strip: show the shelved projects' { Tap-Px $ui.RailShelved 'down' } -Runs 4
+Tap-Px $ui.RailShelved 'down'; Pump-Px
+$null = Measure-Px 'rail strip: clear the project filter' { Tap-Px $ui.RailClear 'up' } -Runs 5
+$null = Measure-Px 'sessions strip: change the sort order' { Tap-Px $ui.ListSort 'down' } -Runs 5
+# 🪤 THE DOT STRIP READS 1,4 ms AND THAT IS THE HANDLER REFUSING, NOT THE
+# HANDLER RUNNING. StripList's handler calls Get-ClickedRow on the event's
+# OriginalSource; raising the event on the ItemsControl itself hands it the
+# container, no row is found, and it returns. It is listed as NOT REACHABLE in
+# the inventory rather than as a 1,4 ms control - the number would be a lie in
+# the direction that flatters the tool.
+$pxStrip = Measure-Px 'the dot strip (NOT REACHABLE - see the note)' { Tap-Px $ui.StripList 'preview' } -Runs 3
+if ($pxStrip -and $pxStrip.Laid -lt 5) { Note 'confirmed: the dot strip handler returned without finding a row, so that row is not a measurement' }
+
+# --- the permission dropdown ------------------------------------------------
+if (@($ui.SetPerm.Items).Count -ge 2) {
+    $null = Measure-Px 'change the permission mode in the settings panel' `
+        { $ui.SetPerm.SelectedIndex = (($ui.SetPerm.SelectedIndex + 1) % @($ui.SetPerm.Items).Count) } -Runs 5
+}
+
+# --- the window frame -------------------------------------------------------
+# 🪤 WinClose is NOT here and never will be: it closes the window this suite is
+# measuring. Maximise and minimise are state changes and safe.
+$pxState = $window.WindowState
+$null = Measure-Px 'the maximise glyph' { Click-Px $ui.WinMax } `
+    -Before { $window.WindowState = 'Normal'; Pump-Px } -Runs 5
+$null = Measure-Px 'the minimise glyph' { Click-Px $ui.WinMin } `
+    -Before { $window.WindowState = 'Normal'; Pump-Px } -Runs 5
+$window.WindowState = $pxState
+Pump-Px
+
+# --- folding a whole column away (also Ctrl+1 / Ctrl+2) ---------------------
+$null = Measure-Px 'fold the projects column away (Ctrl+1)' { Invoke-ColumnFold -Which 'rail' } -Runs 5
+Invoke-ColumnFold -Which 'rail'; Pump-Px
+$null = Measure-Px 'fold the sessions column away (Ctrl+2)' { Invoke-ColumnFold -Which 'list' } -Runs 5
+Invoke-ColumnFold -Which 'list'; Pump-Px
+
+# --- the other two search boxes --------------------------------------------
+$null = Measure-Px 'type one letter into the PROJECTS search box' `
+    { $ui.RailSearch.Text = ($ui.RailSearch.Text + 'a') } `
+    -Settled { -not $script:searchTimer.IsEnabled } -Before { $ui.RailSearch.Text = ''; Pump-Px } -Runs 4
+$ui.RailSearch.Text = ''; Pump-Px
+$null = Measure-Px 'type one letter into the SESSIONS search box' `
+    { $ui.ListSearch.Text = ($ui.ListSearch.Text + 'a') } `
+    -Settled { -not $script:searchTimer.IsEnabled } -Before { $ui.ListSearch.Text = ''; Pump-Px } -Runs 4
+$ui.ListSearch.Text = ''; Pump-Px
+
+# --- the running-shells panel ----------------------------------------------
+$null = Measure-Px 'hide or show the running-shells panel' { Click-Px $ui.ShellFold } -Runs 5
+
+# --- send-to-many (opened and closed, never sent) ---------------------------
+$null = Measure-Px 'open send-to-many' { Click-Px $ui.Broadcast } `
+    -Before { try { Click-Px $ui.CastCancel } catch { }; Pump-Px } -Runs 4
+$null = Measure-Px 'type into the send-to-many box' { $ui.CastText.Text = ($ui.CastText.Text + 'a') } -Runs 5
+$null = Measure-Px 'fill the morning-compact brief' { Click-Px $ui.CastCompact } -Runs 4
+$null = Measure-Px 'close send-to-many' { Click-Px $ui.CastCancel } `
+    -Before { try { Click-Px $ui.Broadcast } catch { }; Pump-Px } -Runs 4
+try { Click-Px $ui.CastCancel } catch { }
+Pump-Px
+
+# --- the skill picker (filters a list; types nothing anywhere) --------------
+$null = Measure-Px 'type / into the composer to raise the skill picker' `
+    { $ui.SendBox.Text = '/' } -Before { $ui.SendBox.Text = ''; Pump-Px } -Runs 5
+$null = Measure-Px 'filter the skill picker one more letter' `
+    { $ui.SendBox.Text = '/co' } -Before { $ui.SendBox.Text = '/'; Pump-Px } -Runs 5
+$ui.SendBox.Text = ''
+Pump-Px
+
+# --- the session manager surface -------------------------------------------
+$ui.ModeManage.IsChecked = $true
+Pump-Px
+# 🪤 THE CHIP IS RESET TO A DIFFERENT ONE, NOT TO ITSELF. Resetting to MgrAll
+# and then pressing MgrAll raises no Checked event at all - a RadioButton that
+# is already on does not fire - so that row read 0,2 ms and measured nothing.
+# Same family of fault as the orphan row: a bench that looks fast because the
+# gesture never happened.
+foreach ($pxChip in @('MgrAll', 'MgrTicked', 'MgrRunning', 'MgrNeeds')) {
+    $pxChipEl = $ui[$pxChip]
+    $pxResetTo = $(if ($pxChip -eq 'MgrAll') { 'MgrTicked' } else { 'MgrAll' })
+    $pxResetEl = $ui[$pxResetTo]
+    $null = Measure-Px ("manager filter chip: " + $pxChip) `
+        { $pxChipEl.IsChecked = $true } `
+        -Before { $pxResetEl.IsChecked = $true; Pump-Px } -Runs 4
+}
+$ui['MgrAll'].IsChecked = $true
+Pump-Px
+foreach ($pxHdr in @('HdrName', 'HdrLane', 'HdrSaid', 'HdrAge', 'HdrLogon')) {
+    $pxHdrEl = $ui[$pxHdr]
+    $null = Measure-Px ("manager sort header: " + $pxHdr) { Tap-Px $pxHdrEl 'down' } -Runs 4
+}
+$null = Measure-Px 'manager: show the older conversations too' `
+    { $script:showOlder = -not $script:showOlder; Build-Manager } -Runs 4
+$ui.ModeWork.IsChecked = $true
+Pump-Px
+
+# --- resizing: the window, and the two splitters ---------------------------
+# A GridSplitter drag ends in a column width change, which is what this sets -
+# and a drag is a stream of them, so the cost of ONE is the cost of a frame of
+# dragging. The window resize is the same question for the whole surface.
+$pxRailW = $ui.RailCol.Width
+$pxListW = $ui.ListCol.Width
+$null = Measure-Px 'drag the projects splitter one step' `
+    { $ui.RailCol.Width = (New-Object System.Windows.GridLength (($ui.RailCol.Width.Value + 6))) } -Runs 6
+$null = Measure-Px 'drag the sessions splitter one step' `
+    { $ui.ListCol.Width = (New-Object System.Windows.GridLength (($ui.ListCol.Width.Value + 6))) } -Runs 6
+$ui.RailCol.Width = $pxRailW
+$ui.ListCol.Width = $pxListW
+
+# ── A/B: THE LINE BREAKER ───────────────────────────────────────────────────
+# 🔑 A HYPOTHESIS WITH A NUMBER ATTACHED, WHICH IS THE ONLY KIND WORTH SENDING.
+#
+# Dragging a splitter costs 250-330 ms and its HANDLER is 0,3 ms of that - so it
+# is all layout, and the lists are virtualized (VirtualizingPanel.IsVirtualizing
+# with Recycling, window2.xaml:884), so it is not them. What is left in that
+# column is the reading pane: a FlowDocumentScrollViewer, which does not
+# virtualize, holding 5-10 screens of document. Narrowing the column re-flows
+# every paragraph in it.
+#
+# And Build-ReadDocument turns on IsOptimalParagraphEnabled (sessions-window.ps1
+# :4043) - WPF's Knuth-Plass breaker, which optimises over the whole paragraph
+# instead of filling each line greedily. It is the better-looking option and it
+# is documented as the slower one. So: same document, same re-flow, breaker on
+# and off, measured back to back. If it is free, the hypothesis is dead and the
+# splitter cost is somewhere else; if it is not, this is a one-property change
+# with a measured saving.
+if ($ui.PaneDoc.Document) {
+    $pxOptWas = $ui.PaneDoc.Document.IsOptimalParagraphEnabled
+    # Nudging PagePadding by a pixel invalidates the document's measure without
+    # changing anything a reader would see - a full re-flow, on demand.
+    function Reflow-Px {
+        $pxD = $ui.PaneDoc.Document
+        $pxPp = $pxD.PagePadding
+        $pxD.PagePadding = New-Object System.Windows.Thickness $pxPp.Left, $pxPp.Top, ($pxPp.Right + 1.0), $pxPp.Bottom
+    }
+    $pxOn = Measure-Px 'A/B: re-flow the whole document, optimal paragraph ON (what ships)' `
+        { Reflow-Px } -Before { $ui.PaneDoc.Document.IsOptimalParagraphEnabled = $true; Pump-Px } -Runs 7
+    $pxOff = Measure-Px 'A/B: re-flow the whole document, optimal paragraph OFF' `
+        { Reflow-Px } -Before { $ui.PaneDoc.Document.IsOptimalParagraphEnabled = $false; Pump-Px } -Runs 7
+    $ui.PaneDoc.Document.IsOptimalParagraphEnabled = $pxOptWas
+    Pump-Px
+    if ($pxOn -and $pxOff) {
+        $pxSave = $pxOn.Laid - $pxOff.Laid
+        if ($pxSave -gt 5) {
+            Note ("the optimal-paragraph line breaker costs {0:N0} ms of every re-flow ({1:N0} -> {2:N0} ms). Every splitter drag frame, every window resize and every text-size change pays it." -f `
+                  $pxSave, $pxOn.Laid, $pxOff.Laid)
+        } else {
+            Note ("the line breaker is NOT the cost: {0:N0} ms on vs {1:N0} ms off. That hypothesis is dead - the re-flow is expensive for another reason." -f `
+                  $pxOn.Laid, $pxOff.Laid)
+        }
+    }
+}
+# 🪤 $window.Width, NOT the layout constant. Assigning to $pxW inside the
+# scriptblock would write a LOCAL - a scriptblock invoked with & gets a child
+# scope - so the width would never change and the bench would measure nothing.
+# What is under test here is the SizeChanged handler, and setting the window's
+# own Width raises it whether or not the window is on screen.
+$null = Measure-Px 'resize the window by 40 px (the SizeChanged handler)' `
+    { $window.Width = 1520.0 } `
+    -Before { $window.Width = 1480.0; Pump-Px } -Runs 5
+$window.Width = $pxW
+Pump-Px
+
 $pxBenchKeys = [SRKeyProbe]::Stop()
+
+# ===========================================================================
+# WHERE Build-Sessions SPENDS ITS 350 ms - ATTRIBUTED FROM OUTSIDE THE LIB.
+# ===========================================================================
+# 🔴 IT IS THE SINGLE MOST EXPENSIVE THING IN THE WINDOW AND IT IS BEHIND MOST
+# OF THE TABLE ABOVE. A project pick, every search keystroke, a sort click, a
+# band click and the live-writer tick all end in it. So before writing a work
+# order that says "make it faster", this says WHICH PART.
+#
+# 🪤 NO LIB FILE IS TOUCHED. Every helper it calls is wrapped here, timed, and
+# unwrapped in the same block. The wrapper's own cost is measured against a
+# control so it can be subtracted rather than assumed - about 2.000 calls go
+# through it and a stopwatch is not free.
+$pxProfile = ("$($env:SR_PIX_PROFILE)".Trim() -eq '1')
+if ($pxProfile) {
+    Write-Host ''
+    Write-Host '--- where Build-Sessions spends it ---'
+    $pxHelpers = @('Test-OnSurface', 'Sort-SessionRows', 'Get-Title', 'Get-RowSubAgents',
+                   'Get-RowScreenSig', 'Get-AgeTicks', 'Get-AgeLabel', 'Get-CtxBrush',
+                   'Get-ProjectLabel', 'Get-Band')
+    $pxHT = @{}
+    $pxHO = @{}
+    foreach ($pxHn in $pxHelpers) {
+        if (-not (Test-Path -LiteralPath ("function:" + $pxHn))) { continue }
+        $pxHT[$pxHn] = @{ N = 0; Ms = 0.0 }
+        $pxHO[$pxHn] = (Get-Item -LiteralPath ("function:" + $pxHn)).ScriptBlock
+        $pxHsrc = @"
+        `$pxTw = [Diagnostics.Stopwatch]::StartNew()
+        try { & `$pxHO['$pxHn'] @args }
+        finally { `$pxTw.Stop(); `$pxHT['$pxHn'].N++; `$pxHT['$pxHn'].Ms += `$pxTw.Elapsed.TotalMilliseconds }
+"@
+        Set-Item -Path ("function:" + $pxHn) -Value ([scriptblock]::Create($pxHsrc))
+    }
+
+    $pxBsRuns = 5
+    $pxBsBest = [double]::MaxValue
+    for ($pxBi2 = 0; $pxBi2 -lt $pxBsRuns; $pxBi2++) {
+        $pxBw2 = [Diagnostics.Stopwatch]::StartNew()
+        Build-Sessions
+        $pxBw2.Stop()
+        if ($pxBw2.Elapsed.TotalMilliseconds -lt $pxBsBest) { $pxBsBest = $pxBw2.Elapsed.TotalMilliseconds }
+    }
+    foreach ($pxHn2 in @($pxHO.Keys)) { Set-Item -Path ("function:" + $pxHn2) -Value $pxHO[$pxHn2] }
+
+    # The control: what a wrapped call costs when the body does nothing. One
+    # stopwatch plus a hashtable update, times however many calls were made.
+    $pxCtrlN = 0
+    foreach ($pxHk in $pxHT.Keys) { $pxCtrlN += $pxHT[$pxHk].N }
+    $pxCtrlOne = [double]::MaxValue
+    for ($pxCk = 0; $pxCk -lt 7; $pxCk++) {
+        $pxCw = [Diagnostics.Stopwatch]::StartNew()
+        for ($pxCn = 0; $pxCn -lt 2000; $pxCn++) {
+            $pxTw2 = [Diagnostics.Stopwatch]::StartNew(); $pxTw2.Stop()
+        }
+        $pxCw.Stop()
+        if ($pxCw.Elapsed.TotalMilliseconds -lt $pxCtrlOne) { $pxCtrlOne = $pxCw.Elapsed.TotalMilliseconds }
+    }
+    $pxWrapCost = ($pxCtrlOne / 2000.0) * $pxCtrlN
+
+    Note ("Build-Sessions best of {0}: {1:N0} ms, over {2} conversations in the model." -f `
+          $pxBsRuns, $pxBsBest, $script:model.Count)
+    Note ("{0} wrapped helper calls in one rebuild; the wrappers themselves cost about {1:N0} ms of the figures below." -f `
+          $pxCtrlN, $pxWrapCost)
+    $pxAcc2 = 0.0
+    foreach ($pxHk2 in @($pxHT.Keys | Sort-Object { -$pxHT[$_].Ms })) {
+        if (-not $pxHT[$pxHk2].N) { continue }
+        $pxPer = $pxHT[$pxHk2].Ms / $pxBsRuns
+        $pxAcc2 += $pxPer
+        Note ("  {0,-20} {1,6} call(s)/rebuild {2,8:N1} ms/rebuild  ({3,4:N1}% of it)" -f `
+              $pxHk2, [int]($pxHT[$pxHk2].N / $pxBsRuns), $pxPer, (100.0 * $pxPer / [Math]::Max($pxBsBest, 1)))
+    }
+    Note ("  {0,-20} {1,38:N1} ms/rebuild  ({2,4:N1}% of it)" -f 'EVERYTHING ELSE', ($pxBsBest - $pxAcc2),
+          (100.0 * ($pxBsBest - $pxAcc2) / [Math]::Max($pxBsBest, 1)))
+    Note  '  "everything else" is the loop itself: one PSCustomObject with ~30 properties per row, most of'
+    Note  '  them $(if ...) sub-expressions, built for every conversation on the surface on every rebuild.'
+}
+
+# ===========================================================================
+# THE INVENTORY. EVERY WIRED HANDLER IN THE WINDOW, ACCOUNTED FOR.
+# ===========================================================================
+# 🔴 perf-driver HAS A COVERAGE CHECK AND IT CANNOT SEE NINE OF THESE.
+#
+# Its detector reads the window source for `$ui.X.Add_<event>`, `$ui[..]
+# .Add_<event>`, `$window.Add_<event>`, and - for controls built in code - only
+# `$something.Add_Click({ param(...) SomeFunction`. That last pattern recovers
+# exactly two sites: Invoke-Answer and Invoke-AskMove. It therefore does NOT see
+# the fold caption, the sub-agent link, the drill-out button, 'load earlier',
+# the inner-scroller wheel handler, the two context-menu factories, the spawn
+# dialog's Escape key, or the launch timer - because none of those is an
+# Add_Click naming a function.
+#
+# The comment in that file says widening the pattern fixed exactly this ("the
+# fold header, 'load earlier' and the agent links ... had never been timed by
+# anything"). It widened the $ui side. The code-built side is still nine sites
+# short, and those sites are not on its debt list either, because a control it
+# cannot see cannot be counted as owed.
+#
+# So this map is built from ALL 80 Add_ sites, and every one has a verdict:
+# the bench that covers it, or the reason it may not be run.
+$PX_SURFACE = @{
+    # --- reading pane ---
+    'PaneTools'        = 'Steps: cycle the button'
+    'PaneZoom'         = 'the text-size control'
+    'PaneSettings'     = 'open the settings panel'
+    'SetCancel'        = 'open the settings panel (closed in its -Before)'
+    'SetPerm'          = 'change the permission mode in the settings panel'
+    'PaneDoc'          = 'resize the window by 40 px (its SizeChanged)'
+    'ShellFold'        = 'hide or show the running-shells panel'
+    'Shell'            = 'resize the window by 40 px (its SizeChanged)'
+    'fold caption'     = 'open a folded block of steps / toggle that block again'
+    'agent link'       = 'open a sub-agent transcript (drill in)'
+    'drill-out button' = 'come back out of the sub-agent'
+    'load earlier'     = 'load earlier (doubles the transcript tail)'
+    # --- the two columns ---
+    'SessionList'      = 'switch to another conversation / hold the down arrow'
+    'RailList'         = 'pick a project in the rail'
+    'Search'           = 'type one letter into the search box'
+    'RailSearch'       = 'type one letter into the PROJECTS search box'
+    'ListSearch'       = 'type one letter into the SESSIONS search box'
+    'RailSort'         = 'rail strip: change the project sort order'
+    'RailOnlyLive'     = 'rail strip: show only projects with something live'
+    'RailShelved'      = 'rail strip: show the shelved projects'
+    'RailClear'        = 'rail strip: clear the project filter'
+    'ListSort'         = 'sessions strip: change the sort order'
+    'RailFold'         = 'fold the projects column away (Ctrl+1)'
+    'RailOpen'         = 'fold the projects column away (Ctrl+1)'
+    'ListFold'         = 'fold the sessions column away (Ctrl+2)'
+    'ListOpen'         = 'fold the sessions column away (Ctrl+2)'
+    'RailSplit'        = 'drag the projects splitter one step'
+    'ListSplit'        = 'drag the sessions splitter one step'
+    # --- the manager ---
+    'ModeWork'         = 'switch back to the work surface'
+    'ModeManage'       = 'switch to the session manager'
+    'MgrAll'           = 'manager filter chip: MgrAll'
+    'MgrTicked'        = 'manager filter chip: MgrTicked'
+    'MgrRunning'       = 'manager filter chip: MgrRunning'
+    'MgrNeeds'         = 'manager filter chip: MgrNeeds'
+    'HdrName'          = 'manager sort header: HdrName'
+    'HdrLane'          = 'manager sort header: HdrLane'
+    'HdrSaid'          = 'manager sort header: HdrSaid'
+    'HdrAge'           = 'manager sort header: HdrAge'
+    'HdrLogon'         = 'manager sort header: HdrLogon'
+    # --- send-to-many, composer, frame ---
+    'Broadcast'        = 'open send-to-many'
+    'CastCancel'       = 'close send-to-many'
+    'CastCompact'      = 'fill the morning-compact brief'
+    'CastText'         = 'type into the send-to-many box'
+    'SendBox'          = 'type / into the composer to raise the skill picker'
+    'WinMax'           = 'the maximise glyph'
+    'WinMin'           = 'the minimise glyph'
+    # 🪤 ' / ' IS THE SEPARATOR THE CHECK SPLITS ON. Commas are not, and this
+    # entry used them - so a control that IS covered three times over failed the
+    # gate. Written down because the next person adding an entry will reach for
+    # a comma too.
+    'window keys'      = 'fold the projects column away (Ctrl+1) / fold the sessions column away (Ctrl+2) / load earlier / manager: show the older conversations'
+    'window SizeChanged' = 'resize the window by 40 px'
+
+    # --- NOT REACHABLE: the handler refuses without something this harness
+    #     cannot synthesize. Distinguished from EXCUSED on purpose: excused
+    #     means "would do harm", this means "would measure a refusal".
+    'StripList'        = 'NOT REACHABLE: Get-ClickedRow on the OriginalSource finds no row when the event is raised on the container. Measuring it would time the early return.'
+    'SkillList'        = 'NOT REACHABLE: same shape - the pick is per rendered row.'
+    'CastList'         = 'NOT REACHABLE: same shape - the tick is per rendered row.'
+    'inner wheel'      = 'NOT REACHABLE here: the handler is on a ScrollViewer inside an OPEN fold, and needs a real wheel delta routed through it.'
+    'SheetB1'          = 'NOT REACHABLE: only exists while a modal confirmation sheet is up, and raising one blocks on a human.'
+    'SheetB2'          = 'NOT REACHABLE: as SheetB1.'
+    'SheetB3'          = 'NOT REACHABLE: as SheetB1.'
+    'spawn Escape'     = 'NOT REACHABLE: belongs to the spawn dialog, whose ShowDialog never returns without a human.'
+
+    # --- EXCUSED: running it would act on the operator's live machine. ---
+    'SendBtn'          = 'EXCUSED: types into a live session.'
+    'AskFreeSend'      = 'EXCUSED: types an answer into a live session.'
+    'AskFree'          = 'EXCUSED: its PreviewKeyDown commits an answer on Enter.'
+    'PaneCompact'      = 'EXCUSED: types /compact into a live session.'
+    'PaneStop'         = 'EXCUSED: presses Esc in a live session and stops its turn.'
+    'PaneGoTo'         = 'EXCUSED: raises a real terminal window.'
+    'PaneRelaunch'     = 'EXCUSED: kills and relaunches a conversation.'
+    'PaneWorktree'     = 'EXCUSED: opens a modal dialog.'
+    'NewSession'       = 'EXCUSED: ShowDialog never returns without a human.'
+    'CastSend'         = 'EXCUSED: types into every ticked session at once.'
+    'SetApply'         = 'EXCUSED: writes per-session settings and may relaunch.'
+    'Rescan'           = 'EXCUSED: saves the registry and rescans.'
+    'SaveBtn'          = 'EXCUSED: writes the operator registry.'
+    'RelaunchSessions' = 'EXCUSED: kills live claude processes.'
+    'OpenNotRunning'   = 'EXCUSED: launches every conversation that is not running.'
+    'SignIn'           = 'EXCUSED: opens an interactive sign-in and then relaunches.'
+    'ManageList'       = 'EXCUSED: a click on a row can tick a conversation (Set-TickOn), which changes what comes back at logon.'
+    'Invoke-Answer'    = 'EXCUSED: sends a decision into a live session.'
+    'Invoke-AskMove'   = 'EXCUSED: walks a live round with arrow keys.'
+    'manager menu'     = 'EXCUSED: its items launch, kill and rename.'
+    'rail menu'        = 'EXCUSED: shelving a project writes the config.'
+    'WinClose'         = 'EXCUSED: closes the window this suite is measuring.'
+    'launch timer'     = 'EXCUSED: it is the timer that OPENS SESSIONS.'
+    # --- lifecycle, not gestures ---
+    'window lifecycle' = 'NOT A CONTROL: Closing, Closed, ContentRendered, SourceInitialized, StateChanged.'
+}
+
+if (-not $pxAgentSeen) {
+    $PX_SURFACE['agent link']       = 'NOT PRESENT TODAY: the profiled conversation tail has no sub-agent block. The control is measurable; it was not on screen.'
+    $PX_SURFACE['drill-out button'] = 'NOT PRESENT TODAY: as the agent link - there was nothing to come back out of.'
+}
+
+$pxMeasuredNames = @{}
+foreach ($pxRn in $pxRows.ToArray()) { $pxMeasuredNames[$pxRn.Name] = $true }
+$pxCovMeasured = 0; $pxCovExcused = 0; $pxCovUnreach = 0; $pxCovBroken = @()
+foreach ($pxKey in $PX_SURFACE.Keys) {
+    $pxV = "$($PX_SURFACE[$pxKey])"
+    if ($pxV -like 'EXCUSED*') { $pxCovExcused++; continue }
+    if ($pxV -like 'NOT REACHABLE*' -or $pxV -like 'NOT A CONTROL*' -or $pxV -like 'NOT PRESENT*') { $pxCovUnreach++; continue }
+    $pxCovMeasured++
+    # 🔴 AND THE MAP IS CHECKED AGAINST THE TABLE, so it cannot name a bench
+    # that does not exist. That is the failure mode of perf-driver's map -
+    # nothing there requires the value to be findable, so an entry can name a
+    # bench that was renamed or deleted and the map still reads as coverage.
+    #
+    # 🪤 AN ENTRY MAY NAME SEVERAL BENCHES, separated by ' / ', because one
+    # control genuinely has more than one gesture - SessionList is both the
+    # click and the arrow. The first version of this took the whole string as
+    # one name and failed three honest entries; a check that fails on correct
+    # input gets switched off exactly as fast as one that passes on wrong input.
+    $pxFound2 = $false
+    foreach ($pxAlt in (($pxV -split ' / '))) {
+        $pxNeedle = ($pxAlt -split ' \(')[0].Trim()
+        if (-not $pxNeedle) { continue }
+        foreach ($pxMn in $pxMeasuredNames.Keys) { if ($pxMn -like ('*' + $pxNeedle + '*')) { $pxFound2 = $true; break } }
+        if ($pxFound2) { break }
+    }
+    if (-not $pxFound2 -and -not $pxOnly) { $pxCovBroken += ('{0} -> "{1}"' -f $pxKey, $pxV) }
+}
+Write-Host ''
+Write-Host '=== the surface, accounted for ==='
+Write-Host ("  {0} entries: {1} measured, {2} excused (would act on the live machine), {3} not reachable / not a control." -f `
+    $PX_SURFACE.Count, $pxCovMeasured, $pxCovExcused, $pxCovUnreach) -ForegroundColor Gray
+Write-Host  '  Built from all 80 Add_ handler sites in sessions-window.ps1, including the eleven built in code' -ForegroundColor DarkGray
+Write-Host  '  that perf-driver.ps1 cannot see - it recovers a code-built control only when the handler is an' -ForegroundColor DarkGray
+Write-Host  '  Add_Click naming a function, which is two of the eleven.' -ForegroundColor DarkGray
+if ($pxCovBroken.Count) {
+    Fail ("{0} inventory entry(ies) name a bench that did not run: {1}" -f $pxCovBroken.Count, ($pxCovBroken -join '; '))
+} elseif (-not $pxOnly) {
+    Pass 'every inventory entry that claims a bench names one that actually ran'
+}
 
 # ===========================================================================
 # WHAT THE WINDOW COSTS WHEN NOBODY TOUCHES IT.

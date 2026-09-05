@@ -46,6 +46,12 @@ param(
     # Seconds to hold still and watch what the window does to itself with no
     # gesture at all. 0 = skip. See the idle-tax section in the driver.
     [int]$Idle = 0,
+    # Attribute Build-Sessions' cost across the helpers it calls, by wrapping
+    # them in the driver. Touches no lib file. Off by default - it adds a
+    # rebuild pass and puts a stopwatch on ~2.000 calls.
+    # 🪤 NOT -Profile. $Profile is a PowerShell automatic variable, and a
+    # parameter of that name shadows it inside this script.
+    [switch]$ProfileBuild,
     [string]$Driver = 'pixels-driver.ps1',
     [string]$GuiFile = 'sessions-window.ps1'
 )
@@ -140,12 +146,13 @@ try {
     $env:SR_PIX_ONLY      = $Only
     $env:SR_PIX_RUNS      = ('{0}' -f $Runs)
     $env:SR_PIX_IDLE      = ('{0}' -f $Idle)
+    $env:SR_PIX_PROFILE   = $(if ($ProfileBuild) { '1' } else { '' })
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $harness -NoScan 2>&1
     $code = $LASTEXITCODE
     $out | ForEach-Object { Write-Host $_ }
 }
 finally {
-    foreach ($v in 'SR_PIX_INJECT', 'SR_PIX_INJECT_AT', 'SR_PIX_ONLY', 'SR_PIX_RUNS', 'SR_PIX_IDLE') {
+    foreach ($v in 'SR_PIX_INJECT', 'SR_PIX_INJECT_AT', 'SR_PIX_ONLY', 'SR_PIX_RUNS', 'SR_PIX_IDLE', 'SR_PIX_PROFILE') {
         Remove-Item ("Env:\{0}" -f $v) -ErrorAction SilentlyContinue
     }
 }
