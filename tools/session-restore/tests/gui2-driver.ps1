@@ -3502,6 +3502,29 @@ Write-Host '--- end to end: how long until you SEE something ---'
 # click, parse, build, on screen. Same for a session writing a line.
 Build-Sessions
 $e2eRows = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and "$($_.Row.S.jsonl)" -and (Test-Path -LiteralPath "$($_.Row.S.jsonl)") })
+# 🔴 THE ROW UNDER TEST IS CHOSEN BY ITS DATA, NOT BY ITS POSITION.
+#
+# This block used to take $e2eRows[0] - whatever happened to be top of the
+# sessions list. On a machine with 34 live conversations that is a different
+# row on every run, and about one run in three it was a session whose tail is
+# all folded tool traffic: the document came out at 2 blocks and 92 characters
+# and "the only text is the pane's own truncation notice" went red, correctly,
+# about a pane that was fine.
+#
+# 🪤 AN INTERMITTENT SUITE IS WORSE THAN A MISSING ONE. It teaches whoever
+# inherits it to re-run until green, and that is how a real regression gets
+# waved through. So the pick is the LARGEST TRANSCRIPT ON DISK - a property of
+# the data, stable between runs minutes apart, and immune to any future change
+# in how the sessions column sorts.
+function Get-E2EBiggest { param($Rows)
+    $best = $null; $bestLen = -1
+    foreach ($e in @($Rows)) {
+        $len = 0
+        try { $len = (Get-Item -LiteralPath "$($e.Row.S.jsonl)" -ErrorAction Stop).Length } catch { $len = 0 }
+        if ($len -gt $bestLen) { $bestLen = $len; $best = $e }
+    }
+    return $best
+}
 if ($e2eRows.Count -lt 2) { Note 'not enough conversations with transcripts to time the round trip' }
 else {
     # SELECT -> READABLE. Driven exactly as the window does it: Show-Selected
@@ -3536,7 +3559,21 @@ else {
     # blocks at all, some of those blocks carry the conversation's own words,
     # and those words are not just the header the pane draws for itself.
     # ===================================================================
-    $docRow = $e2eRows[0]
+    $docRow = Get-E2EBiggest $e2eRows
+    # 🔑 AND THE CHOICE MUST NOT DEPEND ON THE ORDER, or a later change to how
+    # the sessions column sorts reintroduces the flake while this test carries
+    # on passing on a lucky machine. Reversing the list has to pick the same
+    # conversation - that is the property, and asserting the document is merely
+    # non-empty would not have caught any of this.
+    $docRev = @($e2eRows); [array]::Reverse($docRev)
+    $docRow2 = Get-E2EBiggest $docRev
+    if (-not $docRow) { Fail 'no conversation with a readable transcript to render' }
+    elseif (-not [object]::ReferenceEquals($docRow, $docRow2)) {
+        Fail 'the conversation under test depends on the list order - this block will flake again the next time the sort changes'
+    } else {
+        Pass ("the conversation under test is picked by transcript size, not position ('{0}', {1:N0} KB)" -f `
+            $docRow.Name, ((Get-Item -LiteralPath "$($docRow.Row.S.jsonl)").Length / 1KB))
+    }
     $script:selId = $null
     $ui.PaneDoc.Document = $null
     $ui.SessionList.SelectedItem = $docRow
@@ -3769,8 +3806,11 @@ else {
 
     # A SESSION WRITES -> YOU SEE IT. The watcher raises an event, the lane
     # redraws. This is the number behind "I want to see what is happening".
-    $liveFile = "$($e2eRows[0].Row.S.jsonl)"
-    $ui.SessionList.SelectedItem = $e2eRows[0]
+    # Same reasoning as the document row above: a conversation chosen by
+    # position is a different one every run.
+    $liveRow = Get-E2EBiggest $e2eRows
+    $liveFile = "$($liveRow.Row.S.jsonl)"
+    $ui.SessionList.SelectedItem = $liveRow
     $script:selId = $null
     Show-Selected
     Start-TranscriptWatch $liveFile
