@@ -717,8 +717,65 @@ $COVERAGE = @{
     'PaneWorktree'     = 'EXCUSED: opens the same dialog as NewSession.'
 }
 $srcTxt = Get-Content -LiteralPath (Join-Path $SR_LibDir 'sessions-window.ps1') -Raw -Encoding UTF8
-$wired = @([regex]::Matches($srcTxt, '(?m)^\$ui\.([A-Za-z]+)\.Add_(?:Click|SelectionChanged|TextChanged|KeyDown|Checked|MouseDoubleClick)') |
+# 🔴 THIS PATTERN USED TO SEE 37 OF 88 CONTROLS AND REPORT LIKE IT SAW THEM ALL.
+#
+# Audited 2026-09-05. It matched `^\$ui\.Name\.Add_` against SIX event kinds, so
+# three separate blind spots went unreported for the life of the file:
+#
+#   1. EVENT KINDS IT DID NOT LIST - MouseLeftButtonUp (6), MouseLeftButtonDown
+#      and its preview, PreviewKeyDown (both $window ones, i.e. every keyboard
+#      shortcut), SizeChanged, LostKeyboardFocus. That is 19 of 54 $ui wirings,
+#      and it is how this UI wires its custom borders: the fold header, "load
+#      earlier" and the agent links - the most-pressed control on the reading
+#      pane - had never been timed by anything.
+#   2. THE $ui[<name>] INDEXER FORM, invisible whatever the event kind, because
+#      the pattern requires a dot. Every confirmation sheet, the five manager
+#      sort headers and the four filter chips are wired that way.
+#   3. THE ^ ANCHOR, which costs nothing today but is latent: one indented
+#      wiring and the control vanishes from the check silently.
+#
+# All three are fixed below. The names it CANNOT recover - an indexer takes an
+# expression, not a literal - are counted and reported rather than quietly
+# dropped, because "I can see 12 controls here and cannot name them" is a true
+# statement and "37 wired controls" was not.
+$EVENTS = 'Click|SelectionChanged|TextChanged|KeyDown|PreviewKeyDown|Checked|Unchecked|MouseDoubleClick|' +
+          'MouseLeftButtonUp|MouseLeftButtonDown|PreviewMouseLeftButtonUp|PreviewMouseLeftButtonDown|' +
+          'PreviewMouseRightButtonDown|SizeChanged|LostKeyboardFocus|GotKeyboardFocus|Loaded'
+$wired = @([regex]::Matches($srcTxt, ('\$ui\.([A-Za-z][A-Za-z0-9]*)\.Add_(?:' + $EVENTS + ')')) |
            ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+
+# Wired through the indexer - real controls, not nameable from here.
+# 🪤 THE SUBSCRIPT CAN ITSELF CONTAIN BRACKETS - `$ui[$pair[0]].Add_Checked` is
+# the real shape in this window - so `[^\]]+` stops at the INNER bracket and
+# matches nothing. One level of nesting is all this needs and all it should take.
+$idxSites = @([regex]::Matches($srcTxt, ('\$ui\[(?:[^\[\]]|\[[^\[\]]*\])*\]\.Add_(?:' + $EVENTS + ')')))
+
+# 🔑 AND THEIR NAMES ARE RECOVERABLE AFTER ALL. Every one of these sites is a
+# `foreach ($n in @('A','B','C')) { $ui[$n].Add_... }` over LITERAL names - the
+# three confirmation-sheet buttons, the five manager sort headers, the four
+# filter chips. So counting the SITES (3) under-reports the CONTROLS (12) by
+# four times, which is the mistake the first version of this made.
+#
+# Reading the literals out of the nearest preceding foreach recovers all twelve
+# and puts them through the same coverage check as everything else. It is a
+# heuristic and is written down as one: a site whose names are not literal will
+# contribute nothing here and be counted as unnameable below, which is the
+# honest failure direction.
+$indexedNames = New-Object System.Collections.Generic.List[string]
+foreach ($m in $idxSites) {
+    $before = $srcTxt.Substring([Math]::Max(0, $m.Index - 600), [Math]::Min(600, $m.Index))
+    $fe = $before.LastIndexOf('foreach (')
+    if ($fe -lt 0) { continue }
+    foreach ($q in [regex]::Matches($before.Substring($fe), "'([A-Z][A-Za-z0-9]*)'")) {
+        $null = $indexedNames.Add($q.Groups[1].Value)
+    }
+}
+$indexedNames = @($indexedNames.ToArray() | Sort-Object -Unique)
+$indexed = $idxSites.Count
+# They are controls like any other, so they join the list that gets checked.
+$wired = @($wired + $indexedNames | Sort-Object -Unique)
+# Window-level handlers: the keyboard shortcuts, which belong to no control.
+$windowLevel = @([regex]::Matches($srcTxt, ('\$window\.Add_(?:' + $EVENTS + ')'))).Count
 # 🔴 CONTROLS BUILT IN CODE COUNT TOO, and the pattern above cannot see them.
 # The answer buttons in the question panel are created per option and wired with
 # `$b.Add_Click({ Invoke-Answer ... })` - so the most consequential control in
@@ -729,19 +786,58 @@ foreach ($m in [regex]::Matches($srcTxt, '\$\w+\.Add_Click\(\{\s*param\([^)]*\)\
     $wired += $m.Groups[1].Value
 }
 $wired = @($wired | Sort-Object -Unique)
-$unmeasured = @($wired | Where-Object { -not $COVERAGE.ContainsKey($_) })
-if ($unmeasured.Count) {
-    Fail ("{0} control(s) the operator can press have no timing at all: {1}" -f $unmeasured.Count, ($unmeasured -join ', '))
-} else {
-    $excused = @($COVERAGE.Values | Where-Object { "$_" -like 'EXCUSED*' }).Count
-    Note ("{0} wired controls: {1} measured, {2} excused with the work they do beforehand measured instead" -f `
-          $wired.Count, ($wired.Count - $excused), $excused)
-    # 🪤 AND THE MAP MUST NOT ROT EITHER. A name here that no longer exists in
-    # the window means the map was edited and the window was not.
-    $stale = @($COVERAGE.Keys | Where-Object { $wired -notcontains $_ })
-    if ($stale.Count) { Fail ("the coverage map names {0} control(s) the window no longer has: {1}" -f $stale.Count, ($stale -join ', ')) }
-    else { Note 'every name in the coverage map is a control that still exists' }
+$unmeasured = @($wired | Where-Object { -not $COVERAGE.ContainsKey($_) } | Sort-Object)
+$excused = @($COVERAGE.Values | Where-Object { "$_" -like 'EXCUSED*' }).Count
+
+Note ("{0} nameable controls wired: {1} measured, {2} excused, {3} UNMEASURED." -f `
+      $wired.Count, ($wired.Count - $excused - $unmeasured.Count), $excused, $unmeasured.Count)
+Note ("of those, {0} came from {1} indexer site(s): {2}" -f `
+      $indexedNames.Count, $indexed, ($indexedNames -join ', '))
+Note ("plus {0} handler(s) at window level - the keyboard shortcuts, which belong to no control." -f $windowLevel)
+
+# 🔴 THE EXISTING HOLE IS RECORDED, AND IT MAY NOT GROW.
+#
+# Widening the pattern above turned 37 known controls into far more, most of
+# them never measured - and failing on all of them at once would put this suite
+# permanently red, which is the "benchmark that cries wolf" this file has warned
+# about since it was written. A gate nobody can make green gets switched off,
+# and it takes the real checks with it.
+#
+# So the debt is written down instead. A control that is already unmeasured is
+# reported and tolerated; a NEW one is a failure, because that is somebody
+# adding a control today and not timing it. And when a debt entry finally gets
+# measured it is struck off, so the ratchet only ever turns one way.
+$debtPath = Join-Path $SR_Root 'tests\perf-coverage-debt.json'
+$debt = @()
+if (Test-Path -LiteralPath $debtPath) {
+    try { $debt = @((Get-Content -LiteralPath $debtPath -Raw | ConvertFrom-Json).unmeasured) } catch { $debt = @() }
 }
+if (-not $debt.Count) {
+    @{ note = 'Controls wired but never timed. This list may shrink and must never grow - see the gate in perf-driver.ps1.'
+       recordedAt = (Get-Date).ToString('s')
+       unmeasured = $unmeasured } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $debtPath -Encoding utf8
+    Note ("recorded {0} unmeasured control(s) as the coverage debt; it may shrink from here and not grow" -f $unmeasured.Count)
+} else {
+    $fresh = @($unmeasured | Where-Object { $debt -notcontains $_ })
+    $fixed = @($debt | Where-Object { $unmeasured -notcontains $_ })
+    if ($fresh.Count) {
+        Fail ("{0} control(s) were added without any timing: {1}" -f $fresh.Count, ($fresh -join ', '))
+    } else {
+        Note ("no new unmeasured controls; {0} still owed" -f $unmeasured.Count)
+    }
+    if ($fixed.Count) {
+        Note ("{0} control(s) came off the coverage debt: {1}" -f $fixed.Count, ($fixed -join ', '))
+        @{ note = 'Controls wired but never timed. This list may shrink and must never grow - see the gate in perf-driver.ps1.'
+           recordedAt = (Get-Date).ToString('s')
+           unmeasured = $unmeasured } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $debtPath -Encoding utf8
+    }
+}
+
+# 🪤 AND THE MAP MUST NOT ROT EITHER. A name here that no longer exists in
+# the window means the map was edited and the window was not.
+$stale = @($COVERAGE.Keys | Where-Object { $wired -notcontains $_ })
+if ($stale.Count) { Fail ("the coverage map names {0} control(s) the window no longer has: {1}" -f $stale.Count, ($stale -join ', ')) }
+else { Note 'every name in the coverage map is a control that still exists' }
 
 Write-Host ''
 Write-Host '=== the whole surface, slowest first ==='

@@ -1,0 +1,33 @@
+﻿{
+    "unmeasured":  [
+                       "AskFree",
+                       "CastList",
+                       "HdrAge",
+                       "HdrLane",
+                       "HdrLogon",
+                       "HdrName",
+                       "HdrSaid",
+                       "ListFold",
+                       "ListOpen",
+                       "ListSort",
+                       "ManageList",
+                       "MgrAll",
+                       "MgrNeeds",
+                       "MgrRunning",
+                       "MgrTicked",
+                       "PaneDoc",
+                       "RailClear",
+                       "RailFold",
+                       "RailOnlyLive",
+                       "RailOpen",
+                       "RailSort",
+                       "SheetB1",
+                       "SheetB2",
+                       "SheetB3",
+                       "Shell",
+                       "SkillList",
+                       "StripList"
+                   ],
+    "note":  "Controls wired but never timed. This list may shrink and must never grow - see the gate in perf-driver.ps1.",
+    "recordedAt":  "2026-09-05T11:13:31"
+}
