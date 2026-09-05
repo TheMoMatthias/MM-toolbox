@@ -5969,6 +5969,37 @@ $SR_SigTailBytes = 49152
 $script:SR_QueueCache = @{}
 $SR_QueueTailBytes = 4194304
 
+# ---------------------------------------------------------------------------
+# 🔴 THE ENQUEUE AND THE REMOVE OF ONE MESSAGE ARE NOT THE SAME STRING, and
+# matching them by exact text left 37 messages queued forever.
+#
+# Reported: the composer said "2 OF YOURS WAITING, AND 14 FROM THE MACHINE -
+# OLDEST HAS WAITED 23H" on a session with nothing outstanding, and offered to
+# put what you typed next at "position 17". Measured over that transcript
+# (21 MB, 437 queue-operation records): 99 cross-session enqueues of which 62
+# carry a `hop-chain="..."` attribute on the opening tag, against 55 removes of
+# which NONE do. The bodies are byte-identical after it - a 37-character delta,
+# exactly ` hop-chain="..."`. Task-notification removes matched 54 of 54;
+# cross-session removes matched 18 of 55, and all 37 misses carry a hop-chain.
+#
+# 🪤 IT IS PERMANENT RATHER THAN TRANSIENT BECAUSE OF A CORRECT SAFETY CHOICE. A
+# remove that matches nothing is IGNORED rather than popping the front, which is
+# right for a truncated window - it under-reports instead of dropping somebody's
+# message. That is also what turns a text mismatch into a phantom that never
+# clears.
+#
+# The accounting closes exactly: replaying with the attribute stripped from both
+# sides gives 0 unmatched removes where there were 37, and a final depth of 2 -
+# two task-notifications enqueued in the same minute, genuinely in flight.
+# 39 - 2 = 37. Nothing else in the rule needed changing.
+#
+# 🪤 THE KEY IS FOR MATCHING ONLY. Text keeps the hop-chain, because that is what
+# was actually queued and what the panel draws; only the comparison ignores it.
+function Get-SRQueueKey { param([string]$Text)
+    if (-not $Text) { return '' }
+    return ($Text -replace '\s+hop-chain="[^"]*"', '')
+}
+
 function Get-SRQueue {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$JsonlPath, [int]$MaxTailBytes = 0)
@@ -6018,12 +6049,17 @@ function Get-SRQueue {
                 if (-not "$c".Trim()) { break }
                 $at = $null
                 try { $at = [datetime]$r.timestamp } catch { }
-                $null = $q.Add([PSCustomObject]@{ Text = (Remove-SRAnsi $c); At = $at })
+                $clean = Remove-SRAnsi $c
+                $null = $q.Add([PSCustomObject]@{ Text = $clean; At = $at; Key = (Get-SRQueueKey $clean) })
             }
             'popAll' { $q.Clear() }
             'remove' {
+                # 🔴 MATCHED ON THE KEY, NOT THE TEXT, AND THE DIFFERENCE WAS 37
+                # PHANTOM MESSAGES. See Get-SRQueueKey: the enqueue record and the
+                # remove record for the SAME message are not the same string.
+                $rk = Get-SRQueueKey (Remove-SRAnsi $c)
                 for ($i = 0; $i -lt $q.Count; $i++) {
-                    if ("$($q[$i].Text)" -eq (Remove-SRAnsi $c)) { $q.RemoveAt($i); break }
+                    if ("$($q[$i].Key)" -eq $rk) { $q.RemoveAt($i); break }
                 }
             }
             'dequeue' { if ($q.Count) { $q.RemoveAt(0) } }

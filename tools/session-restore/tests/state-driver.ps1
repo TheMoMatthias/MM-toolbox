@@ -1507,6 +1507,45 @@ try {
     $qGone = Get-SRQueue -JsonlPath (Join-Path $qdir 'no-such-file.jsonl')
     if ($qGone.Count -ne 0 -or $qGone.Ok) { Fail 'a missing transcript did not come back empty' }
     else { Pass 'a missing transcript returns empty rather than throwing' }
+
+    # 🔴 THE ENQUEUE AND THE REMOVE OF ONE MESSAGE ARE NOT THE SAME STRING.
+    # Reported live: the composer claimed 16 waiting, the oldest 23 hours old, on
+    # a session with nothing outstanding - and offered to put the next thing typed
+    # at "position 17". A cross-session enqueue carries a hop-chain attribute on
+    # its opening tag; the remove for that same message does not. Measured over
+    # the real 21 MB transcript: 62 enqueues carried one, 0 removes did, and all
+    # 37 unmatched removes were exactly those. Depth 13 before, 1 after - and the
+    # 1 was a notification from the same minute, genuinely in flight.
+    $hopEnq = '<cross-session-message from=\"uds:pipe\" hop-chain=\"e53ad0edd552\" from-name=\"MPV2-IMPL\">do the thing</cross-session-message>'
+    $hopRem = '<cross-session-message from=\"uds:pipe\" from-name=\"MPV2-IMPL\">do the thing</cross-session-message>'
+    $fHop = New-QueueFixture 'hopchain' @(
+        (Q-Op 'enqueue' $hopEnq)
+        $qNoise
+        (Q-Op 'remove' $hopRem)
+    )
+    $qHop = Get-SRQueue -JsonlPath $fHop
+    if ($qHop.Count -ne 0) {
+        Fail ("a message removed without its hop-chain stayed queued: {0} still waiting" -f $qHop.Count)
+    } else { Pass 'a remove missing the hop-chain still takes its message off the queue' }
+
+    # 🪤 AND IT MUST NOT MATCH TOO MUCH. Ignoring one attribute is a licence to
+    # confuse two messages that differ only in it, so the negative is asserted:
+    # different BODIES stay different however the tag is written.
+    $otherRem = '<cross-session-message from=\"uds:pipe\" from-name=\"MPV2-IMPL\">a different thing</cross-session-message>'
+    $fHop2 = New-QueueFixture 'hopchain-other' @(
+        (Q-Op 'enqueue' $hopEnq)
+        (Q-Op 'remove' $otherRem)
+    )
+    $qHop2 = Get-SRQueue -JsonlPath $fHop2
+    if ($qHop2.Count -ne 1) {
+        Fail ("a remove for a DIFFERENT message took one off anyway: {0} waiting, expected 1" -f $qHop2.Count)
+    } else { Pass 'a remove for a different message still matches nothing' }
+
+    # And the text the panel draws keeps the attribute - only the comparison drops
+    # it, so what is shown is what was actually queued.
+    if ("$($qHop2.Items[0].Text)" -notmatch 'hop-chain') {
+        Fail 'the queued text lost its hop-chain - the key was written back over the message'
+    } else { Pass 'the message keeps its hop-chain; only the matching ignores it' }
 }
 finally { Remove-Item -LiteralPath $qdir -Recurse -Force -ErrorAction SilentlyContinue }
 
