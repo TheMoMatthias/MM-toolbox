@@ -925,6 +925,38 @@ function Tap-Px { param($El, [string]$Ev)
     $El.RaiseEvent($pxMe)
 }
 
+# 🔴 THREE CONTROLS I HAD WRITTEN OFF AS NOT REACHABLE, AND TWO OF THE THREE
+# REASONS WERE WRONG.
+#
+# I recorded StripList, SkillList and CastList as unreachable on the grounds
+# that all three "call Get-ClickedRow on the OriginalSource, so raising the
+# event on the container finds no row". That was true of exactly one of them.
+#
+#   SkillList takes NO ROW AT ALL - `Add_MouseLeftButtonUp({ Complete-Skill })`
+#   completes whatever is SELECTED. There was never anything to hit-test.
+#   StripList does walk up, but for a DataContext carrying an Id, not for a
+#   ListBoxItem - so an ItemsControl's ContentPresenter satisfies it.
+#   CastList genuinely needs a ListBoxItem, and gets one: the container comes
+#   from ItemContainerGenerator once the list has been laid out.
+#
+# I generalised from one handler to three without reading the other two, and the
+# inventory carried three confident refusals off it. Raising the event on the
+# REAL container reaches all three. Defined up here beside Tap-Px because two
+# callers below need it and PowerShell resolves a function at call time but only
+# after its definition has actually run.
+function Tap-PxRow { param($List, [string]$Ev)
+    if (-not $pxMouse) { return $false }
+    if (-not @($List.Items).Count) { return $false }
+    $pxCt = $null
+    try { $pxCt = $List.ItemContainerGenerator.ContainerFromIndex(0) } catch { }
+    if (-not $pxCt) { return $false }
+    $pxRe = New-Object System.Windows.Input.MouseButtonEventArgs($pxMouse, 0, [System.Windows.Input.MouseButton]::Left)
+    if ($Ev -eq 'up') { $pxRe.RoutedEvent = [System.Windows.UIElement]::MouseLeftButtonUpEvent }
+    else { $pxRe.RoutedEvent = [System.Windows.UIElement]::PreviewMouseLeftButtonDownEvent }
+    $pxCt.RaiseEvent($pxRe)
+    return $true
+}
+
 # --- the two pane strips: sort, filter, fold, clear -------------------------
 $null = Measure-Px 'rail strip: change the project sort order' { Tap-Px $ui.RailSort 'down' } -Runs 5
 $null = Measure-Px 'rail strip: show only projects with something live' { Tap-Px $ui.RailOnlyLive 'down' } -Runs 4
@@ -933,14 +965,23 @@ $null = Measure-Px 'rail strip: show the shelved projects' { Tap-Px $ui.RailShel
 Tap-Px $ui.RailShelved 'down'; Pump-Px
 $null = Measure-Px 'rail strip: clear the project filter' { Tap-Px $ui.RailClear 'up' } -Runs 5
 $null = Measure-Px 'sessions strip: change the sort order' { Tap-Px $ui.ListSort 'down' } -Runs 5
-# 🪤 THE DOT STRIP READS 1,4 ms AND THAT IS THE HANDLER REFUSING, NOT THE
-# HANDLER RUNNING. StripList's handler calls Get-ClickedRow on the event's
-# OriginalSource; raising the event on the ItemsControl itself hands it the
-# container, no row is found, and it returns. It is listed as NOT REACHABLE in
-# the inventory rather than as a 1,4 ms control - the number would be a lie in
-# the direction that flatters the tool.
-$pxStrip = Measure-Px 'the dot strip (NOT REACHABLE - see the note)' { Tap-Px $ui.StripList 'preview' } -Runs 3
-if ($pxStrip -and $pxStrip.Laid -lt 5) { Note 'confirmed: the dot strip handler returned without finding a row, so that row is not a measurement' }
+# The dot strip: one dot per conversation waiting on you, and pressing one
+# selects it. Its handler walks up from OriginalSource for a DataContext with an
+# Id, so it needs a REAL item container - raising on the ItemsControl itself
+# finds nothing and returns in 1,4 ms, which is a refusal and not a measurement.
+Lay-Px
+$pxStripSeen = $false
+if (Tap-PxRow $ui.StripList 'up') {
+    $pxStripSeen = $true
+    $null = Measure-Px 'press a dot on the strip (jumps to what is waiting)' `
+        { $null = Tap-PxRow $ui.StripList 'up' } -Settled $pxDocHome -Runs 4
+} else {
+    # 🪤 NOT A FAILURE AND NOT A REFUSAL. The strip holds one dot per
+    # conversation waiting on the operator, and right now none is - which is a
+    # statement about the machine this afternoon, not about the control. Same
+    # verdict as the sub-agent link: NOT PRESENT TODAY.
+    Note ("the dot strip is empty - none of the {0} conversations is waiting on the operator right now, so its press cannot be measured this run" -f $script:model.Count)
+}
 
 # --- the permission dropdown ------------------------------------------------
 if (@($ui.SetPerm.Items).Count -ge 2) {
@@ -983,6 +1024,17 @@ $null = Measure-Px 'open send-to-many' { Click-Px $ui.Broadcast } `
     -Before { try { Click-Px $ui.CastCancel } catch { }; Pump-Px } -Runs 4
 $null = Measure-Px 'type into the send-to-many box' { $ui.CastText.Text = ($ui.CastText.Text + 'a') } -Runs 5
 $null = Measure-Px 'fill the morning-compact brief' { Click-Px $ui.CastCompact } -Runs 4
+# Ticking a conversation in the send-to-many list. It flips an in-memory set and
+# rebuilds that list; nothing is sent, and CastSend is never pressed.
+try { Click-Px $ui.Broadcast } catch { }
+Pump-Px
+Lay-Px
+if (Tap-PxRow $ui.CastList 'preview') {
+    $null = Measure-Px 'tick a conversation in the send-to-many list' { $null = Tap-PxRow $ui.CastList 'preview' } -Runs 5
+} else {
+    Huh 'the send-to-many list had no realized row - the tick could not be measured'
+}
+$script:castPick = @{}
 $null = Measure-Px 'close send-to-many' { Click-Px $ui.CastCancel } `
     -Before { try { Click-Px $ui.Broadcast } catch { }; Pump-Px } -Runs 4
 try { Click-Px $ui.CastCancel } catch { }
@@ -993,6 +1045,17 @@ $null = Measure-Px 'type / into the composer to raise the skill picker' `
     { $ui.SendBox.Text = '/' } -Before { $ui.SendBox.Text = ''; Pump-Px } -Runs 5
 $null = Measure-Px 'filter the skill picker one more letter' `
     { $ui.SendBox.Text = '/co' } -Before { $ui.SendBox.Text = '/'; Pump-Px } -Runs 5
+
+Lay-Px
+if (@($ui.SkillList.Items).Count) {
+    if ($ui.SkillList.SelectedIndex -lt 0) { $ui.SkillList.SelectedIndex = 0 }
+    # Tap-Px raises on the control itself, which is all this handler needs.
+    $null = Measure-Px 'pick a skill out of the picker (completes the composer text)' `
+        { Tap-Px $ui.SkillList 'up' } `
+        -Before { $ui.SendBox.Text = '/co'; Pump-Px; if ($ui.SkillList.SelectedIndex -lt 0) { $ui.SkillList.SelectedIndex = 0 } } -Runs 4
+} else {
+    Huh 'the skill picker listed nothing for "/co" - the pick could not be measured'
+}
 $ui.SendBox.Text = ''
 Pump-Px
 
@@ -1276,9 +1339,13 @@ $PX_SURFACE = @{
     # --- NOT REACHABLE: the handler refuses without something this harness
     #     cannot synthesize. Distinguished from EXCUSED on purpose: excused
     #     means "would do harm", this means "would measure a refusal".
-    'StripList'        = 'NOT REACHABLE: Get-ClickedRow on the OriginalSource finds no row when the event is raised on the container. Measuring it would time the early return.'
-    'SkillList'        = 'NOT REACHABLE: same shape - the pick is per rendered row.'
-    'CastList'         = 'NOT REACHABLE: same shape - the tick is per rendered row.'
+    # 🔴 THESE THREE WERE MARKED NOT REACHABLE AND TWO OF THE THREE REASONS
+    # WERE WRONG - see the note on Tap-PxRow. Raising the event on the real item
+    # container reaches all of them. Left in this block, next to the entries
+    # that are still genuinely unreachable, so the correction stays visible.
+    'StripList'        = 'press a dot on the strip'
+    'SkillList'        = 'pick a skill out of the picker'
+    'CastList'         = 'tick a conversation in the send-to-many list'
     'inner wheel'      = 'NOT REACHABLE here: the handler is on a ScrollViewer inside an OPEN fold, and needs a real wheel delta routed through it.'
     'SheetB1'          = 'NOT REACHABLE: only exists while a modal confirmation sheet is up, and raising one blocks on a human.'
     'SheetB2'          = 'NOT REACHABLE: as SheetB1.'
@@ -1316,6 +1383,9 @@ $PX_SURFACE = @{
 if (-not $pxAgentSeen) {
     $PX_SURFACE['agent link']       = 'NOT PRESENT TODAY: the profiled conversation tail has no sub-agent block. The control is measurable; it was not on screen.'
     $PX_SURFACE['drill-out button'] = 'NOT PRESENT TODAY: as the agent link - there was nothing to come back out of.'
+}
+if (-not $pxStripSeen) {
+    $PX_SURFACE['StripList']        = 'NOT PRESENT TODAY: the strip holds one dot per conversation waiting on the operator, and none is. Measurable when one is.'
 }
 
 $pxMeasuredNames = @{}
@@ -1692,6 +1762,21 @@ Write-Host '=== did anything get slower? ==='
 # be able to fail the gate, and must not be able to record over it either.
 if ($pxOnly) {
     Huh ("-Only '{0}' was set, so most of the table did not run. The regression gate is NOT armed for this run and nothing was recorded." -f $pxOnly)
+} elseif ($pxRecord -and ($fails -gt 0 -or $inconclusive -gt 0)) {
+    # 🔴 A BASELINE RECORDED FROM A BROKEN RUN IS WORSE THAN NO BASELINE, and
+    # this is not hypothetical - it happened on the run that added this guard.
+    #
+    # Another lane was mid-edit in lib\sessions-window.ps1 while I recorded. The
+    # driver splices the LIVE source every run, so it got a half-written window:
+    # the reading pane built nothing, the A/B ran over an empty document and
+    # recorded "7 ms on vs 6 ms off", and the splitter recorded 8 ms. The very
+    # next run, against a whole file, read 204 ms and 141 ms and the gate fired
+    # at 35x and 17x - correctly, and about nothing.
+    #
+    # The run KNEW it was broken: it had a failed Steps assertion and a
+    # DocMoved inconclusive in the same output. It recorded anyway, because
+    # nothing connected the two. Now it refuses.
+    Huh ("this run had {0} failure(s) and {1} inconclusive result(s), so NOTHING was recorded. A baseline taken from a run that already knows it is wrong is a ceiling nobody can see through." -f $fails, $inconclusive)
 } elseif ($pxRecord) {
     $pxOut = @{ recordedAt = (Get-Date).ToString('s'); spin = $pxSpinEnd
                 note = 'laid-ms per spin-ms. Only rows at or under 20 ms are gated - see the note in pixels-driver.ps1. Written ONLY by -Record.'

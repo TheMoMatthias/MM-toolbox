@@ -143,6 +143,38 @@ foreach ($g in @($cfgGuard, $regGuard)) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# 🔴 THE SOURCE MUST HOLD STILL WHILE IT IS BEING MEASURED.
+#
+# This is a multi-lane repo and another session owns lib\sessions-window.ps1.
+# The splice above reads it LIVE, so a run that starts while somebody is
+# mid-edit gets a half-written window - and the numbers it produces look like
+# numbers. Measured, on the run that added this guard: the reading pane built
+# nothing, the optimal-paragraph A/B recorded "7 ms on vs 6 ms off" against a
+# document that was not there, and the next run against a whole file read 204 ms
+# and fired the gate at 35x about nothing at all.
+#
+# So the two files are stamped either side. A run whose source moved underneath
+# it reports INCONCLUSIVE and its numbers are not offered - which is a third
+# outcome on purpose, because "the file changed" is neither a pass nor a
+# regression and reporting it as either would be a guess.
+$srcGuard = @((Join-Path $lib $GuiFile), (Join-Path $lib '_common.ps1'))
+$srcWas = @{}
+foreach ($s in $srcGuard) {
+    try { $srcWas[$s] = (Get-FileHash -LiteralPath $s -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $srcWas[$s] = '' }
+    if (-not $srcWas[$s]) {
+        Write-Host ("[warn] could not hash {0} - the source-stability guard is NOT armed." -f (Split-Path -Leaf $s)) -ForegroundColor Yellow
+        continue
+    }
+    # A file written seconds ago is a lane that has probably not finished.
+    $age = 999.0
+    try { $age = ((Get-Date) - (Get-Item -LiteralPath $s).LastWriteTime).TotalSeconds } catch { }
+    if ($age -lt 30) {
+        Write-Host ("[warn] {0} was written {1:N0}s ago - another lane may be mid-edit. These numbers may describe a half-written window." -f `
+                    (Split-Path -Leaf $s), $age) -ForegroundColor Yellow
+    }
+}
+
 $code = 3
 try {
     $env:SR_PIX_INJECT    = ('{0}' -f $Inject)
@@ -168,6 +200,24 @@ function Test-GuardMoved { param([string]$Path)
     try { $now = (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash } catch { }
     if (-not $now) { return $null }
     return ($now -ne $guardWas[$Path])
+}
+
+# The source-stability verdict comes FIRST, because it decides whether anything
+# else in this run means anything.
+$srcMoved = @()
+foreach ($s in $srcGuard) {
+    if (-not $srcWas[$s]) { continue }
+    $now = ''
+    try { $now = (Get-FileHash -LiteralPath $s -Algorithm SHA256 -ErrorAction Stop).Hash } catch { }
+    if ($now -and $now -ne $srcWas[$s]) { $srcMoved += (Split-Path -Leaf $s) }
+}
+if ($srcMoved.Count) {
+    Write-Host ''
+    Write-Host ("[INCONCLUSIVE] {0} changed WHILE this run was measuring it." -f ($srcMoved -join ' and ')) -ForegroundColor Magenta
+    Write-Host  '               The driver splices the live source, so part of this run measured one window' -ForegroundColor Magenta
+    Write-Host  '               and part of it measured another. Nothing above is offered as a number, and' -ForegroundColor Magenta
+    Write-Host  '               nothing was recorded. Re-run when the file is still.' -ForegroundColor Magenta
+    exit 2
 }
 
 if ((Test-GuardMoved $cfgGuard) -eq $true) {
