@@ -2109,7 +2109,23 @@ function Build-Sessions {
             $qRec = $r.Q
             $qVis = $V_Hide; $qTxt = ''; $qTip = ''
             $qBrush = $qGrey
-            if ($qRec -and [int]$qRec.Count -gt 0) {
+            # 🔴 AND ONLY IF THE CONVERSATION HAS DONE ANYTHING RECENTLY.
+            # The records say what they say, but Claude Code does not always
+            # write the one that CANCELS an enqueue - see $SR_QueueStaleHours.
+            # Four of the six marks on this machine were orphans between 2,9 and
+            # 136,8 hours old, one of them on a session that had not written a
+            # record in five and a half days. A mark that says work is waiting
+            # when nothing is waiting is worse than no mark: it is the reason
+            # the strip stops being believed.
+            #
+            # 🪤 MinValue MEANS "COULD NOT TELL" AND STILL DRAWS. The staleness
+            # test only ever HIDES something, so it must fire on positive
+            # evidence of age and never on the absence of evidence.
+            $qFresh = $true
+            if ($qRec -and $qRec.LastWrite -gt [datetime]::MinValue) {
+                $qFresh = (($nowDate - $qRec.LastWrite).TotalHours -le $SR_QueueStaleHours)
+            }
+            if ($qRec -and [int]$qRec.Count -gt 0 -and $qFresh) {
                 $qVis = $V_Show
                 if ([int]$qRec.Mine -gt 0) {
                     $qTxt = "$([int]$qRec.Mine)"

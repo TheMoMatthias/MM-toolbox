@@ -6575,6 +6575,27 @@ $SR_SigTailBytes = 49152
 $script:SR_QueueCache = @{}
 $SR_QueueTailBytes = 4194304
 
+# 🔴 HOW LONG A QUEUE MARK IS STILL EVIDENCE, AND WHY IT NEEDS A LIMIT AT ALL.
+#
+# The queue is reconstructed by replaying queue-operation records: enqueue adds,
+# dequeue/remove/popAll take away. That is faithful to the records - and the
+# records are not always complete. Audited on this machine, 6 conversations drew
+# a queue mark and 4 of them were holding messages 2,9 to 136,8 hours old.
+#
+# The decisive case had a 3,7 MB transcript, so the WHOLE FILE fits the tail
+# window and no boundary effect is possible: zero removes matched nothing, zero
+# dequeues hit an empty queue, and five enqueued cross-session messages from
+# three days earlier had no cancelling record ANYWHERE in the file. Claude Code
+# queued them and never wrote a dequeue, remove or popAll. No parser can fix
+# that; the record does not exist.
+#
+# So the mark needs a second question beside "what do the records say": has this
+# conversation done anything since. A session that has not written a transcript
+# record for hours is not sitting mid-turn holding a message - it is finished,
+# and the enqueue is an orphan. On the audit the split was clean: the two live
+# marks were 0 and 0,1 hours quiet, every phantom was 2,9 hours or more.
+$SR_QueueStaleHours = 1.0
+
 # ---------------------------------------------------------------------------
 # 🔴 THE ENQUEUE AND THE REMOVE OF ONE MESSAGE ARE NOT THE SAME STRING, and
 # matching them by exact text left 37 messages queued forever.
@@ -6611,7 +6632,12 @@ function Get-SRQueue {
     param([Parameter(Mandatory)][string]$JsonlPath, [int]$MaxTailBytes = 0)
 
     if ($MaxTailBytes -le 0) { $MaxTailBytes = $SR_QueueTailBytes }
-    $none = [PSCustomObject]@{ Items = @(); Count = 0; Mine = 0; Machine = 0; Ok = $false }
+    # 🪤 LastWrite IS [datetime]::MinValue HERE, AND THAT MEANS "NOT KNOWN",
+    # NOT "INFINITELY STALE". The caller must draw the mark when it cannot tell
+    # how fresh the conversation is - hiding information on absent evidence is
+    # the worse error of the two, and this object is returned from paths where
+    # the file could not even be opened.
+    $none = [PSCustomObject]@{ Items = @(); Count = 0; Mine = 0; Machine = 0; Ok = $false; LastWrite = [datetime]::MinValue }
     if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return $none }
 
     $stamp = ''
@@ -6692,6 +6718,11 @@ function Get-SRQueue {
 
     $v = [PSCustomObject]@{
         Items = $items.ToArray(); Count = $items.Count
+        # 🔑 FREE - Get-Item was already called above to build the cache stamp,
+        # so carrying its write time costs nothing and saves the list builder a
+        # disk stat per row. Build-Sessions opening a transcript once per row is
+        # a pattern this file has already had to remove once.
+        LastWrite = $fi.LastWriteTime
         Mine = $mine; Machine = $machine; Ok = $true
     }
     $script:SR_QueueCache[$key] = @{ Stamp = $stamp; Value = $v }
