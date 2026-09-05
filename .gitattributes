@@ -25,3 +25,21 @@
 # was folded into Sessions.bat's own fallback branch when the tool went down to
 # two entry points. A .vbs added anywhere in this repo still wants CRLF.
 *.vbs text eol=crlf
+
+# Screen fixtures are byte-exact console captures, not source. They are the input
+# to the ask parser, and the parser reads columns -- so a byte git changes on the
+# way in or out is a byte the test no longer proves anything about.
+#
+# Measured before writing this: every capture is CR=0 today, in the blob and on
+# disk, and a forced CRLF round trip changed no verdict (labels are trimmed). So
+# this is defensive, like the .bat rule above -- not a fix for an observed break.
+# What it stops is the SAME drift that rule exists for: core.autocrlf is true on
+# this machine, unspecified attributes let git auto-detect, and a clone elsewhere
+# gets a different working tree than the one the fixtures were captured in.
+#
+# -text, not eol=lf, and the difference matters: eol=lf would still normalise, it
+# would just normalise deterministically -- a future fixture capturing a real CR
+# (say, to prove the parser survives one) would be silently stripped on commit.
+# -text means git never touches these bytes at all. `diff` is added back so they
+# still review as text instead of "Binary files differ".
+tools/session-restore/tests/screens/*.txt -text diff
