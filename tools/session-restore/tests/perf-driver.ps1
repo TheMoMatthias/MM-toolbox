@@ -91,7 +91,7 @@ $script:Results = New-Object System.Collections.Generic.List[object]
 function BenchList {
     param([string]$Name, [scriptblock]$Do, [string]$Class = 'GESTURE', [int]$Runs = 15)
     $body = { & $Do; Lay }.GetNewClosure()
-    return Bench ($Name + ' (+ layout)') $body $Class $Runs
+    return Bench ($Name + ' (+ layout and the deferred lane)') $body $Class $Runs
 }
 
 # GESTURE is the class with teeth. Everything the operator can DO - a click, a
@@ -256,6 +256,53 @@ function Measure-SRWpfControl {
     return $b
 }
 
+
+# ===========================================================================
+# 🔒 THE OPERATOR'S CONFIG IS REDIRECTED BEFORE ANYTHING IS PUMPED.
+# ===========================================================================
+# 🔴 THIS SUITE USED TO ESCAPE THE LIVE CONFIG WRITE BY ACCIDENT, AND AN
+# ACCIDENT IS NOT A GUARD.
+#
+# Request-SRConfigFlush BeginInvokes the settings write at ApplicationIdle
+# (sessions-window.ps1, Request-SRConfigFlush). This driver pumped at Loaded,
+# which OUTRANKS ApplicationIdle, so the queued write was never reached and the
+# operator's session-restore.config.json was never touched. That is the only
+# reason it was safe - not a decision, a side effect of a priority chosen for a
+# different purpose. `Lay` now pumps at ApplicationIdle (see below, that is the
+# point of this change), so the first gesture that changes a setting - Steps,
+# text size, a fold - would write the live file through the real writer. That
+# file decides which of the operator's ~34 sessions reopen at logon.
+#
+# Redirecting the PATH rather than stubbing the writer keeps the cost honest:
+# the file is still built, serialised and written, so whatever that costs stays
+# inside the measurement. Only the destination moves.
+$perfCfgReal = $SR_ConfigPath
+$perfCfgCopy = Join-Path $SR_Root '.state\perf-config.json'
+try { Copy-Item -LiteralPath $perfCfgReal -Destination $perfCfgCopy -Force -ErrorAction Stop }
+catch { Fail ("could not copy the config to redirect it: {0}" -f $_.Exception.Message); exit 1 }
+$SR_ConfigPath = $perfCfgCopy
+if ("$SR_ConfigPath" -ne "$perfCfgCopy" -or -not (Test-Path -LiteralPath $perfCfgCopy)) {
+    Fail 'the config redirect did not take. Refusing to run - a gesture here would write the operator settings.'
+    exit 1
+}
+# 🪤 PROVEN, NOT ASSERTED. A redirect that silently did not take reads exactly
+# like one that did, right up until the live file changes - the shape of every
+# fake-green in this repo. So one real write goes through the real writer and
+# the copy's hash has to move.
+# 🪤 A KEY THAT IS NOT ALREADY THERE, AND A VALUE NOTHING ELSE COULD PRODUCE.
+# Saving an EXISTING key at its CURRENT value re-serialises byte-identically -
+# the hash does not move and the arming check goes red on a redirect that is
+# working perfectly. A calibration that can fail for a reason unrelated to what
+# it tests is not a calibration. (Learned in pixels-driver; do not re-learn it.)
+$perfCfgWas = (Get-FileHash -LiteralPath $perfCfgCopy -Algorithm SHA256).Hash
+Save-SRConfigLater -Name 'perfHarnessProbe' -Value ([guid]::NewGuid().ToString('N'))
+$null = Save-SRConfigWrites
+if ((Get-FileHash -LiteralPath $perfCfgCopy -Algorithm SHA256).Hash -eq $perfCfgWas) {
+    Fail 'a config write through the real writer did NOT land in the redirected copy - the redirect is not armed. Refusing to run.'
+    exit 1
+}
+Note ('config writes redirected to {0} and proven to land there' -f (Split-Path -Leaf $perfCfgCopy))
+
 # The start reading is NOT taken here - see the note above the first Bench.
 
 
@@ -265,13 +312,38 @@ Note "$($script:model.Count) conversations across $(@($script:dirs).Count) proje
 
 $W = 1480.0; $H = 980.0
 $root = $window.Content
+# 🔑 ApplicationIdle, AND THAT ONE WORD DECIDES WHETHER THIS SUITE MEASURES THE
+# TOOL OR MEASURES HALF OF IT.
+#
+# This pumped at Loaded (6). DispatcherTimer ticks queue at Background (4),
+# which is LOWER, so no timer in this window had ever fired inside this suite -
+# including writeTimer, the 30 ms lane that calls Complete-DocParse and is
+# therefore the thing that actually puts a conversation on screen. The
+# expensive half of a selection was moved off the click AND out of the
+# benchmark in one motion, and the table reported ~20 ms for a gesture the
+# operator waits 500-1000 ms for. That is not a loose budget, it is the wrong
+# quantity. ApplicationIdle (2) drains everything above it, timers included,
+# which is what the real message pump does between gestures.
+#
+# 🔴 CurrentDispatcher WAS ALSO WRONG, and only invisibly so. Inside a spliced
+# driver the current dispatcher is not guaranteed to be the window's, and an
+# Invoke on the wrong one drains nothing while returning cleanly. Address the
+# window's dispatcher by name.
+#
+# 🪤 EVERY OPERATION THIS FEEDS WAS RENAMED (' (+ layout and the deferred
+# lane)'), and the rename IS the fix rather than tidying: draining the lane
+# changes what the operation IS, so the old baseline key no longer describes it
+# and would read as a large regression forever. A renamed op has no key, is
+# counted as new, skipped for one run, and the old key vanishes on the next
+# trusted write. Same mechanism BenchList used when it added layout.
+
 function Lay {
     foreach ($p in 1, 2) {
         $root.Measure((New-Object System.Windows.Size $W, $H))
         $root.Arrange((New-Object System.Windows.Rect 0, 0, $W, $H))
         $root.UpdateLayout()
-        [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
-            [System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
+        $window.Dispatcher.Invoke(
+            [System.Windows.Threading.DispatcherPriority]::ApplicationIdle, [action]{}) | Out-Null
     }
 }
 $ui.ModeWork.IsChecked = $true
@@ -443,10 +515,39 @@ if ($sessions.Count -ge 2) {
         if ($p -and (Test-Path -LiteralPath $p)) { (Get-Item -LiteralPath $p).Length } else { 0 }
     }} -Descending)
     if (@($bySize).Count) {
+        # 🔴 THE BIGGEST FILE IS NOT THE BIGGEST DOCUMENT, AND THIS SUITE HAS
+        # PROBABLY BEEN PROFILING WHICHEVER SESSION RAN IT.
+        #
+        # Picking by BYTES sounds like picking the worst case. On this machine
+        # the largest transcript is THE SESSION RUNNING THE HARNESS, whose tail
+        # is a couple of enormous tool records - its own output. A sister
+        # driver picked that way for an evening and rendered 2 turns and 0 fold
+        # blocks, watched its document extent FALL as its own output grew, and
+        # came one message from reporting a reading-pane regression that did
+        # not exist. Verified by parsing the four largest directly: the
+        # observer yields 2 blocks, the next three yield 27, 25, 27.
+        #
+        # 🔑 SO PICK BY WHAT THE PANE HAS TO RENDER. Parse the tails of the
+        # largest few and take the one with the most blocks. Six parses at
+        # ~30 ms is a rounding error against this run, and it is the difference
+        # between profiling a real conversation and profiling this file.
+        # (feedback-measuring-the-observer)
         $biggest = $bySize[0]
+        $bestN = -1
+        foreach ($cand in @($bySize | Select-Object -First 6)) {
+            $cj = "$($cand.Row.S.jsonl)"
+            if (-not $cj -or -not (Test-Path -LiteralPath $cj)) { continue }
+            $cb = @()
+            # 🪤 Assign, THEN wrap. Get-SRTranscriptBlocks ends in a comma
+            # guard, so @(Get-SRTranscriptBlocks ...) is ONE element holding
+            # the whole array. (feedback-array-wrap-trap)
+            try { $got0 = Get-SRTranscriptBlocks -JsonlPath $cj -MaxRecords 220 -MaxTailBytes $script:tailBytes; $cb = @($got0) } catch { }
+            if ($cb.Count -gt $bestN) { $bestN = $cb.Count; $biggest = $cand }
+        }
         $bytes = 0
         try { $bytes = (Get-Item -LiteralPath "$($biggest.Row.S.jsonl)").Length } catch { }
-        Note ("profiling against the largest conversation on this machine: '{0}', {1:N0} KB of transcript" -f $biggest.Name, ($bytes / 1KB))
+        Note ("profiling against '{0}' - {1:N0} KB of transcript, {2} block(s) in the tail" -f $biggest.Name, ($bytes / 1KB), $bestN)
+        Note  'Chosen by BLOCKS IN THE TAIL, not by file size: the largest file on this machine is the session running this harness.'
         # Put it second so the existing benches below pick it up unchanged.
         $sessions = @($biggest) + @($sessions | Where-Object { $_.Id -ne $biggest.Id })
         $sessions = @($sessions[0], $sessions[0]) + @($sessions | Select-Object -Skip 1)
@@ -457,7 +558,21 @@ else {
     # 🔴 THE COLD PATH IS THE CLICK. $script:selId is what makes a selection
     # "the same one", and an earlier profile measured only the warm path and
     # reported 133 ms for a gesture that was taking seconds.
-    $null = Bench 'select a conversation (COLD - the click)' {
+    # 🔴 THIS ROW IS THE HANDLER, AND THE HANDLER IS ABOUT 4% OF THE WAIT.
+    #
+    # It reads ~36 ms. The same gesture measured click-to-presented-frame is
+    # 493-982 ms, because Update-Document only STARTS a parse: the runspace
+    # returns, the 30 ms lane calls Complete-DocParse, and Build-ReadDocument
+    # then builds and lays out the whole FlowDocument on the UI thread. All of
+    # that is after this stopwatch stops.
+    #
+    # It is kept because it is a real and useful quantity - it is what says the
+    # click path itself is clean - but it is RENAMED so that no reader can take
+    # it for what the operator waits for. A bench name carrying a qualifier is
+    # naming the part it left out; this one now says so out loud.
+    # The presented-frame number for this gesture lives in tests\pixels-run.ps1,
+    # which pumps to settle and is calibrated in both directions.
+    $null = Bench 'select a conversation (the handler returns - NOT the wait; see pixels)' {
         $script:selId = $null
         $ui.SessionList.SelectedItem = $sessions[1]
         Show-Selected
@@ -707,7 +822,11 @@ $null = Bench 'pick a project in the rail' {
 $script:railPick = $railPickWas2
 Build-Rail; Build-Sessions
 
-$null = Bench 'toggle the steps view (the redraw half)' { Show-Selected -Force } 'GESTURE'
+# 🔴 'THE REDRAW HALF' WAS THE HONEST NAME FOR A DISHONEST NUMBER. Steps was
+# measured at 436-800 ms click-to-presented-frame while this row read ~22 ms,
+# and the difference is the half the qualifier quietly excluded. Renamed to say
+# which half, and where the whole one is.
+$null = Bench 'toggle the steps view (the handler returns - NOT the wait; see pixels)' { Show-Selected -Force } 'GESTURE'
 # THE ZOOM, WHICH IS THE MOST EXPENSIVE GESTURE IN THE WINDOW BY CONSTRUCTION:
 # it rewrites six window resources (every XAML style re-resolves), tells the
 # sessions list its rows changed height, and rebuilds the whole document. It is
@@ -717,7 +836,13 @@ $null = Bench 'toggle the steps view (the redraw half)' { Show-Selected -Force }
 $zoomWas = $script:Zoom
 $null = Bench 'the text-size control (resources + list + redraw)' {
     Set-SRTypeScale -Percent $(if ($script:Zoom -eq 100) { 110 } else { 100 })
-    try { $ui.SessionList.Items.Refresh() } catch { }
+    # 🔴 THE Items.Refresh() THAT USED TO BE HERE WAS REMOVED FROM THE PRODUCT
+    # (98426df) AND HAD TO GO FROM THE BENCH WITH IT. Leaving it made this row
+    # ~339 ms of a call the tool no longer makes - a benchmark measuring code
+    # that is not there is worse than no benchmark, and it would have hidden
+    # the whole point of the removal. Every FontSize in window2.xaml is a
+    # {DynamicResource Sz*}; WPF propagates the scale itself and row height
+    # measured 72.0 px identically with and without the refresh.
     Show-Selected -Force
 } 'GESTURE'
 Set-SRTypeScale -Percent $zoomWas
@@ -1059,6 +1184,12 @@ Write-Host ("  AGAINST THE TERMINAL ({0:N1} ms): {1} at the bar, {2} inside one 
     $SR_BAR, $atBar, $nearBar, $overBar) -ForegroundColor $(if ($overBar) { 'Yellow' } else { 'Green' })
 Write-Host  '  This line does not fail the suite - see the note on $SR_BAR. It is the standard,' -ForegroundColor DarkGray
 Write-Host  '  and the gate below is whether anything got WORSE than it was.' -ForegroundColor DarkGray
+Write-Host ''
+Write-Host '  WHAT THIS SUITE STILL DOES NOT SEE: rows named "(the handler returns)" stop the' -ForegroundColor DarkGray
+Write-Host '  clock when the handler returns. Everything the 30 ms lane does afterwards - the' -ForegroundColor DarkGray
+Write-Host '  document parse landing, Build-ReadDocument, its layout - is excluded BY' -ForegroundColor DarkGray
+Write-Host '  CONSTRUCTION, and for a conversation switch that is roughly 96% of the wait.' -ForegroundColor DarkGray
+Write-Host '  tests\pixels-run.ps1 measures those two gestures to the presented frame.' -ForegroundColor DarkGray
 Write-Host ''
 if ($over.Count) {
     Write-Host "  $($over.Count) operation(s) over their class budget:" -ForegroundColor Yellow
