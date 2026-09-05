@@ -3328,13 +3328,51 @@ function Send-SRSessionInput {
 # can see the menu, so if anything has already moved it this sends the wrong
 # answer. That is why it refuses unless the session is genuinely waiting, and why
 # it is only ever called straight off a freshly-read question.
+# ===========================================================================
+# 🔴 THE GATE STAYS. IT STOPPED SPAWNING claude TO SATISFY IT.
+#
+# This asked `claude agents --json` on every option click, purely to read one
+# field - Status -eq 'waiting'. Measured on this machine with 31 sessions live,
+# that spawn is 837-1,090 ms, and it sat between the operator's click and the
+# first key. It was about 40% of a 2.4 s gesture whose terminal equivalent is
+# 6.9 ms.
+#
+# 🔑 THE EVIDENCE MOVES, THE GUARD DOES NOT. The window already knows everything
+# that map was consulted for, and knows it more cheaply and more recently:
+#
+#   pid / kind / name   the row's own agent record, held on the UI thread
+#   "is it asking?"     the 400 ms card lane and the 2.9 s screen sweep, both of
+#                       which read the actual screen - which is what the status
+#                       field is a second-hand summary OF
+#
+# 🔒 AND THE AUTHORITATIVE CHECK WAS NEVER THIS ONE. Read the order: this gate
+# fires, and then ~900 ms later Invoke-SRAnswerOnScreen reads the screen and
+# refuses outright if it cannot see a menu with a cursor, and Wait-SRScreenState
+# re-reads and refuses again if the highlight is not where it was aimed. Since
+# the parser now returns nothing at all for a screen showing a prompt, "the
+# arrows land in a prompt" is unreachable regardless of what this field said.
+# The status check was the OLDEST evidence on the path and the only one that
+# cost a process.
+#
+# 🪤 SO IT IS NOT DROPPED, BECAUSE A CHEAP GUARD THAT AGREES IS WORTH KEEPING -
+# it refuses early, with a better message, before any key is sent. It is now
+# answered from what the caller already has. The caller must pass it; there is
+# no default that means "assume it is asking".
 function Send-SRQuestionAnswer {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$SessionId,
         # 0-based, as the options are indexed on screen.
         [Parameter(Mandatory)][int]$Index,
-        [int]$OptionCount = 0
+        [int]$OptionCount = 0,
+        # What the window already knows, gathered where it is free. See above.
+        [Parameter(Mandatory)][int]$ProcessId,
+        [string]$Kind = 'interactive',
+        [string]$Name = '',
+        # Has this window actually SEEN a live menu on that screen? The card lane
+        # and the sweep both answer this from a real screen read. Defaults to
+        # false so a caller that forgets is refused rather than waved through.
+        [bool]$MenuSeen = $false
     )
     if ($Index -lt 0) { return 'that is not one of the options' }
     # The caller's count comes from the transcript, which lists only what claude
@@ -3342,21 +3380,15 @@ function Send-SRQuestionAnswer {
     # screen is checked below and is the one that governs.
     if ($OptionCount -gt 0 -and $Index -ge $OptionCount) { return 'that is not one of the options' }
 
-    $key = "$SessionId".ToLower()
-    $agents = Get-SRAgentStatus -Refresh
-    $a = $agents[$key]
-    if (-not $a)     { return 'that conversation is not running - open its terminal first' }
-    if (-not $a.Pid) { return 'that session has no console to answer in (it is a background agent)' }
-    if ($a.Kind -ne 'interactive') { return 'only an interactive session can be answered' }
-    # 🔒 IT MUST STILL BE ASKING. If it has moved on, the arrows land in whatever is
-    # on screen now -- which could be a prompt, and DOWN-DOWN-ENTER in a prompt is
-    # a command nobody typed.
-    if ("$($a.Status)" -ne 'waiting') { return 'that session is not waiting for an answer any more' }
+    if ($ProcessId -le 0) { return 'that session has no console to answer in (it is a background agent)' }
+    if ($Kind -and $Kind -ne 'interactive') { return 'only an interactive session can be answered' }
+    # 🔒 IT MUST STILL BE ASKING - same rule, fresher evidence.
+    if (-not $MenuSeen) { return 'that session is not waiting for an answer any more' }
 
-    $notClaude = Test-SRClaudeProcess -ProcessId ([int]$a.Pid)
+    $notClaude = Test-SRClaudeProcess -ProcessId $ProcessId
     if ($notClaude) { return $notClaude }
 
-    $why = Invoke-SRAnswerOnScreen -ProcessId ([int]$a.Pid) -Index $Index -Who "$($a.Name)"
+    $why = Invoke-SRAnswerOnScreen -ProcessId $ProcessId -Index $Index -Who "$(if ($Name) { $Name } else { $SessionId })"
     return $why
 }
 

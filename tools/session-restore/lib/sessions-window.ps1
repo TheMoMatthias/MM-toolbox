@@ -5013,7 +5013,9 @@ $script:AnswerJob = {
     # because the failure this shape prevents is silent and irreversible.
     try {
         switch ("$($SRAns.Kind)") {
-            'answer' { $why = Send-SRQuestionAnswer -SessionId $SRAns.SessionId -Index $SRAns.Index }
+            'answer' { $why = Send-SRQuestionAnswer -SessionId $SRAns.SessionId -Index $SRAns.Index `
+                                                    -ProcessId ([int]$SRAns.Pid) -Kind "$($SRAns.AgentKind)" `
+                                                    -Name "$($SRAns.AgentName)" -MenuSeen ([bool]$SRAns.MenuSeen) }
             'move'   { $why = Invoke-SRRoundMove -ProcessId ([int]$SRAns.Pid) -Delta ([int]$SRAns.Delta) }
             'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId ([int]$SRAns.Pid) -Text "$($SRAns.Text)" -Who "$($SRAns.SessionId)" }
             'send'   { $why = Send-SRSessionInput -SessionId $SRAns.SessionId -Text "$($SRAns.Text)" }
@@ -5047,9 +5049,23 @@ function Start-AskSend {
     $procId = [int]$Row.A.Pid
     Set-Status $Saying
     Set-AskEnabled $false
+    # 🔑 WHAT THE JOB USED TO SPAWN claude TO FIND OUT. Send-SRQuestionAnswer
+    # asked `claude agents --json` on every option click - 837-1,090 ms measured
+    # with 31 sessions live - to read a pid, a kind and one status field. All of
+    # it is already here, on the UI thread, for nothing.
+    #
+    # 🔒 MenuSeen IS THE CARD ITSELF. $script:lastAsk is the parse the card was
+    # drawn from, so it is at most one 400 ms poll old and it came off a real
+    # screen read - which is what the agent list's 'waiting' is a second-hand
+    # summary of. If it is null the card is not showing a menu, and an option
+    # cannot have been clicked. Deliberately NOT falling back to askSeen: that
+    # is the sweep's older verdict and would only loosen a gate the card can
+    # answer exactly.
     $payload = @{
         Kind = $Kind; SessionId = "$($Row.Id)"; Pid = $procId
         Index = $Index; Delta = $Delta; Text = $Text
+        AgentKind = "$($Row.A.Kind)"; AgentName = "$($Row.A.Name)"
+        MenuSeen = [bool]$script:lastAsk
     }
     try {
         # Warm if one was ready; see New-SRRunspace. SRHere is already set on it.
@@ -5086,7 +5102,9 @@ function Start-AskSend {
             # Named arms only, for the reason spelled out on the job above: a
             # default that answers turns any unknown kind into a committed answer.
             switch ($Kind) {
-                'answer' { $why = Send-SRQuestionAnswer -SessionId $Row.Id -Index $Index }
+                'answer' { $why = Send-SRQuestionAnswer -SessionId $Row.Id -Index $Index `
+                                                        -ProcessId $procId -Kind "$($Row.A.Kind)" `
+                                                        -Name "$($Row.A.Name)" -MenuSeen ([bool]$script:lastAsk) }
                 'move'   { $why = Invoke-SRRoundMove -ProcessId $procId -Delta $Delta }
                 'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId $procId -Text $Text -Who "$($Row.Id)" }
                 'send'   { $why = Send-SRSessionInput -SessionId $Row.Id -Text $Text }
