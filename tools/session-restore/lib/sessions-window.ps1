@@ -1807,7 +1807,33 @@ function New-RailTile { param([string]$Path, $Kids, [bool]$Picked, $Blank, [stri
     $needs = 0; $working = 0
     foreach ($r in $Kids) {
         if ("$($r.Band)" -eq 'needs') { $needs++ }
-        elseif ($r.Live) { $working++ }
+        # 🔴 THE BAND, NOT .Live - THE TILE WAS COUNTING RUNNING AND SAYING
+        # WORKING.
+        #
+        # This read `elseif ($r.Live)`, so the number beside the word "working"
+        # was every session with a live agent entry that was not waiting on the
+        # operator - which sweeps in every session sitting at its prompt with
+        # nothing pending. Reported and then reproduced exactly from the same
+        # inputs the window uses: AlgoTrader drew "19 working" against 7 busy,
+        # and MM-toolbox drew "2 working" against 1.
+        #
+        # 🪤 $r.Band ALREADY HOLDS THE ANSWER AND THE TILE NEVER READ IT.
+        # Get-Band maps the agent status: busy -> working, idle -> idle/done,
+        # waiting/blocked -> needs. The correct predicate is used twice more in
+        # this same file - Update-Strip filters on `Band -eq $band` over
+        # @('needs','working'), and Start-QuietCheck tests
+        # `-not $r.Live -or $r.Band -ne 'working'`. So the collapsed strip and
+        # the rail tile disagreed about the same word, in the same window.
+        #
+        # 🪤 THE HEADER IS NOT WRONG AND IS NOT CHANGED. It prints '{0} live of
+        # {1}' off this same .Live set and calls it LIVE, which is what it is.
+        # The defect was never the set; it was the label on it.
+        #
+        # Corroborated independently of the agent status, by transcript tail age
+        # read in the same instant so staleness cannot explain the split:
+        # busy n=7 median 16 s, idle n=22 median 1.999 s, and six sessions
+        # counted as "working" had last written 11,3 hours earlier.
+        elseif ("$($r.Band)" -eq 'working') { $working++ }
     }
     $bits = New-Object System.Collections.Generic.List[string]
     if ($needs)   { $bits.Add("$needs waiting") }

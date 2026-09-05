@@ -1095,8 +1095,32 @@ $script:railSort = 'recent'
 
 $script:railOnlyLive = $true; Build-Rail
 $live = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' })
-$dead = @($live | Where-Object { "$($_.State)" -like '*idle*' -and "$($_.State)" -notlike '*working*' -and "$($_.State)" -notlike '*waiting*' })
-if ($dead.Count) { Fail "$($dead.Count) project(s) with nothing running survived the 'only running' filter" }
+# 🔴 ASKED OF THE MODEL, NOT OF THE TILE'S TEXT.
+#
+# This read the rendered State string and treated "says idle, does not say
+# working" as "nothing is running there". That inference was only ever valid
+# because the tile's "working" count was really counting .Live - so any live
+# project was guaranteed to render the word "working". The tile now counts the
+# working BAND, which is what it always claimed to count, and a project whose
+# sessions are all sitting at their prompts correctly renders "N idle" while
+# being very much alive. The filter kept it, correctly, and this check called
+# that a bug.
+#
+# 🪤 THE FILTER AND THE TILE ARE ANSWERING DIFFERENT QUESTIONS, AND BOTH ARE
+# RIGHT. Build-Rail filters on `$_.Live` and the control calls itself
+# 'running'; the tile counts `Band -eq 'working'` and says 'working'. Running
+# and working are not the same thing, which is the entire point of the fix
+# this check tripped over. So the assertion asks the model the question the
+# FILTER is answering, rather than reading a label that answers the other one.
+$byProjLive = @{}
+foreach ($mr in $script:model) {
+    $pk = "$($mr.D.path)"
+    if (-not $pk) { continue }
+    if (-not $byProjLive.ContainsKey($pk)) { $byProjLive[$pk] = 0 }
+    if ($mr.Live) { $byProjLive[$pk] = [int]$byProjLive[$pk] + 1 }
+}
+$dead = @($live | Where-Object { [int]$byProjLive["$($_.Path)"] -le 0 })
+if ($dead.Count) { Fail ("{0} project(s) with no live session survived the 'only running' filter, first: {1}" -f $dead.Count, "$($dead[0].Path)") }
 else { Pass "'only running' leaves $($live.Count) project(s), none of them idle" }
 $script:railOnlyLive = $false; Build-Rail
 
