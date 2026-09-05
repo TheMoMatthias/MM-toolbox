@@ -3687,6 +3687,38 @@ else {
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the reading pane does not pay for the slow line breaker ---'
+# ===========================================================================
+# 🔴 THE PANE DOES NOT VIRTUALIZE, so every splitter drag frame, every resize and
+# every text-size step re-lays the whole document. Knuth-Plass line breaking cost
+# a measured 480 ms against 355 ms on the largest transcript here - about 125 ms
+# a reflow, on the one surface that pays it repeatedly.
+#
+# 🪤 ASSERTED ON THE DOCUMENT, NOT ON THE SOURCE. A source grep would pass
+# against a line that had been commented out, or moved somewhere it never runs.
+# This asks the FlowDocument the pane actually built.
+$lbDoc = $ui.PaneDoc.Document
+if (-not $lbDoc) {
+    $script:selId = @($script:model | Where-Object { $_.Live })[0].Id
+    Show-Selected
+    $lbSw = [Diagnostics.Stopwatch]::StartNew()
+    while ($lbSw.Elapsed.TotalSeconds -lt 10 -and -not $ui.PaneDoc.Document) {
+        [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
+            [System.Windows.Threading.DispatcherPriority]::Background, [action]{})
+    }
+    $lbDoc = $ui.PaneDoc.Document
+}
+if (-not $lbDoc) { Note 'no document rendered - the line breaker cannot be checked' }
+elseif ($lbDoc.IsOptimalParagraphEnabled) {
+    Fail 'the reading pane has the optimal-paragraph breaker on - it costs ~125 ms on every reflow, and this pane reflows on every drag frame'
+}
+elseif ($lbDoc.IsHyphenationEnabled) {
+    Fail 'hyphenation is on - it was deliberately off, and it is the other half of the same cost'
+}
+else { Pass 'the reading pane leaves the slow line breaker off, as WPF defaults it' }
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- a foldable block in the reading pane can actually be clicked ---'
 # ===========================================================================
 # 🔴 IT NEVER OPENED, FOR AS LONG AS IT HAS EXISTED. Reported as "clicking a

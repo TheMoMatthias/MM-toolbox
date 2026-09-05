@@ -4035,12 +4035,44 @@ function Build-ReadDocument {
     $doc.Background  = [System.Windows.Media.Brushes]::Transparent
     $doc.Foreground  = $Pal.TextHigh
     $doc.ColumnWidth = [double]::PositiveInfinity
-    # OPTIMAL PARAGRAPH IS WPF'S GOOD LINE BREAKER (Knuth-Plass): it looks at
-    # the whole paragraph rather than greedily filling each line, which is the
-    # difference between even ragged edges and the lumpy ones that read as "not
-    # clean". Off by default, and it was left off. Hyphenation stays off -
-    # hyphenated prose in a terminal-adjacent surface reads worse, not better.
-    $doc.IsOptimalParagraphEnabled = $true
+    # 🔴 OPTIMAL PARAGRAPH IS OFF, AND IT IS OFF FOR A MEASURED REASON.
+    #
+    # It is WPF's good line breaker (Knuth-Plass): it looks at the whole
+    # paragraph rather than greedily filling each line, which is the difference
+    # between even ragged edges and lumpy ones. It was switched ON for that, and
+    # the typography really was better. It is also documented as slower, and
+    # nobody had put a number on it.
+    #
+    # THE NUMBER, measured on this machine against the largest transcript here
+    # (201 KB, 40 blocks), same document, same viewer, only this property
+    # changing, at a different width each pass so WPF cannot reuse the previous
+    # line breaks - which is what a splitter drag actually does:
+    #
+    #     breaker ON    median 480 ms        breaker OFF   median 355 ms
+    #
+    # Around 125 ms per reflow, ~1.3x. Taken both interleaved and sequentially
+    # (1.35x and 1.32x) because sequential runs on this machine have produced a
+    # frankly impossible result before; here the two agree, so the methodology
+    # is not doing the work.
+    #
+    # 🔑 WHY IT MATTERS MORE THAN 125 ms SOUNDS. Dragging a splitter costs
+    # 250-435 ms and its handler is 0.3 ms of that, so it is all layout - and the
+    # lists virtualize while THIS PANE DOES NOT. So every drag frame, every
+    # window resize and every text-size step pays it, which is a real part of
+    # "the tool feels laggy everywhere".
+    #
+    # 🪤 REVERSIBLE IN ONE LINE, deliberately. This is typography traded for
+    # speed and the operator may want it back; flip this to $true and nothing
+    # else changes. WPF's own default is off, so off is not a workaround.
+    #
+    # 🪤 AND THE RATIO IS SMALLER THAN IT WAS FIRST REPORTED. A 3.7-4.8x figure
+    # went round before this; three runs here over three document sizes gave
+    # 1.23x, 1.28x and 1.35x and never approached it. The saving is real and
+    # worth taking either way - this note exists so nobody later measures ~1.3x,
+    # assumes a regression against the larger figure, and goes hunting.
+    $doc.IsOptimalParagraphEnabled = $false
+    # Hyphenation stays off - hyphenated prose in a terminal-adjacent surface
+    # reads worse, not better.
     $doc.IsHyphenationEnabled = $false
     # 🔴 RAGGED RIGHT, AND FLOWDOCUMENT DOES NOT DEFAULT TO IT. TextAlignment
     # defaults to JUSTIFY, which nothing in this tool ever asked for: with a
