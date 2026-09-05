@@ -471,15 +471,49 @@ function Set-AskCap {
     try { $ui.AskScroll.MaxHeight = $cap } catch { }
 }
 
+# THE FLUSH LANE FOR Save-SRConfigLater (_common.ps1).
+#
+# ApplicationIdle rather than a timer: the write should happen as soon as the
+# window has nothing better to do - usually a frame or two after the click -
+# not on a fixed delay that widens the window in which a kill loses the setting.
+#
+# 🪤 COALESCED, WHICH IS THE POINT. Stepping the zoom four times queues four
+# values and ONE flush, so it is one read-modify-write of the config instead of
+# four. The flag is what makes that true; without it each click queues its own
+# callback and the saving is only that they land off the gesture.
+#
+# 🪤 AND IT IS STILL THE UI THREAD. A runspace would take the write off the
+# thread entirely, and would also mean two threads doing read-modify-write on
+# one file - on Windows the Move-Item then fails outright when the other holds
+# it open, which is a reproducible failure in place of a cost. Idle is the
+# cheaper correct answer: the gesture is free and the write is single-threaded.
+$script:cfgFlushQueued = $false
+
+function Request-SRConfigFlush {
+    if ($script:cfgFlushQueued) { return }
+    $script:cfgFlushQueued = $true
+    try {
+        $null = $window.Dispatcher.BeginInvoke([Action]{
+            # Cleared FIRST: a throw below must not strand the flag, or every
+            # later click would queue nothing and the settings would stop being
+            # written at all until the close.
+            $script:cfgFlushQueued = $false
+            try { $null = Save-SRConfigWrites }
+            catch { Write-SRLog ('  [skip] could not remember a setting: ' + $_.Exception.Message) }
+        }, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
+    } catch { $script:cfgFlushQueued = $false }
+}
+
 function Invoke-ColumnFold { param([string]$Which)
     $s = Get-ColumnFold
     if ($Which -eq 'rail') {
         $script:foldRail = -not $s.Rail
-        try { $null = Save-SRConfigValue -Name 'foldProjects' -Value ([bool]$script:foldRail) } catch { }
+        try { Save-SRConfigLater -Name 'foldProjects' -Value ([bool]$script:foldRail) } catch { }
     } else {
         $script:foldList = -not $s.List
-        try { $null = Save-SRConfigValue -Name 'foldSessions' -Value ([bool]$script:foldList) } catch { }
+        try { Save-SRConfigLater -Name 'foldSessions' -Value ([bool]$script:foldList) } catch { }
     }
+    Request-SRConfigFlush
     Update-Columns
 }
 
@@ -4099,6 +4133,13 @@ function Show-Ask { param($q)
     # agreeing with what is now on screen, or its next tick would redraw the
     # identical menu and take the focus back off whatever the operator was doing.
     try { $script:askSig = Get-AskSignature $q } catch { $script:askSig = '' }
+    # 🔴 AND THE POLL'S TEXT CACHE. The signature alone is not enough: the fast
+    # lane skips the parse entirely when the SCREEN has not changed, so a card
+    # blanked from here while the terminal is still showing the same menu would
+    # stay blank - the poll would keep matching its cached text and returning
+    # before it ever looked. Every path that draws or blanks the card has to
+    # leave the lane willing to read again, not just agreeing about the drawing.
+    $script:askText = $null
     if (-not $q -or -not @($q.Options).Count) { return }
 
     $ui.AskHeader.Text = $(if ("$($q.Header)") { "$($q.Header)".ToUpper() } else { 'IT IS ASKING' })
@@ -4564,6 +4605,14 @@ function Start-AskSend {
     } catch {
         # 🪤 A FALLBACK THAT STILL SENDS. If a runspace will not open, doing it
         # on this thread is slow but correct; refusing the gesture is not.
+        #
+        # 🔴 BUT CLOSE THE ONE WE WERE HANDED FIRST. Get-SRRunspace returns an
+        # ALREADY-OPEN runspace, so a throw from SetVariable, AddScript or
+        # BeginInvoke strands a live thread with nothing referencing it. Before
+        # the warm spare, the throw here was almost always Open() itself and
+        # there was nothing yet to leak; taking a pre-opened one moved the
+        # failure window to after the open.
+        try { if ($rs) { $rs.Close(); $rs.Dispose() } } catch { }
         Write-SRLog ('  [skip] sending off-thread failed, sending inline: ' + $_.Exception.Message)
         $script:ansPs = $null; $script:ansRs = $null; $script:ansHandle = $null
         $why = $null
@@ -4643,9 +4692,30 @@ function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question,
         # closes the panel and sends the row back to working.
         $seen = $null
         try { $seen = Get-SRScreenQuestion -ProcessId $Pid_ } catch { }
-        if ($seen) { Show-Ask $seen } else {
-            $ui.AskBox.Visibility = $V_Hide
-            $script:lastAsk = $null
+
+        # 🔴 THE CARD BELONGS TO WHAT IS SELECTED NOW, NOT TO WHAT WAS ANSWERED.
+        # This job is 150-200 ms out and keyed on the pid captured at SEND time;
+        # every sibling collector guards on the selection for that reason
+        # (Complete-DocParse on docFor, Complete-AskProbe and Complete-LiveProbe
+        # on selId) and this one did not. Answer A, click B while it is in
+        # flight, and A's NEXT question was drawn onto the card under B's name -
+        # and Invoke-Answer reads SelectedItem fresh, so the option clicked on
+        # that card went into B. Send-SRQuestionAnswer only checks that B is
+        # waiting, not that the menu matches, so it would commit.
+        #
+        # 🪤 THE ROW BOOKKEEPING IS NOT GUARDED, and must not be: whether A still
+        # has a menu is a fact about A, true wherever the operator has clicked.
+        # Only the drawing is about the selection.
+        $sel = $null
+        try { $sel = Get-SelectedRow } catch { }
+        $stillOn = ($sel -and "$($sel.Id)" -eq "$($Row.Id)")
+        if ($seen) {
+            if ($stillOn) { Show-Ask $seen }
+        } else {
+            if ($stillOn) {
+                $ui.AskBox.Visibility = $V_Hide
+                $script:lastAsk = $null
+            }
             Move-RowToWorking $Row
         }
     }
@@ -4852,7 +4922,20 @@ function Invoke-AskPoll {
     # happened to match the last one read would skip the parse and leave the
     # previous conversation's menu on the card - which is the worst bug this
     # window can have.
-    if ($txt -eq $script:askText -and [int]$row.A.Pid -eq [int]$script:askTextPid) { return }
+    # 🔴 EXCEPT WHILE A CLEAR IS PENDING, and leaving that out made the card lie.
+    # The two rules are each right and together they deadlocked: "an unchanged
+    # screen costs no parse" and "clearing takes two parsed-empty reads IN A ROW"
+    # cannot both hold, because the second read never happens. Traced: the
+    # operator answers in the terminal, the menu goes, tick 1 parses empty and
+    # sets askMiss=1, and every tick after that matches the cached text and
+    # returns - askMiss frozen at 1 forever. The card was then cleared only by
+    # the fifteen-second probe this lane was written to replace, in the one
+    # direction where a stale card is still CLICKABLE.
+    #
+    # One extra parse, only while askMiss is exactly 1. It settles at 2 on the
+    # next read and the short-circuit resumes.
+    $same = ($txt -eq $script:askText -and [int]$row.A.Pid -eq [int]$script:askTextPid)
+    if ($same -and $script:askMiss -ne 1) { return }
     $script:askText = $txt
     $script:askTextPid = [int]$row.A.Pid
 
@@ -5388,8 +5471,12 @@ function Start-DocParse { param([string]$Path)
     } catch {
         # 🪤 A FALLBACK THAT STILL RENDERS. If a runspace will not open, reading
         # on this thread is slow but correct; showing nothing would not be.
+        # 🔴 The open runspace goes with it - see the note in Start-AskSend's
+        # catch: what Get-SRRunspace hands back is already open, so a throw after
+        # that point leaks a thread.
+        try { if ($rs) { $rs.Close(); $rs.Dispose() } } catch { }
         Write-SRLog ('  [skip] parsing off-thread failed, reading inline: ' + $_.Exception.Message)
-        $script:docPs = $null
+        $script:docPs = $null; $script:docRs = $null
         $blocks = @()
         try { $blocks = Get-SRTranscriptBlocks -JsonlPath $Path -MaxRecords 220 -MaxTailBytes $script:tailBytes } catch { }
         Set-ReadDocument -Blocks $blocks -Truncated $script:docTrunc
@@ -5957,8 +6044,10 @@ function Step-ToolView {
     $ui.PaneTools.Content = Get-ToolViewLabel
     # 🪤 The write is a SIDE EFFECT, never something the redraw waits on. A
     # config that cannot be written must not stop the pane from redrawing - the
-    # setting is already live in this window either way.
-    try { Save-SRConfigValue -Name 'transcriptTools' -Value $script:toolView }
+    # setting is already live in this window either way. Which is also why it
+    # queues: nothing on this path reads it back, so the file only has to be
+    # right before the window closes.
+    try { Save-SRConfigLater -Name 'transcriptTools' -Value $script:toolView; Request-SRConfigFlush }
     catch { Write-SRLog ('  [skip] could not remember the steps setting: ' + $_.Exception.Message) }
     Show-Selected -Force
 }
@@ -5992,7 +6081,7 @@ function Step-Zoom {
     }
     Set-SRTypeScale -Percent $SR_ZoomSteps[($i + 1) % $SR_ZoomSteps.Count]
     $ui.PaneZoom.Content = Get-ZoomLabel
-    try { Save-SRConfigValue -Name 'zoom' -Value $script:Zoom }
+    try { Save-SRConfigLater -Name 'zoom' -Value $script:Zoom; Request-SRConfigFlush }
     catch { Write-SRLog ('  [skip] could not remember the zoom setting: ' + $_.Exception.Message) }
     # The rows carry their own measured heights, so the list has to be told the
     # type under it changed or it keeps laying out for the old size.
@@ -9354,8 +9443,12 @@ function Start-LiveProbe {
         $script:probeHandle = $ps.BeginInvoke()
         $script:probeStartedAt = Get-Date
     } catch {
+        # 🔴 The open runspace goes with it - see the note in Start-AskSend's
+        # catch. This one runs every 15 seconds, so a leak here is the one that
+        # would accumulate threads fastest.
+        try { if ($rs) { $rs.Close(); $rs.Dispose() } } catch { }
         Write-SRLog ('  [FAIL] the live probe would not start: {0}' -f $_.Exception.Message)
-        $script:probePs = $null
+        $script:probePs = $null; $script:probeRs = $null
     }
 }
 
@@ -9503,6 +9596,14 @@ $window.Add_ContentRendered({
     try { Request-SRSpareRunspace } catch { }
 })
 $window.Add_Closed({
+    # 🔴 THE SETTINGS FIRST, BEFORE ANYTHING HERE CAN THROW. Save-SRConfigLater
+    # takes the write off the click and leaves it queued for an idle moment; a
+    # window closed inside that moment has the value in memory and nowhere else.
+    # This is the line that makes the queue safe rather than lossy, so it runs
+    # before the timers, the runspaces and the child process - each of which is
+    # a chance to throw and skip whatever came after it.
+    try { $null = Save-SRConfigWrites }
+    catch { try { Write-SRLog ('  [skip] a setting could not be remembered on close: ' + $_.Exception.Message) } catch { } }
     # 🪤 ALL SEVEN, NOT FOUR. searchTimer, launchTimer and castTimer were
     # left running: the dispatcher shuts down with ShowDialog so they do not
     # actually fire, which is exactly why the omission was invisible - and

@@ -109,19 +109,29 @@ else { Pass 'an empty launch set starts no timer' }
 #   2. The logon restore skipped 15 conversations as "already live (transcript
 #      written < 3 min ago)" - written seconds before the shutdown, on a restart
 #      that took less than three minutes. See Test-SRTranscriptLive below.
+# 🔴 RESTORED IN A finally, BECAUSE THIS OBJECT IS NOW SHARED. $script:cfg is
+# what Get-SRConfig handed back, and since the config cache landed that is the
+# ONE parsed object every reader in the process holds - so between the write
+# below and the restore, Get-SRCompactBrief, the zoom read and the cleartype
+# read all see maxSessions=4. That was survivable while the restore always ran;
+# it was a bare statement at the end of the block, so any Fail that threw in
+# between left the value poisoned for the rest of the suite.
 $capWas = $null
 try { $capWas = $script:cfg.maxSessions } catch { }
-$script:cfg.maxSessions = 4
-$a = Limit-ToCap @(1, 2, 3, 4, 5, 6)
-$b = Limit-ToCap @(7, 8, 9) -Already @($a.Go).Count
-if (@($a.Go).Count -ne 4) { Fail "the cap let $(@($a.Go).Count) through instead of 4" }
-elseif (@($b.Go).Count -ne 0) { Fail "a second call ignored what the first already took: $(@($b.Go).Count) more" }
-elseif ($b.Over -ne 3) { Fail "the second call reported $($b.Over) over the cap, not 3" }
-else { Pass 'two calls in one action share one cap rather than each getting a whole one' }
-$c = Limit-ToCap @(7, 8, 9) -Already 2
-if (@($c.Go).Count -ne 2) { Fail "with 2 already taken the cap left room for $(@($c.Go).Count), not 2" }
-else { Pass 'the shared cap leaves exactly the room that is left' }
-if ($null -ne $capWas) { $script:cfg.maxSessions = $capWas }
+try {
+    $script:cfg.maxSessions = 4
+    $a = Limit-ToCap @(1, 2, 3, 4, 5, 6)
+    $b = Limit-ToCap @(7, 8, 9) -Already @($a.Go).Count
+    if (@($a.Go).Count -ne 4) { Fail "the cap let $(@($a.Go).Count) through instead of 4" }
+    elseif (@($b.Go).Count -ne 0) { Fail "a second call ignored what the first already took: $(@($b.Go).Count) more" }
+    elseif ($b.Over -ne 3) { Fail "the second call reported $($b.Over) over the cap, not 3" }
+    else { Pass 'two calls in one action share one cap rather than each getting a whole one' }
+    $c = Limit-ToCap @(7, 8, 9) -Already 2
+    if (@($c.Go).Count -ne 2) { Fail "with 2 already taken the cap left room for $(@($c.Go).Count), not 2" }
+    else { Pass 'the shared cap leaves exactly the room that is left' }
+} finally {
+    if ($null -ne $capWas) { $script:cfg.maxSessions = $capWas }
+}
 
 # 🪤 A FRESH TRANSCRIPT AFTER A REBOOT IS THE OPPOSITE OF A LIVE SESSION, and
 # a shorter window would not have fixed it - only a faster reboot was needed.
@@ -4378,6 +4388,177 @@ if ($faceWant) {
     }
     if ($bad.Count) { Fail ("the dialog text never picked up the shipped face (want '$faceWant'): " + ($bad -join '; ')) }
     else { Pass 'the shipped typeface reaches the dialog through the merge' }
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- remembering a setting stops happening on the click that set it ---'
+# ===========================================================================
+# 🔴 THE WHOLE RISK OF THIS CHANGE IS A LOST SETTING, so that is what is tested.
+# Taking the write off the click is easy; the part that can go wrong is the
+# value sitting in a hashtable when the window goes away.
+#
+# 🪤 THE CONFIG IS REDIRECTED, NOT USED. Every other test in this file goes out
+# of its way to avoid Save-SRConfigValue because it writes the OPERATOR'S REAL
+# CONFIG - but this one is ABOUT the writing, so it cannot dodge it. The path
+# and all three pieces of cache state are restored in a finally, and the scratch
+# directory goes with them: a fixture that leaks either is the thing this
+# machine's conventions were written about.
+$cfgWas      = $SR_ConfigPath
+$cfgCacheWas = $script:SR_ConfigCache
+$cfgStampWas = $script:SR_ConfigStamp
+$cfgPendWas  = $script:SR_ConfigPending
+$cfgDir = Join-Path ([System.IO.Path]::GetTempPath()) ('sr-cfg-' + [guid]::NewGuid().ToString('N'))
+try {
+    $null = New-Item -ItemType Directory -Path $cfgDir -Force
+    $script:SR_ConfigPath    = Join-Path $cfgDir 'session-restore.config.json'
+    $script:SR_ConfigCache   = $null
+    $script:SR_ConfigStamp   = ''
+    $script:SR_ConfigPending = @{}
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($SR_ConfigPath, '{"zoom":100,"transcriptTools":"folded"}', $utf8)
+
+    # The click itself must not reach the disk.
+    Save-SRConfigLater -Name 'zoom' -Value 125
+    $onDisk = (Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json)
+    if ([int]$onDisk.zoom -ne 100) { Fail ('the click wrote the file after all: zoom is already {0}' -f $onDisk.zoom) }
+    else { Pass 'the gesture leaves the file exactly as it was' }
+
+    # 🔴 BUT THIS PROCESS MUST READ BACK WHAT IT JUST SET. The file has not
+    # moved, so the stamp still matches and Get-SRConfig would otherwise hand
+    # back a config that predates the click - a setting that reverts when
+    # anything asks for it is worse than one that costs 21 ms.
+    if ([int](Get-SRConfig).zoom -ne 125) { Fail ('Get-SRConfig reports {0}, not the 125 that was just set' -f (Get-SRConfig).zoom) }
+    else { Pass 'a queued setting reads back as the value that was clicked' }
+
+    # Two settings, ONE read-modify-write - which is the saving, not a detail.
+    Save-SRConfigLater -Name 'transcriptTools' -Value 'full'
+    if (-not (Save-SRConfigWrites)) { Fail 'the flush said it had nothing to write with two settings queued' }
+    else {
+        $onDisk = (Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json)
+        if ([int]$onDisk.zoom -ne 125 -or "$($onDisk.transcriptTools)" -ne 'full') {
+            Fail ("the flush did not land both settings: zoom={0} tools='{1}'" -f $onDisk.zoom, $onDisk.transcriptTools)
+        } else { Pass 'both queued settings reach the file in one write' }
+        if ($script:SR_ConfigPending.Count -ne 0) { Fail 'the flush wrote but did not clear the queue - the next one would write them again' }
+        else { Pass 'a written setting leaves the queue' }
+    }
+
+    # 🪤 ASSERTED BY CONTENT, NOT BY TIMESTAMP. Two writes inside the system
+    # clock's ~15.6 ms tick can share a LastWriteTime, so an unchanged stamp is
+    # not evidence that nothing was written.
+    [System.IO.File]::WriteAllText($SR_ConfigPath, '{"zoom":125,"sentinel":"kept"}', $utf8)
+    if (Save-SRConfigWrites) { Fail 'a flush with an empty queue claimed it wrote something' }
+    else {
+        $onDisk = (Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json)
+        if ("$($onDisk.sentinel)" -ne 'kept') { Fail 'a flush with an empty queue rewrote the file anyway' }
+        else { Pass 'a flush with nothing queued writes nothing, and says so' }
+    }
+
+    # 🔴 THE ONE THAT WOULD LOOK LIKE THE SETTING REVERTING ON ITS OWN. A
+    # synchronous write is later than anything queued for the same key; if the
+    # queue kept its copy, the next flush would put the older value back some
+    # seconds after the newer one was written.
+    $script:SR_ConfigCache = $null; $script:SR_ConfigStamp = ''
+    Save-SRConfigLater -Name 'zoom' -Value 150
+    Save-SRConfigValue -Name 'zoom' -Value 90
+    $null = Save-SRConfigWrites
+    $onDisk = (Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json)
+    if ([int]$onDisk.zoom -ne 90) { Fail ('a queued value came back over a synchronous write: zoom is {0}, not 90' -f $onDisk.zoom) }
+    else { Pass 'a synchronous write drops the queued value for the same key' }
+
+    $strays = @(Get-ChildItem -LiteralPath $cfgDir -Filter '.config.*.tmp' -Force -ErrorAction SilentlyContinue)
+    if ($strays.Count) { Fail ("{0} .config.<guid>.tmp left beside the config after four writes" -f $strays.Count) }
+    else { Pass 'no temp file is left beside the config' }
+
+    # 🔴 THE CASE THAT WAS SILENTLY BROKEN, AND HAD BEEN SINCE BEFORE THE QUEUE.
+    # Get-Content and Move-Item report a blocked file as a NON-TERMINATING error,
+    # so the writer's own try/catch never saw it: the read returned nothing and
+    # the write went ahead against a BLANK object, producing a config holding
+    # only the key being saved. Every other setting on it was destroyed - and
+    # then the flush cleared its queue for a value that never landed.
+    #
+    # A destination opened with FileShare None is that state, on demand.
+    [System.IO.File]::WriteAllText($SR_ConfigPath, '{"zoom":100,"transcriptTools":"folded","recencyDays":14}', $utf8)
+    $script:SR_ConfigCache = $null; $script:SR_ConfigStamp = ''
+    $script:SR_ConfigPending = @{}
+    Save-SRConfigLater -Name 'zoom' -Value 133
+    $lock = [System.IO.File]::Open($SR_ConfigPath, 'Open', 'ReadWrite', 'None')
+    $lockThrew = $false
+    try { $null = Save-SRConfigWrites } catch { $lockThrew = $true }
+    $lock.Dispose()
+    if (-not $lockThrew) { Fail 'a write against a config another process holds open reported success' }
+    else { Pass 'a blocked write throws instead of reporting success' }
+    if (-not $script:SR_ConfigPending.ContainsKey('zoom')) { Fail 'the blocked write cleared the queue - the setting is gone' }
+    else { Pass 'a blocked write keeps the setting queued' }
+    $onDisk = (Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json)
+    if ($null -eq $onDisk.PSObject.Properties['recencyDays'] -or $null -eq $onDisk.PSObject.Properties['transcriptTools']) {
+        Fail 'the blocked write replaced the config with only the key it was saving - the other settings are gone'
+    } else { Pass 'a blocked write leaves every other setting on the file untouched' }
+    $strays = @(Get-ChildItem -LiteralPath $cfgDir -Filter '.config.*.tmp' -Force -ErrorAction SilentlyContinue)
+    if ($strays.Count) { Fail ("a blocked write left {0} temp file(s) beside the config" -f $strays.Count) }
+    else { Pass 'a blocked write cleans up its own temp' }
+    $script:SR_ConfigPending = @{}
+
+    # 🔴 A FAILED FLUSH KEEPS THE SETTING. This is what makes the close-flush a
+    # backstop rather than a second chance to lose it: the queue is only cleared
+    # for keys that actually reached the file.
+    $script:SR_ConfigPath  = Join-Path $cfgDir 'no-such-dir\session-restore.config.json'
+    $script:SR_ConfigCache = $null; $script:SR_ConfigStamp = ''
+    Save-SRConfigLater -Name 'zoom' -Value 110
+    $threw = $false
+    try { $null = Save-SRConfigWrites } catch { $threw = $true }
+    if (-not $threw) { Fail 'a write into a directory that does not exist reported success' }
+    elseif (-not $script:SR_ConfigPending.ContainsKey('zoom')) { Fail 'a failed flush dropped the setting instead of keeping it for the next one' }
+    else { Pass 'a failed flush keeps the setting queued, and says it failed' }
+}
+finally {
+    $script:SR_ConfigPath    = $cfgWas
+    $script:SR_ConfigCache   = $cfgCacheWas
+    $script:SR_ConfigStamp   = $cfgStampWas
+    $script:SR_ConfigPending = $cfgPendWas
+    try { Remove-Item -LiteralPath $cfgDir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+}
+
+# AND THE THREE GESTURES ACTUALLY GO THROUGH IT. Same body extraction as the
+# send lane above, comments stripped first for the same reason.
+$cfgSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\sessions-window.ps1'))
+function Get-SRBodyOf { param([string]$Src, [string]$Marker)
+    $a = $Src.IndexOf($Marker)
+    if ($a -lt 0) { return '' }
+    $b = $Src.IndexOf("`nfunction ", $a + $Marker.Length)
+    if ($b -lt 0) { $b = $Src.Length }
+    $body = $Src.Substring($a, $b - $a)
+    return ((($body -split "`n") | ForEach-Object { ($_ -split '#', 2)[0] }) -join "`n")
+}
+
+foreach ($fn in @('Invoke-ColumnFold', 'Step-ToolView', 'Step-Zoom')) {
+    $body = Get-SRBodyOf $cfgSrc "function $fn"
+    if (-not $body) { Fail "$fn is gone"; continue }
+    if ($body -match 'Save-SRConfigValue') { Fail "$fn still writes the config synchronously on the click" }
+    elseif ($body -notmatch 'Save-SRConfigLater') { Fail "$fn no longer remembers its setting at all" }
+    elseif ($body -notmatch 'Request-SRConfigFlush') { Fail "$fn queues the setting and never asks for it to be written" }
+    else { Pass "$fn queues its setting and asks for the flush" }
+}
+
+# 🪤 COALESCED, OR THE CHANGE IS HALF OF ITSELF. Without the guard each click
+# queues its own callback: the writes still leave the gesture, but four clicks
+# are still four read-modify-writes of the file.
+$rqBody = Get-SRBodyOf $cfgSrc 'function Request-SRConfigFlush'
+if (-not $rqBody) { Fail 'Request-SRConfigFlush is gone - the queued settings have no lane to reach the file on' }
+elseif ($rqBody -notmatch 'cfgFlushQueued') { Fail 'the flush is not coalesced - every click would queue its own write' }
+elseif ($rqBody -notmatch 'ApplicationIdle') { Fail 'the flush does not wait for idle - it is back on the gesture' }
+else { Pass 'the flush is coalesced and runs when the window has nothing better to do' }
+
+# 🔴 AND THE CLOSE IS THE BACKSTOP. A setting clicked in the last moment before
+# the window goes away lives only in that hashtable; if Add_Closed does not
+# flush, the queue is exactly a way to lose it.
+$clIx = $cfgSrc.IndexOf('$window.Add_Closed(')
+if ($clIx -lt 0) { Fail 'the window has no Add_Closed handler' }
+else {
+    $clBody = $cfgSrc.Substring($clIx)
+    $clBody = ((($clBody -split "`n") | ForEach-Object { ($_ -split '#', 2)[0] }) -join "`n")
+    if ($clBody -notmatch 'Save-SRConfigWrites') { Fail 'closing the window does not flush the queued settings - a setting clicked in the last moment is lost' }
+    else { Pass 'closing the window writes whatever is still queued' }
 }
 
 Write-Host ''

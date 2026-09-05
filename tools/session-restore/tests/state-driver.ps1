@@ -1342,6 +1342,57 @@ try {
     if ((Get-SRShellOutputPath -SessionId 'ffffffff-0000-0000-0000-000000000000' -Shell 'babcdef12')) {
         Fail 'a shell id for an unknown session resolved to a path'
     } else { Pass 'an unknown session resolves to no output file rather than a guess' }
+
+    # 🔴 AND A SHELL THAT EXISTS IS FOUND. Both assertions above are NEGATIVE,
+    # and between them they let a real regression through: the resolver broke out
+    # of its sweep on the first project directory that merely HAD a tasks folder,
+    # without checking the file was in it. One session id can sit under several
+    # projects - `claude --resume` from another cwd, and worktrees - and on this
+    # machine 11 of them do, one under three. Every shell belonging to the later
+    # directory resolved to '' while sitting plainly on disk, and the wrong
+    # directory was then cached so each later call re-swept every project to
+    # reach the same wrong answer. Two negatives cannot see any of that.
+    #
+    # 🪤 $env:TEMP IS REDIRECTED, because that is what the resolver roots on.
+    # Restored in the finally below with the tree it points at - a fixture that
+    # leaks an env var pollutes every test after it exactly as a leaked dir
+    # pollutes the disk.
+    $tempWas = $env:TEMP
+    $fakeTmp = Join-Path $saDir 'faketemp'
+    try {
+        $sid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        # Three projects, in the order the enumeration will see them: the first
+        # has the session but NOT this shell, the second has the shell, the third
+        # is a decoy. This is the exact shape that was broken.
+        foreach ($p in @('P--first', 'P--second', 'P--third')) {
+            $null = New-Item -ItemType Directory -Force -Path (Join-Path $fakeTmp "claude\$p\$sid\tasks")
+        }
+        [System.IO.File]::WriteAllText((Join-Path $fakeTmp "claude\P--first\$sid\tasks\bother0001.output"), 'not the one')
+        $want = Join-Path $fakeTmp "claude\P--second\$sid\tasks\bwanted0001.output"
+        [System.IO.File]::WriteAllText($want, 'THE ONE')
+        $env:TEMP = $fakeTmp
+        $script:SR_ShellDirCache = @{}
+
+        $got = Get-SRShellOutputPath -SessionId $sid -Shell 'bwanted0001'
+        if ("$got" -ne "$want") { Fail ("a shell under the session's SECOND project directory resolved to '{0}'" -f $got) }
+        else { Pass "a shell is found under whichever of the session's project directories holds it" }
+
+        # 🔑 AND AGAIN, OFF THE CACHE. The first call caches; a resolver that
+        # cached only the first directory would pass the line above by luck of
+        # ordering and fail here, which is the half that was actually broken.
+        $again = Get-SRShellOutputPath -SessionId $sid -Shell 'bwanted0001'
+        if ("$again" -ne "$want") { Fail ("the same shell resolved to '{0}' on the cached path" -f $again) }
+        else { Pass 'and again off the cache, not just on the first sweep' }
+
+        # A shell that genuinely is not there is still nothing - the cache must
+        # not turn "no such file" into some other session's file.
+        if ((Get-SRShellOutputPath -SessionId $sid -Shell 'bnothere01')) {
+            Fail 'a shell with no output file resolved to a path anyway'
+        } else { Pass 'a shell with no output file is still nothing, cached or not' }
+    } finally {
+        $env:TEMP = $tempWas
+        $script:SR_ShellDirCache = @{}
+    }
 } finally {
     Remove-Item -LiteralPath $saDir -Recurse -Force -ErrorAction SilentlyContinue
 }

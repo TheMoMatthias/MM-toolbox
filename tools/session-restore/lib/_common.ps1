@@ -199,12 +199,21 @@ $SR_ReadWidths = @('full', 'measured')
 # Get-SRQueue already use in this file: the cache is dropped the moment the file
 # on disk differs, so it cannot outlive the truth behind it.
 #
-# 🔒 SAFE TO HAND THE SAME OBJECT BACK because nothing mutates it.
-# Save-SRConfigValue does its OWN Get-Content/ConvertFrom-Json, edits that copy
-# and writes it - it never touches what this returns - and the write moves the
-# stamp, so the next read re-parses anyway. Checked against all nine call sites.
+# 🔒 SAFE TO HAND THE SAME OBJECT BACK. Save-SRConfigValue does its OWN
+# Get-Content/ConvertFrom-Json, edits that copy and writes it - it never touches
+# what this returns - and the write moves the stamp, so the next read re-parses
+# anyway. Checked against all nine call sites.
+#
+# 🪤 ONE THING DOES WRITE ON IT, ON PURPOSE: Save-SRConfigLater, below. A queued
+# setting has not reached the file, so the stamp still matches and this would
+# otherwise hand back a config that predates the click that changed it. It
+# writes the SAME value the flush will write, so the two can never disagree.
 $script:SR_ConfigCache = $null
 $script:SR_ConfigStamp = ''
+
+# Settings clicked but not yet on disk. Empty in every process except the window
+# (nothing else calls Save-SRConfigLater), so no other caller is affected by it.
+$script:SR_ConfigPending = @{}
 
 function Get-SRConfig {
     $stamp = ''
@@ -216,6 +225,18 @@ function Get-SRConfig {
         return $script:SR_ConfigCache
     }
     $cfg = Get-SRConfigRead
+    # A value that has been clicked but not yet flushed IS the truth about that
+    # setting; the file is the thing that is behind. The parse above is a private
+    # copy that nobody else holds yet, so writing onto it costs nothing.
+    if ($script:SR_ConfigPending.Count) {
+        foreach ($k in @($script:SR_ConfigPending.Keys)) {
+            try {
+                if ($null -eq $cfg.PSObject.Properties["$k"]) {
+                    $cfg | Add-Member -NotePropertyName "$k" -NotePropertyValue $script:SR_ConfigPending[$k] -Force
+                } else { $cfg."$k" = $script:SR_ConfigPending[$k] }
+            } catch { }
+        }
+    }
     if ($stamp) { $script:SR_ConfigCache = $cfg; $script:SR_ConfigStamp = $stamp }
     return $cfg
 }
@@ -385,21 +406,109 @@ function Get-SRConfigRead {
 # operator's file - a config they had left mostly empty would come back with
 # nine keys they never set, and a value they had deliberately put out of range
 # would be quietly overwritten by ours. Only the key asked for changes.
-function Save-SRConfigValue { param([Parameter(Mandatory)][string]$Name, $Value)
+# N SETTINGS, ONE READ-MODIFY-WRITE. The single-key writer used to be this whole
+# function; it is now one caller of it, and the flush below is the other. That
+# matters because the flush usually has more than one key waiting: four clicks
+# used to be four reparses of 15 KB and four file moves, and are now one.
+function Set-SRConfigOnDisk { param([Parameter(Mandatory)][hashtable]$Values)
     $raw = $null
     if (Test-Path -LiteralPath $SR_ConfigPath) {
-        try { $raw = Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json } catch { $raw = $null }
+        # 🔴 CANNOT-READ AND CANNOT-PARSE ARE DIFFERENT ANSWERS, and running them
+        # together destroyed settings. `Get-Content` on a file another process
+        # holds raises a NON-TERMINATING error, so the catch below never fired,
+        # $raw stayed $null, and the write went ahead against a BLANK object -
+        # producing a config containing only the key being saved and none of the
+        # eleven others. Measured: a destination opened with FileShare None
+        # reproduces it every time.
+        #
+        # So the read throws now, and a read that throws writes NOTHING - the
+        # caller keeps its queue and tries again. Only a parse failure falls
+        # through to a fresh object, which is the case that was always meant to:
+        # hand-edited JSON that no longer parses, where Get-SRConfigRead already
+        # tells the operator to fix it or delete it.
+        $txt = [System.IO.File]::ReadAllText($SR_ConfigPath)
+        try { $raw = $txt | ConvertFrom-Json } catch { $raw = $null }
     }
     if (-not $raw) { $raw = New-Object PSObject }
-    if ($null -eq $raw.PSObject.Properties[$Name]) {
-        $raw | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
-    } else { $raw.$Name = $Value }
+    foreach ($k in @($Values.Keys)) {
+        if ($null -eq $raw.PSObject.Properties["$k"]) {
+            $raw | Add-Member -NotePropertyName "$k" -NotePropertyValue $Values[$k] -Force
+        } else { $raw."$k" = $Values[$k] }
+    }
 
     $dir = Split-Path -Parent $SR_ConfigPath
     $tmp = Join-Path $dir ('.config.{0}.tmp' -f ([guid]::NewGuid().ToString('N')))
     $json = $raw | ConvertTo-Json -Depth 8
-    [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $tmp -Destination $SR_ConfigPath -Force
+    try {
+        [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+        # 🔴 -ErrorAction Stop, OR THE FAILURE IS INVISIBLE. Move-Item reports a
+        # blocked destination as a NON-TERMINATING error: without this the write
+        # "succeeded", Save-SRConfigWrites cleared its queue for a value that
+        # never reached the file, and the temp beside it was never cleaned up.
+        # WriteAllText above is a .NET call and throws on its own, which is why
+        # only half of this path was ever caught.
+        Move-Item -LiteralPath $tmp -Destination $SR_ConfigPath -Force -ErrorAction Stop
+    } catch {
+        # 🪤 THE TEMP OUTLIVES THE FAILURE OTHERWISE. It sits beside the config
+        # rather than in the OS temp dir, so it is not the leak this machine's
+        # conventions are about - but a stray .config.<guid>.tmp next to the real
+        # one is exactly the kind of thing somebody later mistakes for the real
+        # one. Move-Item -Force is the throw that matters here: it fails when
+        # another process holds the destination open.
+        try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch { }
+        throw
+    }
+}
+
+function Save-SRConfigValue { param([Parameter(Mandatory)][string]$Name, $Value)
+    # 🪤 A SYNCHRONOUS WRITE IS LATER THAN ANYTHING QUEUED FOR THE SAME KEY, so
+    # it wins and the queued value is dropped. Without this the next flush would
+    # put the older value back over the top of the one just written, and the
+    # setting would appear to revert some seconds after it was set.
+    if ($script:SR_ConfigPending.ContainsKey($Name)) { $null = $script:SR_ConfigPending.Remove($Name) }
+    $one = @{}
+    $one[$Name] = $Value
+    Set-SRConfigOnDisk -Values $one
+}
+
+# ---------------------------------------------------------------------------
+# 🔴 REMEMBERING A SETTING COST 21 ms ON THE CLICK THAT SET IT. PaneZoom and
+# PaneTools were both ~21 ms and the fold caret 23.8, and essentially all of it
+# was this: read 15 KB, ConvertFrom-Json, ConvertTo-Json, write a temp, move it -
+# on the UI thread, inside the gesture, three times the terminal's 6.9 ms budget.
+#
+# None of the four settings is READ back from the config while the window is
+# open (the window keeps $script:Zoom, $script:toolView, $script:foldRail and
+# $script:foldList), so the write exists only to survive the window. It does not
+# have to happen inside the click - it has to happen before the window closes.
+#
+# 🪤 THIS IS NOT "FREE", IT IS MOVED. The write still costs what it cost; it
+# just no longer lands on a gesture. tests\audit-pane.ps1 keeps measuring
+# Save-SRConfigValue directly as a diagnostic so the number stays visible - a
+# cost that vanishes from the table it used to be in is how an instrument starts
+# lying.
+# ---------------------------------------------------------------------------
+function Save-SRConfigLater { param([Parameter(Mandatory)][string]$Name, $Value)
+    $script:SR_ConfigPending[$Name] = $Value
+    if ($script:SR_ConfigCache) {
+        try {
+            if ($null -eq $script:SR_ConfigCache.PSObject.Properties[$Name]) {
+                $script:SR_ConfigCache | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+            } else { $script:SR_ConfigCache.$Name = $Value }
+        } catch { }
+    }
+}
+
+# Returns $true when it wrote, $false when there was nothing to write, and
+# THROWS when the write failed - leaving the queue intact so the next flush (or
+# the one on close) tries again rather than silently losing the setting.
+function Save-SRConfigWrites {
+    if ($script:SR_ConfigPending.Count -eq 0) { return $false }
+    $take = @{}
+    foreach ($k in @($script:SR_ConfigPending.Keys)) { $take[$k] = $script:SR_ConfigPending[$k] }
+    Set-SRConfigOnDisk -Values $take
+    foreach ($k in @($take.Keys)) { $null = $script:SR_ConfigPending.Remove($k) }
+    return $true
 }
 
 # ---------------------------------------------------------------------------
@@ -976,8 +1085,22 @@ function Save-SRRegistry {
         # Write beside the target then replace: a half-written registry would lose
         # every selection.
         $tmp = "$SR_RegistryPath.tmp"
-        ($Registry | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $tmp -Encoding utf8
-        Move-Item -LiteralPath $tmp -Destination $SR_RegistryPath -Force
+        # 🔴 -ErrorAction Stop ON BOTH, OR A FAILED SAVE LOOKS LIKE A GOOD ONE.
+        # Set-Content and Move-Item report a blocked file as a NON-TERMINATING
+        # error, so a registry another process held open was never written, this
+        # function returned normally, and the line below then re-stamped against
+        # the OLD file - leaving the window's staleness check agreeing with a
+        # save that never happened. The operator's ticks were gone with nothing
+        # said. Same shape as the config writer above; found by holding a
+        # destination open with FileShare None, which reproduces it every time.
+        try {
+            ($Registry | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $tmp -Encoding utf8 -ErrorAction Stop
+            Move-Item -LiteralPath $tmp -Destination $SR_RegistryPath -Force -ErrorAction Stop
+        } catch {
+            try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch { }
+            throw ("the registry could not be saved ($SR_RegistryPath): $($_.Exception.Message). " +
+                   "Nothing was written, so your ticks are still here - close whatever is holding the file and save again.")
+        }
         # What we just wrote is now what this window has seen.
         $script:SR_RegStamp = Get-SRRegistryStamp
     }
@@ -4885,35 +5008,68 @@ function Get-SRShellOutputPath { param([string]$SessionId, [string]$Shell)
     # worse every week the machine stayed up - which is the temp-hygiene problem
     # the operator's conventions already warn about, arriving as a UI stall.
     #
-    # 🔑 A SESSION LIVES IN EXACTLY ONE PROJECT DIRECTORY, so the answer only has
-    # to be found once. After that every shell of that session is a direct path.
-    $known = $script:SR_ShellDirCache["$SessionId"]
-    if ($known) {
-        $direct = Join-Path $known ($Shell + '.output')
-        if ([System.IO.File]::Exists($direct)) { return $direct }
-        # Fall through rather than returning: this session is known but this
-        # particular shell has not been written yet, or was cleaned up.
+    # 🔴 "A SESSION LIVES IN EXACTLY ONE PROJECT DIRECTORY" IS FALSE, and this
+    # function was written on it. `claude --resume` from another cwd, and
+    # worktrees, put one id under several. Counted on this machine: 11 session
+    # ids under more than one project, and the worst has THREE, each with its own
+    # tasks dir holding a DISJOINT set of .output files.
+    #
+    # 🪤 Which is why the sweep below breaks on the FILE and not on the directory.
+    # Breaking on the first dir that merely exists returned '' for shells that
+    # were plainly there - 28 of them for the session that has three - and then
+    # cached that wrong dir, so every later call swept all 178 project dirs again
+    # to reach the same wrong answer. The glob this replaced could not do that:
+    # it matched the whole path INCLUDING the filename, so it only ever returned
+    # a directory that contained the file.
+    #
+    # So the cache is every tasks dir the session owns, not the first one.
+    $known = @($script:SR_ShellDirCache["$SessionId"])
+    if ($known.Count -and $known[0]) {
+        $stale = $false
+        foreach ($d in $known) {
+            $direct = [System.IO.Path]::Combine($d, ($Shell + '.output'))
+            if ([System.IO.File]::Exists($direct)) { return $direct }
+            if (-not [System.IO.Directory]::Exists($d)) { $stale = $true }
+        }
+        # 🔑 A MISS IS AN ANSWER, not a reason to sweep again. While every known
+        # dir is still there, "this shell has no output file" is the truth and
+        # costs one stat per dir. Only a dir that has VANISHED (temp cleaned, the
+        # session moved) means the map is out of date and has to be rebuilt -
+        # without this a shell whose output was cleaned up re-swept 178
+        # directories on every render, permanently.
+        if (-not $stale) { return '' }
     }
 
     # Raw .NET rather than the provider. Get-ChildItem with a wildcard path pays
     # PowerShell's pipeline and provider overhead per candidate; Directory.Exists
     # is a single syscall, and the loop stops at the first hit instead of
     # enumerating all of them and then filtering.
-    $tasksDir = ''
+    # 🪤 EVERY DIR, NOT THE FIRST. Breaking early is what produced the wrong
+    # answer above. The enumeration itself is the cost - GetDirectories over 178
+    # entries - and it is paid the moment the loop starts; the extra
+    # Directory.Exists calls to finish it are a stat each. Stopping early bought
+    # nothing measurable and cost 28 shells their output.
+    $dirs = New-Object System.Collections.Generic.List[string]
+    $found = ''
     try {
         foreach ($proj in [System.IO.Directory]::GetDirectories($root)) {
             $cand = [System.IO.Path]::Combine($proj, $SessionId, 'tasks')
-            if ([System.IO.Directory]::Exists($cand)) { $tasksDir = $cand; break }
+            if (-not [System.IO.Directory]::Exists($cand)) { continue }
+            $dirs.Add($cand)
+            if (-not $found) {
+                $f = [System.IO.Path]::Combine($cand, ($Shell + '.output'))
+                if ([System.IO.File]::Exists($f)) { $found = $f }
+            }
         }
     } catch { return '' }
-    if (-not $tasksDir) { return '' }
+    if ($dirs.Count -eq 0) { return '' }
 
     # Remembered whether or not THIS shell exists: the expensive thing was
     # locating the session, and that answer is good for every shell it owns.
-    $script:SR_ShellDirCache["$SessionId"] = $tasksDir
+    # 🪤 .ToArray(), never @($dirs) - @() on a List[object] throws in PS 5.1.
+    $script:SR_ShellDirCache["$SessionId"] = $dirs.ToArray()
 
-    $found = [System.IO.Path]::Combine($tasksDir, ($Shell + '.output'))
-    if ([System.IO.File]::Exists($found)) { return $found }
+    if ($found) { return $found }
     return ''
 }
 
