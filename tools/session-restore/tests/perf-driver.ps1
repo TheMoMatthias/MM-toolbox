@@ -736,6 +736,20 @@ $COVERAGE = @{
     'WinClose'         = 'the window frame'
     'SaveBtn'          = 'is the registry stale? (what Save checks first)'
     'RelaunchSessions' = 'Get-TickedPlan'
+    # 🪤 POINTED AT AN EXISTING BENCH RATHER THAN A NEW ONE, deliberately.
+    # Clicking the shelved count is one bool flip and a Build-Rail, and Build-Rail
+    # is already timed on its own line - so a separate entry would time the same
+    # work twice and read as coverage it is not. Naming a bench that does not
+    # exist would be worse: this map is how a reader finds out WHERE a control is
+    # measured, so every value has to be findable in the table.
+    'RailShelved'      = 'Build-Rail - its click is one flag and that rebuild'
+    # 🔴 EXCUSED FOR THE SAME REASON AS SignIn, one step milder. Pressing it
+    # sends a real Esc into a live claude and STOPS THE TURN IT IS RUNNING -
+    # a benchmark that ran it fifteen times would interrupt the operator's work
+    # fifteen times. What it costs before the key leaves is the gate, which is
+    # arithmetic on a row already in memory; the send itself goes off-thread
+    # through the same lane the answer path uses and is benched there.
+    'PaneStop'         = 'EXCUSED: presses Esc in a live session and stops its turn. Its gate is arithmetic; the send is Start-AskSend, benched.'
     # 🔴 EXCUSED, AND FOR THE STRONGEST REASON ON THIS LIST. Pressing it opens
     # a real terminal for an interactive sign-in and then RAISES THE RELAUNCH
     # BUTTON, which kills live claude processes. Running it in a benchmark would
@@ -1109,7 +1123,23 @@ foreach ($r in $script:Results) {
     # that reads below 0.9x the envelope on EVERY run walks it down, which is
     # what "sustained" has to mean. A real 3x win arrives in about eleven runs;
     # noise never moves it more than one step, and never twice.
-    $newOps[$r.Name] = [Math]::Max($norm, $wasNorm * 0.9)
+    # 🔴 HOLD OR SHRINK. NEVER RAISE. The first version of this line was
+    # [Math]::Max($norm, $wasNorm * 0.9), and the comment above it reasoned only
+    # about the LUCKY-FAST case. In the unlucky-slow one it wrote $norm straight
+    # back: any run slower than the envelope but under the 2.00x fail threshold
+    # PERMANENTLY WIDENED the bar it is measured against. On this machine, which
+    # reads ~3x its baseline with thirty-odd sessions live, that is most runs -
+    # so the gate was quietly raising its own ceiling every time it ran, which is
+    # the exact "widen on noise" failure the envelope design was chosen to avoid.
+    #
+    # 🪤 It was invisible from inside: every symptom is a number getting BIGGER
+    # in a file nobody diffs. It surfaced only because an agent checksummed
+    # perf-baseline.json around its own runs and found it rewritten.
+    #
+    # Three outcomes now, and no fourth: below 0.9x, take exactly one 10% step
+    # down; otherwise hold. A regression is caught by the branch above, which
+    # keeps $wasNorm, so nothing here can ever move the envelope up.
+    $newOps[$r.Name] = $(if ($norm -lt $wasNorm * 0.9) { $wasNorm * 0.9 } else { $wasNorm })
 }
 
 Write-Host ''
