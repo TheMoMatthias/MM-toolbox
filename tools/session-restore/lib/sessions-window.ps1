@@ -971,11 +971,18 @@ function Get-Band { param($Row)
             else { $band = 'idle' }
         }
     }
-    # 🪤 ONLY EVER working -> needs, the same one-way rule the screen read has
-    # always carried. A menu on the screen of a conversation the probe calls
-    # WORKING means the probe is behind; it does not license moving a row that
-    # is done, idle or quiet, whatever the screen appears to show.
-    if ($band -eq 'working' -and $script:askSeen["$($Row.Id)"]) { return 'needs' }
+    # 🔴 ANY LIVE BAND, NOT JUST 'working' - see the note on Test-QuietVerdict for
+    # why this reversed. In short: the one-way rule was containing a parser that
+    # could not tell prose from a menu, and the structural test removed that
+    # weakness, so the containment was costing ~26 s of notice on the rows most
+    # likely to be asking.
+    #
+    # 🪤 'quiet' IS STILL EXCLUDED, and it is the one exclusion that is about a
+    # fact rather than a policy. Get-Band reaches 'quiet' for a conversation that
+    # is stuck, stale, or has no process at all - none of which has a screen a
+    # menu could have been seen on. A flag surviving on such a row is stale by
+    # definition, so it must not decide anything.
+    if ($band -ne 'quiet' -and $script:askSeen["$($Row.Id)"]) { return 'needs' }
     return $band
 }
 
@@ -8828,9 +8835,41 @@ function Complete-QuietCheck {
 # no job in flight - and Complete-QuietCheck returns at its first line when
 # there is none. Three assertions that a done/idle/quiet row is left alone were
 # passing because nothing ran at all, which is a green that cannot go red.
+# ===========================================================================
+# 🔴 THIS RULE USED TO SAY 'working' AND IT NO LONGER DOES. REVERSING A
+# CONSIDERED DECISION, SO HERE IS WHY.
+#
+# The rule was: only a WORKING row may be moved into needing you, whatever the
+# screen shows for one that is done, idle or quiet. That was right when it was
+# written, and it was compensating for a specific weakness - the parser could
+# not tell an ordinary numbered list from a live menu, so a screen "showing a
+# menu" was not trustworthy evidence, and the band was used as a second opinion
+# to contain the damage.
+#
+# The structural test removed that weakness: a run is a menu only when the
+# session's prompt status line is not drawn below it, which scored 13 of 13 on
+# the fixtures against the old cursor gate's 10, and agreed exactly with
+# `claude agents --json` across 30 live consoles. The second opinion is now
+# costing more than it saves.
+#
+# 🔴 WHAT IT COSTS. The sweep reads every live screen every ~2.9 s and could see
+# the menu - but a row the 15 s probe last called idle or done was FORBIDDEN to
+# move, so noticing fell through to the only other route: the probe reporting
+# 'waiting'. That probe measures 11.3 s on a 15 s timer, so the operator's own
+# complaint - "not instantly seeing when a session has questions" - was a
+# worst case near 26 s on exactly the rows most likely to be asking, because a
+# session that has just gone quiet is the one about to want you.
+#
+# 🔒 WHAT STAYS. A row that is not LIVE is still refused, and that is not a
+# softer version of the old rule but a different fact: a conversation with no
+# process has no screen, so there is nothing that could have seen a menu on it.
+# The sweep never even offers one - it skips rows without a pid - so this guard
+# is about the direct callers and the suite.
 function Test-QuietVerdict { param($Row, [bool]$Asking)
     if (-not $Row -or -not $Asking) { return $false }
-    if ("$($Row.Band)" -ne 'working') { return $false }
+    if (-not $Row.Live) { return $false }
+    # Already there: nothing changed, so say so rather than asking for a redraw.
+    if ("$($Row.Band)" -eq 'needs') { return $false }
     # 🔴 THE FLAG FIRST, THEN THE BAND. Setting only the band is what made the
     # row flap: the band is derived, so the next recompute wiped it and the
     # screen had to win the same argument again a few seconds later. The flag is

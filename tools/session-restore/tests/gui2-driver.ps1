@@ -2615,14 +2615,48 @@ else {
             if ((Get-Band $qRow) -ne 'working') {
                 Fail "the row derives as '$(Get-Band $qRow)' after the menu was answered - the flag stuck"
             } else { Pass 'and once the menu is gone the recompute lets it leave, so the flag cannot stick' }
-            # 🪤 ONE-WAY, even as an input. A done/idle/quiet row is not dragged
-            # into needing you by a menu the screen appears to show.
+            # ===================================================================
+            # 🔴 REVERSED ON PURPOSE, AND REWRITTEN RATHER THAN DELETED.
+            #
+            # These four used to assert that a done / idle / quiet row is never
+            # dragged into needing you by the ask flag - only a WORKING one could
+            # move. That rule was right when it was written and it was
+            # compensating for a specific weakness: the parser could not tell an
+            # ordinary numbered list from a live menu, so "the screen shows a
+            # menu" was not trustworthy evidence and the band was used as a
+            # second opinion to contain the damage.
+            #
+            # The structural test removed the weakness - 13 of 13 fixtures
+            # against the old cursor gate's 10, and exact agreement with
+            # `claude agents --json` over 30 live consoles - and the containment
+            # then cost more than it saved. A row the 15 s probe last called idle
+            # or done was FORBIDDEN to move, so noticing fell through to that
+            # probe, which measures 11.3 s on a 15 s timer: a worst case near
+            # 26 s, on exactly the rows most likely to be asking, because a
+            # session that has just gone quiet is the one about to want you.
+            #
+            # So the assertions now describe the new rule, in both directions -
+            # what may move, and the one thing that still may not.
+            # ===================================================================
+            $qLiveWas = $qRow.Live
+            $qRow.Live = $true
             $null = Set-AskSeen -Id "$($qRow.Id)" -Asking $true
             $qRow.Said = $null
-            $qRow.Conv = [PSCustomObject]@{ State = 'idle'; Needs = $false; Stuck = $false; Stale = $false }
+            foreach ($liveState in @('idle', 'working')) {
+                $qRow.Conv = [PSCustomObject]@{ State = $liveState; Needs = $false; Stuck = $false; Stale = $false }
+                if ((Get-Band $qRow) -ne 'needs') {
+                    Fail ("a live '{0}' conversation with a menu on screen derives as '{1}' - the operator would not see it" -f $liveState, (Get-Band $qRow))
+                } else { Pass ("a live '{0}' row with a menu actually seen derives as needing you" -f $liveState) }
+            }
+            # 🪤 AND 'quiet' IS STILL EXCLUDED - the half that did NOT change,
+            # and it is a fact rather than a policy. Get-Band reaches quiet for a
+            # conversation that is stuck, stale, or has no process at all, none
+            # of which has a screen a menu could have been seen on, so a flag
+            # surviving on one is stale by definition.
+            $qRow.Conv = [PSCustomObject]@{ State = 'idle'; Needs = $false; Stuck = $true; Stale = $false }
             if ((Get-Band $qRow) -eq 'needs') {
-                Fail 'an idle conversation was dragged into needing you by the ask flag'
-            } else { Pass 'the flag only ever turns working into needs, never an idle row' }
+                Fail 'a stuck conversation was dragged into needing you by the ask flag'
+            } else { Pass 'a stuck row is still never dragged in - it has no screen to have been read' }
             $qRow.Conv = $qConvWas
             $qRow.Said = $qSaidWas
             $null = Set-AskSeen -Id "$($qRow.Id)" -Asking $false
@@ -2630,15 +2664,27 @@ else {
             if ((Test-QuietVerdict -Row $qRow -Asking $false) -or "$($qRow.Band)" -ne 'working') {
                 Fail 'a row with no menu on screen was moved anyway'
             } else { Pass 'no menu on screen moves nothing' }
-            foreach ($otherBand in @('done', 'idle', 'quiet')) {
+            # 🔑 THE PROMOTE DIRECTION, WHICH IS WHAT THIS CHANGE IS FOR. Under
+            # the old rule both of these were held back until the 15 s probe.
+            foreach ($otherBand in @('done', 'idle')) {
                 $qRow.Band = $otherBand
                 # Feed it a positive result directly: the question is what it
                 # does with one, not whether it can get one.
-                $null = Test-QuietVerdict -Row $qRow -Asking $true
-                if ("$($qRow.Band)" -ne $otherBand) {
-                    Fail ("the quiet check moved a '{0}' row to '{1}' - it may only ever move a WORKING one" -f $otherBand, $qRow.Band)
-                } else { Pass ("a '{0}' row is left alone by the quiet check" -f $otherBand) }
+                $moved = Test-QuietVerdict -Row $qRow -Asking $true
+                if (-not $moved -or "$($qRow.Band)" -ne 'needs') {
+                    Fail ("a '{0}' row with a menu on its screen was left alone - that is the ~26 s notice bug" -f $otherBand)
+                } else { Pass ("a '{0}' row with a menu actually seen is promoted rather than held for the probe" -f $otherBand) }
+                $null = Set-AskSeen -Id "$($qRow.Id)" -Asking $false
             }
+            # 🔒 AND A CONVERSATION WITH NO PROCESS IS STILL REFUSED. Not a
+            # softer version of the old rule - a different fact. There is no
+            # screen, so nothing can have seen a menu on it.
+            $qRow.Band = 'quiet'
+            $qRow.Live = $false
+            if ((Test-QuietVerdict -Row $qRow -Asking $true) -or "$($qRow.Band)" -ne 'quiet') {
+                Fail 'a conversation with no process was moved into needing you - there is no screen to have read'
+            } else { Pass 'a row that is not running is refused: no process, no screen, no menu' }
+            $qRow.Live = $qLiveWas
         } finally {
             $qRow.Band = $qBandWas
             $script:quietChecked = @{}
