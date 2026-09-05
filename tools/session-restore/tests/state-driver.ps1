@@ -1808,6 +1808,16 @@ if (-not (Get-Command Invoke-SRTokenRefresh -ErrorAction SilentlyContinue)) {
         ('{"claudeAiOauth":{"accessToken":"a","refreshToken":"' + ('r' * 40) + '","expiresAt":1,"refreshTokenExpiresAt":' + $futMs + ',"scopes":"keep me"}}') |
             Set-Content -LiteralPath $refCp -Encoding UTF8
         $before = [System.IO.File]::ReadAllText($refCp)
+        # 🔴 AGAINST A COPY, NOT THE OPERATOR'S CONFIG. This was the last test in
+        # the suite still writing the real file, and it did real damage: every
+        # write goes through ConvertTo-Json, which re-encodes each apostrophe in
+        # that file's hand-written comment block as '. Still valid JSON, and
+        # still unreadable to the person who maintains it. audit-list.ps1 already
+        # does exactly this for its own write; this is the same move.
+        $cfgWasRef = $SR_ConfigPath
+        $cfgCpRef  = Join-Path $refTmp ('sr-state-cfg-{0}.json' -f ([guid]::NewGuid().ToString('N')))
+        Copy-Item -LiteralPath $SR_ConfigPath -Destination $cfgCpRef -Force
+        $SR_ConfigPath = $cfgCpRef
         $null = Save-SRConfigValue -Name 'oauthTokenUrl' -Value 'https://127.0.0.1:9/none'
         $r4 = Invoke-SRTokenRefresh -TimeoutSec 4
         $after = [System.IO.File]::ReadAllText($refCp)
@@ -1822,7 +1832,13 @@ if (-not (Get-Command Invoke-SRTokenRefresh -ErrorAction SilentlyContinue)) {
         # 🪤 RESTORED IN A FINALLY. A leaked USERPROFILE would point every later
         # test in this suite at a directory that no longer exists.
         $env:USERPROFILE = $refWas
-        try { $null = Save-SRConfigValue -Name 'oauthTokenUrl' -Value '' } catch { }
+        # The config path goes back too, and there is nothing to undo on the real
+        # file any more: the write above landed on the copy inside $refTmp, which
+        # the next line takes with it. The old restore here - writing '' back
+        # over oauthTokenUrl - was itself a write to the operator's config, so
+        # the cleanup was doing the same damage as the thing it cleaned up.
+        if ($cfgWasRef) { $SR_ConfigPath = $cfgWasRef }
+        $script:SR_ConfigCache = $null; $script:SR_ConfigStamp = ''
         Remove-Item -LiteralPath $refTmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 }

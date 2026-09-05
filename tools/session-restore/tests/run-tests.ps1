@@ -114,6 +114,27 @@ $lib   = Join-Path $tool 'lib'
 $state = Join-Path $tool '.state'
 if (-not (Test-Path $state)) { $null = New-Item -ItemType Directory -Path $state -Force }
 
+# 🔴 THE SUITE MUST NOT WRITE THE OPERATOR'S CONFIG, AND FOR A LONG TIME IT DID.
+# state-driver's token test wrote oauthTokenUrl to the real file and then wrote
+# it back - so the damage survived its own cleanup, because every write goes
+# through ConvertTo-Json and that re-encodes each apostrophe in the file's
+# hand-written comment block as '. Valid JSON; unreadable prose.
+#
+# 🪤 A HASH ACROSS THE WHOLE SWEEP, not an assertion inside one driver. The
+# drivers run as CHILD PROCESSES, so nothing inside one can see what another
+# did, and the write that mattered was in the one suite that never checked. This
+# is the only place that sees all of them.
+$cfgGuardPath = Join-Path $tool 'session-restore.config.json'
+$cfgGuardWas  = ''
+try { $cfgGuardWas = (Get-FileHash -LiteralPath $cfgGuardPath -Algorithm SHA256 -ErrorAction Stop).Hash } catch { }
+# 🪤 AND IT SAYS SO WHEN IT IS NOT ARMED. Without this the whole guard is one
+# swallowed exception away from being silently inert - which is the exact shape
+# of the defects it was added alongside: a check that cannot fire, reporting
+# nothing, indistinguishable from a check that passed.
+if (-not $cfgGuardWas) {
+    Write-Host ("[warn] could not hash {0} - the config guard is NOT armed for this run." -f (Split-Path -Leaf $cfgGuardPath)) -ForegroundColor Yellow
+}
+
 # --- the splice -------------------------------------------------------------
 # New-Harness spliced select-sessions.ps1 just before its interactive loop, for
 # the `frame` and `paint` suites. Both went with the terminal panel: there is
@@ -364,6 +385,32 @@ foreach ($r in $results) {
     Write-Host ("  {0,-6} {1}" -f $r.Name, $verdict) -ForegroundColor $colour
 }
 if (-not $results.Count) { Write-Host '  nothing ran' -ForegroundColor Yellow; exit 1 }
+
+# See the note where $cfgGuardWas is taken. A suite that changed the operator's
+# config is a failure however green the assertions were - what it measured was
+# not the state it claimed to measure, and the file is theirs, not the suite's.
+if ($cfgGuardWas) {
+    $cfgGuardNow = ''
+    try { $cfgGuardNow = (Get-FileHash -LiteralPath $cfgGuardPath -Algorithm SHA256 -ErrorAction Stop).Hash } catch { }
+    if ($cfgGuardNow -and $cfgGuardNow -ne $cfgGuardWas) {
+        Write-Host ''
+        Write-Host '  THE REAL CONFIG CHANGED WHILE THE TESTS RAN.' -ForegroundColor Red
+        Write-Host ("  {0} is not what it was when the sweep started." -f (Split-Path -Leaf $cfgGuardPath)) -ForegroundColor Red
+        # 🪤 IT CANNOT TELL WHICH OF THE TWO IT WAS, so it must not assert one.
+        # The first version of this said "A SUITE WROTE THE OPERATOR'S REAL
+        # CONFIG" and would have been WRONG the very first time it fired: the
+        # observed change was transcriptTools full -> folded, which is the Steps
+        # button in the operator's own running window. A guard that names the
+        # wrong culprit sends someone hunting through the drivers for a write
+        # that was never there.
+        Write-Host '  Either a suite wrote it - point $SR_ConfigPath at a copy for whatever did,' -ForegroundColor Red
+        Write-Host '  tests\audit-list.ps1 has the pattern - or you changed a setting in the' -ForegroundColor Red
+        Write-Host '  running window while this was going, in which case re-run it.' -ForegroundColor Red
+        Write-Host '  Either way the suite read a config that moved underneath it.' -ForegroundColor DarkGray
+        $bad++
+    }
+}
+
 Write-Host ''
 if ($bad) { Write-Host "$bad suite(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host 'all suites passed' -ForegroundColor Green

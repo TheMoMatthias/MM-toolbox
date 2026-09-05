@@ -63,6 +63,30 @@ function Bench {
 }
 $script:Results = New-Object System.Collections.Generic.List[object]
 
+# ---------------------------------------------------------------------------
+# 🔴 A LIST BENCH THAT NEVER LAYS OUT IS MEASURING HALF THE OPERATION.
+#
+# Build-Sessions, Build-Rail, Build-Manager and every sort/filter/search built on
+# them REPLACE ItemsSource AND RETURN. Container generation, template
+# instantiation and measure/arrange all happen afterwards, on the next layout
+# pass - outside the timed region entirely. So every list figure in this table
+# was the cost of building the ITEMS, reported as the cost of the gesture, and
+# the operator waits for the frame rather than for the assignment.
+#
+# 🪤 THE RENAME IS PART OF THE FIX, NOT TIDYING. Adding the layout changes what
+# the operation IS, so the old baseline entry no longer describes it and would
+# read as a large regression on the next run. SR_PERF_REBASELINE is the wrong
+# tool for that - it widens EVERY op's envelope by one run's noise, permanently.
+# A renamed op has no baseline key, so it is counted as new and skipped for one
+# run, and the old key vanishes on the next trusted write because $newOps is
+# populated only from $script:Results. Self-cleaning, and the old figure keeps
+# its meaning in git history instead of being silently redefined.
+function BenchList {
+    param([string]$Name, [scriptblock]$Do, [string]$Class = 'GESTURE', [int]$Runs = 15)
+    $body = { & $Do; Lay }.GetNewClosure()
+    return Bench ($Name + ' (+ layout)') $body $Class $Runs
+}
+
 # GESTURE is the class with teeth. Everything the operator can DO - a click, a
 # keystroke, a tab, a button - must return inside 50 ms, because that is the
 # contract: no gesture ever waits for work. Anything that reads disk or spawns a
@@ -178,7 +202,7 @@ function Measure-SRSpin {
     }
     return $b
 }
-$script:SpinStart = Measure-SRSpin
+# The start reading is NOT taken here - see the note above the first Bench.
 
 
 
@@ -201,6 +225,28 @@ Set-Surface 'work'
 $ui.Search.Text = ''; $ui.RailSearch.Text = ''; $ui.ListSearch.Text = ''
 $script:railPick = $null; $script:bandPick = $null
 Build-Rail; Build-Sessions; Lay
+
+# 🔴 THE START READING GOES HERE, NOT AT THE TOP OF THE FILE, AND THAT IS WHY
+# THE DRIFT CHECK USED TO SUPPRESS EVERY RUN.
+#
+# The pair exists to answer one question: did the machine change WHILE THE TABLE
+# WAS BEING TAKEN? Taken at the top of the script it answered a different one,
+# because everything between there and here - loading WPF, building the window,
+# Update-Model over 318 conversations, the first layout - lands inside the
+# bracket. Background JIT and GC from that start-up inflate the first reading and
+# nothing inflates the second, so the "drift" was a property of the instrument
+# rather than of the machine, and it repeated:
+#
+#     16 -> 9 (1,74x)    17 -> 9 (1,95x)
+#
+# both above the 1.5x trust threshold, on consecutive runs. Random load does not
+# repeat like that.
+#
+# 🪤 AND A CPU WARM-UP DOES NOT FIX IT - measured, not assumed. Burning 200 ms of
+# the same sqrt loop before the reading moved it 15 -> 9 (1,71x): unchanged. So
+# it is not the clock ramping, it is the process still settling, and the only
+# real fix is to stop including the settling in the measurement.
+$script:SpinStart = Measure-SRSpin
 
 # ---------------------------------------------------------------------------
 Write-Host ''
@@ -244,9 +290,9 @@ $null = Bench 'Invoke-FastPass (every 6 s)' { Invoke-FastPass } 'QUICK'
 Write-Host ''
 Write-Host '--- drawing the three lists ---'
 # ---------------------------------------------------------------------------
-$null = Bench 'Build-Sessions' { Build-Sessions } 'GESTURE'
-$null = Bench 'Build-Rail' { Build-Rail } 'GESTURE'
-$null = Bench 'Build-Manager' { Build-Manager } 'GESTURE'
+$null = BenchList 'Build-Sessions' { Build-Sessions }
+$null = BenchList 'Build-Rail' { Build-Rail }
+$null = BenchList 'Build-Manager' { Build-Manager }
 # 🔴 BOTH PATHS, OR THE BENCH REWARDS BREAKING THE THING IT WATCHES. This ran
 # straight after Bench 'Build-Manager', which CLEARS $script:mgrDirty - so all
 # fifteen iterations took the skip path, the rebuild was never once measured,
@@ -254,8 +300,8 @@ $null = Bench 'Build-Manager' { Build-Manager } 'GESTURE'
 # here as an improvement. The cached path is the one the operator usually gets
 # and is worth its own line; the rebuild is the cost the flag exists to avoid,
 # and a flag that stops working shows up as the cached line jumping to it.
-$null = Bench 'Set-Surface manage (cached)' { Set-Surface 'manage' } 'GESTURE'
-$null = Bench 'Set-Surface manage (rebuild)' { $script:mgrDirty = $true; Set-Surface 'manage' } 'GESTURE'
+$null = BenchList 'Set-Surface manage (cached)' { Set-Surface 'manage' }
+$null = BenchList 'Set-Surface manage (rebuild)' { $script:mgrDirty = $true; Set-Surface 'manage' }
 $null = Bench 'Set-Surface work' { Set-Surface 'work' } 'GESTURE'
 $null = Bench 'Set-Breakpoint' { Set-Breakpoint } 'INSTANT'
 # 🪤 QUICK, AND THE CALLERS ARE THE ARGUMENT. Update-Surface is Build-Rail plus
@@ -280,43 +326,43 @@ $null = Bench 'search: header box (both panes)' {
     $ui.Search.Text = 'kernel'; Build-Rail; Build-Sessions
 } 'GESTURE'
 $ui.Search.Text = ''
-$null = Bench 'search: rail box only' { $ui.RailSearch.Text = 'algo'; Build-Rail } 'GESTURE'
+$null = BenchList 'search: rail box only' { $ui.RailSearch.Text = 'algo'; Build-Rail }
 $ui.RailSearch.Text = ''; Build-Rail
-$null = Bench 'search: sessions box only' { $ui.ListSearch.Text = 'ker'; Build-Sessions } 'GESTURE'
+$null = BenchList 'search: sessions box only' { $ui.ListSearch.Text = 'ker'; Build-Sessions }
 $ui.ListSearch.Text = ''; Build-Sessions
 
 foreach ($k in @('recent', 'name', 'project')) {
     $script:listSort = $k
-    $null = Bench "sort sessions: $k" { Build-Sessions } 'GESTURE'
+    $null = BenchList "sort sessions: $k" { Build-Sessions }
 }
 $script:listSort = 'recent'
 foreach ($k in @('recent', 'name', 'waiting', 'busiest')) {
     $script:railSort = $k
-    $null = Bench "sort rail: $k" { Build-Rail } 'GESTURE'
+    $null = BenchList "sort rail: $k" { Build-Rail }
 }
 $script:railSort = 'recent'
 $mgrSortWas = $script:mgrSort; $mgrDescWas = $script:mgrDesc
 foreach ($k in @('logon', 'name', 'lane', 'said', 'age')) {
     $script:mgrSort = $k
-    $null = Bench "sort manager: $k" { Build-Manager } 'GESTURE'
+    $null = BenchList "sort manager: $k" { Build-Manager }
 }
 $script:mgrSort = $mgrSortWas; $script:mgrDesc = $mgrDescWas
 $mgrFilterWas = $script:mgrFilter
 foreach ($k in @('all', 'ticked', 'running', 'needs')) {
     $script:mgrFilter = $k
-    $null = Bench "filter manager: $k" { Build-Manager } 'GESTURE'
+    $null = BenchList "filter manager: $k" { Build-Manager }
 }
 $script:mgrFilter = $mgrFilterWas
 $bandKeys = @($script:Bands | ForEach-Object { $_.Key })
 $script:bandPick = $bandKeys[0]
-$null = Bench 'filter sessions by band' { Build-Sessions } 'GESTURE'
+$null = BenchList 'filter sessions by band' { Build-Sessions }
 $script:bandPick = $null
 $script:railOnlyLive = $true
-$null = Bench 'filter rail to running only' { Build-Rail } 'GESTURE'
+$null = BenchList 'filter rail to running only' { Build-Rail }
 $script:railOnlyLive = $false
 $railPickWas = $script:railPick
 $script:railPick = "$(@($script:dirs)[0].path)"
-$null = Bench 'filter sessions by project (rail pick)' { Build-Sessions } 'GESTURE'
+$null = BenchList 'filter sessions by project (rail pick)' { Build-Sessions }
 $script:railPick = $railPickWas
 Build-Rail; Build-Sessions
 
@@ -1174,6 +1220,21 @@ if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
 #
 # Exit 2 is the runner's INCONCLUSIVE: yellow in the summary, not counted as a
 # failure. The sweep still passes; it can no longer be quoted as perf evidence.
+# 🔴 A RUN THAT COULD NOT TELL MUST NOT SAY "NOTHING GOT SLOWER". Same defect as
+# the soft gate above, and it bites more often: this machine runs 25 claude
+# sessions, the spin drifted 1.74x on the very run that verified today's fixes,
+# and every failure was suppressed while the summary still printed PASS. The
+# suppression itself is RIGHT - early and late rows really are not on one scale,
+# and failing the build on an extrapolation is the wolf-crying this file exists
+# to avoid. What was wrong is calling the silence a pass.
+#
+# 🪤 IT IS NOT A FAILURE EITHER. Nothing has been shown to be slower; the
+# instrument simply had no footing. INCONCLUSIVE is the honest third answer, and
+# the run is worth repeating on a quieter machine rather than acting on.
+if ($baseOps.Count -and -not $spinTrust) {
+    Write-Host 'the regression gate could not assert on this run - the machine moved underneath it, so nothing was compared.' -ForegroundColor Yellow
+    exit 2
+}
 if ($softGate -and $regressed.Count) {
     Write-Host ("{0} operation(s) got slower - reported, not failed. Run -Only perf for the hard gate." -f $regressed.Count) -ForegroundColor Yellow
     exit 2
