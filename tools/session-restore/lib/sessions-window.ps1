@@ -2522,11 +2522,25 @@ function Install-SRPaneFace {
             return $false
         }
         $window.Resources['FontPane'] = $fam
-        # 🔴 AND THE CHROME TAKES IT TOO. Decided 2026-09-03: one face across
-        # the entire window, not just the transcript. Manrope still loads first
-        # (Install-SRTypeface) and is what these hold if Plex is missing, so a
-        # deleted font file degrades to the previous look rather than to Arial.
-        foreach ($k in @('FontText', 'FontDisplay', 'FontSmall', 'FontMono')) {
+        # 🔴 THE CHROME NO LONGER TAKES IT, AND THAT REVERSES A DATED DECISION.
+        #
+        # 2026-09-03 put "one face across the entire window, not just the
+        # transcript" here, overwriting FontText/FontDisplay/FontSmall as well.
+        # That is why Manrope loads a few lines above and is immediately thrown
+        # away, and why window2.xaml's "Segoe UI Variable Text" never draws
+        # anything: the resource is replaced at runtime, after parse.
+        #
+        # What overturned it is the operator, twice: "either too terminal-like or
+        # something else has happened", and a target of "similarly to how
+        # [Zed / Cursor / the VS Code extension] looks but just with a touch of
+        # the terminal". One face across the whole window is not a touch of the
+        # terminal, it is the terminal - and the complaint was never about the
+        # reading pane alone, which is how it survived a cycle of pane-only work.
+        #
+        # 🔑 FontMono STAYS. It is the key for text that genuinely wants the
+        # grid, so pointing it at the shipped mono face is the whole point of
+        # shipping one. The three TEXT keys keep Manrope, loaded just above.
+        foreach ($k in @('FontMono')) {
             $window.Resources[$k] = $fam
         }
         Write-SRLog ('  [ok]   IBM Plex Mono loaded from lib\fonts ({0} faces) - pane and chrome' -f $faces.Count)
@@ -2658,6 +2672,27 @@ $script:MonoFace = $window.FindResource('FontMono')
 # not a message and keeps the window's own face.
 $script:PaneFace = $window.FindResource('FontPane')
 
+# 🔴 AND PROSE IS NOT MACHINE TEXT. THE PANE HAS TWO FACES, ONE PER ROLE.
+#
+# 18d0007 unified the pane after "text still looks not unified across every
+# single message" and "either too terminal-like or something else has happened".
+# It was right about the disease - twelve hard-coded sizes across two faces, four
+# of them off the six-step scale entirely, so the pane looked uniform at 100% and
+# came apart at every other zoom. It fixed that by putting EVERYTHING on the mono
+# face, which answers "too terminal-like" by making all of it terminal.
+#
+# Its rule is kept exactly: one scale, one face per role, no hard-coded sizes.
+# What changes is which face PROSE lands on. Mono is reserved for the text that
+# needs a character grid - fenced code, inline code, tool arguments, paths, shell
+# output, results, and the glyph columns - because a table of file:line rendered
+# proportionally stops being a table.
+#
+# 🔑 THE CALL SITES ALREADY KNEW. Every one of them passes -Mono when it is
+# drawing machine text; that switch was left as a deliberate no-op with a note
+# saying the distinction was "still carried - by hue and by the gutter marker,
+# not by the face". This reconnects it to the face. No call site moves.
+$script:ProseFace = $script:UiFace
+
 # THE MEASURE'S CHARACTER WIDTH, ASKED OF THE FACE RATHER THAN TYPED IN.
 #
 # 🔴 It was a literal 0.52, described in Set-ReadMeasure as "the measured average
@@ -2667,19 +2702,49 @@ $script:PaneFace = $window.FindResource('FontPane')
 # was measured from, silently, and the only symptom is a column narrower than it
 # claims - which is half of "the text was cut off although the screen was empty".
 #
-# 🪤 A monospaced face has ONE advance, so this is exact rather than an average.
-# The fallback is IBM Plex Mono's own 0.6, used only if the glyph typeface cannot
-# be reached (a missing font file, which already degrades to a fallback stack).
-$script:PaneAdvanceEm = 0.6
+# 🪤 AND IT HAS TO FOLLOW THE FACE PROSE IS ACTUALLY DRAWN IN. The column sizes
+# the READING measure, and the reading is prose, so this asks the PROSE face -
+# not the mono one, which now draws only code. Getting this wrong is silent by
+# construction: the only symptom is a column narrower or wider than it claims.
+#
+# 🪤 A PROPORTIONAL FACE HAS NO SINGLE ADVANCE, so this is a real average over a
+# representative sample rather than the advance of '0'. Sampling one character
+# was exact while the pane was monospaced and would be arbitrary now - '0' is
+# among the widest glyphs in most proportional faces, which would size the
+# column for far fewer characters than it holds.
+#
+# The fallback is 0.52, which is not a guess: it is the average this file
+# carried as a literal for MANROPE before the pane went mono, and prose is on
+# Manrope again.
+$script:PaneAdvanceEm = 0.52
 try {
-    $tf0 = New-Object System.Windows.Media.Typeface $script:PaneFace,
+    $tf0 = New-Object System.Windows.Media.Typeface $script:ProseFace,
                ([System.Windows.FontStyles]::Normal), ([System.Windows.FontWeights]::Normal),
                ([System.Windows.FontStretches]::Normal)
     $gt0 = $null
     if ($tf0.TryGetGlyphTypeface([ref]$gt0)) {
-        $gi = $gt0.CharacterToGlyphMap[[int][char]'0']
-        $adv = [double]$gt0.AdvanceWidths[$gi]
-        if ($adv -gt 0.2 -and $adv -lt 1.5) { $script:PaneAdvanceEm = $adv }
+        # Letter frequencies matter more than coverage here: the sample is the
+        # text that actually appears, so it is weighted the way English is.
+        # 🪤 ORDINARY ENGLISH, NOT AN ALPHABET. The first version averaged over
+        # 'a-z A-Z 0-9 punctuation', which is about 40% capitals where real prose
+        # is nearer 3% - and capitals are wide. It came out at 0,600 em, the very
+        # same number as the monospaced face it replaced, so it would have sized
+        # the reading column about 20% over its intended measure while looking
+        # like it had been measured properly. A sentence carries the real
+        # frequencies, including how often a space appears, and space is the
+        # narrowest glyph there is.
+        $sample = 'the session was waiting for an answer and nothing else was running at the time, so it simply sat there. '
+        $sum = 0.0; $n = 0
+        foreach ($ch in $sample.ToCharArray()) {
+            $gi = 0
+            if ($gt0.CharacterToGlyphMap.TryGetValue([int][char]$ch, [ref]$gi)) {
+                $sum += [double]$gt0.AdvanceWidths[$gi]; $n++
+            }
+        }
+        if ($n -gt 0) {
+            $avg = $sum / $n
+            if ($avg -gt 0.2 -and $avg -lt 1.5) { $script:PaneAdvanceEm = $avg }
+        }
     }
 } catch { }
 $FW_Semi   = [System.Windows.FontWeights]::SemiBold
@@ -2703,17 +2768,16 @@ $script:tailBytes = $script:TailBase
 
 
 function New-ReadRun {
-    # 🪤 -Mono IS NOW A NO-OP, AND IT IS KEPT DELIBERATELY. Every caller that
-    # passed it was asking for "machine text", which is a real distinction and
-    # is still carried - by hue and by the gutter marker, not by the face. The
-    # switch stays so the call sites keep reading as what they mean; removing it
-    # would be a rename across thirty lines that changes nothing on screen.
+    # 🔑 -Mono IS LOAD-BEARING AGAIN. It was left as a no-op when the whole pane
+    # went monospaced, with a note that the machine-text distinction was "still
+    # carried - by hue and by the gutter marker, not by the face". It is carried
+    # by the face again: prose proportional, machine text on the grid.
     param([string]$Text, $Brush, [double]$Size = 0, [string]$Weight = 'Normal', [switch]$Mono, [switch]$Italic)
     if ($Size -le 0) { $Size = $script:PaneSize }
     $r = New-Object System.Windows.Documents.Run ([string]$Text)
     if ($Brush) { $r.Foreground = $Brush }
     $r.FontSize = $Size
-    $r.FontFamily = $script:PaneFace
+    $r.FontFamily = $(if ($Mono) { $script:PaneFace } else { $script:ProseFace })
     if ($Italic) { $r.FontStyle = [System.Windows.FontStyles]::Italic }
     $r.FontWeight = $(if ($Weight -eq 'SemiBold') { $FW_Semi } else { $FW_Normal })
     return $r
@@ -2770,7 +2834,7 @@ function Get-TrackedText { param([string]$Text)
 # card is exactly how the old surface started.
 
 function New-ReadText {
-    # -Mono is a no-op here too; see New-ReadRun.
+    # -Mono selects the face here too; see New-ReadRun.
     param([string]$Text, $Brush, [double]$Size = 0, [switch]$Mono, [switch]$Semi,
           [switch]$Wrap, [double]$Line = 0)
     if ($Size -le 0) { $Size = $script:PaneSize }
@@ -2778,7 +2842,7 @@ function New-ReadText {
     $t.Text = $Text
     if ($Brush) { $t.Foreground = $Brush }
     $t.FontSize = $Size
-    $t.FontFamily = $script:PaneFace
+    $t.FontFamily = $(if ($Mono) { $script:PaneFace } else { $script:ProseFace })
     if ($Semi) { $t.FontWeight = $FW_Semi }
     if ($Wrap) { $t.TextWrapping = 'Wrap' }
     else { $t.TextWrapping = 'NoWrap'; $t.TextTrimming = 'CharacterEllipsis' }
@@ -3346,7 +3410,10 @@ function New-FoldHeader {
     $cap.Text = "$Caption".ToUpper()
     $cap.Foreground = $Brush
     $cap.FontSize = $script:PaneSize
-    $cap.FontFamily = $script:PaneFace
+    # 🪤 THE CAPTION IS A LABEL, THE CARET ABOVE IT IS A GLYPH. The caret keeps
+    # the pane face because it sits in a fixed column with the gutter marks and
+    # has to line up with them; the caption is words and reads as words.
+    $cap.FontFamily = $script:ProseFace
     $cap.VerticalAlignment = 'Center'
     $null = $sp.Children.Add($cap)
 
@@ -3355,7 +3422,7 @@ function New-FoldHeader {
         $tr.Text = $Trailing
         $tr.Foreground = $Pal.TextDim
         $tr.FontSize = $script:PaneSize
-        $tr.FontFamily = $script:PaneFace
+        $tr.FontFamily = $script:ProseFace
         $tr.VerticalAlignment = 'Center'
         $tr.TextTrimming = 'CharacterEllipsis'
         $tr.Margin = New-Object System.Windows.Thickness 10, 0, 0, 0
@@ -4149,7 +4216,10 @@ function Get-ToolViewLabel {
 function Build-ReadDocument {
     param($Blocks, [bool]$Truncated = $false, $Turns = $null)
     $doc = New-Object System.Windows.Documents.FlowDocument
-    $doc.FontFamily  = $script:PaneFace
+    # The document's own face is what every Run inherits unless it asks for the
+    # grid, so prose is the default and mono is the exception - the way round
+    # a reading surface wants.
+    $doc.FontFamily  = $script:ProseFace
     # TRANSPARENT, NOT Ink. The document was painting the GROUND colour - the
     # near-black the window shows *around* its cards - inside an output pane
     # that is painted Panel and has a 12px corner radius. The result was a
@@ -4259,7 +4329,7 @@ function Build-ReadDocument {
         $lb.Text = ('load earlier   showing the last {0} KB of a longer conversation' -f [int]($script:tailBytes / 1KB))
         $lb.Foreground = $Pal.TextDim
         $lb.FontSize = $script:PaneSize
-        $lb.FontFamily = $script:PaneFace
+        $lb.FontFamily = $script:ProseFace
         $lb.VerticalAlignment = 'Center'
         $null = $sp.Children.Add($lb)
         $bd.Child = $sp

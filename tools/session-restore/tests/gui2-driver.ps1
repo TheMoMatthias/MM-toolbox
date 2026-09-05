@@ -4987,13 +4987,19 @@ Write-Host '--- the shipped typeface reaches the text, not just the key ---'
 # 🔴 THE EXPECTED FACE IS ASKED OF THE WINDOW, NOT TYPED IN. This block used to
 # name Manrope, and when the chrome moved to IBM Plex Mono it failed on six
 # controls that were drawing exactly what they should - the assertion had
-# outlived the face it was written for, which is the third time that shape has
-# cost something today. It reads FontPane now, and a separate assertion further
-# up pins FontPane to a real family, so this is not circular: one test says what
-# the shipped face IS, these say the controls reached it.
+# outlived the face it was written for. It then read FontPane, and has now
+# outlived THAT face for the same reason in the other direction: the chrome came
+# back off the monospaced face on 2026-09-06, so asking FontPane would fail every
+# chrome control for drawing exactly what it should.
+#
+# 🪤 SO IT ASKS FOR THE CHROME KEY, WHICH IS THE ONE THE CHROME IS SUPPOSED TO
+# USE. That is the durable form of this check: whatever FontText resolves to,
+# the controls have to be drawing it. It survives the next face change without
+# anyone remembering to come here. A separate assertion pins FontText to a real
+# family, so this is not circular - one test says what the shipped face IS,
+# this one says the controls reached it.
 $faceWant = ''
-if ($script:hasPlex) { $faceWant = "$($window.Resources['FontPane'].Source)" }
-elseif ($script:hasManrope) { $faceWant = "$($window.Resources['FontText'].Source)" }
+$faceWant = "$($window.Resources['FontText'].Source)"
 
 if ($faceWant) {
     Lay
@@ -5076,7 +5082,12 @@ if ($paneFam -isnot [System.Windows.Media.FontFamily]) {
         if ($faceN -lt 2) {
             Fail ("IBM Plex Mono exposes {0} face - every bold in the transcript would be synthesised" -f $faceN)
         } else {
-            Pass ("the transcript has one face of its own: IBM Plex Mono, {0} real typefaces" -f $faceN)
+            # 🪤 "ONE FACE" WAS TRUE AND IS NOT ANY MORE. The pane draws prose
+            # proportionally and machine text on the grid - two faces, one per
+            # role, which is the whole of the typography change. This check is
+            # about the MACHINE face still being real IBM Plex Mono with real
+            # weights, so the wording now says which face it means.
+            Pass ("the transcript's machine face is IBM Plex Mono with {0} real typefaces" -f $faceN)
         }
         $tf = New-Object System.Windows.Media.Typeface $paneFam,
                   ([System.Windows.FontStyles]::Normal), ([System.Windows.FontWeights]::Normal),
@@ -5099,12 +5110,26 @@ if ([Math]::Abs($script:readSize - $script:MonoSize) -gt 0.01) {
 # A hard-coded metric outlives the face it was measured from, silently.
 $expAdv = -1.0
 try {
-    $tfM = New-Object System.Windows.Media.Typeface $window.Resources['FontPane'],
+    # 🔴 THE PROSE FACE, BECAUSE THAT IS WHAT THE COLUMN MEASURES. The pane draws
+    # prose proportionally and code on the grid; the reading measure is about the
+    # prose. Checking it against FontPane would assert the column is sized for a
+    # face that now draws only the code blocks.
+    $tfM = New-Object System.Windows.Media.Typeface $window.Resources['FontText'],
                ([System.Windows.FontStyles]::Normal), ([System.Windows.FontWeights]::Normal),
                ([System.Windows.FontStretches]::Normal)
     $gtM = $null
     if ($tfM.TryGetGlyphTypeface([ref]$gtM)) {
-        $expAdv = [double]$gtM.AdvanceWidths[$gtM.CharacterToGlyphMap[[int][char]'0']]
+        # Same average, computed independently of the window's own code - if this
+        # simply called the product's helper it would agree with itself.
+        $sampleM = 'the session was waiting for an answer and nothing else was running at the time, so it simply sat there. '
+        $sumM = 0.0; $nM = 0
+        foreach ($chM in $sampleM.ToCharArray()) {
+            $giM = 0
+            if ($gtM.CharacterToGlyphMap.TryGetValue([int][char]$chM, [ref]$giM)) {
+                $sumM += [double]$gtM.AdvanceWidths[$giM]; $nM++
+            }
+        }
+        if ($nM -gt 0) { $expAdv = $sumM / $nM }
     }
 } catch { }
 if ($expAdv -lt 0) {
@@ -5369,12 +5394,23 @@ if (-not $ui.ShellBox -or -not $ui.ShellList) {
     } else {
         Pass 'description, command, live output and elapsed all reach the screen'
     }
-    # 🪤 THERE IS NO SEPARATE MACHINE FACE ANY MORE. This asked for Cascadia or
-    # Consolas, which was right while the window had two faces and became wrong
-    # the moment it had one - a command is still the machine voice, it is simply
-    # not told apart by its typeface now. What it must still be is the face the
-    # window ships, so that is what is asserted.
-    $monoWant = $(if ($faceWant) { $faceWant } else { '' })
+    # 🪤 THE MACHINE FACE IS BACK, AND THIS ASSERTION HAS NOW BEEN WRONG IN BOTH
+    # DIRECTIONS - which is the useful part of its history.
+    #
+    # It first asked for Cascadia or Consolas. That was right while the window
+    # had two faces, and became wrong the moment 2026-09-03 gave it one: it
+    # failed on a command drawing exactly what it should. So it was changed to
+    # ask for whatever face the window ships - and that has now become wrong in
+    # the other direction, because 2026-09-06 gave the window two faces again.
+    #
+    # A command and its output are machine text: they bind {DynamicResource
+    # FontMono} in window2.xaml and they belong on the character grid, which is
+    # the entire reason a monospaced face is shipped at all. So this asks for
+    # the MACHINE key rather than the chrome key, and it is now asking the
+    # question that will stay true through the next face change: is the machine
+    # voice drawn in the machine face.
+    $monoWant = ''
+    try { $monoWant = "$($window.Resources['FontMono'].Source)" } catch { }
     if ($monoWant) {
         $monoOff = @(Get-TextBlocks $ui.ShellList |
                      Where-Object { "$($_.Text)" -eq 'npm run build' -or "$($_.Text)" -eq 'webpack: compiling...' } |
