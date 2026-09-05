@@ -1053,7 +1053,30 @@ $ui.ListCol.Width = $pxListW
 # and off, measured back to back. If it is free, the hypothesis is dead and the
 # splitter cost is somewhere else; if it is not, this is a one-property change
 # with a measured saving.
+# 🔴 THE A/B IS PUT BACK ON A KNOWN DOCUMENT FIRST, AND THAT IS A CORRECTION.
+#
+# The first version measured whatever the pane happened to be showing by the
+# time it ran - and by then the search benches, the rail picks and the surface
+# switches had moved the selection. So the ratio read 3,7x on one run and 1,65x
+# on another, and I had already told the lead the ratio was "a property of the
+# code, not the machine". It is not: a re-flow costs what it costs PER SCREEN OF
+# DOCUMENT, and those two runs were re-flowing 8,9 screens and 2,9 screens.
+#
+# Both halves of the A/B were always measured on the SAME document as each
+# other, so the comparison was never wrong - but it was not comparable BETWEEN
+# runs, which is most of what a recorded number is for. The extent is printed
+# with the ratio now, so a reader can never take one without the other.
+if ($pxBigId) {
+    $script:selId = $null
+    $ui.SessionList.SelectedItem = (Get-PxRow $pxBigId)
+    $pxW4 = [Diagnostics.Stopwatch]::StartNew()
+    while ($script:docPs -and $pxW4.Elapsed.TotalMilliseconds -lt 15000) { Pump-Px; [System.Threading.Thread]::Sleep(1) }
+    Lay-Px
+}
 if ($ui.PaneDoc.Document) {
+    $pxSv2 = Get-PaneScroller
+    $pxExtent = 0.0
+    if ($pxSv2) { $pxExtent = $pxSv2.ExtentHeight }
     $pxOptWas = $ui.PaneDoc.Document.IsOptimalParagraphEnabled
     # Nudging PagePadding by a pixel invalidates the document's measure without
     # changing anything a reader would see - a full re-flow, on demand.
@@ -1070,9 +1093,11 @@ if ($ui.PaneDoc.Document) {
     Pump-Px
     if ($pxOn -and $pxOff) {
         $pxSave = $pxOn.Laid - $pxOff.Laid
+        Note ("the A/B ran over {0:N0} px of document ({1:N1} screens). The saving scales with this - do not compare the ratio between runs without it." -f `
+              $pxExtent, $(if ($pxSv2 -and $pxSv2.ViewportHeight -gt 0) { $pxExtent / $pxSv2.ViewportHeight } else { 0 }))
         if ($pxSave -gt 5) {
-            Note ("the optimal-paragraph line breaker costs {0:N0} ms of every re-flow ({1:N0} -> {2:N0} ms). Every splitter drag frame, every window resize and every text-size change pays it." -f `
-                  $pxSave, $pxOn.Laid, $pxOff.Laid)
+            Note ("the optimal-paragraph line breaker costs {0:N0} ms of every re-flow ({1:N0} -> {2:N0} ms, {3:N2}x). Every splitter drag frame, every window resize and every text-size change pays it." -f `
+                  $pxSave, $pxOn.Laid, $pxOff.Laid, ($pxOn.Laid / [Math]::Max($pxOff.Laid, 0.001)))
         } else {
             Note ("the line breaker is NOT the cost: {0:N0} ms on vs {1:N0} ms off. That hypothesis is dead - the re-flow is expensive for another reason." -f `
                   $pxOn.Laid, $pxOff.Laid)
@@ -1602,6 +1627,138 @@ if ($pxInject -le 0) {
     if ($pxT0.Count) {
         Write-Host ("CALIB inject=0 at=none handler={0:N2} settled={1:N2} laid={2:N2} draw={3:N2} spin={4:N0}" -f `
             $pxT0[0].Handler, $pxT0[0].Settled, $pxT0[0].Laid, ($pxT0[0].Pixels - $pxT0[0].Laid), $pxSpinEnd) -ForegroundColor Magenta
+    }
+}
+
+# ===========================================================================
+# THE REGRESSION GATE, AND AN HONEST ACCOUNT OF WHAT IT CANNOT GATE.
+# ===========================================================================
+# 🔴 MOST OF THE TABLE ABOVE CANNOT BE GATED AT ALL, AND SAYING SO IS THE POINT.
+#
+# 'switch to another conversation' read 1.001, 904, 475, 493, 818, 982 and 702 ms
+# on SEVEN runs of identical source. Normalising by the spin does not tame it -
+# divided through it is still 26 to 59, a 2,3x spread - because the cost depends
+# on the write lane, the vitals sweep, runspace scheduling and whether the
+# transcript happened to grow, none of which a CPU loop describes. A threshold
+# above 2,3x would be too blunt to catch anything real, and one below it would
+# cry wolf. This file already carries the reason that is fatal: a benchmark that
+# cries wolf gets muted, and a muted benchmark catches nothing.
+#
+# 🔑 SO THE GATE COVERS THE QUANTITIES THAT ARE ACTUALLY STABLE, and the rest is
+# printed for a human to diff. Three of them:
+#
+#   1. THE CHEAP ROWS. Everything that came in under 20 ms read 1-6 ms on every
+#      run: scrolling, the surface switch, the settings panel, the warm
+#      re-select, the window frame. Those are layout-only paths with no disk, no
+#      runspace and no lane involvement, and a regression there - somebody
+#      putting a file read on the scroll path - is exactly the kind that ships.
+#   2. THE IDLE KEYSTROKE MEDIAN. 13,0 / 13,3 / 13,8 ms on three runs; it is a
+#      median over ~500 samples, which is why it is steady where a single sample
+#      is not.
+#   3. THE LINE-BREAKER RATIO. 2,8x to 4,8x over four runs. A ratio between two
+#      measurements taken seconds apart cancels the machine almost entirely.
+#      This one is a FALSIFICATION guard rather than a speed gate: if it ever
+#      reads ~1,0 the A/B has stopped working and the number in the header of
+#      this file has stopped being evidence.
+#
+# 🪤 THE BASELINE IS WRITTEN ONLY WHEN ASKED, NEVER ON A NORMAL RUN. This repo
+# has already been bitten by a baseline that widened its own ceiling every time
+# it saw a slow run - Build-Sessions drifted 9,36 to 18,06 ms in an afternoon,
+# so a genuine 90% regression would have passed in silence. -Record is the only
+# thing that writes this file.
+$PX_GATE_MAX   = 20.0    # a baseline row at or under this is gated; above it, reported
+$PX_GATE_RATIO = 2.50
+$PX_GATE_MINMS = 12.0
+$pxBasePath = Join-Path $SR_Root 'tests\pixels-baseline.json'
+$pxRecord = ("$($env:SR_PIX_RECORD)".Trim() -eq '1')
+
+$pxNow = @{}
+foreach ($pxRr in $pxAll) {
+    if ($pxRr.Threw -or $pxRr.Stalled) { continue }
+    if ($pxRr.Name -like '*empty gesture*') { continue }
+    $pxNow[$pxRr.Name] = [Math]::Round($pxRr.Laid / [Math]::Max($pxSpinEnd, 0.001), 6)
+}
+$pxKeyMed = $null
+if ($pxIdleSecs -gt 0 -and $pxIdleKeys -and $pxIdleKeys.Count -ge 20) {
+    $pxKs2 = @($pxIdleKeys | Sort-Object)
+    $pxKeyMed = $pxKs2[[int]($pxKs2.Count / 2)]
+}
+$pxAbRatio = $null
+if ($pxOn -and $pxOff -and $pxOff.Laid -gt 0) { $pxAbRatio = $pxOn.Laid / $pxOff.Laid }
+
+Write-Host ''
+Write-Host '=== did anything get slower? ==='
+# 🪤 -Only MAKES EVERY OTHER BASELINE ROW LOOK DELETED. A filtered run must not
+# be able to fail the gate, and must not be able to record over it either.
+if ($pxOnly) {
+    Huh ("-Only '{0}' was set, so most of the table did not run. The regression gate is NOT armed for this run and nothing was recorded." -f $pxOnly)
+} elseif ($pxRecord) {
+    $pxOut = @{ recordedAt = (Get-Date).ToString('s'); spin = $pxSpinEnd
+                note = 'laid-ms per spin-ms. Only rows at or under 20 ms are gated - see the note in pixels-driver.ps1. Written ONLY by -Record.'
+                idleKeyMedianMs = $pxKeyMed
+                lineBreakerRatio = $pxAbRatio
+                rows = $pxNow }
+    $pxOut | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $pxBasePath -Encoding utf8
+    Note ("recorded {0} row(s) against spin {1:N0} ms. This is the ONLY thing that writes that file." -f $pxNow.Count, $pxSpinEnd)
+} elseif (-not (Test-Path -LiteralPath $pxBasePath)) {
+    Huh 'no baseline recorded yet - run once with -Record. Until then this run asserts nothing about regressions.'
+} else {
+    $pxBase = $null
+    try { $pxBase = Get-Content -LiteralPath $pxBasePath -Raw | ConvertFrom-Json } catch { }
+    if (-not $pxBase) {
+        Huh 'the baseline file would not parse - the regression gate is NOT armed for this run.'
+    } else {
+        $pxGated = 0; $pxReported = 0; $pxNew = @(); $pxGone = @()
+        foreach ($pxBn in @($pxBase.rows.PSObject.Properties.Name)) {
+            if (-not $pxNow.ContainsKey($pxBn)) { $pxGone += $pxBn }
+        }
+        foreach ($pxNn in @($pxNow.Keys | Sort-Object)) {
+            $pxProp = $pxBase.rows.PSObject.Properties[$pxNn]
+            if (-not $pxProp) { $pxNew += $pxNn; continue }
+            $pxExp = [double]$pxProp.Value * $pxSpinEnd
+            $pxAct = $pxNow[$pxNn] * $pxSpinEnd
+            if ($pxExp -gt $PX_GATE_MAX) { $pxReported++; continue }
+            $pxGated++
+            if ($pxAct -gt ($pxExp * $PX_GATE_RATIO) -and ($pxAct - $pxExp) -gt $PX_GATE_MINMS) {
+                Fail ("{0}: {1:N1} ms against {2:N1} expected ({3:N1}x). Both tests cleared - proportionally worse AND worse by more than {4:N0} ms." -f `
+                      $pxNn, $pxAct, $pxExp, ($pxAct / [Math]::Max($pxExp, 0.001)), $PX_GATE_MINMS)
+            }
+        }
+        Note ("{0} row(s) gated, {1} reported-only (over the {2:N0} ms line where a single sample stops meaning anything)." -f `
+              $pxGated, $pxReported, $PX_GATE_MAX)
+        if ($pxNew.Count) { Note ("{0} new row(s), skipped this run: {1}" -f $pxNew.Count, ($pxNew -join ', ')) }
+        # 🔴 A BENCH THAT VANISHED IS A FAILURE, NOT A QUIET DIFF. This repo has
+        # already had a benchmark that would have scored DELETING the feature it
+        # guarded as an improvement. A row in the baseline with nothing to
+        # compare it against means somebody removed a bench or renamed it, and
+        # either way the surface it covered is now unguarded.
+        if ($pxGone.Count) {
+            Fail ("{0} baseline row(s) have no bench any more - deleted or renamed, and either way that surface is unguarded now: {1}" -f `
+                  $pxGone.Count, ($pxGone -join ', '))
+        }
+        # The two whole-run figures.
+        if ($null -ne $pxKeyMed -and $null -ne $pxBase.idleKeyMedianMs) {
+            $pxKeyExp = [double]$pxBase.idleKeyMedianMs
+            if ($pxKeyMed -gt ($pxKeyExp * 2.0) -and ($pxKeyMed - $pxKeyExp) -gt 10.0) {
+                Fail ("a keystroke at an idle window now waits {0:N1} ms against {1:N1} recorded - the window got busier doing nothing." -f $pxKeyMed, $pxKeyExp)
+            } else {
+                Note ("idle keystroke median {0:N1} ms against {1:N1} recorded." -f $pxKeyMed, $pxKeyExp)
+            }
+        } elseif ($pxIdleSecs -le 0) {
+            Note 'the idle keystroke median is not gated this run - it needs -Idle.'
+        }
+        if ($null -ne $pxAbRatio) {
+            # 🪤 1,25 AND NOT 1,5. The ratio scales with how much document is
+            # loaded - measured 1,65x over 2,9 screens against 3,7x over 8,9 -
+            # so a threshold set near the big-document value fails honestly on a
+            # small one. This is a "has the A/B stopped separating at all" guard,
+            # not a speed gate, and it is set where only ~1,0 trips it.
+            if ($pxAbRatio -lt 1.25) {
+                Fail ("the optimal-paragraph A/B now reads {0:N2}x. At this value the A/B is no longer demonstrating anything and the figures quoted in this file's header have stopped being evidence." -f $pxAbRatio)
+            } else {
+                Note ("the optimal-paragraph A/B still separates: {0:N2}x." -f $pxAbRatio)
+            }
+        }
     }
 }
 

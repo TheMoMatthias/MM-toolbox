@@ -52,6 +52,10 @@ param(
     # 🪤 NOT -Profile. $Profile is a PowerShell automatic variable, and a
     # parameter of that name shadows it inside this script.
     [switch]$ProfileBuild,
+    # 🔴 THE ONLY THING THAT WRITES tests\pixels-baseline.json. Never on an
+    # ordinary run: this repo has already had a baseline that widened its own
+    # ceiling on every slow run, so a real 90% regression passed in silence.
+    [switch]$Record,
     [string]$Driver = 'pixels-driver.ps1',
     [string]$GuiFile = 'sessions-window.ps1'
 )
@@ -147,12 +151,13 @@ try {
     $env:SR_PIX_RUNS      = ('{0}' -f $Runs)
     $env:SR_PIX_IDLE      = ('{0}' -f $Idle)
     $env:SR_PIX_PROFILE   = $(if ($ProfileBuild) { '1' } else { '' })
+    $env:SR_PIX_RECORD    = $(if ($Record) { '1' } else { '' })
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $harness -NoScan 2>&1
     $code = $LASTEXITCODE
     $out | ForEach-Object { Write-Host $_ }
 }
 finally {
-    foreach ($v in 'SR_PIX_INJECT', 'SR_PIX_INJECT_AT', 'SR_PIX_ONLY', 'SR_PIX_RUNS', 'SR_PIX_IDLE', 'SR_PIX_PROFILE') {
+    foreach ($v in 'SR_PIX_INJECT', 'SR_PIX_INJECT_AT', 'SR_PIX_ONLY', 'SR_PIX_RUNS', 'SR_PIX_IDLE', 'SR_PIX_PROFILE', 'SR_PIX_RECORD') {
         Remove-Item ("Env:\{0}" -f $v) -ErrorAction SilentlyContinue
     }
 }
