@@ -2287,7 +2287,18 @@ function Add-ReadProse {
             $p.Inlines.Add((New-GutterMark -Glyph (Get-MarkGlyph $Kind) -Brush (Get-MarkBrush $Kind)))
             $firstMark = $false
         } else {
-            $p.Inlines.Add((New-GutterMark -Glyph ' ' -Brush $Pal.TextLow))
+            # 🔴 A BLANK GUTTER NEEDS NO OBJECT AT ALL, and this was hosting a
+            # UIElement per continuation line to display nothing. Audited:
+            # New-GutterMark is 0.85 ms - twelve times a bare Paragraph - and
+            # Add-ReadProse added one to EVERY paragraph, which is about a
+            # quarter of the 3.44 ms a source line costs.
+            #
+            # The layout is identical without it. Margin.Left is already
+            # Indent + GutterW; the negative TextIndent exists only to pull the
+            # first line back so the mark can sit in the space. With no mark to
+            # sit there, not pulling it back puts the text on exactly the same
+            # x - so this is the same pixels for one fewer UIElement per line.
+            $p.TextIndent = 0
         }
         $body = $ln; $size = $Size; $weight = 'Normal'; $bump = 0
         # 🪤 A HEADING IS WEIGHT NOW, NOT SIZE. `$Size + 2` was one of the twelve
@@ -2301,6 +2312,16 @@ function Add-ReadProse {
         # offset on exactly the lines that are indented anyway - every bullet in
         # every reply sliding one column left of the prose above it.
         if ($bump) { $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW + $bump), 2, 0, 2 }
+        # 🔴 HOW MANY INLINES THIS PARAGRAPH STARTED WITH, because that number is
+        # no longer a constant. The blank-line test below used to read
+        # `-le 1`, meaning "nothing here but the gutter box" - and the note on it
+        # already records that it was once `-eq 0` and silently stopped firing
+        # when the gutter box was ADDED in front of every paragraph. Removing the
+        # box for unmarked lines moves it again, the other way: a line of real
+        # prose would now hold ONE inline and be mistaken for an empty one.
+        # Comparing against where this paragraph actually started cannot drift
+        # with whatever does or does not precede the body.
+        $inl0 = $p.Inlines.Count
         $rest = $body
         while ($rest -match '^(.*?)(`([^`]+)`|\*\*([^*]+)\*\*)(.*)$') {
             $before = $Matches[1]; $codeTxt = $Matches[3]; $boldTxt = $Matches[4]; $rest = $Matches[5]
@@ -2322,7 +2343,7 @@ function Add-ReadProse {
         # would have quietly stopped firing, leaving full-size blank lines
         # through every reply. A count that changed meaning when a column was
         # added in front of it.
-        if ($p.Inlines.Count -le 1) { $p.Inlines.Add((New-ReadRun -Text ' ' -Brush $Brush -Size ($Size * 0.4))) }
+        if ($p.Inlines.Count -eq $inl0) { $p.Inlines.Add((New-ReadRun -Text ' ' -Brush $Brush -Size ($Size * 0.4))) }
         $Doc.Blocks.Add($p)
         $i++
     }
@@ -2637,9 +2658,15 @@ function New-GutterPara {
     if ($Line -gt 0) { $p.LineHeight = $Line; $p.LineStackingStrategy = 'BlockLineHeight' }
     if ($NoMark) {
         # A continuation paragraph inside one turn: it keeps the indent so it
-        # aligns, and shows no marker because the turn already has one. A blank
-        # box, not a space - a space is proportional and would not be a gutter.
-        $p.Inlines.Add((New-GutterMark -Glyph ' ' -Brush $Pal.TextLow))
+        # aligns, and shows no marker because the turn already has one.
+        #
+        # 🔴 IT USED TO HOST A BLANK BOX HERE - "a space is proportional and
+        # would not be a gutter", which is true of a SPACE and not of what the
+        # box was doing. The box existed to occupy the width the negative
+        # TextIndent pulls the first line back over. Not pulling it back leaves
+        # the text at Margin.Left, which is already Indent + GutterW: the same
+        # column, with no UIElement built for it. 0.85 ms per paragraph.
+        $p.TextIndent = 0
     } else {
         $p.Inlines.Add((New-GutterMark -Glyph (Get-MarkGlyph $Kind) -Brush (Get-MarkBrush $Kind)))
     }
