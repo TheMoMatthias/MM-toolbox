@@ -8498,10 +8498,45 @@ $ui.StripList.Add_PreviewMouseLeftButtonUp({
     # need to be visible to work: Build-Sessions still binds it and restores the
     # selection from $script:selId, which fires the usual handler and puts the
     # conversation in the pane.
-    $script:selId = $id
-    Build-Sessions
+    $null = Select-SRSessionById $id
     Update-Strip
 })
+
+# Pulled out of the strip handler so it can be asserted: "did this rebuild the
+# list?" is the whole question here and there is no way to ask it of a routed
+# event raised on a never-rendered window. Returns $true when it selected
+# without rebuilding.
+function Select-SRSessionById { param([string]$Id)
+    if (-not $Id) { return $false }
+    $script:selId = $Id
+    # 🔴 SELECT THE ROW, DO NOT REBUILD THE LIST TO GET AT IT. This called
+    # Build-Sessions purely so that the rebind would restore the selection from
+    # $script:selId - a correct route to the right outcome, and audited at
+    # 164 ms for the gesture with 114 of it inside that one call. Every row in
+    # the list is reconstructed to change which of them is highlighted.
+    #
+    # The items are already bound whether or not the list is visible, so the row
+    # can simply be found and selected; SelectionChanged then does exactly what
+    # it did after the rebuild.
+    #
+    # 🪤 THE FALLBACK IS NOT DECORATION. A filter or a search can leave the
+    # target out of the bound list entirely, and then there is nothing to
+    # select - so it falls back to the rebuild, which is what used to happen
+    # every time. (A rebuild applies the same filter, so it may not find it
+    # either; that is pre-existing behaviour and is left exactly as it was.)
+    $hit = $null
+    foreach ($sit in $ui.SessionList.Items) {
+        if ($sit.Kind -eq 'session' -and "$($sit.Row.Id)" -eq $Id) { $hit = $sit; break }
+    }
+    if ($hit) {
+        if (-not [object]::ReferenceEquals($ui.SessionList.SelectedItem, $hit)) {
+            $ui.SessionList.SelectedItem = $hit
+        }
+        return $true
+    }
+    Build-Sessions
+    return $false
+}
 # 🔴 ONE LINE, NOT TWO MESSAGES. `/compact` takes instructions, and giving them
 # to it is what makes the compaction aligned rather than a race: a bare
 # /compact summarises whatever happens to be in context, which is exactly the

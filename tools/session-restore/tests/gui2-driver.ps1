@@ -2426,6 +2426,40 @@ try {
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the strip selects a conversation without rebuilding the list ---'
+# ===========================================================================
+# 🔴 IT REBUILT EVERY ROW TO CHANGE WHICH ONE WAS HIGHLIGHTED. The handler set
+# $script:selId and called Build-Sessions purely so the rebind would restore the
+# selection from it - a correct route to the right outcome, audited at 164 ms for
+# the gesture with 114 of it inside that single call.
+#
+# 🪤 THE FALLBACK IS THE HALF THAT MUST NOT ROT. A filter or a search can leave
+# the target out of the bound list, and then there is nothing to select - so it
+# still rebuilds. Both paths are asserted, because a version that always found
+# the row would pass a test that only checked the happy one.
+$ui.ModeWork.IsChecked = $true
+Set-Surface 'work'
+Build-Sessions
+$stripRow = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' }) | Select-Object -Last 1
+if (-not $stripRow) { Fail 'no session row to select from the strip' }
+else {
+    $srcBefore = $ui.SessionList.ItemsSource
+    $direct = Select-SRSessionById "$($stripRow.Row.Id)"
+    if (-not $direct) { Fail 'selecting a conversation that IS in the list fell back to a rebuild' }
+    elseif (-not [object]::ReferenceEquals($srcBefore, $ui.SessionList.ItemsSource)) {
+        Fail 'selecting from the strip rebuilt the list - the 114 ms is back'
+    } elseif ("$($ui.SessionList.SelectedItem.Row.Id)" -ne "$($stripRow.Row.Id)") {
+        Fail 'the strip selected the wrong conversation'
+    } else { Pass 'the strip selects the row in place, with no rebuild' }
+
+    # And a conversation the list does not hold must still fall back.
+    $fell = Select-SRSessionById 'not-a-conversation-id-00000000'
+    if ($fell) { Fail 'an id that is not in the list reported success instead of falling back' }
+    else { Pass 'an id the list does not hold falls back to the rebuild' }
+    $script:selId = "$($stripRow.Row.Id)"
+}
+
+Write-Host ''
 Write-Host '--- switching to the manager does not rebuild it unless it has to ---'
 # ===========================================================================
 # 🔴 THE ASYMMETRY WAS ONE FUNCTION CALL. Audited: Set-Surface manage is two
