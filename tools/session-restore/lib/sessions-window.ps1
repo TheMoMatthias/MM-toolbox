@@ -1072,9 +1072,15 @@ function Get-AgeLabel { param([long]$Delta)
 
 # Ticks in, no parse. Get-Age still takes a string for the callers that only
 # have one; this is for the two list builders, which have $r.At already.
-function Get-AgeTicks { param([long]$Ticks)
+# 🔑 $Now IS OPTIONAL, AND THE CALLERS IN A LOOP PASS IT. [DateTime]::Now is a
+# system call, and this made one PER ROW - 52 per rebuild, 22,3 ms, 11,5% of the
+# whole build - so that every row could ask what time it is during a pass that
+# cannot last long enough for the answer to change. The list builders hoist one
+# reading and hand it down; every other caller is a one-off and omits it.
+function Get-AgeTicks { param([long]$Ticks, [long]$Now = 0)
     if ($Ticks -le 0) { return '' }
-    return (Get-AgeLabel ([DateTime]::Now.Ticks - $Ticks))
+    if ($Now -le 0) { $Now = [DateTime]::Now.Ticks }
+    return (Get-AgeLabel ($Now - $Ticks))
 }
 
 function Get-Age { param($When)
@@ -1919,7 +1925,17 @@ function Sort-SessionRows { param($Rows)
                                     $pp = "$($_.D.path)"
                                     $(if ($pp) { (Get-ProjectLabel $pp).ToLower() } else { '' })
                                  }, { (Get-Title $_.S $_.D).Text.ToLower() }) }
-        default   { return @($Rows | Sort-Object { try { [datetime]$_.S.lastActive } catch { [datetime]0 } } -Descending) }
+        # 🔴 THE ROW ALREADY CARRIES THIS AS TICKS. This parsed
+        # $_.S.lastActive - a DATE STRING - once per row, inside a Sort-Object
+        # scriptblock, and Build-Sessions calls this five times, once per band.
+        # Measured 35,5 ms per rebuild - 18,3% of the whole build - for a value
+        # Update-Model already computed and stored on the row as $r.At.
+        #
+        # 🪤 IT IS AN EQUIVALENT SORT, NOT A SIMILAR ONE. $r.At is the ticks of
+        # that same lastActive, and a row whose date would not parse gets At = 0,
+        # which sorts last descending exactly as [datetime]0 did. The try/catch
+        # goes because reading a long cannot throw.
+        default   { return @($Rows | Sort-Object -Property At -Descending) }
     }
 }
 
@@ -1944,7 +1960,28 @@ function Build-Sessions {
     foreach ($r in $script:model) {
         if ($pick) {
             if ("$($r.D.path)" -ne $pick) { continue }
-        } elseif (-not (Test-OnSurface $r)) { continue }
+        # 🔴 INLINED, AND IT IS THE CALL THAT COSTS, NOT THE TEST.
+        # This ran Test-OnSurface for all 327 conversations to keep 52, and
+        # measured 34,7 ms of a 194 ms Build-Sessions - 17,9%, the second largest
+        # item in the rebuild that sits behind almost every slow gesture in the
+        # window: every search keystroke, every sort, every project pick, every
+        # band click, and the live lane's own tick. Nearly all of it is per-call
+        # overhead; the body it reaches is three property reads.
+        #
+        # 🪤 THIS IS EXACTLY Test-OnSurface FOR A MODEL ROW, NOT AN APPROXIMATION
+        # OF IT. Update-Model writes `Warm = $warm` on every row it builds, so
+        # `$null -ne $R.Warm` is always true here and the function can only take
+        # its first branch - Live, else Warm, else the pinned selection.
+        # Test-Warm's date re-parse is unreachable from this loop. The function
+        # stays for the callers that hold a bare session object.
+        #
+        # 🔴 AND IT IS NOT CACHED - deliberately, not by omission. It reads
+        # $r.Live, which the probe mutates IN PLACE without replacing the model,
+        # and $script:selId, which changes on every click. Its invalidation rate
+        # is near-continuous, so a cache would rebuild constantly and cost more
+        # than it saves. Same reason it is not merged with the rail's grouping
+        # walk: merging drags the stable cache down to the volatile one's rate.
+        } elseif (-not ($r.Live -or $r.Warm -or ($script:selId -and $r.Id -eq $script:selId))) { continue }
         # 🔴 ONCE PER ROW, NOT THREE TIMES. Get-Title was called for the global
         # search, again for this pane's search, and a third time when the item
         # was built - up to 573 calls over 191 conversations on a pass that runs
@@ -1966,6 +2003,13 @@ function Build-Sessions {
     # 🪤 RESOLVED ONCE, NOT PER ROW. FindResource walks the resource dictionary,
     # and these two are constants - the same reasoning as Get-Title and the
     # haystack in Update-Model. Cheap individually and pointless 300 times.
+    # 🔑 ONE CLOCK PER REBUILD, NOT ONE PER ROW. Both of these were system calls
+    # made inside the row loop - [DateTime]::Now for the age label and Get-Date
+    # for the screen-signature TTL - and a rebuild cannot last long enough for
+    # either answer to change. Together they were 36,8 ms of a 194 ms build.
+    # Same reasoning as the two brushes resolved just below.
+    $nowTicks = [DateTime]::Now.Ticks
+    $nowDate  = Get-Date
     $qGrey  = [System.Windows.Media.Brush]$window.FindResource('TextLow')
     $qAmber = [System.Windows.Media.Brush]$window.FindResource('HueOut')
 
@@ -2004,7 +2048,19 @@ function Build-Sessions {
             elseif ($r.Conv -and "$($r.Conv.Detail)") { $saidText = "$($r.Conv.Detail)" }
             # What this conversation has out, from the two readers that can each
             # answer half of it. See the note beside the marks below.
-            $scr = Get-RowScreenSig "$($r.Id)"
+            # 🔑 INLINED, for the reason WO-2 proved and WO-4/7 disproved:
+            # what costs here is the invocation, not the work. With $nowDate
+            # hoisted this function is a dictionary read and a TTL compare, and
+            # it still measured 13,3 ms per rebuild over 52 calls. The function
+            # stays - four other callers hold a bare id and are not in a loop.
+            #
+            # 🪤 THE TTL IS THE POINT AND MUST NOT BE DROPPED. A count read four
+            # minutes ago describes a session that has since done anything at
+            # all; past its life it is not evidence and must not draw. Kept
+            # identical to Get-RowScreenSig, and gui2 asserts they agree.
+            $scr = $null
+            $scrV = $script:rowScreen["$($r.Id)"]
+            if ($scrV -and ($nowDate - $scrV.At).TotalSeconds -le $SR_RowScreenTTL) { $scr = $scrV }
             $rowShells = $(if ($scr) { [int]$scr.Shells } else { 0 })
             # 🔴 ACTIVE, ON EVIDENCE - NOT "A TASK ID THE TAIL NEVER SAW
             # ANSWERED". The count came from $r.Sig.Agents, which is an open
@@ -2084,7 +2140,11 @@ function Build-Sessions {
                 Name = $t.Text
                 NameWeight = $(if ($b.Key -eq 'needs') { 'SemiBold' } else { 'Normal' })
                 NameStyle  = $(if ($t.Derived) { 'Italic' } else { 'Normal' })
-                Age  = (Get-AgeTicks $r.At)
+                # 🔑 Get-AgeLabel DIRECTLY - Get-AgeTicks is a guard and a
+                # subtraction, and with $nowTicks hoisted there is nothing else
+                # left in it. Two invocations per row became one and no logic
+                # is duplicated: the ladder still lives in exactly one place.
+                Age  = $(if ($r.At -gt 0) { Get-AgeLabel ($nowTicks - $r.At) } else { '' })
                 Said = $saidText
                 BarOpacity = $(if ($b.Key -eq 'quiet') { 0.25 } else { 0.85 })
                 # 🔴 TWO MARKS, AND ONLY WHEN THEY MEAN SOMETHING. This list was
@@ -6565,7 +6625,24 @@ function Format-Clock { param([double]$Seconds)
 # the chip body is always glass, and HUE LIVES IN THE DOT AND THE TEXT. That
 # still tells the four accent chips apart at a glance - a teal dot reads as
 # teal - while none of them outshouts the title above.
-$SR_ChipFont = 10.5
+# 🔴 THE LAST SIZE IN THE WINDOW THAT WAS OFF THE SCALE, AND IT WAS FROZEN.
+#
+# This was the literal 10,5 - between SzMicro (9,5) and SzCaption (11), on the
+# scale's steps but not one of them - and because it was a literal rather than a
+# resource it did NOT move with the text-size control. Every chip in the header
+# stayed 10,5 px while the name above it went to 19,5 at 150%, which is the one
+# place a fixed size is guaranteed to be seen.
+#
+# Caught by gui2's "every size on screen is one of the six" check, which walks
+# realised TextBlocks. It only fires when a chip is actually drawn, and a chip is
+# only drawn when a session has vitals - so on a quiet machine the check passes
+# and the defect is still there. That is why it went unnoticed.
+#
+# 🪤 READ AT BUILD TIME, NOT CACHED IN A SCRIPT VARIABLE. Set-SRTypeScale
+# rewrites $window.Resources['Sz*'] and XAML picks that up through
+# {DynamicResource}; code-built text has to ask again. Update-Chips rebuilds the
+# strip on the follow tick, so asking here is what makes chips follow the scale.
+function Get-ChipFont { return [double]$window.FindResource('SzCaption') }
 function New-Chip {
     param([string]$Text, $Fg, $Bg, $Dot, [double]$Bar = -1, $BarFg, [string]$Tip, [switch]$Square)
     $bd = New-Object System.Windows.Controls.Border
@@ -6607,7 +6684,7 @@ function New-Chip {
     $tb = New-Object System.Windows.Controls.TextBlock
     $tb.Text = $Text
     $tb.Foreground = $Fg
-    $tb.FontSize = $SR_ChipFont
+    $tb.FontSize = (Get-ChipFont)
     $tb.FontWeight = $FW_Normal
     $tb.FontFamily = $script:UiFace
     $null = $sp.Children.Add($tb)
@@ -6693,7 +6770,7 @@ function Update-Chips { param($R, [switch]$Force)
         foreach ($part in @(@(('+' + $v.Added), $Pal.Ask), @(('   ' + [string][char]0x2212 + $v.Removed), $Pal.Bad))) {
             $t = New-Object System.Windows.Controls.TextBlock
             $t.Text = $part[0]; $t.Foreground = $part[1]
-            $t.FontSize = $SR_ChipFont; $t.FontWeight = $FW_Normal; $t.FontFamily = $script:UiFace
+            $t.FontSize = (Get-ChipFont); $t.FontWeight = $FW_Normal; $t.FontFamily = $script:UiFace
             $null = $sp.Children.Add($t)
         }
         $bd.Child = $sp
@@ -8643,13 +8720,18 @@ function Set-RowScreenSig {
     return $changed
 }
 
-function Get-RowScreenSig { param([string]$Id)
+# 🔑 $Now IS OPTIONAL, FOR THE SAME REASON AS Get-AgeTicks. This TTL check called
+# Get-Date once per row - 52 per rebuild, 14,5 ms, 7,5% of the build - to decide
+# whether a reading taken seconds ago is still fresh. A row cannot age
+# meaningfully inside one pass, so the caller in the loop takes it once.
+function Get-RowScreenSig { param([string]$Id, [datetime]$Now = [datetime]::MinValue)
     if (-not $Id) { return $null }
     $v = $script:rowScreen[$Id]
     if (-not $v) { return $null }
     # A count read four minutes ago describes a session that has since done
     # anything at all. Past its life it is not evidence and must not draw.
-    if (((Get-Date) - $v.At).TotalSeconds -gt $SR_RowScreenTTL) { return $null }
+    if ($Now -eq [datetime]::MinValue) { $Now = Get-Date }
+    if (($Now - $v.At).TotalSeconds -gt $SR_RowScreenTTL) { return $null }
     return $v
 }
 

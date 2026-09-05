@@ -1339,11 +1339,54 @@ if (@($railWant.Keys).Count -le 12) {
 # callers and its note explains why they must keep the 24-hour cut: a sessions
 # column listing all 322 conversations is exactly what it prevents. The fix was
 # rail-local, and this is what says so.
-$railSrc = Get-SRBodyOf $winSrc 'function Build-Rail'
-$listSrc = Get-SRBodyOf $winSrc 'function Build-Sessions'
-if ($railSrc -match 'Test-OnSurface') { Fail 'Build-Rail asks Test-OnSurface again - the rail is back to the last 24 hours' }
-elseif ($listSrc -notmatch 'Test-OnSurface') { Fail 'Build-Sessions no longer asks Test-OnSurface - the sessions column has become a browser for every conversation' }
-else { Pass 'the rail ignores the 24-hour gate; the sessions column still honours it' }
+# 🔴 ASSERTED ON THE BUILT LIST, NOT ON A SOURCE GREP - and the grep failed on a
+# CORRECT change, which is how it earned its replacement.
+#
+# This read the SOURCE of Build-Rail and Build-Sessions and looked for the string
+# 'Test-OnSurface' in one and not the other. Two things are wrong with that, and
+# this repo has now been bitten by both: a grep passes just as happily against a
+# commented-out line or one moved somewhere it never runs, AND it cannot tell an
+# INLINE from a deletion. The predicate was inlined into the filter loop because
+# 327 calls to keep 52 rows was 17,9% of the whole rebuild - the rule was
+# untouched and the grep went red anyway.
+#
+# So each claim is now asserted against the thing it is about:
+#   - the rail is NOT gated - proved above, every project in the registry has a
+#     tile, which a 24-hour gate would make impossible
+#   - the sessions column IS gated - proved below, it never exceeds the count of
+#     conversations Test-OnSurface itself keeps
+#   - and the SELECTED conversation is pinned on even when it is cold, which is
+#     the half of the rule an inline is most likely to drop and which neither of
+#     the other two would notice.
+#
+# 🪤 THE PIN CHECK CHANGES EXACTLY ONE INPUT. It picks a row that is neither
+# live nor warm, selects it, rebuilds, and rebuilds again with the selection
+# cleared. Nothing else moves between the two builds, so the row appearing and
+# then not appearing can only be $script:selId. A check that changed the model
+# as well would rebuild for the wrong reason and still come out green.
+$selWas = $script:selId
+$cold = @($script:model.ToArray() | Where-Object { -not $_.Live -and -not $_.Warm })
+if (-not $cold.Count) {
+    # 🔴 A THIRD STATE, SPELLED OUT, because this suite has only Fail and Pass
+    # and silence would read as green. If every conversation happens to be live
+    # or warm when this runs, the rule was not exercised and that is not a pass.
+    Note 'COULD NOT BE CHECKED THIS RUN: every conversation is live or warm, so the cold-pin rule was never exercised. It is NOT a pass.'
+} else {
+    $pinId = "$($cold[0].Id)"
+    $script:selId = $pinId
+    Build-Sessions
+    $withPin = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and "$($_.Id)" -eq $pinId }).Count
+    $script:selId = $null
+    Build-Sessions
+    $noPin = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and "$($_.Id)" -eq $pinId }).Count
+    if ($withPin -eq 1 -and $noPin -eq 0) {
+        Pass 'a cold conversation is on the surface only while it is selected - the pin is the only thing holding it'
+    } else {
+        Fail ('the selection pin is broken: a cold conversation drew {0} time(s) selected and {1} time(s) not' -f $withPin, $noPin)
+    }
+    $script:selId = $selWas
+    Build-Sessions
+}
 
 $onSurface = @($script:model.ToArray() | Where-Object { Test-OnSurface $_ }).Count
 $script:railPick = $null
