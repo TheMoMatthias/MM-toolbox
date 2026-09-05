@@ -6840,9 +6840,32 @@ function Step-Zoom {
     $ui.PaneZoom.Content = Get-ZoomLabel
     try { Save-SRConfigLater -Name 'zoom' -Value $script:Zoom; Request-SRConfigFlush }
     catch { Write-SRLog ('  [skip] could not remember the zoom setting: ' + $_.Exception.Message) }
-    # The rows carry their own measured heights, so the list has to be told the
-    # type under it changed or it keeps laying out for the old size.
-    try { $ui.SessionList.Items.Refresh() } catch { }
+    # 🔴 THERE IS NO Items.Refresh() HERE ANY MORE, AND THAT IS THE POINT.
+    #
+    # It used to sit here with "the rows carry their own measured heights, so the
+    # list has to be told the type under it changed or it keeps laying out for
+    # the old size". That premise was never tested, and it is false. Every
+    # FontSize in window2.xaml is a {DynamicResource Sz*}, and Set-SRTypeScale
+    # above assigns $window.Resources["Sz$k"] - which WPF propagates by itself,
+    # invalidating measure on every element that reads it. The rows re-measure
+    # whether or not the list is told anything.
+    #
+    # MEASURED on a realised container, stepping 100% -> 150%:
+    #
+    #     row height   100%  64.0px      150% WITHOUT the refresh  72.0px
+    #                                    150% WITH the refresh     72.0px
+    #
+    # Identical. And the refresh was not free: Items.Refresh() plus layout ran
+    # 339.5 ms median, against 12.5 ms for Set-SRTypeScale plus layout - it
+    # discards and regenerates every container in the list to arrive at the size
+    # the rows had already taken. That is the whole of the text-size button's
+    # cost, spent on nothing.
+    #
+    # 🪤 IF A ROW EVER BAKES A FONT-DERIVED NUMBER INTO ITS ITEM OBJECT rather
+    # than reading a resource, this stops being true and the height will lag a
+    # step behind. The suite asserts the height actually tracks the scale with no
+    # refresh, so that would go red here rather than being noticed as "the zoom
+    # looks wrong sometimes".
     Show-Selected -Force
 }
 

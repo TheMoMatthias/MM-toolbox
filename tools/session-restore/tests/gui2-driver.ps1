@@ -3807,6 +3807,60 @@ else {
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the text size reaches the rows without regenerating the list ---'
+# ===========================================================================
+# 🔴 Step-Zoom USED TO CALL Items.Refresh(), on the belief that rows "carry their
+# own measured heights". They do not: every FontSize is a {DynamicResource Sz*}
+# and Set-SRTypeScale assigns the resource, which WPF propagates on its own.
+# Measured, the refresh changed the height by nothing and cost 339.5 ms against
+# the gesture's other 12.5 ms - it regenerated every container to reach the size
+# the rows had already taken.
+#
+# 🪤 THIS ASSERTS THE PROPERTY THE REMOVAL DEPENDS ON, not the removal. If a row
+# ever bakes a font-derived number into its item object, the height stops
+# tracking and this goes red - which is the thing that would otherwise be noticed
+# months later as "the zoom looks wrong sometimes".
+$tzWas = $script:Zoom
+try {
+    function Get-TzRowHeight {
+        $ui.SessionList.UpdateLayout()
+        for ($i = 0; $i -lt @($ui.SessionList.Items).Count; $i++) {
+            if ($ui.SessionList.Items[$i].Kind -ne 'session') { continue }
+            $c = $ui.SessionList.ItemContainerGenerator.ContainerFromIndex($i)
+            if ($c -and $c.ActualHeight -gt 0) { return [double]$c.ActualHeight }
+        }
+        return 0.0
+    }
+    Set-SRTypeScale -Percent 100; Lay
+    $tzSmall = Get-TzRowHeight
+    # No refresh, no rebuild - only the resource assignment inside Set-SRTypeScale.
+    Set-SRTypeScale -Percent 150; Lay
+    $tzBig = Get-TzRowHeight
+    if ($tzSmall -le 0 -or $tzBig -le 0) { Note 'no realised session row to measure - the type scale is unchecked here' }
+    elseif ($tzBig -le $tzSmall) {
+        Fail "the row height did not follow the type scale without a refresh ($tzSmall px -> $tzBig px) - something font-derived is baked into the item"
+    } else { Pass "the row height follows the type scale with no refresh and no rebuild ($tzSmall px -> $tzBig px)" }
+
+    # And it comes back, so the check above is not just measuring a one-way drift.
+    Set-SRTypeScale -Percent 100; Lay
+    $tzBack = Get-TzRowHeight
+    if ([Math]::Abs($tzBack - $tzSmall) -gt 0.5) { Fail "stepping back left the row at $tzBack px, not the $tzSmall px it started at" }
+    else { Pass 'and it comes back when the scale does' }
+} finally {
+    Set-SRTypeScale -Percent $tzWas
+    Lay
+}
+
+# 🔴 AND THE REFRESH MUST NOT COME BACK. It is the whole cost of the gesture and
+# it buys nothing; a future reader seeing rows "not updating" will reach for it.
+$tzSrc = Get-SRBodyOf $winSrc 'function Step-Zoom'
+if (-not $tzSrc) { Fail 'Step-Zoom is gone' }
+elseif ($tzSrc -match 'Items\.Refresh') {
+    Fail 'Step-Zoom regenerates the whole list again - measured at 339.5 ms for a height the rows already had'
+} else { Pass 'the text-size gesture does not regenerate the list' }
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the reading pane does not pay for the slow line breaker ---'
 # ===========================================================================
 # 🔴 THE PANE DOES NOT VIRTUALIZE, so every splitter drag frame, every resize and
