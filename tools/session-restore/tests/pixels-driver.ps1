@@ -110,8 +110,92 @@ try { if ("$($env:SR_PIX_INJECT)".Trim()) { $pxInject = [double]("$($env:SR_PIX_
 $pxInjectAt = "$($env:SR_PIX_INJECT_AT)".Trim().ToLower()
 if (-not $pxInjectAt) { $pxInjectAt = 'build' }
 $pxOnly = "$($env:SR_PIX_ONLY)".Trim()
+# The bar is the terminal: a real claude TUI answers an arrow in 6.9 ms
+# (bench-term.ps1 / bench-claude.ps1, 2026-09-04), and one frame at 60 Hz is
+# 16 ms. Declared up here because the idle watch below uses the same bar the
+# gesture table does - they are the same standard asked at two moments.
+$PX_BAR = 7.0
+$PX_FRAME = 16.0
 $pxRuns = 5
 try { if ("$($env:SR_PIX_RUNS)".Trim() -and [int]"$($env:SR_PIX_RUNS)" -gt 0) { $pxRuns = [int]"$($env:SR_PIX_RUNS)" } } catch { }
+
+# ===========================================================================
+# THE KEYSTROKE PROBE - the operator's complaint, measured directly.
+# ===========================================================================
+# 🔴 "navigating up and down feels laggy ... whenever I type something, I answer
+# a question, I want to go back and forth" IS NOT A GESTURE-COST QUESTION. It is
+# "when I press a key, how long before this window answers me", and the answer
+# depends on what the UI thread happens to be doing at that instant - which no
+# table of gesture costs can show.
+#
+# A real keystroke arrives from the OS on another thread and is queued at
+# DispatcherPriority.Input. So this is a BACKGROUND THREAD that queues an empty
+# operation at exactly that priority and times how long the UI thread takes to
+# get to it. Nothing above Input can be pre-empted, so if a 400 ms rebuild is
+# running the probe waits 400 ms - which is precisely what the operator's finger
+# experiences.
+#
+# 🪤 IT IS C#, NOT A POWERSHELL RUNSPACE, AND THAT IS NOT PREFERENCE. A
+# scriptblock marshalled to a delegate belongs to the runspace that created it;
+# handing one to another thread's Dispatcher.Invoke is exactly the shape that
+# produces a hang or a wrong-thread throw. A compiled Action closure has no
+# runspace and no affinity.
+#
+# 🪤 AND IT MEASURES A KEY THAT DOES NOTHING. A real key would type into a live
+# session; this queues an EMPTY action, so it measures the wait and never the
+# work, and it can never reach anything the operator owns.
+Add-Type -ReferencedAssemblies 'WindowsBase' -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
+using System.Windows.Threading;
+
+public static class SRKeyProbe
+{
+    public static List<double> Waits = new List<double>();
+    private static Dispatcher _d;
+    private static volatile bool _run;
+    private static Thread _t;
+
+    public static void Start(Dispatcher d, int everyMs)
+    {
+        _d = d; _run = true;
+        Waits = new List<double>();
+        _t = new Thread(delegate() {
+            while (_run)
+            {
+                Stopwatch sw = Stopwatch.StartNew();
+                try { _d.Invoke(DispatcherPriority.Input, new Action(delegate() { })); }
+                catch { }
+                sw.Stop();
+                lock (Waits) { Waits.Add(sw.Elapsed.TotalMilliseconds); }
+                Thread.Sleep(everyMs);
+            }
+        });
+        _t.IsBackground = true;
+        _t.Start();
+    }
+
+    public static double[] Stop()
+    {
+        _run = false;
+        if (_t != null) { _t.Join(2000); _t = null; }
+        lock (Waits) { return Waits.ToArray(); }
+    }
+}
+'@
+
+function Report-PxKeys { param([string]$When, [double[]]$Waits)
+    if (-not $Waits -or $Waits.Count -lt 3) { Huh ("no keystroke samples for '{0}' - the probe did not run" -f $When); return }
+    $pxKs = @($Waits | Sort-Object)
+    $pxKmed = $pxKs[[int]($pxKs.Count / 2)]
+    $pxK90 = $pxKs[[int]($pxKs.Count * 0.9)]
+    $pxKmax = $pxKs[$pxKs.Count - 1]
+    $pxKover = @($pxKs | Where-Object { $_ -gt $PX_BAR }).Count
+    Note ("{0}: {1} synthetic keystrokes - median {2:N1} ms, 90th {3:N1} ms, worst {4:N0} ms; {5} of {1} over the 6,9 ms terminal bar ({6:N0}%)" -f `
+          $When, $pxKs.Count, $pxKmed, $pxK90, $pxKmax, $pxKover, (100.0 * $pxKover / $pxKs.Count))
+}
 
 # 🪤 A CPU BURN, NOT Start-Sleep. Sleep models a blocking call; the regressions
 # this is meant to catch are code getting slower, and those hold the CPU. Burn
@@ -469,6 +553,12 @@ if ($pxInject -gt 0) {
 Write-Host ''
 Write-Host '--- the gestures the operator named ---'
 # ---------------------------------------------------------------------------
+# 🔑 A SYNTHETIC KEYSTROKE EVERY 40 ms FOR THE WHOLE OF THE TABLE BELOW. The
+# gesture rows say what each click costs; this says what pressing a key costs
+# WHILE the window is doing that work, which is the half of "laggy" a
+# per-gesture table cannot express. Compared against the same probe on an idle
+# window at the end of the run.
+[SRKeyProbe]::Start($window.Dispatcher, 40)
 
 # 🔑 THE PREDICATE FOR "THE CONVERSATION IS ON SCREEN". $script:docPs is the
 # PowerShell instance holding the off-thread parse; Complete-DocParse clears it
@@ -709,17 +799,156 @@ $null = Measure-Px 'open the settings panel' `
 try { $ui.SetCancel.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))) } catch { }
 Pump-Px
 
+$pxBenchKeys = [SRKeyProbe]::Stop()
+
+# ===========================================================================
+# WHAT THE WINDOW COSTS WHEN NOBODY TOUCHES IT.
+# ===========================================================================
+# 🔴 EVERY BENCH IN THIS REPO MEASURES A GESTURE, AND THE OPERATOR DID NOT ONLY
+# COMPLAIN ABOUT GESTURES. "navigating up and down feels laggy", "whenever I
+# type something ... super laggy" describe a UI thread that is busy with
+# something else when the input arrives. No table of gesture costs can show
+# that: the gesture is fast and the thread is not free to run it.
+#
+# So this holds still and watches. It pumps the dispatcher in a tight loop for
+# N seconds with NO gesture at all and records the GAP between consecutive
+# pumps. A gap is time the UI thread spent inside somebody else's work - a lane
+# tick, a rebuild, a sweep collection - and it is exactly the window in which a
+# keystroke or a click would sit unanswered. The terminal answers an arrow in
+# 6.9 ms; any gap above that is time this window could not have.
+#
+# Opt-in (-Idle <seconds>) because it costs real wall clock and adds nothing to
+# a gesture table.
+$pxIdleSecs = 0
+try { if ("$($env:SR_PIX_IDLE)".Trim()) { $pxIdleSecs = [int]("$($env:SR_PIX_IDLE)".Trim()) } } catch { }
+if ($pxIdleSecs -gt 0) {
+    Write-Host ''
+    Write-Host ("--- holding still for {0}s: what the window does to itself ---" -f $pxIdleSecs)
+
+    # 🔴 THE FIRST VERSION OF THIS MEASURED ITS OWN SLEEP AND REPORTED 81,7%.
+    #
+    # It timed the LOOP PERIOD - pump, Thread.Sleep(1), stamp - and called
+    # everything over 7 ms a stall. On Windows the default timer resolution is
+    # 15,6 ms, so Sleep(1) sleeps up to fifteen; 2.277 iterations over 25 s is
+    # 11 ms each, which is the sleep and nothing else. The tell was that it
+    # claimed 81,7% of the thread was busy in a run where Build-Sessions,
+    # Build-Rail and Update-Document were each called ZERO times. Two readings
+    # that contradict each other, and the instrument was the wrong one.
+    #
+    # What is timed now is the PUMP ITSELF: how long the dispatcher takes to run
+    # everything queued above ApplicationIdle. That is UI-thread busy time and
+    # nothing else. The sleep sits outside the bracket, where it belongs.
+    #
+    # 🪤 ITS OWN FLOOR IS MEASURED FIRST, on a queue that is already empty, so
+    # the reader is never asked to take "a pump costs about nothing" on trust.
+    $pxPumpFloor = [double]::MaxValue
+    for ($pxFi = 0; $pxFi -lt 40; $pxFi++) {
+        $pxFw = [Diagnostics.Stopwatch]::StartNew()
+        Pump-Px
+        $pxFw.Stop()
+        if ($pxFw.Elapsed.TotalMilliseconds -lt $pxPumpFloor) { $pxPumpFloor = $pxFw.Elapsed.TotalMilliseconds }
+    }
+
+    # Counters around what the lane can reach. None of these take parameters, so
+    # @args forwarding is exact.
+    $pxNames = @('Build-Sessions', 'Build-Rail', 'Update-Document', 'Invoke-WriteLane',
+                 'Update-LiveWriters', 'Complete-VitalsSweep', 'Start-VitalsSweep',
+                 'Complete-QuietCheck', 'Start-QuietCheck', 'Complete-AskProbe', 'Complete-DocParse')
+    $pxTally = @{}
+    $pxOrig = @{}
+    foreach ($pxNm in $pxNames) {
+        if (-not (Test-Path -LiteralPath ("function:" + $pxNm))) { continue }
+        $pxTally[$pxNm] = @{ N = 0; Ms = 0.0 }
+        $pxOrig[$pxNm] = (Get-Item -LiteralPath ("function:" + $pxNm)).ScriptBlock
+        # 🪤 THE COUNTER IS BUILT FROM A STRING, not written out eleven times.
+        # A per-name closure over $pxNm would capture the loop variable by
+        # reference and file every call under the last name - the exact trap the
+        # window's own fold headers carry a comment about.
+        $pxWrapSrc = @"
+        `$pxTw = [Diagnostics.Stopwatch]::StartNew()
+        try { & `$pxOrig['$pxNm'] @args }
+        finally { `$pxTw.Stop(); `$pxTally['$pxNm'].N++; `$pxTally['$pxNm'].Ms += `$pxTw.Elapsed.TotalMilliseconds }
+"@
+        Set-Item -Path ("function:" + $pxNm) -Value ([scriptblock]::Create($pxWrapSrc))
+    }
+
+    # 🔑 AND THE SECOND, CONTRADICTABLE READING. The pump timing below says how
+    # long the dispatcher spent running queued work; it cannot tell busy from
+    # waiting-for-a-message, and the first version of this section got exactly
+    # that wrong. The keystroke probe answers the operator's question directly
+    # and by a completely different route - a real Input-priority operation from
+    # a real background thread - so if the two disagree, one of them is wrong
+    # and it is worth knowing which.
+    [SRKeyProbe]::Start($window.Dispatcher, 40)
+
+    $pxGaps = New-Object System.Collections.Generic.List[double]
+    $pxWatch = [Diagnostics.Stopwatch]::StartNew()
+    while ($pxWatch.Elapsed.TotalSeconds -lt $pxIdleSecs) {
+        $pxPw = [Diagnostics.Stopwatch]::StartNew()
+        Pump-Px
+        $pxPw.Stop()
+        $pxGaps.Add($pxPw.Elapsed.TotalMilliseconds)
+        [System.Threading.Thread]::Sleep(1)
+    }
+    $pxWatch.Stop()
+    $pxIdleKeys = [SRKeyProbe]::Stop()
+
+    # Unwrap before anything else runs, so the counters cannot leak into a later
+    # measurement.
+    foreach ($pxNm2 in @($pxOrig.Keys)) { Set-Item -Path ("function:" + $pxNm2) -Value $pxOrig[$pxNm2] }
+
+    $pxG = $pxGaps.ToArray()
+    $pxWall = $pxWatch.Elapsed.TotalMilliseconds
+    $pxBusy = 0.0; $pxOver7 = 0; $pxOver50 = 0; $pxOver100 = 0; $pxOver250 = 0; $pxMax = 0.0
+    foreach ($pxGg in $pxG) {
+        $pxBusy += $pxGg
+        if ($pxGg -gt $PX_BAR) { $pxOver7++ }
+        if ($pxGg -gt 50)  { $pxOver50++ }
+        if ($pxGg -gt 100) { $pxOver100++ }
+        if ($pxGg -gt 250) { $pxOver250++ }
+        if ($pxGg -gt $pxMax) { $pxMax = $pxGg }
+    }
+    # 🔑 THE HEADLINE IS THE KEYSTROKE PROBE. It is measured from OUTSIDE the UI
+    # thread, at the priority a real key arrives on, so it needs no attribution
+    # and no interpretation: this IS the wait.
+    Report-PxKeys 'IDLE, nothing touched' $pxIdleKeys
+    Note ("{0} pumps over {1:N1}s; an empty pump costs {2:N2} ms." -f `
+          $pxG.Count, ($pxWall / 1000.0), $pxPumpFloor)
+    Note ("pumps over the 6,9 ms terminal bar: {0}   over 50 ms: {1}   over 100 ms: {2}   over 250 ms: {3}   longest {4:N0} ms" -f `
+          $pxOver7, $pxOver50, $pxOver100, $pxOver250, $pxMax)
+    Note  'Each long pump is a burst in which a keystroke or a click sits unanswered.'
+    # 🔴 THE SUM OF THE PUMPS IS *NOT* REPORTED AS "THE THREAD WAS BUSY N%", AND
+    # THE REASON IS THAT TWO READINGS HERE DISAGREE.
+    #
+    # Summed, the pumps come to 26.267 of 30.004 ms - 87,5% - and the functions
+    # wrapped below account for only 5.672 ms of it. A 20-second hole. Either
+    # something unattributed is eating the thread, or Dispatcher.Invoke at
+    # ApplicationIdle spends part of its wall clock WAITING for a message rather
+    # than running work, and this instrument cannot tell those apart.
+    #
+    # The keystroke probe can, and says the milder thing: a median wait of 13 ms
+    # is not what a thread that is busy seven-eighths of the time would produce.
+    # So the percentage is withheld rather than printed with a caveat nobody
+    # would read, and the number below is what the pumps support without
+    # interpretation - how much of the run was spent in bursts long enough to
+    # swallow a keypress.
+    $pxLongMs = 0.0
+    foreach ($pxGg2 in $pxG) { if ($pxGg2 -gt 50) { $pxLongMs += $pxGg2 } }
+    Note ("{0:N0} ms of the {1:N0} ms went into bursts longer than 50 ms - measured; what fraction of those is work rather than waiting is NOT established." -f `
+          $pxLongMs, $pxWall)
+    foreach ($pxK in @($pxTally.Keys | Sort-Object { -$pxTally[$_].Ms })) {
+        if (-not $pxTally[$pxK].N) { continue }
+        Note ("  {0,-22} {1,5} call(s) {2,8:N0} ms total {3,7:N1} ms each" -f `
+              $pxK, $pxTally[$pxK].N, $pxTally[$pxK].Ms, ($pxTally[$pxK].Ms / $pxTally[$pxK].N))
+    }
+    $pxNever = @($pxTally.Keys | Where-Object { -not $pxTally[$_].N } | Sort-Object)
+    if ($pxNever.Count) { Note ("  never called while idle: {0}" -f ($pxNever -join ', ')) }
+}
+
 # ===========================================================================
 Write-Host ''
 Write-Host '=== click to pixels, worst first ==='
 # ===========================================================================
-# The bar is the terminal: a real claude TUI answers an arrow in 6.9 ms, and one
-# frame at 60 Hz is 16 ms. Both are printed because they answer different
-# questions - 6.9 is the standard the operator set, 16 is the point below which
-# faster is not observable.
-$PX_BAR = 7.0
-$PX_FRAME = 16.0
-
 # 🪤 .ToArray(), NOT @(...). `@($list)` on a System.Collections.Generic.List
 # [object] throws "Argument types do not match" in PowerShell 5.1 - it is a
 # known trap in this repo and it cost this file one debugging round: everything
@@ -739,6 +968,8 @@ if ($pxDrift -gt 1.5) {
 }
 Write-Host ''
 
+Report-PxKeys 'WHILE THE BENCHES BELOW RAN' $pxBenchKeys
+Write-Host ''
 Write-Host ('  {0,9} {1,9} {2,9} {3,9} {4,9}   {5}' -f 'handler', 'settled', 'laid', 'draw', 'worst', 'gesture') -ForegroundColor Gray
 foreach ($pxR in @($pxAll | Sort-Object -Property Laid -Descending)) {
     $pxTag = ' '

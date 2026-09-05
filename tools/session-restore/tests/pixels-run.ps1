@@ -43,6 +43,9 @@ param(
     [string]$InjectAt = 'build',
     [string]$Only = '',
     [int]$Runs = 0,
+    # Seconds to hold still and watch what the window does to itself with no
+    # gesture at all. 0 = skip. See the idle-tax section in the driver.
+    [int]$Idle = 0,
     [string]$Driver = 'pixels-driver.ps1',
     [string]$GuiFile = 'sessions-window.ps1'
 )
@@ -136,12 +139,13 @@ try {
     $env:SR_PIX_INJECT_AT = $InjectAt
     $env:SR_PIX_ONLY      = $Only
     $env:SR_PIX_RUNS      = ('{0}' -f $Runs)
+    $env:SR_PIX_IDLE      = ('{0}' -f $Idle)
     $out = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $harness -NoScan 2>&1
     $code = $LASTEXITCODE
     $out | ForEach-Object { Write-Host $_ }
 }
 finally {
-    foreach ($v in 'SR_PIX_INJECT', 'SR_PIX_INJECT_AT', 'SR_PIX_ONLY', 'SR_PIX_RUNS') {
+    foreach ($v in 'SR_PIX_INJECT', 'SR_PIX_INJECT_AT', 'SR_PIX_ONLY', 'SR_PIX_RUNS', 'SR_PIX_IDLE') {
         Remove-Item ("Env:\{0}" -f $v) -ErrorAction SilentlyContinue
     }
 }
