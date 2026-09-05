@@ -4449,6 +4449,63 @@ $script:ansFor = $null
 # One job with a Kind rather than three lanes: the guard that refuses a second
 # send while one is in flight, the 25-second timeout that gives the panel back,
 # and the collector are all things there must be exactly one of.
+# ===========================================================================
+# A RUNSPACE READY BEFORE IT IS ASKED FOR.
+#
+# 🔴 OPENING ONE COSTS 17-25 ms ON THE THREAD THAT DRAWS, and this window opens
+# them on gestures. Audited 2026-09-05: Start-AskSend is 19.41 ms before a
+# single key is sent, and Start-DocParse is 24.9 ms of which 17.4 is the bare
+# runspace.Open() - so a cold conversation click can open TWO, one for the parse
+# and one for the probe Show-Selected kicks. That is three frames of nothing,
+# paid before any of the actual work starts, on the two most repeated gestures
+# in the tool.
+#
+# The cost is not avoidable, but the TIMING is: one spare is kept open, a click
+# takes it, and the replacement is built at ApplicationIdle - which is precisely
+# "when the operator is not waiting for anything".
+#
+# 🔒 ON THE DISPATCHER, DELIBERATELY, NOT ON A THREADPOOL THREAD. Warming off
+# the UI thread would save nothing that matters (the cost is already off the
+# click) and would buy a race on $script:spareRs for it. Idle priority means it
+# cannot delay a gesture: the dispatcher runs it only when there is nothing else
+# to do.
+#
+# 🪤 ONE SPARE, NOT A POOL. Every open runspace holds a thread; a pool would
+# trade a visible 20 ms for an invisible handful of threads sitting idle for
+# hours, which is the kind of thing this tool is supposed to be fixing.
+$script:spareRs = $null
+
+function New-SRRunspace {
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.ApartmentState = 'MTA'
+    $rs.ThreadOptions  = 'ReuseThread'
+    $rs.Open()
+    $rs.SessionStateProxy.SetVariable('SRHere', $here)
+    return $rs
+}
+
+function Request-SRSpareRunspace {
+    if ($script:spareRs) { return }
+    try {
+        $null = $window.Dispatcher.BeginInvoke([Action]{
+            if ($script:spareRs) { return }
+            try { $script:spareRs = New-SRRunspace } catch { $script:spareRs = $null }
+        }, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
+    } catch { }
+}
+
+# Hand out the spare if there is one, build one if there is not, and queue the
+# next either way. The caller owns what it gets and disposes it as before.
+function Get-SRRunspace {
+    $rs = $script:spareRs
+    $script:spareRs = $null
+    if (-not $rs) {
+        try { $rs = New-SRRunspace } catch { return $null }
+    }
+    Request-SRSpareRunspace
+    return $rs
+}
+
 $script:AnswerJob = {
     . (Join-Path $SRHere '_common.ps1')
     $why = ''
@@ -4488,11 +4545,9 @@ function Start-AskSend {
         Index = $Index; Delta = $Delta; Text = $Text
     }
     try {
-        $rs = [runspacefactory]::CreateRunspace()
-        $rs.ApartmentState = 'MTA'
-        $rs.ThreadOptions = 'ReuseThread'
-        $rs.Open()
-        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        # Warm if one was ready; see New-SRRunspace. SRHere is already set on it.
+        $rs = Get-SRRunspace
+        if (-not $rs) { throw 'no runspace' }
         $rs.SessionStateProxy.SetVariable('SRAns', $payload)
         $ps = [powershell]::Create()
         $ps.Runspace = $rs
@@ -5295,11 +5350,11 @@ function Start-DocParse { param([string]$Path)
     $script:docTrunc = $false
     try { $script:docTrunc = ((Get-Item -LiteralPath $Path).Length -gt $script:tailBytes) } catch { }
     try {
-        $rs = [runspacefactory]::CreateRunspace()
-        $rs.ApartmentState = 'MTA'
-        $rs.ThreadOptions = 'ReuseThread'
-        $rs.Open()
-        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        # 🔑 THE WARM ONE. Opening a runspace here was 17.4 of this function's
+        # 24.9 ms, on the click that opens a conversation - the most repeated
+        # gesture in the tool. See New-SRRunspace.
+        $rs = Get-SRRunspace
+        if (-not $rs) { throw 'no runspace' }
         $rs.SessionStateProxy.SetVariable('SRDoc', @{ Path = $Path; Tail = $script:tailBytes })
         $ps = [powershell]::Create()
         $ps.Runspace = $rs
@@ -9369,6 +9424,9 @@ $window.Add_ContentRendered({
     # would cost a process start to save nothing and then idle behind it. See the
     # note on Start-SRScreenServer.
     try { $null = Start-SRScreenServer } catch { Write-SRLog ('screen reader: ' + $_.Exception.Message) }
+    # 🔑 AND ONE RUNSPACE READY BEFORE THE FIRST CLICK ASKS FOR IT. Queued at
+    # idle priority, so it costs the opening frames nothing; see New-SRRunspace.
+    try { Request-SRSpareRunspace } catch { }
 })
 $window.Add_Closed({
     # 🪤 ALL SEVEN, NOT FOUR. searchTimer, launchTimer and castTimer were
@@ -9398,6 +9456,9 @@ $window.Add_Closed({
     # what you opened - the whole reason this machine's conventions single out
     # orphan processes is that every one of them was somebody's backstop.
     try { Stop-SRScreenServer } catch { }
+    # 🔒 AND THE SPARE RUNSPACE, which holds a thread exactly like the ones the
+    # jobs use. It is nobody else's to close.
+    try { if ($script:spareRs) { $script:spareRs.Close(); $script:spareRs.Dispose(); $script:spareRs = $null } } catch { }
 })
 
 $null = $window.ShowDialog()

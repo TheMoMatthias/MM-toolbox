@@ -1,6 +1,6 @@
 ﻿{
-    "recordedAt":  "2026-09-05T11:26:34",
-    "spin":  9.09,
+    "recordedAt":  "2026-09-05T11:30:58",
+    "spin":  8.992,
     "note":  "ops values are ms-per-spin-ms; expected = value * spinNow. See the gate in perf-driver.ps1.",
     "ops":  {
                 "a growth tick, APPENDING the tail (now)":  1.358376,
@@ -38,6 +38,7 @@
                 "Get-TickedPlan":  1.21707,
                 "Get-Title for every conversation":  1.884456,
                 "hide the running-shells panel":  0.009343,
+                "inside: Add-ReadProse for ONE prose turn":  0.103282,
                 "inside: Compress-SRPath x100":  2.634362,
                 "inside: Get-TrackedText x100":  0.522382,
                 "inside: New-RailBlock x50":  2.571539,
