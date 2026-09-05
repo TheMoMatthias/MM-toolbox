@@ -7517,18 +7517,31 @@ function Get-RowScreenSig { param([string]$Id)
 $script:subAgents = @{}
 $SR_SubAgentTTL = 20
 
+# 🔴 THIS USED TO OPEN A TRANSCRIPT FROM INSIDE Build-Sessions, ONCE PER ROW.
+#
+# It was cached on a 20-second TTL, which sounds harmless and is not: the rows
+# are read together, so they EXPIRE together, and the next rebuild after that
+# pays the whole disk sweep at once. Audited: one rebuild in eight cost 784.7 ms
+# - and which one is a matter of when you happened to click. An unpredictable
+# stall is worse than a constant one; there is nothing the operator can learn
+# about it.
+#
+# 🔑 THE PROBE ALREADY OPENS THESE FILES, off the UI thread, for the said-lines
+# and the queue. Reading the sub-agents in the same pass costs it one more read
+# of a file it has already opened, and costs a click nothing at all. This is now
+# a pure cache read: whatever the last probe filed, or nothing.
+#
+# 🪤 IT NO LONGER REFRESHES ITSELF, so a conversation the probe has not reached
+# yet shows no agent marks rather than blocking to find out. That is the right
+# trade in this direction only - a mark that appears a probe late is a cosmetic
+# delay; a rebuild that stops for three-quarters of a second is the thing the
+# operator has been reporting for weeks.
 function Get-RowSubAgents { param($R)
     $id = "$($R.Id)"
     if (-not $id) { return @() }
     $v = $script:subAgents[$id]
-    if ($v -and ((Get-Date) - $v.At).TotalSeconds -le $SR_SubAgentTTL) { return $v.List }
-    $list = @()
-    try {
-        $j = "$($R.S.jsonl)"
-        if ($j) { $list = @(Get-SRSubAgents -JsonlPath $j) }
-    } catch { $list = @() }
-    $script:subAgents[$id] = @{ At = (Get-Date); List = $list }
-    return $list
+    if ($v) { return $v.List }
+    return @()
 }
 
 # ===========================================================================
@@ -8829,7 +8842,7 @@ $script:lastFp = $null
 # run on the dispatcher every 45 seconds.
 $script:ProbeJob = {
     . (Join-Path $SRHere '_common.ps1')
-    $out = @{ Reg = $null; Agents = @{}; Said = @{}; Queue = @{}; Ask = $null; AskFor = ''; RegStamp = '' }
+    $out = @{ Reg = $null; Agents = @{}; Said = @{}; Queue = @{}; Subs = @{}; Ask = $null; AskFor = ''; RegStamp = '' }
     try { $out.Reg = Get-SRRegistry; $out.RegStamp = Get-SRRegistryStamp } catch { }
     try { $out.Agents = Get-SRAgentStatus -Refresh } catch { }
 
@@ -8859,6 +8872,11 @@ $script:ProbeJob = {
                 if ($out.Agents[$id]) {
                     try { $out.Queue[$id] = Get-SRQueue -JsonlPath $s.jsonl } catch { }
                 }
+                # 🔑 AND THE SUB-AGENTS, HERE RATHER THAN INSIDE A REBUILD. See
+                # the note on Get-RowSubAgents: read per row on a click this was
+                # 784.7 ms every eighth rebuild, at random. The file is already
+                # open on this thread for the two reads above.
+                try { $subsOne = Get-SRSubAgents -JsonlPath $s.jsonl; $out.Subs[$id] = @($subsOne) } catch { }
             }
         }
     }
@@ -9162,6 +9180,17 @@ function Complete-LiveProbe {
     # just ticked. With unsaved work in hand, only the agent map is taken - and
     # then the ROWS ARE NOT REBOUND EITHER, because the rows must always point
     # into whichever registry $script:reg is.
+    # 🔑 THE SUB-AGENT LISTS GO IN FIRST, AND ON BOTH BRANCHES. They are a cache
+    # of their own keyed by id, not part of the model, so they do not need to
+    # travel through Update-Model - and putting them in before the rebuild below
+    # means the very next Build-Sessions draws the marks the probe just found.
+    if ($res.Subs) {
+        $subsAt = Get-Date
+        foreach ($sk in @($res.Subs.Keys)) {
+            $script:subAgents["$sk"] = @{ At = $subsAt; List = @($res.Subs[$sk]) }
+        }
+    }
+
     if (-not $script:dirty -and $res.Reg) {
         # 🪤 THE STAMP COMES WITH THE DATA. The probe read the registry in its
         # own runspace, so this window is now holding something newer than its

@@ -189,7 +189,38 @@ $SR_TextModes = @('grayscale', 'cleartype')
 #             better for long prose; leaves the right of a wide pane empty.
 $SR_ReadWidths = @('full', 'measured')
 
+# 🔴 IT WAS RE-READING AND RE-PARSING 15 KB ON EVERY CALL, INCLUDING ON CLICKS.
+# Audited: the morning-compact button spends 3.45 of its 5.05 ms in here, and it
+# is far from the only caller - the fold carets, the settings sheet and the send
+# panel all reach for the config on a gesture. Nothing about it changes between
+# two presses.
+#
+# Stamped on length + last-write, which is the pattern Get-SRLastSaid and
+# Get-SRQueue already use in this file: the cache is dropped the moment the file
+# on disk differs, so it cannot outlive the truth behind it.
+#
+# 🔒 SAFE TO HAND THE SAME OBJECT BACK because nothing mutates it.
+# Save-SRConfigValue does its OWN Get-Content/ConvertFrom-Json, edits that copy
+# and writes it - it never touches what this returns - and the write moves the
+# stamp, so the next read re-parses anyway. Checked against all nine call sites.
+$script:SR_ConfigCache = $null
+$script:SR_ConfigStamp = ''
+
 function Get-SRConfig {
+    $stamp = ''
+    try {
+        $cfi = Get-Item -LiteralPath $SR_ConfigPath -ErrorAction Stop
+        $stamp = '{0}|{1}' -f $cfi.Length, $cfi.LastWriteTimeUtc.Ticks
+    } catch { }
+    if ($stamp -and $script:SR_ConfigCache -and $script:SR_ConfigStamp -eq $stamp) {
+        return $script:SR_ConfigCache
+    }
+    $cfg = Get-SRConfigRead
+    if ($stamp) { $script:SR_ConfigCache = $cfg; $script:SR_ConfigStamp = $stamp }
+    return $cfg
+}
+
+function Get-SRConfigRead {
     if (-not (Test-Path -LiteralPath $SR_ConfigPath)) { throw "config not found: $SR_ConfigPath" }
     # 🪤 SAY WHAT TO DO ABOUT IT. Get-SRRegistry has caught its own parse
     # failure and named the fix since it was written; this threw ConvertFrom-Json's
