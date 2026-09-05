@@ -885,6 +885,15 @@ Pump-Px
 $null = Measure-Px 'the text-size control (rebuilds the pane at a new size)' `
     { $ui.PaneZoom.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))) } `
     -Settled $pxDocHome -Runs 4
+# 🔑 AND WHAT THE 200 ms OF HANDLER IN IT ACTUALLY IS. Step-Zoom does three
+# things before it returns - rewrite the type scale into the window resources,
+# force the sessions list to regenerate, and rebuild the document - and the
+# whole-control number cannot say which. Each is timed on its own here, in the
+# same run, so the work order names a line rather than a function.
+$null = Measure-Px '  of which: Set-SRTypeScale (rewrites the window type resources)' `
+    { Set-SRTypeScale -Percent $script:Zoom } -Runs 5
+$null = Measure-Px '  of which: SessionList.Items.Refresh() (regenerate every row)' `
+    { $ui.SessionList.Items.Refresh() } -Runs 5
 
 # ── THE SETTINGS PANEL ──────────────────────────────────────────────────────
 $null = Measure-Px 'open the settings panel' `
@@ -1404,6 +1413,19 @@ if ($pxIdleSecs -gt 0) {
     # and it is worth knowing which.
     [SRKeyProbe]::Start($window.Dispatcher, 40)
 
+    # 🔑 AND A THIRD READING, BECAUSE THE FIRST TWO DISAGREE. Summed pump time
+    # says the thread is busy 87,5% of an idle run; a 13,8 ms median keystroke
+    # says it is not. Process CPU time can separate BUSY from WAITING, which is
+    # exactly what the pump timing cannot do.
+    #
+    # 🪤 IT IS THE WHOLE PROCESS, NOT THE UI THREAD. The vitals sweep, the quiet
+    # check and the ask probe all run on their own threads inside this process,
+    # so this OVER-counts the UI thread by however much they use. It is an upper
+    # bound, and an upper bound is enough to kill the 87,5% claim if it comes in
+    # low. Reported as what it is.
+    $pxProc = [System.Diagnostics.Process]::GetCurrentProcess()
+    $pxCpuWas = $pxProc.TotalProcessorTime
+
     $pxGaps = New-Object System.Collections.Generic.List[double]
     $pxWatch = [Diagnostics.Stopwatch]::StartNew()
     while ($pxWatch.Elapsed.TotalSeconds -lt $pxIdleSecs) {
@@ -1459,6 +1481,9 @@ if ($pxIdleSecs -gt 0) {
     foreach ($pxGg2 in $pxG) { if ($pxGg2 -gt 50) { $pxLongMs += $pxGg2 } }
     Note ("{0:N0} ms of the {1:N0} ms went into bursts longer than 50 ms - measured; what fraction of those is work rather than waiting is NOT established." -f `
           $pxLongMs, $pxWall)
+    $pxCpuMs = ($pxProc.TotalProcessorTime - $pxCpuWas).TotalMilliseconds
+    Note ("the WHOLE PROCESS - every thread, sweeps and probes included - used {0:N0} ms of CPU in that {1:N0} ms." -f $pxCpuMs, $pxWall)
+    Note ("summed pump time was {0:N0} ms. Where the CPU figure is the smaller of the two, the pump was WAITING, not working." -f $pxBusy)
     foreach ($pxK in @($pxTally.Keys | Sort-Object { -$pxTally[$_].Ms })) {
         if (-not $pxTally[$pxK].N) { continue }
         Note ("  {0,-22} {1,5} call(s) {2,8:N0} ms total {3,7:N1} ms each" -f `
