@@ -74,7 +74,7 @@ param(
     # `shot` is the odd one out: it draws the real window to PNG and asserts
     # almost nothing. It never runs in a full sweep -- only when asked for by
     # name -- because its output is something to LOOK at, not something to pass.
-    [ValidateSet('state', 'gui2', 'live', 'jump', 'relay', 'shot', 'design', 'type', 'perf', 'app')]
+    [ValidateSet('state', 'gui2', 'live', 'jump', 'relay', 'shot', 'design', 'type', 'perf', 'pixels', 'app')]
     [string]$Only,
     [switch]$NoGui,
 
@@ -346,6 +346,29 @@ if (-not $Only -or $Only -eq 'perf') {
     Remove-Item Env:\SR_PERF_SOFT -ErrorAction SilentlyContinue
     $out | ForEach-Object { Write-Host $_ }
     Record 'perf' $LASTEXITCODE @($out)
+}
+
+# --- pixels: what a gesture costs CLICK TO PIXELS, not handler-to-return -----
+# 🔴 IT RUNS IN THE SWEEP AND IT CAN FAIL IT, and that is the point of wiring it
+# rather than leaving it as a thing somebody remembers to run. A suite that
+# exists and is never run is the same defect in a new place.
+#
+# 🪤 IT HAS ITS OWN RUNNER, so this shells out rather than splicing. pixels-run
+# needs parameters this file has no way to forward - which gesture, how much
+# delay to inject and where - and the spliced script cannot take parameters of
+# its own because the GUI's param() block is the one at the top. Its runner also
+# hashes lib\sessions-window.ps1 and _common.ps1 either side and reports
+# INCONCLUSIVE (exit 2) if either moved mid-run, which this file's other suites
+# do not do and which matters while several lanes are editing them.
+#
+# Exit 2 is INCONCLUSIVE and the summary already renders it as such: it means
+# the source moved, the baseline is missing, or a gesture measured nothing.
+if (-not $Only -or $Only -eq 'pixels') {
+    Write-Host "`n=== pixels (every gesture, click to pixels) ===" -ForegroundColor Cyan
+    $pxRunner = Join-Path $here 'pixels-run.ps1'
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $pxRunner -Runs 3 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    Record 'pixels' $LASTEXITCODE @($out)
 }
 
 # --- jump: needs a desktop and the operator's real terminals -----------------

@@ -1,6 +1,7 @@
-﻿{
+{
     "recordedAt":  "2026-09-05T14:07:08",
     "spin":  9.059,
+    "wpf":  89.4,
     "note":  "ops values are ms-per-spin-ms; expected = value * spinNow. See the gate in perf-driver.ps1.",
     "ops":  {
                 "a growth tick, APPENDING the tail (now)":  1.458885,

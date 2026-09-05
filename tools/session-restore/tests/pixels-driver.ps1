@@ -87,6 +87,16 @@
 #      clean runs: its own noise is wider than the fault. It is printed and
 #      asserted on by nothing until that is fixed.
 #
+# 🪤 AND ONE FIGURE FROM THIS FILE WAS QUOTED WRONG BY ITS OWN AUTHOR. An
+# earlier version of this header reported the optimal-paragraph line breaker as
+# "3,7x to 4,8x", full stop. A second lane measured 1,23-1,35x and was right to
+# challenge it. A ratio is NOT a portable quantity: anything common to both
+# halves of an A/B sits in the numerator and the denominator and drags it toward
+# 1, so two honest brackets give two honest ratios. The DELTAS agree (159, 125,
+# 74, 25 ms across four measurements on documents of different sizes) and the
+# delta is the physical saving. Quote deltas in work orders; quote a ratio only
+# beside the method that produced it. Full reconciliation in the A/B block.
+#
 # 🪤 THE CLEAN RUNS SPREAD 904-1001 ms ON IDENTICAL SOURCE, so a single sample
 # resolves about 100 ms on this gesture. Anything smaller than that needs the
 # deliberate A/B, not this table.
@@ -369,7 +379,16 @@ function Measure-Px {
           [scriptblock]$Before  = $null,      # put the surface back in the cold state
           [int]$Runs = 0,
           [int]$TimeoutMs = 15000,
-          [string]$Watch = '')                # a note about what should have changed
+          [string]$Watch = '',                # a note about what should have changed
+          # 🔑 WHICH LAYOUT THE `laid` STAMP PAYS FOR, and it is load-bearing
+          # rather than a convenience. 'window' is two full Measure/Arrange
+          # passes over the whole tree, which is what a gesture that changes a
+          # column width really costs. 'pane' is one UpdateLayout of the reading
+          # pane alone, which is what isolates the document. Quoting a number
+          # from one as if it came from the other is how two lanes end up with
+          # a 3x disagreement about the same property - see the reconciliation
+          # block further down.
+          [string]$Lay = 'window')
 
     if ($pxOnly -and $Name -notlike ("*" + $pxOnly + "*")) { return $null }
     if ($Runs -le 0) { $Runs = $pxRuns }
@@ -411,7 +430,21 @@ function Measure-Px {
         if (-not $pxHit) { $pxTimedOut++ }
         $pxSettle = $pxSw.Elapsed.TotalMilliseconds
 
-        Lay-Px
+        switch ($Lay) {
+            'pane' {
+                # One pass over the reading pane only, at the size it is arranged
+                # to on the work surface. perf-driver's LayPane, same reasoning:
+                # swapping a document does not re-arrange the session list, so
+                # charging the document with the window's layout is a lie.
+                $pxPw = [Math]::Max(300.0, $ui.PaneDoc.ActualWidth)
+                $pxPh = [Math]::Max(300.0, $ui.PaneDoc.ActualHeight)
+                $ui.PaneDoc.Measure((New-Object System.Windows.Size $pxPw, $pxPh))
+                $ui.PaneDoc.Arrange((New-Object System.Windows.Rect 0, 0, $pxPw, $pxPh))
+                $ui.PaneDoc.UpdateLayout()
+            }
+            'none'  { }
+            default { Lay-Px }
+        }
         $pxLaid = $pxSw.Elapsed.TotalMilliseconds
 
         Draw-Px
@@ -1183,10 +1216,59 @@ if ($ui.PaneDoc.Document) {
         $pxPp = $pxD.PagePadding
         $pxD.PagePadding = New-Object System.Windows.Thickness $pxPp.Left, $pxPp.Top, ($pxPp.Right + 1.0), $pxPp.Bottom
     }
-    $pxOn = Measure-Px 'A/B: re-flow the whole document, optimal paragraph ON (what ships)' `
+    # ── THE RECONCILIATION ──────────────────────────────────────────────────
+    # 🔴 TWO LANES MEASURED THIS PROPERTY AND GOT 3,7-4,8x AND 1,23-1,35x. I
+    # published the first. Rather than defend it, both methods run here, in one
+    # process, over one document, so the disagreement resolves on numbers.
+    #
+    # What is NOT the difference: construction. My bracket never built a
+    # document - it nudges PagePadding on one that is already built. That was
+    # the other lane's hypothesis and it is wrong.
+    #
+    # What IS different: WHICH LAYOUT the stamp pays for. Mine ran Lay-Px - two
+    # full Measure/Arrange/UpdateLayout passes over the WHOLE window. The other
+    # lane lays out the viewer alone, once. If the optimal-paragraph formatter
+    # does not fully cache between two passes, ON pays twice where OFF's second
+    # pass is nearly free, and my ratio is inflated by construction of the
+    # instrument rather than of the document.
+    #
+    # Both are reported. Whichever answers the question being asked is the one
+    # to quote, and the question decides: "what does a splitter drag cost"
+    # wants the window figure, "what does the property cost" wants the pane one.
+    #
+    # 🔑 AND THE ANSWER, MEASURED 2026-09-05 - THE LAYOUT SCOPE IS NOT IT.
+    # Same document, same run: whole-window 38,5 -> 20,3 (1,90x), pane-only
+    # 41,9 -> 17,2 (2,43x). Pane-only is the HIGHER ratio, so my two full passes
+    # were not inflating anything. The hypothesis I went in with was wrong too.
+    #
+    # WHAT ACTUALLY EXPLAINS IT: the ratio is not a portable quantity. The other
+    # lane's OFF readings are 321 and 355 ms where mine are 17-60; its bracket
+    # carries several hundred milliseconds that ON and OFF both pay, and a
+    # constant common to both halves lands in the numerator AND the denominator
+    # and drags any ratio toward 1. Compare the DELTAS instead and the two lanes
+    # agree to within noise on the same order of magnitude:
+    #
+    #     this lane, 8,9 screens        219 -> 60      delta 159 ms
+    #     this lane, 2,8 screens         42 -> 17      delta  25 ms
+    #     other lane, 40 blocks       479,7 -> 355,0   delta 125 ms
+    #     other lane, 7 large blocks  394,7 -> 321,0   delta  74 ms
+    #
+    # There was never a factual disagreement. There was a ratio quoted without
+    # its denominator. The delta is the physical saving and it is what belongs
+    # in a work order; the ratio belongs only next to the method that produced
+    # it. Recorded here so the next reader does not re-run this argument.
+    $pxOn = Measure-Px 'A/B window: re-flow, optimal paragraph ON (2 full-window layout passes)' `
         { Reflow-Px } -Before { $ui.PaneDoc.Document.IsOptimalParagraphEnabled = $true; Pump-Px } -Runs 7
-    $pxOff = Measure-Px 'A/B: re-flow the whole document, optimal paragraph OFF' `
+    $pxOff = Measure-Px 'A/B window: re-flow, optimal paragraph OFF' `
         { Reflow-Px } -Before { $ui.PaneDoc.Document.IsOptimalParagraphEnabled = $false; Pump-Px } -Runs 7
+    $pxOnP = Measure-Px 'A/B pane: re-flow, optimal paragraph ON (pane only, one pass)' `
+        { Reflow-Px } -Before { $ui.PaneDoc.Document.IsOptimalParagraphEnabled = $true; Pump-Px } -Runs 7 -Lay 'pane'
+    $pxOffP = Measure-Px 'A/B pane: re-flow, optimal paragraph OFF' `
+        { Reflow-Px } -Before { $ui.PaneDoc.Document.IsOptimalParagraphEnabled = $false; Pump-Px } -Runs 7 -Lay 'pane'
+    if ($pxOnP -and $pxOffP -and $pxOffP.Laid -gt 0) {
+        Note ("PANE-ONLY, ONE PASS:      {0,6:N1} -> {1,6:N1} ms   delta {2,6:N1} ms   ratio {3:N2}x" -f `
+              $pxOnP.Laid, $pxOffP.Laid, ($pxOnP.Laid - $pxOffP.Laid), ($pxOnP.Laid / $pxOffP.Laid))
+    }
     $ui.PaneDoc.Document.IsOptimalParagraphEnabled = $pxOptWas
     Pump-Px
     if ($pxOn -and $pxOff) {
@@ -1194,8 +1276,11 @@ if ($ui.PaneDoc.Document) {
         Note ("the A/B ran over {0:N0} px of document ({1:N1} screens). The saving scales with this - do not compare the ratio between runs without it." -f `
               $pxExtent, $(if ($pxSv2 -and $pxSv2.ViewportHeight -gt 0) { $pxExtent / $pxSv2.ViewportHeight } else { 0 }))
         if ($pxSave -gt 5) {
-            Note ("the optimal-paragraph line breaker costs {0:N0} ms of every re-flow ({1:N0} -> {2:N0} ms, {3:N2}x). Every splitter drag frame, every window resize and every text-size change pays it." -f `
-                  $pxSave, $pxOn.Laid, $pxOff.Laid, ($pxOn.Laid / [Math]::Max($pxOff.Laid, 0.001)))
+            Note ("WHOLE-WINDOW, TWO PASSES: {0,6:N1} -> {1,6:N1} ms   delta {2,6:N1} ms   ratio {3:N2}x" -f `
+                  $pxOn.Laid, $pxOff.Laid, $pxSave, ($pxOn.Laid / [Math]::Max($pxOff.Laid, 0.001)))
+            Note  'QUOTE THE DELTA, NOT THE RATIO. The ratio depends on what else is in the bracket - anything'
+            Note  'common to both halves lands in numerator AND denominator and pulls it toward 1. That is the'
+            Note  'whole of the 3,7x vs 1,3x disagreement between the two lanes; see the block above this one.'
         } else {
             Note ("the line breaker is NOT the cost: {0:N0} ms on vs {1:N0} ms off. That hypothesis is dead - the re-flow is expensive for another reason." -f `
                   $pxOn.Laid, $pxOff.Laid)

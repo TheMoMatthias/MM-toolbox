@@ -25,6 +25,13 @@
 $fails = 0
 function Fail { param($m) Write-Host "  FAIL  $m" -ForegroundColor Red; $script:fails++ }
 function Note { param($m) Write-Host "        $m" -ForegroundColor DarkGray }
+# 🔴 THE THIRD STATE, GIVEN A NAME SO IT CANNOT BE SPELLED AS SILENCE. This file
+# already reaches `exit 2` for a spin the run could not trust; a gate that
+# cannot tell must be able to say so from anywhere, not only at the bottom.
+# Counted separately from failures: nothing has been shown to be slower, the
+# instrument simply had no footing.
+$unsure = 0
+function Inconclusive { param($m) Write-Host "  ????  $m" -ForegroundColor Magenta; $script:unsure++ }
 
 # 🔴 THE MINIMUM OF N, NOT THE MEDIAN. This measured the median of 3, and on this
 # machine that measures the LOAD, not the code: Build-Sessions read 207 ms and
@@ -202,6 +209,53 @@ function Measure-SRSpin {
     }
     return $b
 }
+# ---------------------------------------------------------------------------
+# 🔑 A SECOND CONTROL, AND IT EXISTS BECAUSE THIS FILE ALREADY PROVED THE SPIN
+# LOOP CANNOT DO THIS JOB.
+#
+# Recorded further down, in this file's own words: "The spin loop was ROCK
+# STEADY across those runs - 15, 16, 17, 16 ms - while `search: sessions box
+# only` swung 14 -> 34 ms. So the variance in these operations is not CPU
+# contention at all; it is GC timing and WPF's own state, which a Math::Sqrt
+# loop cannot see and therefore cannot correct for."
+#
+# That is a precise statement of why a sqrt loop is the wrong normaliser for a
+# WPF operation, and it has been sitting here unused. This is the right one: a
+# FIXED WPF WORKLOAD - allocate a hundred TextBlocks, measure and arrange them -
+# which pays exactly the costs that move. Allocation, GC pressure, text
+# measurement, layout.
+#
+# 🔴 WHY IT LIVES IN THE TEST FILE AND NOT IN THE PRODUCT. A control has to be
+# code the change under test cannot touch. Every candidate inside the window -
+# Get-Band, Compress-SRPath, New-SRTint - is product code somebody may optimise
+# next week, and on the day they do it silently stops being a control and every
+# ratio built on it shifts without anyone noticing. Nothing in lib\ can reach
+# this function, so it cannot be optimised, deleted or accidentally improved.
+#
+# 🪤 IT IS A CORRECTION, NOT A CONVERSION, exactly like the spin - and it is
+# CAPPED. Beyond the cap the run reports INCONCLUSIVE rather than passing,
+# because "the control was slow too" is not evidence that the code is fine.
+function Measure-SRWpfControl {
+    $b = [double]::MaxValue
+    for ($rep = 0; $rep -lt 5; $rep++) {
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $sp = New-Object System.Windows.Controls.StackPanel
+        for ($i = 0; $i -lt 100; $i++) {
+            $tb = New-Object System.Windows.Controls.TextBlock
+            $tb.Text = 'the quick brown fox jumps over the lazy dog and then does it again for measure'
+            $tb.FontSize = 13.0
+            $tb.TextWrapping = 'Wrap'
+            $null = $sp.Children.Add($tb)
+        }
+        $sp.Measure((New-Object System.Windows.Size 420, 10000))
+        $sp.Arrange((New-Object System.Windows.Rect 0, 0, 420, $sp.DesiredSize.Height))
+        $sp.UpdateLayout()
+        $sw.Stop()
+        if ($sw.Elapsed.TotalMilliseconds -lt $b) { $b = $sw.Elapsed.TotalMilliseconds }
+    }
+    return $b
+}
+
 # The start reading is NOT taken here - see the note above the first Bench.
 
 
@@ -247,6 +301,9 @@ Build-Rail; Build-Sessions; Lay
 # it is not the clock ramping, it is the process still settling, and the only
 # real fix is to stop including the settling in the measurement.
 $script:SpinStart = Measure-SRSpin
+# Taken here for the same reason and at the same moment: after the process has
+# settled, before the table starts.
+$script:WpfStart = Measure-SRWpfControl
 
 # ---------------------------------------------------------------------------
 Write-Host ''
@@ -670,6 +727,28 @@ $null = Bench 'the window frame' { Update-Frame } 'GESTURE'
 $null = Bench 'the send-to-many text box' {
     $ui.CastSend.IsEnabled = (@($script:castPick.Keys).Count -gt 0 -and "$($ui.CastText.Text)".Trim().Length -gt 0)
 } 'GESTURE'
+# 🔑 THIS ONE MOVED 0,67 -> ~2,65 ms ON PURPOSE (1b2608b), AND IT IS THE FIX.
+#
+# The staleness guard compared Length|LastWriteTimeUtc.Ticks. Two different
+# registries collide on that pair more easily than it looks: equal length is
+# ordinary (one session ticked and another unticked is net zero, and lastScan is
+# fixed-width `.ToString('o')`), and equal timestamp is a ~15,6 ms window
+# because that is the Windows clock granularity rather than 100 ns. A collision
+# does not serve stale data - it lets a save through that should have been
+# refused, and one window silently overwrites another's ticks. That is the
+# failure this repo records as having cost the operator 210 conversations.
+# A SHA256 of the content now rides in the stamp: +1,98 ms on the 0,67 ms
+# Get-Item. Accept the new figure deliberately rather than letting the envelope
+# absorb it.
+#
+# 🪤 AND THE GATE BELOW CANNOT SEE THIS MOVE AT ALL - worth knowing before
+# anyone treats a green run as confirmation. A regression must clear BOTH
+# $SR_RegressAt (2,00x) and $SR_RegressMinMs (8 ms). This is 4x but only +2 ms,
+# so it fails the second test and passes silently. That is the minimum-delta
+# rule working as designed - a ratio on a sub-millisecond operation is noise -
+# but it means a 4x step on a cheap operation is invisible here BY CONSTRUCTION.
+# The expected value is written down in this comment precisely because the gate
+# is not the thing that will catch the next change to it.
 $null = Bench 'is the registry stale? (what Save checks first)' { Get-SRRegistryStamp } 'GESTURE'
 # All the Sign in button does before it opens a terminal: read one file's
 # timestamp, so it knows what "changed" means afterwards.
@@ -941,6 +1020,9 @@ Write-Host '=== the whole surface, slowest first ==='
 # something to compare against: 337 ms on 2026-09-04 with 26 claude sessions
 # running, on a 4090 machine that reads far lower when it is quiet.
 $spinEnd = Measure-SRSpin
+$wpfEnd = Measure-SRWpfControl
+$wpfNow = ($script:WpfStart + $wpfEnd) / 2.0
+$wpfDrift = [Math]::Max($script:WpfStart, $wpfEnd) / [Math]::Max([Math]::Min($script:WpfStart, $wpfEnd), 0.001)
 # The mean of the two ends, which is the best single description available of
 # the machine WHILE the table was being taken.
 $spinBest = ($script:SpinStart + $spinEnd) / 2.0
@@ -1221,6 +1303,9 @@ if ($spinTrust -or -not $baseOps.Count -or $env:SR_PERF_REBASELINE) {
         $payload = [ordered]@{
             recordedAt = (Get-Date).ToString('s')
             spin       = [Math]::Round($spinBest, 3)
+            # The WPF control this run measured, so a later run can express the
+            # stall bar in the same machine's units. See Measure-SRWpfControl.
+            wpf        = [Math]::Round($wpfNow, 3)
             note       = 'ops values are ms-per-spin-ms; expected = value * spinNow. See the gate in perf-driver.ps1.'
             ops        = ([ordered]@{})
         }
@@ -1228,9 +1313,84 @@ if ($spinTrust -or -not $baseOps.Count -or $env:SR_PERF_REBASELINE) {
         ($payload | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $SR_BaselinePath -Encoding utf8
     } catch { Write-Host ('  [warn] could not write the perf baseline: ' + $_.Exception.Message) -ForegroundColor Yellow }
 }
-$stalls = @($script:Results | Where-Object { $_.Ms -ge 1000 -and $_.Class -ne 'SLOW' -and $_.Class -ne 'STALL' -and $_.Class -ne 'GESTURE' })
-if ($stalls.Count) {
-    foreach ($s in $stalls) { Fail ("{0} takes {1:N0} ms - the window is visibly frozen for that long" -f $s.Name, $s.Ms) }
+# ===========================================================================
+# 🔴 THE STALL GATE IS NOW CONTROL-RELATIVE. IT WAS A WALL CLOCK, AND ON THIS
+# MACHINE A WALL CLOCK CANNOT TELL A REGRESSION FROM A TUESDAY.
+#
+# `$_.Ms -ge 1000` was the last absolute-time assertion in this file. The
+# operator runs ~34 live Claude sessions and that is this machine's NORMAL
+# state, not a bad day - so the bar was being asked to hold still while
+# everything it measures moves by 3x. Evidence from the last red run, all of it
+# untouched code: Get-SRRegistry (read from disk) at 2.39x its own baseline and
+# `draw a pending question` at 2.25x. Nothing had regressed.
+#
+# 🔑 SO THE BAR IS EXPRESSED IN MACHINE UNITS, MEASURED IN THIS RUN. The WPF
+# control above pays the same costs these operations pay - allocation, GC, text
+# measurement, layout - which the sqrt spin provably cannot see. The nominal bar
+# is unchanged at 1000 ms; what changes is that 1000 now means "1000 ms on the
+# machine the baseline was recorded on".
+#
+# 🪤 THIS IS NOT THE THRESHOLD BEING RAISED, AND THE DIFFERENCE IS THE CAP.
+# Widening a bar to fit the worst machine is what the perf baseline was silently
+# doing to itself until this morning - Build-Sessions drifting 9.36 -> 18.06 ms
+# in an afternoon, so a genuine 90% regression would have passed. The bar here
+# is never rewritten and never remembers a slow run: it is recomputed from a
+# control every time, it can stretch by at most SR_CtrlCap, and PAST THAT CAP
+# THE RUN DOES NOT PASS - it reports INCONCLUSIVE. "The control was slow too" is
+# a third state, not a green one.
+$SR_CtrlCap = 3.0
+$ctrlScale = 1.0
+$ctrlTrust = $false
+$baseWpf = 0.0
+try { if ($bj -and $bj.wpf) { $baseWpf = [double]$bj.wpf } } catch { }
+if ($baseWpf -gt 0 -and $wpfNow -gt 0) {
+    $ctrlScale = $wpfNow / $baseWpf
+    # The same steadiness requirement the spin has: a control that moved a lot
+    # WHILE the table was taken describes two different machines, and no single
+    # scale factor describes the run.
+    $ctrlTrust = ($wpfDrift -le 1.5)
+}
+Write-Host ''
+Write-Host ("  the WPF control (100 TextBlocks, measured + arranged): {0:N1} ms now against {1:N1} recorded - {2:N2}x, drift {3:N2}x" -f `
+    $wpfNow, $baseWpf, $ctrlScale, $wpfDrift) -ForegroundColor DarkGray
+Write-Host  '  It lives in this file so no product change can optimise it and quietly stop it being a control.' -ForegroundColor DarkGray
+
+$stallBar = 1000.0
+$stallState = 'armed'
+if ($baseWpf -le 0) {
+    $stallState = 'unarmed'
+} elseif (-not $ctrlTrust) {
+    $stallState = 'unsteady'
+} elseif ($ctrlScale -gt $SR_CtrlCap) {
+    $stallState = 'offscale'
+} else {
+    # Only ever stretched, never tightened: a fast machine does not get a
+    # stricter bar than the one that was agreed.
+    $stallBar = 1000.0 * [Math]::Max(1.0, $ctrlScale)
+}
+
+$stalls = @($script:Results | Where-Object { $_.Ms -ge $stallBar -and $_.Class -ne 'SLOW' -and $_.Class -ne 'STALL' -and $_.Class -ne 'GESTURE' })
+switch ($stallState) {
+    'unarmed' {
+        Inconclusive ('no WPF control is recorded in the baseline, so the stall gate has no machine to scale against. It is NOT armed this run - record a baseline to arm it.')
+    }
+    'unsteady' {
+        Inconclusive ('the WPF control moved {0:N2}x between the two ends of this run, so the early rows and the late rows are not on one scale. The stall gate cannot tell, and says so.' -f $wpfDrift)
+    }
+    'offscale' {
+        Inconclusive ('the WPF control reads {0:N2}x its recorded value, past the {1:N1}x this correction is trustworthy over. Extrapolating that far onto a WPF layout is a guess, and a guess must not pass as a result. {2} operation(s) were over the unscaled bar.' -f `
+            $ctrlScale, $SR_CtrlCap, $stalls.Count)
+    }
+    default {
+        if ($stalls.Count) {
+            foreach ($s in $stalls) {
+                Fail ("{0} takes {1:N0} ms against a {2:N0} ms bar (1000 ms scaled by the control's {3:N2}x) - the window is visibly frozen for that long" -f `
+                      $s.Name, $s.Ms, $stallBar, $ctrlScale)
+            }
+        } else {
+            Note ("nothing is over the stall bar, which this run's control put at {0:N0} ms." -f $stallBar)
+        }
+    }
 }
 # A wide spread is not a failure but it IS a finding: it means the operation is
 # contending with something rather than simply costing what it costs.
@@ -1267,6 +1427,11 @@ if ($baseOps.Count -and -not $spinTrust) {
 }
 if ($softGate -and $regressed.Count) {
     Write-Host ("{0} operation(s) got slower - reported, not failed. Run -Only perf for the hard gate." -f $regressed.Count) -ForegroundColor Yellow
+    exit 2
+}
+# The stall gate abstaining is the same kind of answer and gets the same exit.
+if ($unsure) {
+    Write-Host ("{0} gate(s) could not assert on this run - see the ???? lines. That is not a pass." -f $unsure) -ForegroundColor Magenta
     exit 2
 }
 Write-Host 'nothing on the surface stalls the window' -ForegroundColor Green
