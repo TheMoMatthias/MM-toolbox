@@ -1,0 +1,28 @@
+  File set: millwright/board.py, millwright/boardcmd.py, millwright/proofs/test_board.py (new) + the board subparser
+  block in millwright/cli.py. git diff --stat ac0fd05..HEAD = 4 files, +1469. Nothing else.
+
+  Three design points worth the lead's attention before leg b2 builds gates on this:
+
+  1. owned: is not read as a schedule. D3 says repair-scheduled comes from an agenda item carrying repairs: F-nnn; the
+     brief's G1 shorthand said "when owned". I implemented D3 literally — every one of this week's eight findings
+     carries an owner, so reading the disposition as a schedule is exactly what hid them. That is what makes the
+     acceptance list fire.
+  2. Findings carry no timestamp. agenda.LedgerRow drops the found by cell the date lives in. Rather than regex a date
+     out of prose (as likely to match a date the finding talks about), "oldest first" falls back to the id number — the
+     filing order of an append-only register. Stated in _age_key; if b3 wants real ruling latency (M-B1), that cell
+     needs surfacing in read_findings.
+  3. board is not in selftest.READERS — that registry gates three families I don't own, and its parity guard derives
+     families from its own keys, so a new family neither reddens nor gets covered. board show --selftest builds
+     selftest.Verdict over selftest.gut itself, and boardcmd.gate() guards the plain path. If b2 wants the board inside
+     the shared registry, that is a one-line edit to a file this lane didn't own.
+
+  /remote-control is active · Continue here, on your phone, or at
+  https://claude.ai/code/session_REDACTEDFORFIXTURE
+
+─────────────────────────────────────────────────────────────────────────────────── Lane eval1-b1 board implementation ─
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Model: Opus 5 | [█████░░░░░░░░░░░░░░░░░░░░░░░░░░░] 169k/1.0M (17%) | ⎇ wip/eval1-b1 | (+0,-0)                    /rc
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+
+

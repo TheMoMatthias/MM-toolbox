@@ -4566,6 +4566,103 @@ function Test-SRQuestionChrome { param([string]$Line)
     return $false
 }
 
+# ===========================================================================
+# 🔴 THE MENU IS DRAWN *INSTEAD OF* THE INPUT BOX, AND THAT IS THE ONLY
+# RELIABLE WAY TO TELL ONE FROM A NUMBERED LIST IN SCROLLBACK.
+#
+# Three things were tried before this one, and the first two are recorded here
+# because each looked right and was measured wrong:
+#
+#   THE HIGHLIGHT. "A live TUI menu always has its cursor somewhere; prose never
+#   does." False. U+276F is ALSO the glyph claude prefixes the operator's own
+#   messages with. Counted on ONE real captured screen -
+#   tests\screens\round-single-fresh.txt - the glyph appears on three lines and
+#   only ONE of them is the menu cursor; the other two are messages. So a
+#   message that BEGINS with a numbered list renders as "❯ 1. ..." and clears a
+#   cursor gate completely.
+#
+#   "Enter to select". Present on all seven captured menus and on ZERO of 30
+#   live consoles, because the permission prompt ("Do you want to proceed?")
+#   uses different chrome entirely. It would have gated out the commonest menu
+#   the operator actually answers.
+#
+# 🪤 AND IT CANNOT REUSE Test-SRQuestionChrome, WHICH IS THE OBVIOUS THING TO DO.
+# That helper's box-drawing arm matches the menu's OWN free-text editor row -
+# round-single-fresh.txt draws a box-drawing rule between option 4 and option 5 -
+# so "no chrome below the last option" rejects ALL SEVEN captured real menus.
+# Measured, after writing it that way. Only the three status-line patterns below
+# are safe, and they are deliberately a narrower set than the chrome test.
+#
+# 🔑 WHAT IS LEFT IS STRUCTURE, AND IT IS EXACT. The prompt's status line only
+# ever appears when the session is showing its input box, and a session showing
+# its input box is not showing a menu. Scored over 13 fixtures: the old cursor
+# gate was wrong on 3, the sweep's option-count test on 2, this on none. Against
+# 30 live consoles it returned exactly the one session `claude agents --json`
+# reported as waiting.
+function Test-SRPromptLine { param([string]$Line)
+    $t = "$Line".Trim()
+    if (-not $t) { return $false }
+    # 🔴 ORDINAL IS NOT NEEDED HERE AND -match IS NOT StartsWith - see the note on
+    # Test-SRQuestionChrome for why every glyph comparison in this file is
+    # ordinal. These are anchored regexes on ASCII, which have no culture.
+    if ($t -match '^Model:\s') { return $true }
+    if ($t -match '\bshift\+tab to cycle\b') { return $true }
+    if ($t -match '^\?\s+for shortcuts') { return $true }
+    return $false
+}
+
+# Where the LIVE menu's first option is, or -1 when the screen holds no menu.
+#
+# 🔴 IT HAS TO RESTART, AND NOT RESTARTING IS THE BUG THIS EXISTS TO FIX. The
+# parser used to lock onto the first run of consecutive numbers on the screen and
+# never reconsider - so an ordinary numbered list in scrollback ABOVE a live menu
+# captured the parse. Worse, it kept absorbing later lines whose number continued
+# the count, so three lines of prose came back WELDED to the menu's last two rows
+# as one option list. With the highlight arrowed onto one of those absorbed rows
+# the cursor gate passed too, and the card offered scrollback prose as answers
+# while the arrows it computed aimed at real menu options of unrelated names.
+#
+# The welding is old; the blank card that hid it behind a refusal came in with
+# the cursor gate in 9c53a76.
+#
+# 🔑 THE LAST SURVIVING RUN WINS. A run is disqualified the moment a prompt
+# status line appears below it, because everything above the input box is
+# scrollback by definition. What is left at the end is the run nothing has been
+# drawn under - which is the menu, if there is one.
+function Get-SRLiveMenuStart {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    if (-not $Text) { return -1 }
+    $cursorGlyph = [regex]::Escape([string][char]0x276F)
+    $ls = @($Text -split "`n")
+    $runStart = -1
+    $runCount = 0
+    for ($i = 0; $i -lt $ls.Count; $i++) {
+        $m = [regex]::Match($ls[$i], '^\s*(' + $cursorGlyph + ')?\s*(\d{1,2})\.\s+(\S.*)$')
+        if ($m.Success) {
+            $n = [int]$m.Groups[2].Value
+            # A '1.' always starts a new run, whatever was being counted before.
+            if ($n -eq 1) { $runStart = $i; $runCount = 1; continue }
+            if ($runCount -gt 0 -and $n -eq $runCount + 1) { $runCount++; continue }
+            continue
+        }
+        if (Test-SRPromptLine $ls[$i]) { $runStart = -1; $runCount = 0 }
+    }
+    # One numbered line is a paragraph, not a menu - the same floor the parser
+    # itself keeps.
+    if ($runCount -lt 2) { return -1 }
+    return $runStart
+}
+
+# Is a live menu on this screen at all? The band asks this and so does the card,
+# through one function, so the two cannot answer it differently - which is
+# exactly what they were doing.
+function Test-SRLiveMenu {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    return ((Get-SRLiveMenuStart -Text $Text) -ge 0)
+}
+
 function Invoke-SRParseScreenQuestion {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
@@ -4586,7 +4683,20 @@ function Invoke-SRParseScreenQuestion {
     # Which option already carries the answered tick, on a question you have come
     # back to. -1 while nothing on screen says one was chosen.
     $chosenAt = -1
-    for ($i = 0; $i -lt $lines.Count; $i++) {
+
+    # 🔑 FIND THE LIVE MENU FIRST, THEN READ IT. Everything below this line is
+    # unchanged; all that moved is WHERE it starts looking. The scan used to
+    # begin at the top of the screen and take the first run of consecutive
+    # numbers it met, which on a busy session is nearly always scrollback.
+    #
+    # 🔴 AND THE REFUSAL IS THE OTHER HALF. A screen with no live menu now parses
+    # to $null rather than to whatever numbered prose happened to be on it. That
+    # is what stops the band claiming a session wants you when it does not - the
+    # sweep's flag is built from this parse, so the two can no longer disagree.
+    $scanFrom = Get-SRLiveMenuStart -Text $txt
+    if ($scanFrom -lt 0) { return $null }
+
+    for ($i = $scanFrom; $i -lt $lines.Count; $i++) {
         $ln = $lines[$i]
         # '  2. BRAVO' or '<cursor> 1. ALPHA'. The label runs to the end of the line;
         # the description sits on the indented lines beneath and is not needed to
