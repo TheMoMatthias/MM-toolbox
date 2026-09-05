@@ -150,7 +150,23 @@ function Set-SRIncludeWorktrees {
     # write, so each toggle grew the file by a blank line. Normalise the ending and
     # write exactly that. UTF8 without a BOM, matching how the file was authored.
     $new = $new.TrimEnd("`r", "`n") + "`r`n"
+    # 🔑 AND THAT NORMALISATION IS WHY THIS WRITER NEEDS THE STAMP NUDGE TOO -
+    # the line directly above is the reason, not a coincidence. It is tempting to
+    # argue this path is safe because `true` is four characters and `false` is
+    # five, so the length always moves and a cached reader must always see the
+    # write. That argument is false BECAUSE of the TrimEnd: the length delta is
+    # the boolean's (+/-1) PLUS the trailing-newline's (2 minus however many the
+    # file already ended with). A file saved by an editor with LF endings ends in
+    # one character, contributing +1, and a `false` -> `true` flip contributes
+    # -1: net zero, same length, colliding stamp. The fix for the blank-line
+    # growth is what armed it, two lines apart. Nudging here removes the whole
+    # class rather than leaving a comment defending an argument that has to stay
+    # true forever. See Set-SRDistinctWriteTime.
+    $wasAt = $null; $wasBad = $false
+    try { $wasAt = (Get-Item -LiteralPath $SR_ConfigPath -ErrorAction Stop).LastWriteTimeUtc }
+    catch { $wasBad = $true }
     [System.IO.File]::WriteAllText($SR_ConfigPath, $new, (New-Object System.Text.UTF8Encoding($false)))
+    Set-SRDistinctWriteTime -Path $SR_ConfigPath -Was $wasAt -BaselineFailed:$wasBad
 
     $check = (Get-Content -LiteralPath $SR_ConfigPath -Raw | ConvertFrom-Json).includeWorktrees
     if ([bool]$check -ne $Value) {
@@ -422,6 +438,76 @@ function Get-SRConfigRead {
     return $c
 }
 
+# ===========================================================================
+# MAKE SURE A WRITE IS VISIBLE TO A READER THAT ONLY LOOKS AT THE STAMP.
+#
+# 🔴 TWO DIFFERENT CONFIGS CAN PRODUCE ONE STAMP. Get-SRConfig decides its cache
+# is fresh by comparing `length|LastWriteTimeUtc.Ticks`. A write that changes no
+# bytes in LENGTH and lands in the same filetime tick as the one the cache was
+# taken from is therefore invisible: the cache is returned and the new value is
+# never read, with nothing logged. And that cache does not heal - every later
+# pass re-stats, finds the same stamp, and returns the same stale object, until
+# something changes the file's length or time. For a window the operator only
+# READS settings in, that is the rest of its life.
+#
+# 🪤 THE SAME-LENGTH HALF IS THE COMMON CASE, NOT THE EXOTIC ONE. Measured:
+# `transcriptTools` cycles 'folded' <-> 'hidden', six characters each;
+# railBandsShut moves between 'week,month,older' and 'today,week,month', sixteen
+# each; maxSessions 12 -> 24. Every one of those re-serialises to a file of
+# identical length. Folding a band is enough to arm it.
+#
+# 🔑 SO IT IS FIXED AT THE WRITER, NOT AT EVERY READER. Get-SRConfig is a hot
+# path - Update-Model calls it every pass - and a hash or a TTL there would put
+# a permanent recurring cost on the drawing thread to defend against something
+# a writer can make impossible for free. Nudging the stamp costs one file
+# operation per SAVE, which is a gesture, and no reader changes at all.
+#
+# 🪤 ONE TICK IS ENOUGH, and it is deliberately not more. The comparison is on
+# exact Ticks, so +100 ns defeats it; jumping the ~15.6 ms clock granule would
+# make the file look meaningfully newer than it is for no gain. Consecutive
+# writes inside one granule can step the recorded time BACKWARDS by a tick,
+# which reads oddly and is harmless: every comparison is against the stamp a
+# reader cached, never against history.
+#
+# 🔴 AND IT NEVER THROWS. Everywhere else in this writer, `-ErrorAction Stop`
+# exists so a failed write cannot look successful. This is the opposite case and
+# the same principle: by the time it runs THE WRITE HAS ALREADY SUCCEEDED, so
+# raising here would report a good save as a bad one - the very failure that
+# rule was written to prevent, arrived at from the other side. It logs instead.
+#
+# 🪤 IT DOES NOT RE-STAT. The caller passes what it observed before its own
+# write; asking the filesystem again here would be asking after the fact, which
+# is a different question. A $null baseline has two causes and they are told
+# apart on purpose: no file to stamp (a first write - a no-op is CORRECT, and
+# silent, or every fresh install logs a warning that is not one), against a stat
+# that failed on a file which does exist (a no-op is merely safe, and says so).
+function Set-SRDistinctWriteTime {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        # The destination's LastWriteTimeUtc BEFORE this write, as the caller saw
+        # it. $null means the caller had no baseline to give.
+        $Was,
+        # Which kind of $null: set when the caller tried to read a baseline off an
+        # existing file and could not.
+        [switch]$BaselineFailed
+    )
+    if ($null -eq $Was) {
+        if ($BaselineFailed) {
+            Write-SRLog ('  [skip] could not read a write-time baseline for ' + $Path +
+                         ' - a same-tick write could go unseen by a cached reader')
+        }
+        return
+    }
+    try {
+        $now = (Get-Item -LiteralPath $Path -ErrorAction Stop).LastWriteTimeUtc
+        if ($now -ne [datetime]$Was) { return }
+        [System.IO.File]::SetLastWriteTimeUtc($Path, $now.AddTicks(1))
+    } catch {
+        Write-SRLog ('  [skip] could not separate the write time of ' + $Path + ': ' +
+                     $_.Exception.Message + ' - the save itself was fine')
+    }
+}
+
 # One key, written back without disturbing the rest of the file.
 #
 # 🪤 IT RE-READS FROM DISK RATHER THAN WRITING THE OBJECT Get-SRConfig RETURNED.
@@ -463,6 +549,14 @@ function Set-SRConfigOnDisk { param([Parameter(Mandatory)][hashtable]$Values)
     $dir = Split-Path -Parent $SR_ConfigPath
     $tmp = Join-Path $dir ('.config.{0}.tmp' -f ([guid]::NewGuid().ToString('N')))
     $json = $raw | ConvertTo-Json -Depth 8
+    # The baseline for Set-SRDistinctWriteTime, taken before the replace because
+    # afterwards it is gone. Two nulls, told apart: no file at all is a first
+    # write and needs no nudge; a stat that failed on a file that exists does.
+    $wasAt = $null; $wasBad = $false
+    if (Test-Path -LiteralPath $SR_ConfigPath) {
+        try { $wasAt = (Get-Item -LiteralPath $SR_ConfigPath -ErrorAction Stop).LastWriteTimeUtc }
+        catch { $wasBad = $true }
+    }
     try {
         [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
         # 🔴 -ErrorAction Stop, OR THE FAILURE IS INVISIBLE. Move-Item reports a
@@ -482,6 +576,9 @@ function Set-SRConfigOnDisk { param([Parameter(Mandatory)][hashtable]$Values)
         try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch { }
         throw
     }
+    # AFTER the replace, and outside the try above on purpose: the save has
+    # succeeded by here, so nothing this does may turn it into a failure.
+    Set-SRDistinctWriteTime -Path $SR_ConfigPath -Was $wasAt -BaselineFailed:$wasBad
 }
 
 function Save-SRConfigValue { param([Parameter(Mandatory)][string]$Name, $Value)
@@ -3293,6 +3390,38 @@ function Test-SRClaudeProcess {
 # Typing a sentence into a session showing a menu never did what the operator
 # meant - the text lands in the menu's editor row - and the window has a control
 # for that case. Reversible by dropping the Test-SRLiveMenu clause.
+# ===========================================================================
+# THE TWO REFUSALS THAT -Force LIFTS, AND WHY THEY DO NOT NAME IT THEMSELVES.
+#
+# 🔴 THEY USED TO END "or send anyway to type into the dialog/menu" - AND NO
+# CALLER PASSED -Force. All four of them (the composer's two dispatch arms,
+# Invoke-Compact and the broadcast queue) called this without it, and no UI path
+# retried, so the sentence offered the operator an action that did not exist.
+# The dialog one had been a dead end for some time; be842da added the menu one,
+# which fires whenever ANY live menu is on screen rather than only when a cached
+# status said 'dialog', and turned a rare dead end into a common one.
+#
+# 🔑 SO THE REFUSAL STATES THE FACT AND THE CALLER OWNS THE OFFER. Whether
+# "send anyway" is even available depends on who is asking: the composer has the
+# operator standing in front of it and can put the choice to them, while the
+# broadcast queue and /compact are acting across sessions nobody is watching -
+# forcing a sentence into a menu there is precisely the accident this exists to
+# prevent, so they report what was skipped instead. One message that is true
+# everywhere, and the offer made only where it can be honoured.
+#
+# 🪤 CONSTANTS, NOT PROSE MATCHED AT THE CALL SITE. The composer has to tell
+# "refused, and forcing would be reasonable" from "refused because the session
+# is gone", and matching on wording would break the moment somebody improves it.
+$SR_RefuseDialog = 'a dialog is open in that session - it is waiting on an answer there'
+$SR_RefuseMenu   = 'that session is showing a menu - the question card is where it wants answering'
+
+# Is this refusal one that -Force would lift? Kept beside the two strings so
+# there is one place to change if either is reworded.
+function Test-SRForceableRefusal { param([string]$Why)
+    if (-not $Why) { return $false }
+    return ($Why -eq $SR_RefuseDialog -or $Why -eq $SR_RefuseMenu)
+}
+
 function Send-SRSessionInput {
     [CmdletBinding()]
     param(
@@ -3313,7 +3442,7 @@ function Send-SRSessionInput {
     if ($ProcessId -le 0) { return 'that session has no process to type into (it is a background agent)' }
     if ($Kind -and $Kind -ne 'interactive') { return 'only an interactive session can be typed into' }
     if (-not $Force -and $WaitingFor -match 'dialog') {
-        return 'a dialog is open in that session - answer it there, or send anyway to type into the dialog'
+        return $SR_RefuseDialog
     }
 
     # A pid is reusable. Confirm THIS one is still the claude that owns the
@@ -3327,7 +3456,7 @@ function Send-SRSessionInput {
         $onScreen = $null
         try { $onScreen = Get-SRScreenText -ProcessId $ProcessId } catch { }
         if ($onScreen -and (Test-SRLiveMenu -Text $onScreen)) {
-            return 'that session is showing a menu - answer it on the question card, or send anyway to type into the menu'
+            return $SR_RefuseMenu
         }
     }
 

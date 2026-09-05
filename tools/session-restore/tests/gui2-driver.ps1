@@ -2018,6 +2018,49 @@ else { Pass 'no send dispatch answers by default - an unknown kind refuses inste
 Write-Host ''
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the escape hatch is offered only where somebody can take it ---'
+# ===========================================================================
+# 🔴 THE REFUSAL NAMED AN ACTION NOBODY COULD TAKE. "or send anyway" was in the
+# message while none of the four callers passed -Force. The offer now lives in
+# the composer's landing, which is the one caller with the operator in front of
+# it - and it must NOT appear in the two that act across sessions nobody is
+# watching, where forcing a sentence into a menu is the accident being prevented.
+$fcSrc = Get-SRBodyOf $winSrc 'function Complete-AnswerLanded'
+if (-not $fcSrc) { Fail 'Complete-AnswerLanded is gone' }
+elseif ($fcSrc -notmatch 'Test-SRForceableRefusal') {
+    Fail 'the send landing does not tell a forceable refusal from any other - it cannot offer the retry'
+}
+elseif ($fcSrc -notmatch 'Confirm-Action') {
+    Fail 'the send landing retries without asking - forcing text into a menu must be the operator saying so'
+}
+elseif ($fcSrc -notmatch 'Start-AskSend[^\n]*-Force') {
+    Fail 'the send landing asks, and then does not re-send forced - the offer is still a dead end'
+} else { Pass 'the composer catches a forceable refusal, asks, and re-sends forced' }
+
+# 🪤 AND IT CANNOT LOOP. A forced send skips both refusals so it can never come
+# back forceable, but the guard says so rather than resting on that.
+if ($fcSrc -notmatch '-not \$Force') {
+    Fail 'the retry is not guarded on $Force - a refusal that survived forcing would ask again forever'
+} else { Pass 'a send that was already forced never offers the retry again' }
+
+# 🔴 AND THE BATCH PATHS STAY UNFORCED. This is the assertion that stops a
+# future reader "finishing the job" by wiring -Force everywhere.
+foreach ($fcFn in @('Invoke-Compact')) {
+    $b = Get-SRBodyOf $winSrc "function $fcFn"
+    if (-not $b) { Fail "$fcFn is gone"; continue }
+    if ($b -match 'Send-SRSessionInput[\s\S]*?-Force') {
+        Fail "$fcFn forces its send - nobody is watching that session, and forcing text into a menu is the accident the refusal exists to stop"
+    } else { Pass "$fcFn never forces its send" }
+}
+# The broadcast queue is a timer body rather than a named function, so it is
+# matched on the call itself.
+$castCall = [regex]::Match($winSrc, 'Send-SRSessionInput -SessionId \$r\.Id -Text \$script:castMsg[\s\S]{0,240}')
+if (-not $castCall.Success) { Fail 'the broadcast send has moved - this check can no longer see it' }
+elseif ($castCall.Value -match '-Force') { Fail 'the broadcast queue forces its sends across every ticked conversation' }
+else { Pass 'the broadcast queue never forces its sends' }
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- interrupting a turn, and refusing to press Esc anywhere else ---'
 # ===========================================================================
 # 🔴 THE GATE IS THE WHOLE SAFETY ARGUMENT, so it is what gets tested. Every

@@ -800,9 +800,18 @@ $withFooter = @(
     ''
     'Either way the gate re-runs before anything lands.'
     ''
+    # 🔴 THIS SCREEN WAS CORRECTED AGAINST THE REAL CAPTURES, and the assertion
+    # below went red until it was. It used to end with a "> " prompt line and
+    # "Model: Opus 5 | shift+tab to cycle" - the window's INPUT chrome. No menu
+    # screen looks like that: round-single-fresh.txt, round-multi-fresh.txt and
+    # round-multi-ticked.txt all end with the menu's OWN footer and carry no
+    # prompt line and no Model: line at all, because the TUI draws a menu
+    # INSTEAD of the input box, never both. (round-review.txt does contain the
+    # U+276F glyph - as the option CURSOR, which is a different thing from a
+    # prompt.) So the fixture was depicting a screen that cannot exist, and
+    # Test-SRLiveMenu was right to refuse it. Do not put the prompt line back.
     '  ' + ([string][char]0x2500) * 40
-    "$([string][char]0x276F) "
-    '  Model: Opus 5 | shift+tab to cycle'
+    'Enter to select ' + [string][char]0x00B7 + ' Tab/Arrow keys to navigate ' + [string][char]0x00B7 + ' Esc to cancel'
 ) -join "`n"
 $pf = Invoke-SRParseScreenQuestion -Text $withFooter
 if (-not $pf) { Fail 'the menu with a trailing note was not recognised at all' }
@@ -811,8 +820,18 @@ else {
     else { Pass 'the trailing note did not get counted as an option' }
     if ("$($pf.Footer)" -notlike '*gate re-runs*') { Fail "the footer read as '$($pf.Footer)'" }
     else { Pass "the note under the whole question is kept: 'Either way the gate re-runs...'" }
-    if ("$($pf.Footer)" -match 'Model:|2500|shift\+tab') { Fail "the footer swallowed claude's chrome: '$($pf.Footer)'" }
-    else { Pass 'the footer stops at the input box' }
+    # 🪤 THE PATTERN MOVED WITH THE FIXTURE, OR IT WOULD MATCH NOTHING. It hunted
+    # 'Model:|2500|shift+tab' - the input chrome that is no longer on this screen
+    # because no menu screen has it - so leaving it would have left an assertion
+    # that cannot fail. It now hunts the chrome a menu screen really does carry:
+    # the menu's own footer, and the box-drawing rule above it. 'shift+tab' was
+    # also never reachable and '2500' never matched the separator either, since
+    # the separator is the CHARACTER U+2500 and not the text "2500" - so this is
+    # stricter than what it replaces, not a relaxation.
+    $chrome = [regex]::Escape([string][char]0x2500)
+    if ("$($pf.Footer)" -match "Enter to select|Tab/Arrow|Esc to cancel|$chrome") {
+        Fail "the footer swallowed claude's chrome: '$($pf.Footer)'"
+    } else { Pass "the footer stops before the menu's own chrome" }
     if ("$($pf.Details[1])" -like '*gate re-runs*') { Fail 'the whole-question note was filed under option 2' }
     else { Pass 'a whole-question note is not attached to the last option' }
 }
@@ -1022,6 +1041,161 @@ try {
         Fail "an unreadable config says [$msg] - it does not name the file or the fix"
     } else { Pass 'an unreadable config names the file and what to do about it' }
 } finally { $script:SR_ConfigPath = $cfgWas }
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- a refusal may not name an action nobody can take ---'
+# ===========================================================================
+# 🔴 BOTH REFUSALS USED TO END "or send anyway", AND NOTHING COULD. All four
+# callers of Send-SRSessionInput went without -Force and no path retried, so the
+# sentence offered the operator a way through that did not exist. The dialog one
+# had been a dead end for a while; the menu one arrived on be842da and fires far
+# more often, which is what made it visible.
+#
+# 🪤 AND THE FIX IS NOT "STOP REFUSING". Typing a sentence into a session that is
+# showing a menu is still wrong by default - the refusal is right, the wording
+# was not. What moved is WHERE the offer lives: with the caller that has a person
+# in front of it, and nowhere else.
+$refDlg = $SR_RefuseDialog
+$refMnu = $SR_RefuseMenu
+foreach ($rf in @(@{ N = 'the dialog refusal'; T = $refDlg }, @{ N = 'the menu refusal'; T = $refMnu })) {
+    if ("$($rf.T)" -match 'send anyway|anyway to type') {
+        Fail "$($rf.N) still offers 'send anyway', which no caller of Send-SRSessionInput can do: '$($rf.T)'"
+    } elseif (-not "$($rf.T)".Trim()) { Fail "$($rf.N) says nothing at all" }
+    else { Pass "$($rf.N) states the fact without naming an action: '$($rf.T)'" }
+}
+
+# The composer has to tell these two apart from every other refusal, and by
+# identity rather than by matching prose that somebody will reword.
+if (-not (Test-SRForceableRefusal $refMnu)) { Fail 'the menu refusal is not recognised as one -Force would lift' }
+elseif (-not (Test-SRForceableRefusal $refDlg)) { Fail 'the dialog refusal is not recognised as one -Force would lift' }
+elseif (Test-SRForceableRefusal 'that session has exited') {
+    Fail 'a refusal that -Force could NOT lift is offered as forceable - the composer would offer to retry a dead session'
+} elseif (Test-SRForceableRefusal '') { Fail 'an empty reason reads as a forceable refusal' }
+else { Pass 'the two forceable refusals are recognised by identity, and nothing else is' }
+
+# 🔴 AND -Force ACTUALLY LIFTS THEM. Asserted on the guards rather than by
+# typing into a session: this suite never sends a key. With -Force the dialog
+# refusal must not be the answer - what comes back instead is whatever the next
+# guard says, and on a pid that is not a claude that is the process check.
+$refWhy = Send-SRSessionInput -SessionId 'no-such-session' -Text 'hello' -ProcessId 999999 `
+                              -Kind 'interactive' -WaitingFor 'dialog'
+if ($refWhy -ne $refDlg) { Fail "a dialog-waiting session was not refused: '$refWhy'" }
+else { Pass 'a plain message into a session waiting on a dialog is still refused' }
+$refForced = Send-SRSessionInput -SessionId 'no-such-session' -Text 'hello' -ProcessId 999999 `
+                                 -Kind 'interactive' -WaitingFor 'dialog' -Force
+if ($refForced -eq $refDlg) { Fail '-Force did not lift the dialog refusal, so the escape hatch cannot work' }
+elseif (-not $refForced) { Fail '-Force reported success against a pid that is not a claude' }
+else { Pass "-Force lifts it and the next guard takes over: '$refForced'" }
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- a config write that changes no bytes in length must still be seen ---'
+# ===========================================================================
+# 🔴 THE CACHE CAN MISS A WRITE ENTIRELY. Get-SRConfig judges freshness on
+# `length|LastWriteTimeUtc.Ticks`; two different configs of the same length
+# written inside one filetime tick produce one stamp, so the second is never
+# read and nothing is logged. It does not heal either - every later pass re-stats,
+# finds the same stamp, returns the same stale object.
+#
+# 🪤 AND THE SAME-LENGTH HALF IS ORDINARY. maxSessions 12 -> 24, transcriptTools
+# 'folded' -> 'hidden', railBandsShut 'week,month,older' -> 'today,week,month':
+# all re-serialise to a file of identical length. Measured over 200 real writes
+# in a sandbox, the length collided EVERY time. What did not collide on this
+# machine was the tick - consecutive writes landed 21-30 ms apart against a
+# ~15.6 ms granule, and 600 writes produced 600 distinct stamps. So the end-to-end
+# collision could not be produced naturally here, and the assertions below stop
+# short of claiming otherwise: they forge the stamp to show the reader really is
+# vulnerable, then check the guarantee the WRITER now makes so it cannot arise.
+$stmWas = $SR_ConfigPath
+$stmCacheWas = $script:SR_ConfigCache
+$stmStampWas = $script:SR_ConfigStamp
+try {
+    $stmCfg = Join-Path $SR_StateDir ('cfgstamp-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+    $script:SR_ConfigPath = $stmCfg
+    $script:SR_ConfigCache = $null; $script:SR_ConfigStamp = ''
+
+    # 1. THE READER IS VULNERABLE. Written directly rather than through the
+    #    writer, and the timestamp forced back, which is exactly the state a
+    #    same-tick same-length write would leave behind.
+    [System.IO.File]::WriteAllText($stmCfg, '{ "maxSessions": 12 }', (New-Object System.Text.UTF8Encoding($false)))
+    $stmT = (Get-Item -LiteralPath $stmCfg).LastWriteTimeUtc
+    $stmFirst = [int](Get-SRConfig).maxSessions
+    [System.IO.File]::WriteAllText($stmCfg, '{ "maxSessions": 24 }', (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::SetLastWriteTimeUtc($stmCfg, $stmT)
+    $stmLen = (Get-Item -LiteralPath $stmCfg).Length
+    $stmSeen = [int](Get-SRConfig).maxSessions
+    if ($stmFirst -ne 12) { Fail "the sandboxed config did not read back as 12 (got $stmFirst)" }
+    elseif ($stmSeen -eq 24) {
+        Write-Host "  --    the cache noticed a same-stamp write - it is stricter than length|ticks now, and the writer guarantee below is belt-and-braces"
+    } else {
+        Pass "a same-length write under one stamp is invisible to the cache (file says 24, cache still says $stmSeen) - which is why the writer must move the stamp"
+    }
+
+    # 2. THE HELPER MOVES A COLLIDING STAMP. The one thing the guarantee rests
+    #    on, so it is checked directly rather than inferred from a writer.
+    $script:SR_ConfigCache = $null; $script:SR_ConfigStamp = ''
+    [System.IO.File]::SetLastWriteTimeUtc($stmCfg, $stmT)
+    Set-SRDistinctWriteTime -Path $stmCfg -Was $stmT
+    $stmAfter = (Get-Item -LiteralPath $stmCfg).LastWriteTimeUtc
+    if ($stmAfter -eq $stmT) { Fail 'a colliding write time was left exactly as it was - a cached reader would never see the write' }
+    elseif ($stmAfter.Ticks - $stmT.Ticks -ne 1) {
+        Fail "the write time moved by $($stmAfter.Ticks - $stmT.Ticks) ticks - one is enough, and more makes the file look newer than it is"
+    } else { Pass 'a colliding write time is separated by exactly one tick' }
+
+    # 🔑 AND IT LEAVES A NON-COLLIDING ONE ALONE, or it would be rewriting the
+    #    timestamp of every save for nothing.
+    $stmKeep = (Get-Item -LiteralPath $stmCfg).LastWriteTimeUtc
+    Set-SRDistinctWriteTime -Path $stmCfg -Was $stmKeep.AddSeconds(-5)
+    if ((Get-Item -LiteralPath $stmCfg).LastWriteTimeUtc -ne $stmKeep) {
+        Fail 'a write time that had already moved was nudged again'
+    } else { Pass 'a write time that already differs is left untouched' }
+
+    # 3. THE TWO KINDS OF MISSING BASELINE. A first write has nothing to collide
+    #    with, so a no-op is correct AND silent - otherwise every fresh install
+    #    logs a warning that is not one. A stat that failed on a file that does
+    #    exist is merely safe, and says so.
+    $stmLog = Join-Path $SR_StateDir ('stamplog-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.log')
+    $stmLogWas = $script:SR_LogPath
+    try {
+        $script:SR_LogPath = $stmLog
+        Set-SRDistinctWriteTime -Path $stmCfg -Was $null
+        $quiet = -not (Test-Path -LiteralPath $stmLog) -or -not ((Get-Content -LiteralPath $stmLog -Raw) -match 'baseline')
+        Set-SRDistinctWriteTime -Path $stmCfg -Was $null -BaselineFailed
+        $loud = (Test-Path -LiteralPath $stmLog) -and ((Get-Content -LiteralPath $stmLog -Raw) -match 'baseline')
+        if (-not $quiet) { Fail 'a first write with no baseline logs a warning - every fresh install would cry wolf' }
+        elseif (-not $loud) { Fail 'a baseline that could not be read is passed over silently' }
+        else { Pass 'no baseline is silent; a baseline that failed to read is logged' }
+    } finally {
+        $script:SR_LogPath = $stmLogWas
+        Remove-Item -LiteralPath $stmLog -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host ("  --    the collision needs a same-length write, which is the common case: this file was {0} bytes before and after" -f $stmLen)
+    Remove-Item -LiteralPath $stmCfg -Force -ErrorAction SilentlyContinue
+} finally {
+    $script:SR_ConfigPath = $stmWas
+    $script:SR_ConfigCache = $stmCacheWas
+    $script:SR_ConfigStamp = $stmStampWas
+}
+
+# 🔴 AND BOTH WRITERS CALL IT. There are exactly two things that write this file
+# and the guarantee is worthless if either skips it. Set-SRIncludeWorktrees is
+# the one that looks safe and is not: it normalises the trailing newline in the
+# same write that flips the boolean, so the length delta is the boolean's +/-1
+# plus 2-minus-however-many-the-file-ended-with, and an LF-ended file flipping
+# false -> true nets to zero.
+$stmSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\_common.ps1'))
+foreach ($stmFn in @('Set-SRConfigOnDisk', 'Set-SRIncludeWorktrees')) {
+    $a = $stmSrc.IndexOf("function $stmFn")
+    $b = $(if ($a -ge 0) { $stmSrc.IndexOf("`nfunction ", $a + 20) } else { -1 })
+    if ($b -lt 0) { $b = $stmSrc.Length }
+    $body = $(if ($a -ge 0) { $stmSrc.Substring($a, $b - $a) } else { '' })
+    $body = ((($body -split "`n") | ForEach-Object { ($_ -split '#', 2)[0] }) -join "`n")
+    if (-not $body) { Fail "$stmFn is gone" }
+    elseif ($body -notmatch 'Set-SRDistinctWriteTime') {
+        Fail "$stmFn writes the config without separating the write time - a same-length write through it can go unseen"
+    } else { Pass "$stmFn separates its write time" }
+}
 
 # ===========================================================================
 Write-Host ''

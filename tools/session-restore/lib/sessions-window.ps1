@@ -5027,7 +5027,8 @@ $script:AnswerJob = {
             'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId ([int]$SRAns.Pid) -Text "$($SRAns.Text)" -Who "$($SRAns.SessionId)" }
             'send'   { $why = Send-SRSessionInput -SessionId $SRAns.SessionId -Text "$($SRAns.Text)" `
                                                   -ProcessId ([int]$SRAns.Pid) -Kind "$($SRAns.AgentKind)" `
-                                                  -WaitingFor "$($SRAns.AgentWaitingFor)" }
+                                                  -WaitingFor "$($SRAns.AgentWaitingFor)" `
+                                                  -Force:([bool]$SRAns.Force) }
             # 🪤 NAMED LIKE THE REST, and it is the one arm that picks nothing:
             # Esc stops a turn rather than choosing an option, so there is no
             # index to be wrong about and no screen to verify against. The
@@ -5053,7 +5054,12 @@ function Start-AskSend {
         [int]$Index = -1,
         [int]$Delta = 0,
         [string]$Text = '',
-        [string]$Saying = 'working...'
+        [string]$Saying = 'working...',
+        # Lift the dialog/menu refusal. Set ONLY by the composer's retry,
+        # after the operator has been shown what is on that screen and said
+        # go ahead - see Complete-AnswerLanded. Never set by /compact or the
+        # broadcast queue, which act across sessions nobody is watching.
+        [switch]$Force
     )
     $procId = [int]$Row.A.Pid
     Set-Status $Saying
@@ -5076,6 +5082,7 @@ function Start-AskSend {
         AgentKind = "$($Row.A.Kind)"; AgentName = "$($Row.A.Name)"
         AgentWaitingFor = "$($Row.A.WaitingFor)"
         MenuSeen = [bool]$script:lastAsk
+        Force = [bool]$Force
     }
     try {
         # Warm if one was ready; see New-SRRunspace. SRHere is already set on it.
@@ -5090,6 +5097,7 @@ function Start-AskSend {
         $script:ansHandle = $ps.BeginInvoke()
         $script:ansFor = @{
             Row = $Row; Pid = $procId; Index = $Index; Kind = $Kind
+            Text = $Text; Force = [bool]$Force
             Question = $script:lastAsk; At = (Get-Date)
         }
         try { $script:ansTimer.Start() } catch { }
@@ -5119,12 +5127,14 @@ function Start-AskSend {
                 'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId $procId -Text $Text -Who "$($Row.Id)" }
                 'send'   { $why = Send-SRSessionInput -SessionId $Row.Id -Text $Text `
                                                       -ProcessId $procId -Kind "$($Row.A.Kind)" `
-                                                      -WaitingFor "$($Row.A.WaitingFor)" }
+                                                      -WaitingFor "$($Row.A.WaitingFor)" `
+                                                      -Force:$Force }
                 'esc'    { $why = Send-SRInterrupt -ProcessId $procId -Who "$($Row.Id)" }
                 default  { $why = "nothing was sent - '$Kind' is not a kind of send this knows" }
             }
         } catch { $why = $_.Exception.Message }
-        Complete-AnswerLanded -Row $Row -Pid_ $procId -Index $Index -Question $script:lastAsk -Why "$why" -Kind $Kind
+        Complete-AnswerLanded -Row $Row -Pid_ $procId -Index $Index -Question $script:lastAsk -Why "$why" -Kind $Kind `
+                              -Text $Text -Force ([bool]$Force)
         return $false
     }
 }
@@ -5147,12 +5157,41 @@ function Invoke-Answer { param([int]$Index)
 }
 
 # What used to run straight after the send, now run wherever the send finished.
-function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question, [string]$Why, [string]$Kind = 'answer')
+# 🪤 $Text AND $Force TRAVEL WITH IT so the composer's retry has something to
+# re-send and cannot loop: a forced send skips both refusals, so it can never
+# come back here forceable again, and the -not $Force guard says so out loud
+# rather than relying on that staying true.
+function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question, [string]$Why, [string]$Kind = 'answer',
+                                       [string]$Text = '', [bool]$Force = $false)
     Set-AskEnabled $true
 
     # A SENT MESSAGE IS NOT AN ANSWER EITHER. It clears the composer rather than
     # the question card, and it files no answer record - nothing was chosen.
     if ($Kind -eq 'send') {
+        # 🔴 THE OFFER IS MADE HERE, WHERE IT CAN ACTUALLY BE HONOURED. The two
+        # refusals -Force lifts used to end "or send anyway" inside the message
+        # itself, while not one of the four call sites passed -Force and no path
+        # retried - so the sentence named an action the operator could not take.
+        # The message now states the fact only (see $SR_RefuseMenu) and the
+        # composer, which is the one caller with a person standing in front of
+        # it, puts the choice to them and re-sends forced if they take it.
+        #
+        # 🪤 THE MESSAGE IS NOT CLEARED AND THE ROW IS NOT MOVED on this path.
+        # Nothing has been sent yet; if the operator declines, what they typed
+        # has to still be in the box.
+        if ($Why -and (Test-SRForceableRefusal $Why) -and -not $Force) {
+            Set-AskEnabled $true
+            $t = (Get-Title $Row.S $Row.D).Text
+            if (Confirm-Action 'Send it anyway' (
+                "{0}`n`n'{1}' is waiting on something on its own screen. Sending now types your message into that, which is almost never what you meant - and if it IS, this is the way." -f `
+                    $Why, $t) -Verb 'Send anyway') {
+                $null = Start-AskSend -Kind 'send' -Row $Row -Text $Text -Saying 'sending anyway...' -Force
+            } else {
+                Set-Status 'not sent - it is still waiting on its own screen' 'warn'
+            }
+            try { Update-SendState } catch { }
+            return
+        }
         if ($Why) { Set-Status $Why 'bad' } else {
             # 🪤 CLEARED ON LANDING, NOT ON THE CLICK. Same reasoning as the
             # typed answer: off-thread, clearing it at the click would throw the
@@ -5310,7 +5349,8 @@ function Complete-AnswerSend {
     $why = ''
     if ($res) { $why = "$($res.Why)" }
     Complete-AnswerLanded -Row $f.Row -Pid_ ([int]$f.Pid) -Index ([int]$f.Index) -Question $f.Question -Why $why `
-                          -Kind "$(if ($f.Kind) { $f.Kind } else { 'answer' })"
+                          -Kind "$(if ($f.Kind) { $f.Kind } else { 'answer' })" `
+                          -Text "$($f.Text)" -Force ([bool]$f.Force)
     return $true
 }
 
@@ -5879,6 +5919,12 @@ function Invoke-Compact {
     # for. It used to spawn `claude agents --json` from here - about a second of
     # dead window on every /compact - for a pid and a kind that are on the row.
     try {
+        # 🔴 NO -Force HERE, AND THAT IS THE POINT. The composer offers
+        # "send anyway" because the operator is standing in front of it and can
+        # see which session they mean. This is acting on a session that may have started asking something since you looked, where forcing a
+        # sentence into a menu is exactly the accident the refusal exists to
+        # stop. It reports what was skipped instead - and the refusal text no
+        # longer names an action, so what it reports is now true here.
         $why = Send-SRSessionInput -SessionId $r.Id -Text '/compact' `
                                    -ProcessId ([int]$r.A.Pid) -Kind "$($r.A.Kind)" `
                                    -WaitingFor "$($r.A.WaitingFor)"
@@ -9575,6 +9621,12 @@ $script:castTimer.Add_Tick({
             # `claude agents --json` for each conversation it drained, so a cast
             # to ten was ten spawns on top of the keys. The row already holds
             # every field it wanted.
+            # 🔴 NO -Force HERE, AND THAT IS THE POINT. The composer offers
+            # "send anyway" because the operator is standing in front of it and can
+            # see which session they mean. This is acting on every ticked conversation at once, where forcing a
+            # sentence into a menu is exactly the accident the refusal exists to
+            # stop. It reports what was skipped instead - and the refusal text no
+            # longer names an action, so what it reports is now true here.
             $why = Send-SRSessionInput -SessionId $r.Id -Text $script:castMsg `
                                        -ProcessId ([int]$r.A.Pid) -Kind "$($r.A.Kind)" `
                                        -WaitingFor "$($r.A.WaitingFor)"
