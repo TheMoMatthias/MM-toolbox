@@ -70,6 +70,62 @@ $script:Results = New-Object System.Collections.Generic.List[object]
 # below as a warning only, since a scan takes the time a scan takes.
 $LIMITS = @{ 'GESTURE' = 50.0; 'INSTANT' = 50.0; 'QUICK' = 250.0; 'SLOW' = 1000.0; 'STALL' = 100000.0 }
 
+# ===========================================================================
+# 🔴 THE BAR IS MEASURED, AND IT IS NOT 50 ms.
+#
+# The classes above were written against what a person notices. That was a
+# reasonable standard and it is not the one the operator set: "no noticeable
+# difference between operating a terminal and operating the tool". So the
+# terminal was measured (bench-term.ps1 / bench-claude.ps1, 2026-09-04):
+#
+#     a bare console app answers a key          1.8 ms
+#     the real claude TUI answers an arrow      6.9 ms   <- THE BAR
+#     one screen read, held-open reader         9.3 ms
+#
+# 6.9 is a CEILING rather than a reading: a screen read costs more than that, so
+# nothing faster is observable. The TUI repaints inside one read.
+#
+# 🪤 GESTURE = 50 ms IS SEVEN TIMES THE BAR, which is why this suite could report
+# "everything is inside its class budget" about a window with 49 of 79
+# gesture/instant operations over the terminal. The budget was not wrong when it
+# was written; it is simply not the question being asked any more.
+$SR_BAR   = 7.0     # the terminal
+$SR_FRAME = 16.0    # one frame at 60fps - below this, faster is unobservable
+
+# 🔴 THE BAR IS REPORTED, NOT GATED ON, AND THAT IS DELIBERATE.
+#
+# Failing every operation over 7 ms would put this suite permanently red across
+# most of the window - and this file already carries the reason that is fatal:
+# "a benchmark that cries wolf gets muted, and a muted benchmark catches
+# nothing." A gate nobody can ever make green is a gate that gets switched off,
+# taking the real regressions with it.
+#
+# So the two questions are separated. HOW FAR FROM THE TERMINAL is printed for
+# every operation, every run, and never fails. WHETHER THIS COMMIT MADE
+# SOMETHING SLOWER is the gate, and it is measured against a recorded baseline
+# rather than against an absolute.
+# ⏸ NOT BUILT YET - THIS IS THE NEXT STEP, RECORDED SO IT IS NOT MISTAKEN FOR
+# SOMETHING THAT ALREADY WORKS. The plan, measured and ready to implement:
+#
+#   * record best-of-N per operation into tests\perf-baseline.json ALONGSIDE the
+#     spin-loop figure from the same run;
+#   * on a later run, expected = baselineMs * (spinNow / spinBaseline);
+#   * fail when actual > expected * ~1.6, which is a regression the machine
+#     cannot explain. Generous on purpose: the spin is pure CPU and these
+#     operations are WPF, so it is a correction and not a conversion.
+#
+# 🔴 WHY THIS REPLACES THE EXISTING RULE. The gate below decides "code, not
+# machine" from a NARROW best-to-worst spread - and that inference is backwards
+# under sustained load: when everything is contended every sample is contended,
+# so the floor rises with the ceiling and the spread NARROWS. Measured 2026-09-05:
+# it fired on ten operations at once while UNTOUCHED code in the same run had
+# moved further than the touched code (sort sessions: project 3.06x, Build-Sessions
+# 2.80x, against Build-Manager 2.01x, spin 88 -> 163 ms). The comment further down
+# already admits the spread guard cannot see this; the answer was to soften the
+# gate rather than to fix the detector. Normalising by the spin fixes it.
+$SR_BaselinePath = Join-Path $PSScriptRoot 'perf-baseline.json'
+$SR_RegressAt = 1.60
+
 
 
 Update-Model
@@ -681,14 +737,30 @@ Write-Host ("  with {0} claude session(s) running. If that number moved and the 
 Write-Host  '  the table moved because of the machine.' -ForegroundColor DarkGray
 
 $over = New-Object System.Collections.Generic.List[object]
+$atBar = 0; $nearBar = 0; $overBar = 0
 foreach ($r in @($script:Results | Sort-Object -Property Ms -Descending)) {
     $lim = $LIMITS[$r.Class]
     $flag = ' '
     if ($r.Ms -gt $lim) { $flag = '!'; $over.Add($r) }
-    Write-Host ("  {0} {1,8:N1} ms  {2,-8} {3}" -f $flag, $r.Ms, $r.Class, $r.Name) -ForegroundColor $(
+    # 🔑 DISTANCE FROM THE TERMINAL, ON EVERY ROW. The class budget says whether
+    # a person would notice; this says how far it is from the thing the operator
+    # actually compares it against. Both are printed because they answer
+    # different questions and one of them used to be missing entirely.
+    $vs = ''
+    if ($r.Class -eq 'GESTURE' -or $r.Class -eq 'INSTANT') {
+        if ($r.Ms -le $SR_BAR)        { $vs = 'at bar';  $atBar++ }
+        elseif ($r.Ms -le $SR_FRAME)  { $vs = '1 frame'; $nearBar++ }
+        else { $vs = ('{0,5:N0}x bar' -f ($r.Ms / $SR_BAR)); $overBar++ }
+    }
+    Write-Host ("  {0} {1,8:N1} ms  {2,-8} {3,-9} {4}" -f $flag, $r.Ms, $r.Class, $vs, $r.Name) -ForegroundColor $(
         if ($r.Ms -gt $lim) { 'Yellow' } elseif ($r.Ms -gt $lim / 2) { 'Gray' } else { 'DarkGray' })
 }
 
+Write-Host ''
+Write-Host ("  AGAINST THE TERMINAL ({0:N1} ms): {1} at the bar, {2} inside one frame, {3} over." -f `
+    $SR_BAR, $atBar, $nearBar, $overBar) -ForegroundColor $(if ($overBar) { 'Yellow' } else { 'Green' })
+Write-Host  '  This line does not fail the suite - see the note on $SR_BAR. It is the standard,' -ForegroundColor DarkGray
+Write-Host  '  and the gate below is whether anything got WORSE than it was.' -ForegroundColor DarkGray
 Write-Host ''
 if ($over.Count) {
     Write-Host "  $($over.Count) operation(s) over their class budget:" -ForegroundColor Yellow
