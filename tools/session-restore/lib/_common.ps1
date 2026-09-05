@@ -956,11 +956,66 @@ function Get-SRDiscovered {
 # newer than its own stamp. Without Set-SRRegistryStamp on that path, the next
 # save refuses against a file it actually agrees with.
 $script:SR_RegStamp = $null
+# 🔴 LENGTH AND TIMESTAMP CAN BOTH MATCH ACROSS A REAL CHANGE, AND THEN THE
+# GUARD PERMITS A SAVE IT EXISTS TO REFUSE.
+#
+# This was length|ticks. Both halves collide for ordinary registry edits:
+#
+#   LENGTH  ticking one session and unticking another in the same save is
+#           net-zero, and lastScan is written with .ToString('o'), which is
+#           fixed-width and therefore never moves the length either.
+#   TICKS   the Windows clock stamps LastWriteTimeUtc at ~15.6 ms granularity,
+#           so any write landing within one tick of the previous one inherits an
+#           identical value.
+#
+# A false "unchanged" here does not serve stale data - it lets THIS window
+# overwrite another window's ticks, which is the failure this repo already
+# records as having cost the operator 210 conversations.
+#
+# 🪤 AND THE LOCK DOES NOT COVER IT, though the note on Save-SRRegistry reads as
+# though it might. Invoke-SRWithRegistryLock stops a write interleaving BETWEEN
+# the check and the replace. The hazard is earlier: the other window's save
+# completes BEFORE this one takes the lock, so the check runs inside the lock,
+# against a file that already changed, and agrees.
+#
+# 🔑 SO THE STAMP CARRIES THE CONTENT ITSELF. SHA256 of the bytes, measured at
+# 1.98 ms on top of the 0.67 ms Get-Item - which is nothing on a save, and a
+# save is a gesture rather than a hot path.
+#
+# 🔑 AND IT GOES IN THE STAMP RATHER THAN BESIDE IT, which is the whole reason
+# this is a hash and not the cheaper-looking alternative of keeping the raw text
+# read in Get-SRRegistry as a baseline. The stamp is not a local: the probe
+# reads the registry in ITS OWN RUNSPACE (sessions-window.ps1:9874) and hands
+# back both the object and the stamp, and the UI adopts them (:10245). A second
+# parallel baseline would have to cross that boundary too - 549,146 characters
+# marshalled every 15 s - and would be a second thing to remember on every path
+# that adopts. One opaque string travels the plumbing that already exists.
+#
+# 🪤 IT ALSO MAKES THE BOM TRAP STRUCTURALLY IMPOSSIBLE. A baseline taken from
+# the string we serialised would not match the file: Set-Content -Encoding utf8
+# on 5.1 writes a BOM and a trailing newline, measured - 7 chars in, 12 bytes
+# out, and ReadAllText gives back 9. This never derives a baseline from the
+# in-memory JSON; it always reads what is actually on disk.
+#
+# Returns '' only when there is NO FILE. See the guard: that means "nothing to
+# be stale against", and it is not the same as "could not tell".
 function Get-SRRegistryStamp {
+    $fi = $null
+    try { $fi = Get-Item -LiteralPath $SR_RegistryPath -ErrorAction Stop } catch { return '' }
+    $h = ''
     try {
-        $fi = Get-Item -LiteralPath $SR_RegistryPath -ErrorAction Stop
-        return ('{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks)
-    } catch { return '' }
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            # FileShare ReadWrite: another window mid-save must not turn this
+            # into an exception, and a torn read cannot produce a FALSE MATCH -
+            # only a mismatch, which fails safe by refusing.
+            $fs = [System.IO.File]::Open($SR_RegistryPath, [System.IO.FileMode]::Open,
+                                         [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try { $h = [BitConverter]::ToString($sha.ComputeHash($fs)).Replace('-', '') } finally { $fs.Dispose() }
+        } finally { $sha.Dispose() }
+    } catch { $h = '' }
+    if (-not $h) { return 'unhashed' }
+    return ('{0}|{1}|{2}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks, $h)
 }
 function Set-SRRegistryStamp { param([string]$Stamp) $script:SR_RegStamp = $Stamp }
 
@@ -1098,7 +1153,30 @@ function Save-SRRegistry {
         # there is nothing to be stale against, so it writes.
         if (-not $Force -and $script:SR_RegStamp) {
             $now = Get-SRRegistryStamp
-            if ($now -and $now -ne $script:SR_RegStamp) {
+            # 🔴 A CHECK THAT CANNOT TELL MUST NOT PERMIT. This used to be
+            # `if ($now -and $now -ne $stamp)`, so an EMPTY $now fell straight
+            # through and the save went ahead - and empty is exactly what
+            # Get-SRRegistryStamp returns when it cannot see the file. Having a
+            # stamp at all means this window read a registry, so failing to
+            # stamp one now is not evidence that nothing has changed; it is
+            # evidence that the question could not be answered.
+            #
+            # The one case where empty really does mean "nothing to clobber" is
+            # a file that is genuinely gone, and that is asked separately rather
+            # than inferred from the same silence.
+            if (-not $now) {
+                if (Test-Path -LiteralPath $SR_RegistryPath) {
+                    throw ("the registry is on disk but could not be read to check whether it " +
+                           "changed, so this save was refused rather than risk overwriting " +
+                           "another window's ticks. Try again in a moment.")
+                }
+            }
+            elseif ($now -eq 'unhashed') {
+                throw ("the registry could not be read to check whether it changed - " +
+                       "something else has it open. This save was refused rather than " +
+                       "risk overwriting another window's ticks. Try again in a moment.")
+            }
+            elseif ($now -ne $script:SR_RegStamp) {
                 throw ("the registry changed on disk since this window read it - " +
                        "another Sessions window (or a scan) has saved. Saving now would " +
                        "discard those changes. Close the other window, or press Rescan " +

@@ -5255,6 +5255,90 @@ try {
         if ($hideHadW) { $hideDirW.shelved = $hideWasW }
         elseif ($null -ne $hideDirW.PSObject.Properties['shelved']) { $hideDirW.PSObject.Properties.Remove('shelved') }
     }
+
+    # ===================================================================
+    # 🔴 THE GUARD HAD TO BE ABLE TO PASS WHEN IT SHOULD THROW, AND THAT IS
+    # THE ONLY DIRECTION WORTH TESTING.
+    #
+    # Asserting that Save-SRRegistry refuses a genuinely different file passes
+    # today and proves nothing - length and ticks both move in that case. The
+    # hazard is the pair that COLLIDES: same length, same LastWriteTimeUtc,
+    # different content. Then the old length|ticks stamp matched, the guard
+    # agreed, and this window overwrote another window's ticks.
+    #
+    # 🔑 THE TIMESTAMP IS SET, NOT RACED. The real collision needs a write
+    # inside the clock's ~15.6 ms granularity, which is a race and would make
+    # this flaky. Writing LastWriteTimeUtc explicitly reproduces the same state
+    # deterministically - it is the state that matters, not how it arose.
+    # ===================================================================
+    $collideA = '{"version":2,"lastScan":"x","directories":[{"path":"P","sessions":[{"sessionId":"AAAA"},{"sessionId":"BBBB"}]}]}'
+    $collideB = '{"version":2,"lastScan":"x","directories":[{"path":"P","sessions":[{"sessionId":"BBBB"},{"sessionId":"AAAA"}]}]}'
+    if ($collideA.Length -ne $collideB.Length) {
+        Fail 'the collision fixtures are not the same length - the test cannot reach the hazard'
+    } else {
+        $fixedT = [DateTime]::new(2026, 1, 1, 12, 0, 0, [DateTimeKind]::Utc)
+        [IO.File]::WriteAllText($sandReg, $collideA, (New-Object System.Text.UTF8Encoding($false)))
+        (Get-Item -LiteralPath $sandReg).LastWriteTimeUtc = $fixedT
+        $oldStyleA = '{0}|{1}' -f (Get-Item -LiteralPath $sandReg).Length, (Get-Item -LiteralPath $sandReg).LastWriteTimeUtc.Ticks
+        $regObj = Get-SRRegistry            # this window's view, and its stamp
+
+        [IO.File]::WriteAllText($sandReg, $collideB, (New-Object System.Text.UTF8Encoding($false)))
+        (Get-Item -LiteralPath $sandReg).LastWriteTimeUtc = $fixedT
+        $oldStyleB = '{0}|{1}' -f (Get-Item -LiteralPath $sandReg).Length, (Get-Item -LiteralPath $sandReg).LastWriteTimeUtc.Ticks
+
+        # The test only bites if the OLD stamp really could not tell these apart.
+        if ($oldStyleA -ne $oldStyleB) {
+            Fail "the collision was not reproduced (old-style stamps differ: $oldStyleA vs $oldStyleB) - this assertion proves nothing"
+        } else {
+            Pass 'two different registries really can share a length and a timestamp'
+            $threw = $false
+            $msg = ''
+            try { Save-SRRegistry -Registry $regObj } catch { $threw = $true; $msg = "$($_.Exception.Message)" }
+            if (-not $threw) {
+                Fail 'the guard PERMITTED a save over a registry that had changed underneath it - another window''s ticks would be gone'
+            } elseif ($msg -notmatch 'changed on disk') {
+                Fail "it threw, but not the staleness refusal: $msg"
+            } else { Pass 'a save over content that changed behind an identical stamp is refused' }
+            # And the file must still hold B - a refusal that half-wrote would be
+            # worse than the bug.
+            $after = ''
+            try { $after = [IO.File]::ReadAllText($sandReg) } catch { }
+            if ($after -ne $collideB) { Fail 'the refused save still modified the registry' }
+            else { Pass 'and the refused save left the file exactly as it was' }
+        }
+
+        # 🪤 AND THE SAME WINDOW MUST STILL BE ABLE TO SAVE TWICE. The obvious
+        # way to build a content baseline is to remember what was serialised -
+        # and that is wrong, because Set-Content -Encoding utf8 on 5.1 adds a
+        # BOM and a trailing newline, so the file never equals the string. A
+        # baseline taken that way turns a silent-overwrite bug into a
+        # cannot-save-twice bug. The stamp is read back off the file for exactly
+        # this reason, and this is the assertion that would catch it.
+        [IO.File]::WriteAllText($sandReg, $collideA, (New-Object System.Text.UTF8Encoding($false)))
+        $regTwice = Get-SRRegistry
+        $twiceOk = $true
+        $twiceWhy = ''
+        try { Save-SRRegistry -Registry $regTwice } catch { $twiceOk = $false; $twiceWhy = "first: $($_.Exception.Message)" }
+        if ($twiceOk) {
+            try { Save-SRRegistry -Registry $regTwice } catch { $twiceOk = $false; $twiceWhy = "second: $($_.Exception.Message)" }
+        }
+        if (-not $twiceOk) { Fail "a window cannot save twice in a row - $twiceWhy" }
+        else { Pass 'the same window can save twice in a row, so the baseline is read back off the file' }
+
+        # 🔴 AND A CHECK THAT CANNOT TELL MUST NOT PERMIT. An unreadable registry
+        # used to fall straight through the guard, because the empty stamp was
+        # tested with -and rather than asked about.
+        Set-SRRegistryStamp 'a-stamp-from-before-something-else-wrote'
+        $held = $null
+        try {
+            $held = [System.IO.File]::Open($sandReg, [System.IO.FileMode]::Open,
+                                           [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+            $blocked = $false
+            try { Save-SRRegistry -Registry $regTwice } catch { $blocked = $true }
+            if (-not $blocked) { Fail 'a save went ahead while the registry could not be read to check it' }
+            else { Pass 'a registry that cannot be read refuses the save rather than assuming it is unchanged' }
+        } finally { if ($held) { $held.Dispose() } }
+    }
 } finally {
     $script:SR_RegistryPath = $realRegPath
     Remove-Item -LiteralPath $sandReg -Force -ErrorAction SilentlyContinue
