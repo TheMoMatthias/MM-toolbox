@@ -123,8 +123,62 @@ $SR_FRAME = 16.0    # one frame at 60fps - below this, faster is unobservable
 # 2.80x, against Build-Manager 2.01x, spin 88 -> 163 ms). The comment further down
 # already admits the spread guard cannot see this; the answer was to soften the
 # gate rather than to fix the detector. Normalising by the spin fixes it.
-$SR_BaselinePath = Join-Path $PSScriptRoot 'perf-baseline.json'
-$SR_RegressAt = 1.60
+# 🪤 $SR_Root, NOT $PSScriptRoot. This driver is SPLICED onto the window source
+# by New-GuiHarness and executed from .state, so $PSScriptRoot here is .state -
+# and the first version of this quietly wrote the baseline into a scratch
+# directory. Deleting tests\perf-baseline.json then did nothing, and the run
+# kept comparing against a file that looked like it had been removed.
+$SR_BaselinePath = Join-Path $SR_Root 'tests\perf-baseline.json'
+# 🔴 SET FROM MEASUREMENT, AFTER TWO GUESSES WERE WRONG.
+#
+# Against an ENVELOPE baseline (the worst of five healthy runs - see the
+# rebaseline note further down), three clean verification runs on identical
+# source came in at worst 1.11x, 1.57x and "nothing within 8 ms". 1.60 leaves a
+# 2% margin over that, which is one unlucky run away from crying wolf, and this
+# file already records what happens to a benchmark that does.
+#
+# 🪤 BE HONEST ABOUT WHAT THIS BUYS. At 2.0x against the worst healthy run, and
+# only when the absolute difference clears 8 ms, this catches something becoming
+# GROSSLY slower - a synchronous disk read appearing on a click, a rebuild where
+# an append used to be, the 1.3-second Send. It does NOT catch 20% creep, and no
+# threshold on a single sample per run could: the underlying spread is 1.5x on
+# healthy code. Finer work than that needs the deliberate A/B the audit lanes
+# did, not a suite gate.
+$SR_RegressAt = 2.00
+# 🔴 AND IT MUST ALSO BE SLOWER BY AN AMOUNT ANYONE COULD NOTICE.
+#
+# A ratio on a small operation is mostly noise. Measured across four runs of this
+# suite on IDENTICAL source, the worst ratio seen was 1.39x, then 1.54x, then
+# 1.75x - and every one of those was a sub-10 ms operation where the actual
+# difference was one or two milliseconds. A threshold set above that spread
+# (2.5x, say) would be too blunt to catch anything real; the honest fix is to
+# stop judging small operations by ratio at all.
+#
+# So a regression has to clear BOTH tests: proportionally worse AND worse by at
+# least this many milliseconds. Eight is half a frame - below it, nothing that
+# happens on a click is perceptible, and the ratio is measuring the machine.
+$SR_RegressMinMs = 8.0
+
+# 🔑 HOW BUSY THIS MACHINE IS, MEASURED THE SAME WAY AT BOTH ENDS OF THE RUN.
+#
+# A fixed CPU workload: whatever it reads, it read for the same reason the table
+# did. Taking it only ONCE was a real source of false alarms - the benchmarks
+# take minutes, and a single reading at the end describes the machine at the end
+# rather than while the work was happening. Bracketing the run gives a mean to
+# normalise against and, more usefully, a DRIFT figure: if the two ends disagree
+# badly, nothing measured in between can be trusted against a baseline.
+function Measure-SRSpin {
+    $b = [double]::MaxValue
+    for ($rep = 0; $rep -lt 5; $rep++) {
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $acc = 0.0
+        for ($i = 1; $i -lt 100000; $i++) { $acc += [Math]::Sqrt($i) }
+        $sw.Stop()
+        if ($sw.Elapsed.TotalMilliseconds -lt $b) { $b = $sw.Elapsed.TotalMilliseconds }
+    }
+    return $b
+}
+$script:SpinStart = Measure-SRSpin
 
 
 
@@ -722,19 +776,17 @@ Write-Host '=== the whole surface, slowest first ==='
 # which is the only question that actually comes up. Recorded here so there is
 # something to compare against: 337 ms on 2026-09-04 with 26 claude sessions
 # running, on a 4090 machine that reads far lower when it is quiet.
-$spinBest = [double]::MaxValue
-for ($rep = 0; $rep -lt 5; $rep++) {
-    $sw = [Diagnostics.Stopwatch]::StartNew()
-    $acc = 0.0
-    for ($i = 1; $i -lt 100000; $i++) { $acc += [Math]::Sqrt($i) }
-    $sw.Stop()
-    if ($sw.Elapsed.TotalMilliseconds -lt $spinBest) { $spinBest = $sw.Elapsed.TotalMilliseconds }
-}
+$spinEnd = Measure-SRSpin
+# The mean of the two ends, which is the best single description available of
+# the machine WHILE the table was being taken.
+$spinBest = ($script:SpinStart + $spinEnd) / 2.0
+$spinDrift = [Math]::Max($script:SpinStart, $spinEnd) / [Math]::Max([Math]::Min($script:SpinStart, $spinEnd), 0.001)
 $spinBusy = @(Get-Process -Name 'claude' -ErrorAction SilentlyContinue).Count
 Write-Host ''
 Write-Host ("  the machine, for comparing this run against another: a fixed CPU loop took {0:N0} ms" -f $spinBest) -ForegroundColor DarkGray
-Write-Host ("  with {0} claude session(s) running. If that number moved and the table moved with it," -f $spinBusy) -ForegroundColor DarkGray
-Write-Host  '  the table moved because of the machine.' -ForegroundColor DarkGray
+Write-Host ("  ({0:N0} before the table, {1:N0} after - drift {2:N2}x) with {3} claude session(s) running." -f `
+    $script:SpinStart, $spinEnd, $spinDrift, $spinBusy) -ForegroundColor DarkGray
+Write-Host  '  If that number moved and the table moved with it, the table moved because of the machine.' -ForegroundColor DarkGray
 
 $over = New-Object System.Collections.Generic.List[object]
 $atBar = 0; $nearBar = 0; $overBar = 0
@@ -780,52 +832,207 @@ if ($over.Count) {
 Write-Host ''
 $brokeIt = @($script:Results | Where-Object { $_.Threw })
 foreach ($b in $brokeIt) { Fail ("{0} THREW - it has no timing, it has an error: {1}" -f $b.Name, $b.Threw) }
-$slowGestures = @($script:Results | Where-Object { -not $_.Threw -and $_.Class -eq 'GESTURE' -and $_.Ms -gt $LIMITS['GESTURE'] })
-# 🔴 A VIOLATION HAS TO BE STABLE TO COUNT. Measured across five runs of this
-# suite as the machine got busier, 'build the FlowDocument' read 19.6, 29.3,
-# 40.4, 49.9 and 78.8 ms on IDENTICAL source - so a single over-budget reading
-# is not evidence about the code. When the best and worst of seven runs differ
-# by more than 2.5x the operation was contending for the machine and its best
-# sample cannot be trusted either; that is reported, loudly, but it does not
-# fail the suite. A stable number over budget is the code, and that does.
-# 🔴 TWO GATES, AND WHICH ONE APPLIES DEPENDS ON WHY THIS IS RUNNING.
+# ===========================================================================
+# 🔴 THE GATE IS "DID THIS COMMIT MAKE SOMETHING SLOWER", NOT "IS THIS UNDER 50 ms".
 #
-# This suite now runs as part of the DEFAULT suite, because being by-name-only
-# meant it never ran: fourteen commits landed in one day, each after a green
-# full run, and not one had its effect on responsiveness checked.
+# WHAT WAS HERE BEFORE, AND WHY IT HAD TO GO. The old rule decided "code, not
+# machine" from a NARROW best-to-worst spread: a wide spread meant the operation
+# was contending and was excused, a narrow one meant the number was real and
+# failed. That inference is backwards under sustained load. When the whole
+# machine is busy EVERY sample is contended, so the floor rises with the ceiling
+# and the spread NARROWS - the exact condition it treats as proof of code.
 #
-# 🪤 BUT IT RUNS ON THE OPERATOR'S OWN MACHINE, WHICH HAS TWENTY CLAUDE SESSIONS
-# ON IT. Measured twice, minutes apart, on identical source: 10 operations over
-# budget, then 19 - Build-Manager 54 ms then 65, 'sort manager: said' 56 then
-# 82. That is contention, not code, and the existing 2.5x spread guard does not
-# catch it because EVERYTHING is uniformly slower, so best and worst move
-# together. A default suite that goes red because the operator's own work is
-# running is the exact "benchmark that cries wolf" this driver was written
-# against, and it would be switched off within a week.
+# Measured 2026-09-05, and it is why this was rewritten: the rule fired on TEN
+# operations at once, while UNTOUCHED code in the same run had moved further
+# than the code that had just changed -
 #
-# So: run it deliberately (-Only perf) and the 50 ms gesture budget is a HARD
-# GATE, which is what you want when you are working on speed. Run it as part of
-# the full suite and only a STALL fails - a gesture over 250 ms, which is five
-# times the budget and far outside anything load can explain. The table prints
-# either way, so a regression is visible in both.
+#     sort sessions: project   41.7 -> 127.6 ms   3.06x   UNTOUCHED
+#     Build-Sessions           37.9 -> 106.1 ms   2.80x   UNTOUCHED
+#     Build-Manager            37.3 ->  75.1 ms   2.01x   just edited
+#
+# with the spin loop going 88 -> 163 ms. The comment this replaces already
+# admitted the spread guard could not see this; the answer at the time was to
+# SOFTEN the gate rather than fix the detector, which is how a suite ends up
+# unable to fail honestly in either direction.
+#
+# 🔑 THE SPIN LOOP IS THE FIX. It is a fixed CPU workload measured in the SAME
+# run, so it says how fast this machine was while these numbers were taken.
+# Comparing an operation against a baseline recorded with ITS OWN spin cancels
+# the machine out: expected = baseline * (spinNow / spinThen).
+#
+# 🪤 IT DOES NOT AUTO-RATCHET, AND THE FIRST VERSION OF THIS GATE DID.
+#
+# That version rewrote the baseline whenever an operation came in faster, to
+# "lock in the win". Run it twice on IDENTICAL source and it fails: the baseline
+# converges on the luckiest sample ever recorded, and every ordinary run
+# afterwards reads as a regression against it. Measured immediately - the second
+# run flagged four operations, all untouched, up to 1.89x.
+#
+# A baseline for a noisy metric has to be a TYPICAL number, not a minimum. So it
+# is recorded once and left alone; improvements are reported and deliberately do
+# not tighten the gate. SR_PERF_REBASELINE takes the current numbers on purpose.
+# ===========================================================================
 $softGate = [bool]$env:SR_PERF_SOFT
-$gestureFailAt = $(if ($softGate) { 250.0 } else { $LIMITS['GESTURE'] })
-if ($softGate) {
-    Write-Host ("  (full-suite run: the table is printed, but only a gesture over {0:N0} ms fails - run -Only perf for the {1:N0} ms gate)" -f `
-        $gestureFailAt, $LIMITS['GESTURE']) -ForegroundColor DarkGray
+
+$baseSpin = 0.0
+$baseOps  = @{}
+if (Test-Path -LiteralPath $SR_BaselinePath) {
+    try {
+        $bj = Get-Content -LiteralPath $SR_BaselinePath -Raw | ConvertFrom-Json
+        $baseSpin = [double]$bj.spin
+        foreach ($p in $bj.ops.PSObject.Properties) { $baseOps[$p.Name] = [double]$p.Value }
+    } catch {
+        Write-Host ('  [warn] the perf baseline is unreadable, recording a fresh one: ' + $_.Exception.Message) -ForegroundColor Yellow
+        $baseSpin = 0.0; $baseOps = @{}
+    }
 }
-foreach ($g in $slowGestures) {
-    $spread = 99.0
-    if ($g.Ms -gt 0) { $spread = $g.Worst / $g.Ms }
-    if ($g.Ms -le $gestureFailAt) {
-        Write-Host ("  OVER  {0,-42} {1,6:N0} ms against a {2:N0} ms budget" -f $g.Name, $g.Ms, $LIMITS['GESTURE']) -ForegroundColor DarkYellow
+
+# 🪤 NORMALISATION IS A CORRECTION, NOT A CONVERSION. The spin is pure CPU and
+# these operations are WPF, disk and interpreter, so the adjustment is only
+# trustworthy over a modest range. Far outside it, report and do not fail:
+# extrapolating a 4x-busier machine onto a WPF layout is a guess, and a guess
+# that fails the build is exactly the wolf-crying this file was written against.
+$spinRatio = 1.0
+$spinTrust = $false
+if ($baseSpin -gt 0 -and $spinBest -gt 0) {
+    $spinRatio = $spinBest / $baseSpin
+    # 🪤 AND THE RUN HAS TO HAVE BEEN STEADY WHILE IT WAS TAKEN. A run whose two
+    # spin readings disagree by more than half was measured across a machine
+    # that changed underneath it, so no single normaliser describes it and the
+    # early rows and the late rows are not on the same scale.
+    $spinTrust = ($spinRatio -ge 0.33 -and $spinRatio -le 3.0 -and $spinDrift -le 1.5)
+}
+
+$newOps = @{}
+$regressed = New-Object System.Collections.Generic.List[object]
+$improved  = 0
+$added     = 0
+# 🔑 HOW CLOSE THIS RUN CAME, PRINTED WHETHER OR NOT ANYTHING FAILED. Without it
+# the only visible states are "green" and "over the line", which says nothing
+# about the margin - and the margin is the whole question when the threshold is
+# a judgement call. It is also how $SR_RegressAt was set: run the suite
+# repeatedly on IDENTICAL source, read this number, and put the threshold above
+# the spread the machine produces on its own.
+$worstRatio = 0.0
+$worstName  = ''
+
+foreach ($r in $script:Results) {
+    if ($r.Threw -or $r.Ms -le 0) { continue }
+    $norm = $r.Ms / [Math]::Max($spinBest, 0.001)
+    if (-not $baseOps.ContainsKey($r.Name)) {
+        $newOps[$r.Name] = $norm; $added++
         continue
     }
-    if ($spread -gt 2.5) {
-        Write-Host ("  NOISY {0} read {1:N0} ms best / {2:N0} ms worst - over budget, but this machine is contending" -f $g.Name, $g.Ms, $g.Worst) -ForegroundColor Yellow
-    } else {
-        Fail ("{0} takes {1:N0} ms at its FASTEST and only {2:N0} ms at its worst - that is the code, not the machine" -f $g.Name, $g.Ms, $g.Worst)
+    $wasNorm  = $baseOps[$r.Name]
+    $expected = $wasNorm * $spinBest
+    # A floor, because a ratio on a sub-millisecond operation is all noise: 0.1 ms
+    # against 0.05 is "twice as slow" and means nothing anyone can perceive.
+    if ($expected -lt 2.0 -and $r.Ms -lt 2.0) { $newOps[$r.Name] = $wasNorm; continue }
+    # 🪤 ONLY AMONG OPERATIONS THAT COULD ACTUALLY FAIL. Reporting the worst
+    # ratio across everything reports the noise floor of the smallest operation
+    # in the suite - which is how the first version of this line said "1.75x,
+    # threshold 1.60x" about a two-millisecond difference.
+    $ratio = $norm / [Math]::Max($wasNorm, 0.000001)
+    if (($r.Ms - $expected) -ge $SR_RegressMinMs -and $ratio -gt $worstRatio) {
+        $worstRatio = $ratio; $worstName = $r.Name
     }
+    if ($norm -gt $wasNorm * $SR_RegressAt -and ($r.Ms - $expected) -ge $SR_RegressMinMs) {
+        $regressed.Add([PSCustomObject]@{ Name = $r.Name; Ms = $r.Ms; Expected = $expected; Was = ($wasNorm * $baseSpin) })
+        $newOps[$r.Name] = $wasNorm
+        continue
+    }
+    if ($norm -lt $wasNorm) { $improved++ }
+    # 🔴 THE BASELINE IS KEPT, NOT LOWERED. See the note above: taking the better
+    # of the two here is what makes the gate converge on its luckiest run and
+    # then fail on unchanged code.
+    $newOps[$r.Name] = $wasNorm
+}
+
+Write-Host ''
+if (-not $baseOps.Count) {
+    Write-Host ("  BASELINE RECORDED - {0} operation(s) at a spin of {1:N0} ms. Nothing to compare against yet;" -f $added, $spinBest) -ForegroundColor Cyan
+    Write-Host  '  the next run is the first that can catch a regression.' -ForegroundColor DarkGray
+} elseif (-not $spinTrust) {
+    if ($spinDrift -gt 1.5) {
+        Write-Host ("  MACHINE MOVED DURING THE RUN: the spin loop read {0:N0} ms before the table and {1:N0} ms after ({2:N2}x)." -f `
+            $script:SpinStart, $spinEnd, $spinDrift) -ForegroundColor Yellow
+        Write-Host  '  Early and late rows are not on the same scale, so nothing is failed on this run.' -ForegroundColor DarkGray
+    } else {
+        Write-Host ("  MACHINE TOO DIFFERENT TO JUDGE: the spin loop reads {0:N0} ms against {1:N0} ms when the baseline" -f $spinBest, $baseSpin) -ForegroundColor Yellow
+        Write-Host ("  was recorded ({0:N2}x). The table is printed and nothing is failed - normalising that far is a guess." -f $spinRatio) -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host ("  REGRESSION GATE: machine is {0:N2}x the baseline (spin {1:N0} against {2:N0} ms)." -f $spinRatio, $spinBest, $baseSpin) -ForegroundColor DarkGray
+    if ($regressed.Count) {
+        foreach ($g in $regressed) {
+            $msg = ('{0} is {1:N0} ms where this machine predicts {2:N0} ms ({3:N0} ms when the baseline was taken) - {4:N2}x slower than it was' -f `
+                    $g.Name, $g.Ms, $g.Expected, $g.Was, ($g.Ms / [Math]::Max($g.Expected, 0.001)))
+            if ($softGate) { Write-Host ('  SLOWER  ' + $msg) -ForegroundColor Yellow }
+            else { Fail $msg }
+        }
+        if ($softGate) {
+            Write-Host '  (full-suite run: reported only. Run -Only perf to have a regression fail the suite.)' -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host ("  nothing got slower. {0} improved, {1} new." -f $improved, $added) -ForegroundColor Green
+    }
+    if ($worstName) {
+        Write-Host ("  closest to the line: {0} at {1:N2}x its baseline (fails above {2:N2}x AND +{3:N0} ms)." -f `
+            $worstName, $worstRatio, $SR_RegressAt, $SR_RegressMinMs) -ForegroundColor DarkGray
+    } else {
+        Write-Host ("  nothing was even {0:N0} ms slower than predicted." -f $SR_RegressMinMs) -ForegroundColor DarkGray
+    }
+}
+
+# 🔒 THE BASELINE IS ONLY REWRITTEN WHEN IT CAN BE TRUSTED, and never in a way
+# that hides a regression: a regressed operation keeps its OLD figure above, so
+# writing here records the improvements and the new operations and nothing else.
+# SR_PERF_REBASELINE is the escape hatch for a deliberate, accepted slowdown -
+# it takes the current numbers as the new truth, which is a thing to do on
+# purpose and never by default.
+# 🔴 THE BASELINE IS AN ENVELOPE, NOT A READING, AND IT TAKES SEVERAL RUNS.
+#
+# Two earlier designs failed against measurement, both on IDENTICAL source:
+#   1. ratchet to the best-ever value -> converges on the luckiest run, then
+#      fails everything afterwards (4 false alarms on the second run);
+#   2. one reading + spin normalisation -> still 3 false alarms per run, at up
+#      to 2.49x, on 15-60 ms operations.
+#
+# 🪤 THE SECOND FAILURE IS THE INFORMATIVE ONE. The spin loop was ROCK STEADY
+# across those runs - 15, 16, 17, 16 ms - while `search: sessions box only`
+# swung 14 -> 34 ms. So the variance in these operations is not CPU contention
+# at all; it is GC timing and WPF's own state, which a Math::Sqrt loop cannot
+# see and therefore cannot correct for. Normalising harder was never going to
+# work, because the normaliser is blind to the thing that moves.
+#
+# What DOES describe it is the operation's own spread. So rebaselining takes the
+# MAX of what it already held and what this run measured: run it a few times on
+# healthy code and the baseline grows into the envelope that code produces on
+# this machine. The gate then asks "is this outside the envelope", which is a
+# question the data can actually answer.
+if ($env:SR_PERF_REBASELINE) {
+    $widened = 0
+    foreach ($r in $script:Results) {
+        if ($r.Threw -or $r.Ms -le 0) { continue }
+        $n = $r.Ms / [Math]::Max($spinBest, 0.001)
+        if ($newOps.ContainsKey($r.Name)) {
+            if ($n -gt $newOps[$r.Name]) { $newOps[$r.Name] = $n; $widened++ }
+        } else { $newOps[$r.Name] = $n; $widened++ }
+    }
+    Write-Host ("  SR_PERF_REBASELINE - the envelope was widened for {0} operation(s) by this run." -f $widened) -ForegroundColor Magenta
+    Write-Host  '  Run this a few times on healthy code; the baseline is the worst each one honestly does.' -ForegroundColor DarkGray
+}
+if ($spinTrust -or -not $baseOps.Count -or $env:SR_PERF_REBASELINE) {
+    try {
+        $payload = [ordered]@{
+            recordedAt = (Get-Date).ToString('s')
+            spin       = [Math]::Round($spinBest, 3)
+            note       = 'ops values are ms-per-spin-ms; expected = value * spinNow. See the gate in perf-driver.ps1.'
+            ops        = ([ordered]@{})
+        }
+        foreach ($k in @($newOps.Keys | Sort-Object)) { $payload.ops[$k] = [Math]::Round($newOps[$k], 6) }
+        ($payload | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $SR_BaselinePath -Encoding utf8
+    } catch { Write-Host ('  [warn] could not write the perf baseline: ' + $_.Exception.Message) -ForegroundColor Yellow }
 }
 $stalls = @($script:Results | Where-Object { $_.Ms -ge 1000 -and $_.Class -ne 'SLOW' -and $_.Class -ne 'STALL' -and $_.Class -ne 'GESTURE' })
 if ($stalls.Count) {
