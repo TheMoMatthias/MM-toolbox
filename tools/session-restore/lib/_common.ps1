@@ -4854,6 +4854,10 @@ function Get-SRSubAgents { param([string]$JsonlPath)
 # function returned nothing. Same family as the `$Path`/`$path` and
 # single-letter collisions already recorded in CONTEXT.md - a name that is
 # already taken, in a language that will not warn you.
+# sessionId -> its ...\<session>\tasks directory. Populated on the first lookup
+# that finds one; see the note inside the function for why it is worth caching.
+$script:SR_ShellDirCache = @{}
+
 function Get-SRShellOutputPath { param([string]$SessionId, [string]$Shell)
     if (-not $SessionId -or -not $Shell) { return '' }
     # Only ever a bare id from the transcript, but this reaches the filesystem
@@ -4863,11 +4867,54 @@ function Get-SRShellOutputPath { param([string]$SessionId, [string]$Shell)
     if ($SessionId -notmatch '^[A-Za-z0-9_-]{1,64}$') { return '' }
     $root = Join-Path $env:TEMP 'claude'
     if (-not (Test-Path -LiteralPath $root)) { return '' }
-    $glob = Join-Path $root ('*\' + $SessionId + '\tasks\' + $Shell + '.output')
-    $hit = @()
-    try { $hit = @(Get-ChildItem -Path $glob -File -ErrorAction SilentlyContinue) } catch { }
-    if (-not $hit.Count) { return '' }
-    return $hit[0].FullName
+
+    # 🔴 THIS WAS 330 ms ON A CLICK, TO FIND A 903-BYTE FILE.
+    #
+    # The path is %TEMP%\claude\<project>\<session>\tasks\<shell>.output and the
+    # project segment is not known here, so it was a wildcard:
+    #
+    #     Get-ChildItem -Path "$root\*\$SessionId\tasks\$Shell.output"
+    #
+    # which makes the provider walk every project directory under the root.
+    # Audited 2026-09-05: opening a background-shell fold cost 289 ms, of which
+    # ~330 was this call; the file it finds reads in 2.1 ms, and a fold with
+    # nothing to read is 12.1 ms. Essentially the whole cost was the search.
+    #
+    # 🪤 AND THE SEARCH SPACE ONLY GROWS. Counted the same day: 379 entries under
+    # that root, 194 of them older than two days. Nothing prunes it, so this got
+    # worse every week the machine stayed up - which is the temp-hygiene problem
+    # the operator's conventions already warn about, arriving as a UI stall.
+    #
+    # 🔑 A SESSION LIVES IN EXACTLY ONE PROJECT DIRECTORY, so the answer only has
+    # to be found once. After that every shell of that session is a direct path.
+    $known = $script:SR_ShellDirCache["$SessionId"]
+    if ($known) {
+        $direct = Join-Path $known ($Shell + '.output')
+        if ([System.IO.File]::Exists($direct)) { return $direct }
+        # Fall through rather than returning: this session is known but this
+        # particular shell has not been written yet, or was cleaned up.
+    }
+
+    # Raw .NET rather than the provider. Get-ChildItem with a wildcard path pays
+    # PowerShell's pipeline and provider overhead per candidate; Directory.Exists
+    # is a single syscall, and the loop stops at the first hit instead of
+    # enumerating all of them and then filtering.
+    $tasksDir = ''
+    try {
+        foreach ($proj in [System.IO.Directory]::GetDirectories($root)) {
+            $cand = [System.IO.Path]::Combine($proj, $SessionId, 'tasks')
+            if ([System.IO.Directory]::Exists($cand)) { $tasksDir = $cand; break }
+        }
+    } catch { return '' }
+    if (-not $tasksDir) { return '' }
+
+    # Remembered whether or not THIS shell exists: the expensive thing was
+    # locating the session, and that answer is good for every shell it owns.
+    $script:SR_ShellDirCache["$SessionId"] = $tasksDir
+
+    $found = [System.IO.Path]::Combine($tasksDir, ($Shell + '.output'))
+    if ([System.IO.File]::Exists($found)) { return $found }
+    return ''
 }
 
 # The output as it stands RIGHT NOW. Read with FileShare::ReadWrite because the
