@@ -504,11 +504,42 @@ if ($pxSessions.Count -ge 2) {
         $pxJ = "$($_.Row.S.jsonl)"
         if ($pxJ -and (Test-Path -LiteralPath $pxJ)) { (Get-Item -LiteralPath $pxJ).Length } else { 0 }
     }} -Descending)
+    # 🔴 THE BIGGEST FILE IS NOT THE BIGGEST DOCUMENT, AND FOR ONE EVENING THIS
+    # HARNESS WAS MEASURING ITSELF.
+    #
+    # perf-driver picks the largest transcript by BYTES and this copied it. On
+    # this machine the largest transcript is THE SESSION RUNNING THE HARNESS, and
+    # its last 96 KB is two records - one enormous tool call and one enormous
+    # result, which is this file's own output table. So the pane rendered 2 turns
+    # and 0 fold blocks, the document extent fell 5.020 -> 1.399 px across the
+    # evening as those outputs grew, and the optimal-paragraph A/B collapsed to
+    # 0,96x because there was almost no prose left to break lines in. I came
+    # within one message of reporting that as a regression in the reading pane.
+    #
+    # Verified by parsing the four largest transcripts directly: this session
+    # yields 2 blocks; the next three yield 27, 25 and 27. The parse was never
+    # wrong. The SELECTION was measuring the observer.
+    #
+    # 🔑 SO IT PICKS BY WHAT THE PANE ACTUALLY HAS TO RENDER. Parse the tails of
+    # the largest few and take the one with the most blocks. Six parses at ~30 ms
+    # is a rounding error against this run, and it is the difference between
+    # profiling a real conversation and profiling this file's own output.
     $pxBig = $pxBySize[0]
+    $pxBestN = -1
+    foreach ($pxCand in @($pxBySize | Select-Object -First 6)) {
+        $pxCj = "$($pxCand.Row.S.jsonl)"
+        if (-not $pxCj -or -not (Test-Path -LiteralPath $pxCj)) { continue }
+        $pxCb = @()
+        # 🪤 Assign, THEN wrap. Get-SRTranscriptBlocks ends in a comma guard, so
+        # @(Get-SRTranscriptBlocks ...) is ONE element holding the whole array.
+        try { $pxGot0 = Get-SRTranscriptBlocks -JsonlPath $pxCj -MaxRecords 220 -MaxTailBytes $script:tailBytes; $pxCb = @($pxGot0) } catch { }
+        if ($pxCb.Count -gt $pxBestN) { $pxBestN = $pxCb.Count; $pxBig = $pxCand }
+    }
     $pxOther = @($pxBySize | Where-Object { $_.Id -ne $pxBig.Id })[0]
     $pxKb = 0
     try { $pxKb = (Get-Item -LiteralPath "$($pxBig.Row.S.jsonl)").Length / 1KB } catch { }
-    Note ("profiling against '{0}' - {1:N0} KB of transcript" -f $pxBig.Name, $pxKb)
+    Note ("profiling against '{0}' - {1:N0} KB of transcript, {2} block(s) in the tail." -f $pxBig.Name, $pxKb, $pxBestN)
+    Note  'Chosen by BLOCKS IN THE TAIL, not by file size: the largest file here is the session running this harness.'
 }
 
 # 🔴 THE INJECTION GOES ON A PATH THIS DRIVER OTHERWISE LEAVES ALONE, and it
@@ -572,6 +603,7 @@ $pxDocHome = { -not $script:docPs }
 # is not something this harness gets to decide, so the inventory says
 # NOT PRESENT TODAY rather than failing or quietly claiming coverage.
 $pxAgentSeen = $false
+$pxFoldSeen = $false
 
 # The device a synthesized mouse event needs. Looked up once, here, rather than
 # inside the first block that happens to want it - the agent link needs it too
@@ -641,8 +673,11 @@ else {
     }
     $pxHeads = Find-FoldHeaders
     Note ("{0} foldable block(s) realized in the pane" -f $pxHeads.Count)
+    if ($pxHeads.Count) { $pxFoldSeen = $true }
     if (-not $pxHeads.Count) {
-        Huh 'no fold headers found in the visual tree - either the document is empty or they are not realized. Cannot judge the fold.'
+        $pxSvF = Get-PaneScroller
+        Huh ("NO FOLD BLOCK IN THE PANE AT ALL. The document is {0:N0} px over {1} turn(s). Earlier today this same conversation rendered 4 to 11. Either its tail is now all prose, or the reading pane has stopped folding - and 'I still cannot see the individual steps' is the operator's own words, so this must not be read as a pass." -f `
+             $(if ($pxSvF) { $pxSvF.ExtentHeight } else { 0 }), @($script:docTurns).Count)
     } else {
         # Prefer a run block: it is the one holding the individual steps.
         $pxRunHead = @($pxHeads | Where-Object { "$($_.Tag.Kind)" -eq 'run' })
@@ -1386,6 +1421,17 @@ if (-not $pxAgentSeen) {
 }
 if (-not $pxStripSeen) {
     $PX_SURFACE['StripList']        = 'NOT PRESENT TODAY: the strip holds one dot per conversation waiting on the operator, and none is. Measurable when one is.'
+}
+# 🔴 AND THE FOLD CAPTION DOES **NOT** GET A TIDY VERDICT WHEN IT IS MISSING.
+#
+# "no fold block was rendered" has two possible causes and this harness cannot
+# tell them apart: a tail that happens to be all prose, or the reading pane
+# having stopped folding. Filing it as NOT PRESENT TODAY would make the second
+# one look like the first - and the second is the operator's original complaint,
+# word for word. So it gets a verdict that stays loud, and the run stays
+# inconclusive rather than passing.
+if (-not $pxFoldSeen) {
+    $PX_SURFACE['fold caption'] = 'COULD NOT BE MEASURED THIS RUN: no fold block was rendered at all. That is either a tail with no tool runs in it or the reading pane no longer folding, and this harness cannot tell which. It is NOT a pass.'
 }
 
 $pxMeasuredNames = @{}
