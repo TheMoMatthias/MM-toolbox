@@ -4972,6 +4972,39 @@ function Get-SRRunspace {
 
 $script:AnswerJob = {
     . (Join-Path $SRHere '_common.ps1')
+    # ===================================================================
+    # 🔴 THE HELD-OPEN READER IS PER RUNSPACE, AND ONLY THE UI EVER ASKED FOR
+    # ONE. Connect-SRScreenServer refuses a first start unless SR_ScreenWant is
+    # set, and the sole caller of Start-SRScreenServer was the window's own
+    # startup - so every job spawned the reader exe once per read.
+    #
+    # That silently defeated a tuning decision two files away:
+    # Wait-SRScreenState's SliceMs was dropped to 8 on the basis that a served
+    # read is ~5 ms, and answering does one read to find the cursor and then
+    # another per iteration until the highlight arrives. Unserved those are ~78
+    # ms each, so the loop was paced entirely by the reads and the slice was
+    # decoration.
+    #
+    # 🔑 AND IT PAYS FROM THE FIRST READ, which is not what I expected. Starting
+    # the server costs a process spawn, so a job that reads once looked like a
+    # net loss. Measured in this exact shape - fresh runspace, dot-source, then
+    # N reads of a live console, 30 of them on the machine:
+    #
+    #     reads      spawn-per-read     held-open
+    #         1            244 ms         134 ms
+    #         2            162 ms          88 ms
+    #         5            365 ms         124 ms
+    #        16          1,096 ms         224 ms
+    #
+    # There is no crossover to find: one served read plus the server start still
+    # beats one spawn-per-read, because that path also writes a temp file, waits
+    # on process exit, reads it back and deletes it.
+    #
+    # 🔒 AND IT IS STOPPED AGAIN BELOW. The server is a child process that
+    # outlives the runspace - it self-exits after 30 s idle, but a backstop is
+    # not a substitute for closing what you opened, and answers happen far more
+    # often than every 30 s.
+    $null = Start-SRScreenServer
     $why = ''
     # 🔴 NO 'default' THAT ANSWERS. The obvious way to write this switch puts the
     # option click in the default arm - and then ANY kind that does not match,
@@ -4994,6 +5027,10 @@ $script:AnswerJob = {
         }
     }
     catch { $why = "$($_.Exception.Message)" }
+    # Close the reader this job opened. See the note above: it would go on its
+    # own after 30 s idle, but sends are far more frequent than that and this
+    # machine's conventions single out orphan processes for good reason.
+    try { Stop-SRScreenServer } catch { }
     @{ Why = "$why" }
 }
 
@@ -5367,6 +5404,9 @@ $script:AskPollSlowMs = 2500
 $script:askSig  = ''
 $script:askMiss = 0
 $script:askSlow = $false
+# How many reads IN A ROW have come back over the bar. See the note in the poll:
+# the bar is right and the flap was that one slow read was enough.
+$script:askSlowRun = 0
 # The last screen this lane read, and whose it was. See the note in the poll:
 # an unchanged screen cannot hold a changed menu, so it skips the parse.
 $script:askText = ''
@@ -5412,7 +5452,35 @@ function Invoke-AskPoll {
     # spawn fallback the same read is ~100 ms, and polling THAT four times a
     # second would put a fifth of the UI thread into watching one console. The
     # measurement decides, not an assumption about which path is live.
-    $slow = ($sw.Elapsed.TotalMilliseconds -gt 40)
+    # 🔴 THE BAR WAS RIGHT AND THE FLAP WAS THAT ONE READ WAS ENOUGH.
+    #
+    # Counted in the operator's own running window (.state\restore.log): 135
+    # transitions, 68 trips down to 2500 ms and 67 back up - flapping, not
+    # settling - and the read that tripped it was n=64, min 40, p50 50, p90 143.
+    # 56 of those 64 (88%) were reads UNDER 100 ms, i.e. the held-open reader
+    # working normally, ten milliseconds over a bar set at forty. Every misfire
+    # cost a full 2500 ms tick, so the card's real worst case was ~2.5 s and not
+    # the 400 ms this lane advertises.
+    #
+    # 🪤 AND NO THRESHOLD CAN FIX IT, WHICH IS WHY THE 40 STAYS. Measured n=300
+    # served reads round-robin over 30 live consoles against n=40 on the spawn
+    # fallback:
+    #
+    #     served  min 3.3  p50 5.2  p90 8.0  p99 12.5  p99.7 60.8  max 94.7
+    #     spawn   min 57.9 p50 71.4 p90 81.2                       max 96.7
+    #
+    # The two OVERLAP - 58 to 95 belongs to both - so raising the bar to 100 or
+    # 150 stops the false trips only by disabling the detector: at 100 ms the
+    # spawn fallback trips on 0% of its reads and the back-off never fires at
+    # all. What separates them is not one read but two: at 40 ms, 3 of 300
+    # served reads are over the bar and NO TWO IN A ROW are, while every spawn
+    # read is over it - so the fallback is still caught inside two ticks.
+    #
+    # Asymmetric on purpose: two over the bar to back off, one under it to come
+    # back. Being briefly fast is never worth punishing.
+    $overBar = ($sw.Elapsed.TotalMilliseconds -gt 40)
+    if ($overBar) { $script:askSlowRun++ } else { $script:askSlowRun = 0 }
+    $slow = $(if ($script:askSlow) { $overBar } else { $script:askSlowRun -ge 2 })
     if ($slow -ne $script:askSlow) {
         $script:askSlow = $slow
         try {
@@ -8477,15 +8545,34 @@ $script:SweepJob = {
             # the quiet check happened to pick got looked at - one per pass,
             # once per ten seconds - and a row already in NEEDS YOU was skipped
             # by its picker entirely, so nothing could ever say "not any more".
-            $q = $null
-            try { $q = Invoke-SRParseScreenQuestion -Text $screens[$k] } catch { }
+            # 🔴 THE SAME QUESTION THE CARD ASKS, THROUGH THE SAME FUNCTION.
+            # This used to be `@($q.Options).Count -ge 2` - no cursor, no
+            # structure, nothing - while the card required more. So the row and
+            # the card disagreed about one screen, and the operator got a row
+            # sitting in NEEDS YOU whose card said "nothing that looks like a
+            # question is on its screen". Two code paths answering one question
+            # differently is the whole shape of what was reported.
+            #
+            # 🔑 AND IT DROPS THE PARSE. The full parse ran on every screen on
+            # every pass purely to reach Options.Count; nothing else here used
+            # $q. Test-SRLiveMenu answers the only question being asked.
+            #
+            # 🪤 THE SAVING IS THE DIFFERENCE, NOT THE PARSE. The first version
+            # of this note quoted 144 ms - the cost of the parse being removed -
+            # which reads as the saving and is not. The predicate is not free.
+            # Measured over 30 live screens, three alternating passes each:
+            # full parse 245 ms median, Test-SRLiveMenu 136 ms median, so the
+            # sweep drops ~109 ms a pass. The two agreed on all 30, which is
+            # what makes the saving a saving rather than a different answer.
+            $asking = $false
+            try { $asking = [bool](Test-SRLiveMenu -Text $screens[$k]) } catch { }
             # Same two defaults the single reader uses, and for the same reason:
             # a line that printed no shell count IS zero, and one that named no
             # sub-agents means "ask the transcript" rather than "there are none".
             $out[[int]$k] = @{
                 Shells = [int]$v.Shells
                 Agents = $(if ($v.SawAgents) { [int]$v.Agents } else { -1 })
-                Asking = [bool]($q -and @($q.Options).Count -ge 2)
+                Asking = $asking
                 # What the session says about its own turn and how hard it is
                 # thinking. Both are '' / -1 when the screen did not say, which
                 # is not the same as zero.
@@ -8624,13 +8711,21 @@ function Stop-VitalsSweep {
 
 $script:QuietJob = {
     . (Join-Path $SRHere '_common.ps1')
+    # One read per pass, and the held-open reader still beats spawning for it -
+    # measured at 134 ms against 244. See the note on AnswerJob.
+    $null = Start-SRScreenServer
     $out = @{ Asking = $false; Read = $false; Shells = 0; Agents = -1 }
     try {
         $txt = Get-SRScreenText -ProcessId $SRQuiet.Pid
         if ($txt) {
             $out.Read = $true
-            $q = Invoke-SRParseScreenQuestion -Text $txt
-            if ($q -and @($q.Options).Count -ge 2) { $out.Asking = $true }
+            # 🔴 THE SAME QUESTION THE CARD ASKS, THROUGH THE SAME FUNCTION. This
+            # used to be `@($q.Options).Count -ge 2` while the card required more,
+            # so the row could sit in NEEDS YOU and the card say "nothing that
+            # looks like a question is on its screen" about one screen. Two code
+            # paths answering one question differently is the whole shape of the
+            # bug the operator reported.
+            if (Test-SRLiveMenu -Text $txt) { $out.Asking = $true }
             # The same screen answers the other thing a row wants to know, so
             # it costs nothing beyond the read that was already being made.
             $sv = Read-SRScreenVitals -ScreenText $txt
@@ -8638,6 +8733,7 @@ $script:QuietJob = {
             if ($sv.SawAgents) { $out.Agents = [int]$sv.Agents }
         }
     } catch { }
+    try { Stop-SRScreenServer } catch { }
     $out
 }
 
@@ -9871,6 +9967,9 @@ $script:askStartedAt = $null
 
 $script:AskJob = {
     . (Join-Path $SRHere '_common.ps1')
+    # One read, and a second whenever the first comes back empty. Served either
+    # way now - see the note on AnswerJob for why it pays even at one read.
+    $null = Start-SRScreenServer
     $out = @{ Ask = $null; Read = $false; Shells = -1; Agents = -1
               Effort = ''; TurnSecs = -1; TurnDone = $false; CtxTokens = -1; CtxWindow = -1 }
     try {
@@ -9913,6 +10012,7 @@ $script:AskJob = {
             $out.CtxWindow = $(if ($sv.SawCtx) { [int]$sv.CtxWindow } else { -1 })
         }
     } catch { }
+    try { Stop-SRScreenServer } catch { }
     $out
 }
 
