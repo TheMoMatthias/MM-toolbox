@@ -5025,7 +5025,9 @@ $script:AnswerJob = {
                                                     -Name "$($SRAns.AgentName)" -MenuSeen ([bool]$SRAns.MenuSeen) }
             'move'   { $why = Invoke-SRRoundMove -ProcessId ([int]$SRAns.Pid) -Delta ([int]$SRAns.Delta) }
             'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId ([int]$SRAns.Pid) -Text "$($SRAns.Text)" -Who "$($SRAns.SessionId)" }
-            'send'   { $why = Send-SRSessionInput -SessionId $SRAns.SessionId -Text "$($SRAns.Text)" }
+            'send'   { $why = Send-SRSessionInput -SessionId $SRAns.SessionId -Text "$($SRAns.Text)" `
+                                                  -ProcessId ([int]$SRAns.Pid) -Kind "$($SRAns.AgentKind)" `
+                                                  -WaitingFor "$($SRAns.AgentWaitingFor)" }
             # 🪤 NAMED LIKE THE REST, and it is the one arm that picks nothing:
             # Esc stops a turn rather than choosing an option, so there is no
             # index to be wrong about and no screen to verify against. The
@@ -5072,6 +5074,7 @@ function Start-AskSend {
         Kind = $Kind; SessionId = "$($Row.Id)"; Pid = $procId
         Index = $Index; Delta = $Delta; Text = $Text
         AgentKind = "$($Row.A.Kind)"; AgentName = "$($Row.A.Name)"
+        AgentWaitingFor = "$($Row.A.WaitingFor)"
         MenuSeen = [bool]$script:lastAsk
     }
     try {
@@ -5114,7 +5117,9 @@ function Start-AskSend {
                                                         -Name "$($Row.A.Name)" -MenuSeen ([bool]$script:lastAsk) }
                 'move'   { $why = Invoke-SRRoundMove -ProcessId $procId -Delta $Delta }
                 'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId $procId -Text $Text -Who "$($Row.Id)" }
-                'send'   { $why = Send-SRSessionInput -SessionId $Row.Id -Text $Text }
+                'send'   { $why = Send-SRSessionInput -SessionId $Row.Id -Text $Text `
+                                                      -ProcessId $procId -Kind "$($Row.A.Kind)" `
+                                                      -WaitingFor "$($Row.A.WaitingFor)" }
                 'esc'    { $why = Send-SRInterrupt -ProcessId $procId -Who "$($Row.Id)" }
                 default  { $why = "nothing was sent - '$Kind' is not a kind of send this knows" }
             }
@@ -5870,7 +5875,14 @@ function Invoke-Compact {
     }
     Set-Status 'compacting...'
     $why = $null
-    try { $why = Send-SRSessionInput -SessionId $r.Id -Text '/compact' } catch { $why = $_.Exception.Message }
+    # 🪤 THIS RUNS ON THE UI THREAD, so what it costs is what the window freezes
+    # for. It used to spawn `claude agents --json` from here - about a second of
+    # dead window on every /compact - for a pid and a kind that are on the row.
+    try {
+        $why = Send-SRSessionInput -SessionId $r.Id -Text '/compact' `
+                                   -ProcessId ([int]$r.A.Pid) -Kind "$($r.A.Kind)" `
+                                   -WaitingFor "$($r.A.WaitingFor)"
+    } catch { $why = $_.Exception.Message }
     if ($why) { Set-Status $why 'bad' } else {
         Set-Status 'sent /compact' 'ok'
         Move-RowToWorking $r
@@ -9559,7 +9571,13 @@ $script:castTimer.Add_Tick({
         if ("$($r.A.Status)" -eq 'busy') {
             $script:castBad.Add(('{0} (started a turn)' -f $t))
         } else {
-            $why = Send-SRSessionInput -SessionId $r.Id -Text $script:castMsg
+            # 🪤 ONE SPAWN PER ROW is what this used to cost: the send asked
+            # `claude agents --json` for each conversation it drained, so a cast
+            # to ten was ten spawns on top of the keys. The row already holds
+            # every field it wanted.
+            $why = Send-SRSessionInput -SessionId $r.Id -Text $script:castMsg `
+                                       -ProcessId ([int]$r.A.Pid) -Kind "$($r.A.Kind)" `
+                                       -WaitingFor "$($r.A.WaitingFor)"
             if ($why) { $script:castBad.Add(('{0} ({1})' -f $t, $why)); Write-SRLog ('  [FAIL] cast to {0}: {1}' -f $t, $why) }
             else { $script:castOk++; Write-SRLog ('  [ok]   cast to {0}' -f $t) }
         }

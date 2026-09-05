@@ -3264,11 +3264,44 @@ function Test-SRClaudeProcess {
 
 # Returns $null when the line was delivered, or a reason string when it was not.
 # A reason is always a refusal to act, never a partial send.
+# 🔴 THIS SPAWNED claude TOO, AND THE BROADCAST PAID IT PER SESSION. Same
+# `claude agents --json` as the answer path - 837-1,090 ms with 31 sessions live
+# - for a pid, a kind and one waitingFor field. Invoke-Compact calls this
+# SYNCHRONOUSLY ON THE UI THREAD, so /compact froze the window for about a
+# second; the cast queue calls it once per drained row, so sending to ten
+# conversations was ten spawns.
+#
+# 🪤 BUT THE DIALOG GATE IS NOT THE ANSWER PATH'S GATE, AND THE DIFFERENCE
+# DECIDES THE FIX. On the answer path the status check could be replaced with
+# cheaper evidence because something downstream still asks the question -
+# Invoke-SRAnswerOnScreen refuses without a cursor, Wait-SRScreenState refuses if
+# the highlight moved. HERE THERE IS NO DOWNSTREAM CHECK AT ALL: this types the
+# text and submits it, and nothing re-reads the screen in between. So the
+# evidence cannot simply be made cheaper and older - the caller's record is
+# refreshed by a 15 s probe that itself takes 11.3 s, which would put this gate
+# up to ~26 s behind with nothing to catch it.
+#
+# 🔑 SO IT IS MADE CHEAPER AND *FRESHER* INSTEAD. The screen is the authority on
+# whether something is open in that session, it costs ~9 ms through the held-open
+# reader, and Test-SRLiveMenu already answers exactly this question - a
+# permission prompt is a menu, which is what "a dialog is open" looks like on
+# screen. The caller's waitingFor is still honoured when it has one, so this only
+# ever adds a reason to refuse.
+#
+# ⚠️ BEHAVIOUR CHANGE, AND IT IS DELIBERATE: a plain message is now refused while
+# ANY live menu is on that screen, not only when claude called it a dialog.
+# Typing a sentence into a session showing a menu never did what the operator
+# meant - the text lands in the menu's editor row - and the window has a control
+# for that case. Reversible by dropping the Test-SRLiveMenu clause.
 function Send-SRSessionInput {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$SessionId,
         [Parameter(Mandatory)][string]$Text,
+        # What the window already holds about this row. See above.
+        [Parameter(Mandatory)][int]$ProcessId,
+        [string]$Kind = 'interactive',
+        [string]$WaitingFor = '',
         # Skip the dialog refusal. The caller must have shown the operator what
         # is open and been told to go ahead anyway.
         [switch]$Force
@@ -3277,20 +3310,26 @@ function Send-SRSessionInput {
     $body = ($Text -replace "`r`n", ' ' -replace "`r", ' ' -replace "`n", ' ').Trim()
     if (-not $body) { return 'nothing to send' }
 
-    $key = "$SessionId".ToLower()
-    $agents = Get-SRAgentStatus -Refresh
-    $a = $agents[$key]
-    if (-not $a)        { return 'that conversation is not running - open its terminal first' }
-    if (-not $a.Pid)    { return 'that session has no process to type into (it is a background agent)' }
-    if ($a.Kind -ne 'interactive') { return 'only an interactive session can be typed into' }
-    if (-not $Force -and $a.WaitingFor -match 'dialog') {
+    if ($ProcessId -le 0) { return 'that session has no process to type into (it is a background agent)' }
+    if ($Kind -and $Kind -ne 'interactive') { return 'only an interactive session can be typed into' }
+    if (-not $Force -and $WaitingFor -match 'dialog') {
         return 'a dialog is open in that session - answer it there, or send anyway to type into the dialog'
     }
 
     # A pid is reusable. Confirm THIS one is still the claude that owns the
     # session before writing anything into its console.
-    $notClaude = Test-SRClaudeProcess -ProcessId ([int]$a.Pid)
+    $notClaude = Test-SRClaudeProcess -ProcessId $ProcessId
     if ($notClaude) { return $notClaude }
+
+    # The screen, which is both fresher than the caller's record and the only
+    # evidence anything downstream would have had. See the note above.
+    if (-not $Force) {
+        $onScreen = $null
+        try { $onScreen = Get-SRScreenText -ProcessId $ProcessId } catch { }
+        if ($onScreen -and (Test-SRLiveMenu -Text $onScreen)) {
+            return 'that session is showing a menu - answer it on the question card, or send anyway to type into the menu'
+        }
+    }
 
     # 🔴 THE TEXT AND THE SUBMIT ARE TWO CALLS, and that is not tidiness.
     # Send() wrote the characters and a trailing ENTER in ONE WriteConsoleInput
@@ -3301,17 +3340,17 @@ function Send-SRSessionInput {
     #
     # The box needs a beat to finish taking a few hundred characters before it will
     # accept the newline that closes them.
-    $n = [SRCon]::Send([uint32]$a.Pid, $body, $false)
+    $n = [SRCon]::Send([uint32]$ProcessId, $body, $false)
     if ($n -ge 0) {
         Start-Sleep -Milliseconds 400
-        $n = [SRCon]::SendKeys([uint32]$a.Pid, [uint16[]]@(0x0D))
+        $n = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@(0x0D))
     }
     if ($n -lt 0) {
         $err = -$n
-        Write-SRLog ("send to {0} failed: win32 {1}" -f $a.Name, $err)
+        Write-SRLog ("send to {0} failed: win32 {1}" -f $SessionId, $err)
         return "could not reach that session's console (win32 error $err)"
     }
-    Write-SRLog ("  [ok]   sent {0} char(s) to {1} ({2})" -f $body.Length, $a.Name, $SessionId)
+    Write-SRLog ("  [ok]   sent {0} char(s) to {1}" -f $body.Length, $SessionId)
     return $null
 }
 
