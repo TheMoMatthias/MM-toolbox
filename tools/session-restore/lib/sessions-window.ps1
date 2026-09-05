@@ -316,6 +316,9 @@ $script:cfg       = $null
 $script:reg       = $null
 $script:dirs      = @()
 $script:model     = @()
+# Bumped every time Update-Model replaces the model. Nothing else adds to or
+# removes from that list, so this changes exactly when MEMBERSHIP does.
+$script:modelGen  = 0
 $script:agents    = @{}
 
 # The widths the operator dragged to, remembered so a breakpoint restores what
@@ -1262,7 +1265,10 @@ function Update-Model {
         $r.Band = Get-Band $r
         $r.Lane = (Get-LaneLabel $r "$($r.T.Text)")
     }
-    $script:model = $rows
+    $script:model = $rows; $script:modelGen++
+    # 🔑 THE INVALIDATION KEY FOR ANYTHING CACHED OFF THE MODEL'S MEMBERSHIP.
+    # Explicit rather than a reference-equality check on the list, because a
+    # counter is a thing a test can bump and watch: see Get-RailGrouping.
     Update-ProjectLabels
 
     # 🔴 THE SEARCH HAYSTACK IS BUILT ONCE, HERE. Typing in the header box cost
@@ -1560,6 +1566,71 @@ $script:railOnlyLive = $false
 $script:railShowShelved = $false
 $script:railShelved = 0
 
+# ===========================================================================
+# THE PER-PROJECT GROUPING, COMPUTED ONCE PER MODEL RATHER THAN PER REBUILD.
+#
+# 🔴 MEASURED: THE WALK IS THE COST, NOT THE SORT. Profiled over the operator's
+# 322 conversations - grouping walk 19.95 ms, and the default 'recent' sort
+# 1.46 ms. The walk is ~8 PowerShell operations a row with no hotspot: walking
+# the rows and reading one property is 0.54 ms, and the tightest hand-optimised
+# version of the loop still cost 16.92 ms. There is no cheap win inside it.
+#
+# 🪤 AND THE OBVIOUS FIX WAS THE WRONG ONE. Sort-ManagerRows records a real
+# measurement of a scriptblock sort key - 24.28 ms against 3.15 ms for a plain
+# -Property sort - and it looked like this sort's twin. It is not: THAT sorts 319
+# ROWS and this sorts 36 KEYS, and at 36 the keyed-list construction costs about
+# what the scriptblock overhead saves. Measured here: 'recent' 1.46 -> 2.62 ms
+# and 'busiest' 12.58 -> 15.34 ms, i.e. WORSE in three modes of four. A cited
+# measurement's SCALE is part of the measurement; quoting it correctly is not
+# enough. Do not re-try the keyed sort here without re-measuring the count.
+#
+# 🔑 SO THE LEVER IS NOT REPEATING WORK WHOSE INPUTS HAVE NOT CHANGED. This is
+# NOT the same as moving the cost onto Update-Model: that pass already pays this
+# walk and still does. What stops paying is every OTHER rebuild - folding a band,
+# stepping the sort, picking a project, each debounced keystroke - which is where
+# the operator actually feels it.
+#
+# 🔴 EVERY INPUT IS IN THE KEY, and they were enumerated rather than assumed.
+# The grouping reads exactly three things: which rows are in the model, and the
+# two search strings. It reads $r.D.path, $r.At, $r.Hay and $r.HayProj, and all
+# four are written once in Update-Model and never touched again.
+#
+# 🪤 IT DELIBERATELY DOES NOT DEPEND ON .Live OR .Band, and that is the part that
+# would have bitten. The light probe branch of the collector mutates $r.A,
+# $r.Live, $r.Conv, $r.Said, $r.Q and $r.Band IN PLACE on the existing rows
+# WITHOUT replacing the model - so a cache keyed on the model alone would be
+# stale for anything reading those. This one is safe because it stores ROW
+# REFERENCES: the counts on a tile are recomputed from those rows on every build,
+# so a band that changed under the cache is still read fresh. What is cached is
+# only which project a row belongs to and when that project was last touched -
+# neither of which the probe can change without a new model.
+$script:railGroupKey = ''
+$script:railGroupBy = $null
+$script:railGroupNewest = $null
+
+function Get-RailGrouping { param([string]$Q, [string]$QR)
+    $key = '{0}|{1}|{2}' -f $script:modelGen, $Q, $QR
+    if ($key -eq $script:railGroupKey -and $null -ne $script:railGroupBy) {
+        return @{ ByProj = $script:railGroupBy; Newest = $script:railGroupNewest }
+    }
+    $byProj = @{}
+    $newest = @{}
+    foreach ($r in $script:model) {
+        if ($Q -and "$($r.Hay)" -notlike "*$Q*") { continue }
+        if ($QR -and "$($r.HayProj)" -notlike "*$QR*") { continue }
+        $k = "$($r.D.path)"
+        $lst = $byProj[$k]
+        if ($null -eq $lst) { $lst = New-Object System.Collections.Generic.List[object]; $byProj[$k] = $lst }
+        $lst.Add($r)
+        $n = $newest[$k]
+        if ($null -eq $n -or [long]$r.At -gt [long]$n) { $newest[$k] = [long]$r.At }
+    }
+    $script:railGroupKey = $key
+    $script:railGroupBy = $byProj
+    $script:railGroupNewest = $newest
+    return @{ ByProj = $byProj; Newest = $newest }
+}
+
 function Build-Rail {
     # 🔴 TWO SEARCHES, AND THEY ARE NOT THE SAME QUESTION. The header box is
     # GLOBAL and narrows both panes at once; this pane's own box narrows only
@@ -1569,48 +1640,25 @@ function Build-Rail {
     # global box already reached here.
     $q = "$($ui.Search.Text)".Trim().ToLower()
     $qr = "$($ui.RailSearch.Text)".Trim().ToLower()
-    $byProj = @{}
-    # When each project was last touched, in ticks: the key the 'recent' sort
-    # orders by AND the number that decides its age band. See the note below.
-    $newest = @{}
-    foreach ($r in $script:model) {
-        # 🔴 THE RAIL CARRIES EVERY PROJECT, AND DELIBERATELY DOES NOT ASK
-        # Test-OnSurface. That gate is live-or-spoke-in-the-last-day, and against
-        # it this rail held 12 of 36 projects - so three of the four age bands
-        # could never fill, and a project quiet long enough to be worth shelving
-        # was by definition not a tile you could right-click. What the operator
-        # asked for was the opposite: "filter for only the most latest used
-        # projects, and if necessary click on further-away filtered projects to
-        # expand all of the projects who are in there, and continue working on
-        # them if needed". The 24-hour cut made the second half impossible.
-        #
-        # 🪤 RAIL-LOCAL, NOT A CHANGE TO THE GATE. Test-OnSurface has two other
-        # callers - Build-Sessions and Update-Strip - and widening it there would
-        # turn the sessions column into a browser for all 319 conversations,
-        # which is the thing the note beside it exists to prevent. The age bands
-        # are what make 36 tiles readable, and they are why this is safe now and
-        # would not have been before them.
-        #
-        # The model already drops missing directories and gone conversations, so
-        # "no filter" here means every project that still exists. A tile's count
-        # is now the project's whole conversation count rather than just its
-        # recent ones, which is what a project tile should have said all along.
-        if ($q -and "$($r.Hay)" -notlike "*$q*") { continue }
-        # This box matches the PROJECT, not the conversation - it is the projects
-        # list, and matching conversation titles would hide projects whose names
-        # you had typed correctly.
-        if ($qr -and "$($r.HayProj)" -notlike "*$qr*") { continue }
-        $k = "$($r.D.path)"
-        if (-not $byProj.ContainsKey($k)) { $byProj[$k] = New-Object System.Collections.Generic.List[object] }
-        $byProj[$k].Add($r)
-        # 🔴 $r.At, NOT [datetime]$r.S.lastActive AGAIN. Update-Model parses that
-        # string ONCE per pass and carries the ticks - the note there records
-        # that re-parsing it per row was 51 ms of a 274 ms pass - and the 'recent'
-        # sort below was re-parsing it a second time for all 319 conversations on
-        # every rebuild, which is every keystroke in either search box. The age
-        # band wants the same number, so it is taken once here and both use it.
-        if (-not $newest.ContainsKey($k) -or [long]$r.At -gt [long]$newest[$k]) { $newest[$k] = [long]$r.At }
-    }
+    # 🔴 THE RAIL CARRIES EVERY PROJECT, AND DELIBERATELY DOES NOT ASK
+    # Test-OnSurface. That gate is live-or-spoke-in-the-last-day, and against it
+    # this rail held 12 of 36 projects - so three of the four age bands could
+    # never fill, and a project quiet long enough to be worth shelving was by
+    # definition not a tile you could right-click. What the operator asked for
+    # was the opposite: "filter for only the most latest used projects, and if
+    # necessary click on further-away filtered projects to expand all of the
+    # projects who are in there, and continue working on them if needed".
+    #
+    # 🪤 RAIL-LOCAL, NOT A CHANGE TO THE GATE. Test-OnSurface has two other
+    # callers - Build-Sessions and Update-Strip - and widening it there would
+    # turn the sessions column into a browser for all 322 conversations, which
+    # is what the note beside it exists to prevent.
+    #
+    # The walk itself now lives in Get-RailGrouping, which does it once per
+    # model rather than once per rebuild - see the measurements there.
+    $grp = Get-RailGrouping -Q $q -QR $qr
+    $byProj = $grp.ByProj
+    $newest = $grp.Newest
     # 🔴 THE RAIL ORDERS ITSELF. 'recent' is the default and was the only
     # one; the others exist because at 29 projects "which has something waiting"
     # and "which is busiest" are different questions from "which did I touch
@@ -9861,7 +9909,13 @@ try {
     $script:reg    = [PSCustomObject]@{ version = 2; lastScan = $null; directories = @() }
     $script:dirs   = @()
     $script:agents = @{}
-    $script:model  = New-Object System.Collections.Generic.List[object]
+    # 🪤 THE COUNTER BUMPS HERE TOO. It is the invariant Get-RailGrouping
+    # rests on: ASSIGNING THE MODEL BUMPS THE GENERATION, every time and
+    # everywhere, or a cache keyed on it serves the previous model's answer.
+    # This path only runs before the first build, so it cannot bite today -
+    # which is exactly why it would be missed when a third assignment is
+    # added somewhere it can.
+    $script:model  = New-Object System.Collections.Generic.List[object]; $script:modelGen++
     $script:dirty  = $false
 }
 try {

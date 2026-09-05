@@ -1102,6 +1102,126 @@ $script:railOnlyLive = $false; Build-Rail
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the grouping is cached, and every input invalidates it ---'
+# ===========================================================================
+# 🔴 A CACHE INVALIDATED ON A SUBSET OF ITS INPUTS SHOWS A RAIL THAT DISAGREES
+# WITH REALITY, and it reads as a data bug rather than a caching one. So each
+# input is changed in turn and the grouping is required to actually change -
+# and the negative is asserted too, or "it always rebuilds" would pass every
+# positive here while caching nothing.
+#
+# The inputs were enumerated, not guessed: the walk reads which rows are in the
+# model, plus $r.D.path, $r.At, $r.Hay and $r.HayProj - all four written once in
+# Update-Model. It does NOT read .Live or .Band, which is what makes it safe,
+# because the probe's light branch mutates those in place without replacing the
+# model. See the note on Get-RailGrouping.
+$cgGenWas = $script:modelGen
+$cgKeyWas = $script:railGroupKey
+try {
+    # Same inputs twice: the very same object comes back.
+    $g1 = Get-RailGrouping -Q '' -QR ''
+    $g2 = Get-RailGrouping -Q '' -QR ''
+    if (-not [object]::ReferenceEquals($g1.ByProj, $g2.ByProj)) {
+        Fail 'the grouping was rebuilt with nothing changed - it is not caching at all'
+    } else { Pass "an unchanged model reuses the grouping ($(@($g1.ByProj.Keys).Count) projects)" }
+
+    # 1. THE MODEL. This is the one the light probe cannot bump on its own, so a
+    #    cache keyed on anything weaker would go stale on a real rescan.
+    $script:modelGen++
+    $g3 = Get-RailGrouping -Q '' -QR ''
+    if ([object]::ReferenceEquals($g1.ByProj, $g3.ByProj)) {
+        Fail 'a new model did not invalidate the grouping - the rail would keep showing the old projects'
+    } else { Pass 'a new model invalidates it' }
+
+    # 2. THE HEADER SEARCH. Narrows by conversation, so it changes which rows
+    #    land in each project and can drop a project entirely.
+    $g4 = Get-RailGrouping -Q 'zzz-no-such-conversation' -QR ''
+    if ([object]::ReferenceEquals($g3.ByProj, $g4.ByProj)) {
+        Fail 'the header search did not invalidate the grouping'
+    } elseif (@($g4.ByProj.Keys).Count -ge @($g3.ByProj.Keys).Count) {
+        Fail "a search matching nothing left $(@($g4.ByProj.Keys).Count) project(s) - it is not filtering"
+    } else { Pass "the header search invalidates it ($(@($g3.ByProj.Keys).Count) -> $(@($g4.ByProj.Keys).Count) projects)" }
+
+    # 3. THE RAIL SEARCH. A different box asking a different question, and it
+    #    has its own haystack - so it needs its own slot in the key.
+    $g5 = Get-RailGrouping -Q '' -QR 'zzz-no-such-project'
+    if ([object]::ReferenceEquals($g3.ByProj, $g5.ByProj)) {
+        Fail 'the rail search did not invalidate the grouping'
+    } elseif (@($g5.ByProj.Keys).Count -ge @($g3.ByProj.Keys).Count) {
+        Fail "a project search matching nothing left $(@($g5.ByProj.Keys).Count) project(s)"
+    } else { Pass "the rail search invalidates it ($(@($g5.ByProj.Keys).Count) projects)" }
+
+    # 🔴 PAIRWISE, AND THIS IS THE CHECK THAT ACTUALLY PROVES A SLOT IS IN THE
+    # KEY. The three above do not: dropping $QR from the key entirely still left
+    # them all green, because each call also changed $Q or the generation, so a
+    # rebuild happened for the wrong reason and the counts still came out right.
+    # Found by breaking the key and watching the suite stay green - the gap was
+    # in the test, not the code. Each pair below changes exactly ONE input.
+    $p0 = Get-RailGrouping -Q '' -QR ''
+    $p1 = Get-RailGrouping -Q '' -QR 'zzz-only-the-rail-box-moved'
+    if ([object]::ReferenceEquals($p0.ByProj, $p1.ByProj)) {
+        Fail 'changing ONLY the rail search reused the grouping - $QR is not in the cache key'
+    } else { Pass 'the rail search alone invalidates it' }
+
+    $p2 = Get-RailGrouping -Q '' -QR ''
+    $p3 = Get-RailGrouping -Q 'zzz-only-the-header-box-moved' -QR ''
+    if ([object]::ReferenceEquals($p2.ByProj, $p3.ByProj)) {
+        Fail 'changing ONLY the header search reused the grouping - $Q is not in the cache key'
+    } else { Pass 'the header search alone invalidates it' }
+
+    $p4 = Get-RailGrouping -Q '' -QR ''
+    $script:modelGen++
+    $p5 = Get-RailGrouping -Q '' -QR ''
+    if ([object]::ReferenceEquals($p4.ByProj, $p5.ByProj)) {
+        Fail 'changing ONLY the model reused the grouping - the generation is not in the cache key'
+    } else { Pass 'the model alone invalidates it' }
+
+    # 🪤 AND THE TWO BOXES ARE NOT INTERCHANGEABLE. The same string in the other
+    # slot must give a different grouping, or the key is concatenating them into
+    # something ambiguous.
+    $g6 = Get-RailGrouping -Q 'mm' -QR ''
+    $g7 = Get-RailGrouping -Q '' -QR 'mm'
+    if ([object]::ReferenceEquals($g6.ByProj, $g7.ByProj)) {
+        Fail 'the two search boxes share a slot in the cache key - one would serve the other its answer'
+    } else { Pass 'the two search boxes are told apart in the key' }
+
+    # 🔴 THE CACHED LISTS HOLD ROW REFERENCES, NOT COPIES - which is what lets a
+    # tile's counts stay live while the grouping is reused. If they were copies,
+    # a band the probe changed under the cache would be drawn stale.
+    $gk = @($g1.ByProj.Keys)[0]
+    $cgRow = $g1.ByProj[$gk][0]
+    $cgIsLive = $false
+    foreach ($m in $script:model) { if ([object]::ReferenceEquals($m, $cgRow)) { $cgIsLive = $true; break } }
+    if (-not $cgIsLive) { Fail 'the grouping holds copies of the rows - a band changed by the probe would draw stale' }
+    else { Pass 'the grouping holds the model rows themselves, so their counts stay live' }
+} finally {
+    $script:modelGen = $cgGenWas
+    $script:railGroupKey = $cgKeyWas
+    $script:railGroupBy = $null
+    Build-Rail
+}
+
+# 🔑 THE INVARIANT THE WHOLE THING RESTS ON: assigning the model bumps the
+# generation. Asserted on the source because it is about every assignment that
+# exists, including ones a run does not reach - the startup-failure path sets an
+# empty model and cannot bite today, which is exactly why a third assignment
+# would be added without the bump.
+$cgSrc = [regex]::Matches($winSrc, '(?m)^\s*\$script:model\s*=\s*[^\r\n]*')
+if ($cgSrc.Count -lt 2) { Fail "found $($cgSrc.Count) model assignment(s) - this check can no longer see them" }
+else {
+    $cgBad = 0
+    foreach ($m in $cgSrc) {
+        $after = $winSrc.Substring($m.Index, [Math]::Min(240, $winSrc.Length - $m.Index))
+        # The declaration at the top is the initial value, not a reassignment.
+        if ($m.Value -match '=\s*@\(\)') { continue }
+        if ($after -notmatch '\$script:modelGen\+\+') { $cgBad++ }
+    }
+    if ($cgBad) { Fail "$cgBad model assignment(s) do not bump the generation - a cache keyed on it would serve the previous model" }
+    else { Pass "every model assignment bumps the generation ($($cgSrc.Count) found)" }
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the projects rail, in age bands you can fold ---'
 # ===========================================================================
 # 🔴 EVERY ONE OF THESE IS ABOUT SOMETHING BEING STRANDED. A rail that folds is
