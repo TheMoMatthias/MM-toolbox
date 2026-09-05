@@ -247,7 +247,15 @@ Write-Host '--- drawing the three lists ---'
 $null = Bench 'Build-Sessions' { Build-Sessions } 'GESTURE'
 $null = Bench 'Build-Rail' { Build-Rail } 'GESTURE'
 $null = Bench 'Build-Manager' { Build-Manager } 'GESTURE'
-$null = Bench 'Set-Surface manage' { Set-Surface 'manage' } 'GESTURE'
+# 🔴 BOTH PATHS, OR THE BENCH REWARDS BREAKING THE THING IT WATCHES. This ran
+# straight after Bench 'Build-Manager', which CLEARS $script:mgrDirty - so all
+# fifteen iterations took the skip path, the rebuild was never once measured,
+# and deleting the dirty flag so the manager NEVER rebuilt would have registered
+# here as an improvement. The cached path is the one the operator usually gets
+# and is worth its own line; the rebuild is the cost the flag exists to avoid,
+# and a flag that stops working shows up as the cached line jumping to it.
+$null = Bench 'Set-Surface manage (cached)' { Set-Surface 'manage' } 'GESTURE'
+$null = Bench 'Set-Surface manage (rebuild)' { $script:mgrDirty = $true; Set-Surface 'manage' } 'GESTURE'
 $null = Bench 'Set-Surface work' { Set-Surface 'work' } 'GESTURE'
 $null = Bench 'Set-Breakpoint' { Set-Breakpoint } 'INSTANT'
 # 🪤 QUICK, AND THE CALLERS ARE THE ARGUMENT. Update-Surface is Build-Rail plus
@@ -1038,10 +1046,24 @@ foreach ($r in $script:Results) {
         continue
     }
     if ($norm -lt $wasNorm) { $improved++ }
-    # 🔴 THE BASELINE IS KEPT, NOT LOWERED. See the note above: taking the better
-    # of the two here is what makes the gate converge on its luckiest run and
-    # then fail on unchanged code.
-    $newOps[$r.Name] = $wasNorm
+    # 🔴 THE ENVELOPE FOLLOWS A SUSTAINED WIN DOWN, AT 10% A RUN, AND NO FASTER.
+    #
+    # It used to be kept flat forever, and that had a consequence nobody had
+    # looked for: an envelope that never lowers cannot notice a landed fix being
+    # REVERTED. Proof, from this repo's own history - `git diff 3cffa7e c263dba
+    # -- tests/perf-baseline.json` changes only recordedAt and spin, so
+    # "Set-Surface manage" still carried the figure it had BEFORE 5b63bfd taught
+    # it to skip an 80 ms Build-Manager. Deleting $script:mgrDirty outright would
+    # have stayed green.
+    #
+    # 🪤 AND IT STILL CANNOT CONVERGE ON THE LUCKIEST RUN, which is what killed
+    # the first two gate designs. The floor is THIS run's own reading, so a
+    # single lucky sample writes back at most 0.9x - and the next ordinary run
+    # computes max(was, 0.81 x was) = was and puts it straight back. Only an op
+    # that reads below 0.9x the envelope on EVERY run walks it down, which is
+    # what "sustained" has to mean. A real 3x win arrives in about eleven runs;
+    # noise never moves it more than one step, and never twice.
+    $newOps[$r.Name] = [Math]::Max($norm, $wasNorm * 0.9)
 }
 
 Write-Host ''
@@ -1143,5 +1165,18 @@ if ($jumpy.Count) {
     foreach ($j in $jumpy) { Note ("{0,8:N0} ms best / {1,8:N0} ms worst   {2}" -f $j.Ms, $j.Worst, $j.Name) }
 }
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
+# 🔴 A SOFT RUN THAT FOUND REGRESSIONS IS NOT A PASS, and calling it one is how
+# four commit messages came to say "all seven suites pass" while meaning nothing
+# whatever about speed. The full sweep sets SR_PERF_SOFT so a noisy ride-along
+# cannot fail the build - that part is deliberate and stays. What was wrong is
+# that the summary then printed `perf PASS` beside the other six, so the sentence
+# "all suites passed" read as "and nothing got slower".
+#
+# Exit 2 is the runner's INCONCLUSIVE: yellow in the summary, not counted as a
+# failure. The sweep still passes; it can no longer be quoted as perf evidence.
+if ($softGate -and $regressed.Count) {
+    Write-Host ("{0} operation(s) got slower - reported, not failed. Run -Only perf for the hard gate." -f $regressed.Count) -ForegroundColor Yellow
+    exit 2
+}
 Write-Host 'nothing on the surface stalls the window' -ForegroundColor Green
 exit 0

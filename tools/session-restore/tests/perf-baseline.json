@@ -1,6 +1,6 @@
 ﻿{
-    "recordedAt":  "2026-09-05T11:53:45",
-    "spin":  9.128,
+    "recordedAt":  "2026-09-05T12:50:02",
+    "spin":  15.69,
     "note":  "ops values are ms-per-spin-ms; expected = value * spinNow. See the gate in perf-driver.ps1.",
     "ops":  {
                 "a growth tick, APPENDING the tail (now)":  1.358376,
@@ -33,7 +33,7 @@
                 "Get-SelectedRow":  0.016625,
                 "Get-SRAgentStatus -Refresh (spawns claude)":  40.255371,
                 "Get-SRCredStamp (what Sign in costs before the terminal opens)":  0.126864,
-                "Get-SRLastSaid x24 (what the probe does)":  0.972782,
+                "Get-SRLastSaid x23 (what the probe does)":  1.275368,
                 "Get-SRRegistry (read from disk)":  3.100129,
                 "Get-TickedPlan":  1.21707,
                 "Get-Title for every conversation":  1.884456,
@@ -69,7 +69,8 @@
                 "select a conversation (COLD - the click)":  2.13624,
                 "select the same one again (warm)":  0.050658,
                 "Set-Breakpoint":  0.044101,
-                "Set-Surface manage":  3.237741,
+                "Set-Surface manage (cached)":  0.024124,
+                "Set-Surface manage (rebuild)":  3.740483,
                 "Set-Surface work":  0.027541,
                 "sort manager: age":  4.872592,
                 "sort manager: lane":  4.948112,
