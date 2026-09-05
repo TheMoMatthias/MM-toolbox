@@ -530,7 +530,24 @@ function Set-Surface { param([string]$Mode)
     if ($Mode -eq 'manage') {
         $ui.WorkSurface.Visibility   = $V_Hide
         $ui.ManageSurface.Visibility = $V_Show
-        Build-Manager
+        # 🔴 THE ASYMMETRY WAS ONE FUNCTION CALL, AND IT WAS THIS ONE. Audited:
+        # switching to the manager is two Visibility assignments (0.18 ms), a
+        # Set-Status (0.18) and a full Build-Manager (80.00). Switching BACK is
+        # the same 0.36 and nothing else - because the work surface is kept
+        # current by the six-second passes, so it can simply SHOW what was last
+        # built. The manager had no such pass and no dirty flag, so the only way
+        # it could be right on arrival was to rebuild it every single time.
+        # Measured repeated (87.75) and alternating (79.92): nothing was cached
+        # between presses.
+        #
+        # 🔒 WHAT MAKES THE FLAG SAFE HERE. Everything that changes what this
+        # surface shows while it is VISIBLE - a sort, a filter, a fold, showing
+        # older - calls Build-Manager itself and is gated on being on this
+        # surface, so it clears the flag on the way past. The only thing that can
+        # go stale is the model changing while the manager is HIDDEN, and that is
+        # exactly where the three cache drops already are: Update-Model,
+        # Set-TickOn and Toggle-Tick. The flag is set beside each of them.
+        if ($script:mgrDirty) { Build-Manager }
         Set-Status 'Session manager: what comes back at the next logon. The ticks decide - and the two buttons act on exactly that set, now.'
     } else {
         $ui.ManageSurface.Visibility = $V_Hide
@@ -632,6 +649,10 @@ function Sort-ManagerRows { param($Rows)
 # Built manager rows, keyed by conversation id. Dropped by Update-Model and by
 # Toggle-Tick - the only two things that change what a row says.
 $script:mgrItems = @{}
+# Does the manager need rebuilding before it is shown? True until it has been
+# built once, then set wherever the cache above is dropped. See Set-Surface for
+# why this is safe and what it is worth.
+$script:mgrDirty = $true
 
 function Build-Manager {
     # 🪤 THE BRUSH IS LOOKED UP ONCE, NOT PER ROW. FindResource walks the
@@ -789,6 +810,8 @@ function Build-Manager {
     $total = @($script:model | Where-Object { -not $_.S.gone }).Count
     if ($script:mgrFilter -eq 'all') { $ui.MgrFilterNote.Text = '' }
     else { $ui.MgrFilterNote.Text = ('showing {0} of {1} - the rest are hidden by this filter' -f $shown, $total) }
+    # What is on screen now matches what the model says. See Set-Surface.
+    $script:mgrDirty = $false
 }
 
 # A PROJECT OPENS ON ONE CLICK; A TICK NEEDS TWO.
@@ -805,10 +828,20 @@ function Build-Manager {
 # THE ONE PLACE A TICK CHANGES. Both the mouse and the keyboard come through
 # here, so they cannot drift apart.
 function Set-TickOn { param($Row)
-    # A tick is the one thing a built row says that can change without the model
-    # being rebuilt, so it drops the cache. See Build-Manager.
-    $script:mgrItems = @{}
-    if (-not $Row) { return }
+    # 🔴 ONE ROW CHANGED, SO ONE ROW IS DROPPED. This cleared the WHOLE cache to
+    # change a single brush, which forced the Build-Manager below to rebuild
+    # every conversation row from scratch: audited at 141.90 ms for a tick, of
+    # which the cold rebuild is 132 against 80 warm. Ticking is the most repeated
+    # gesture on this surface - it is how the operator says what reopens - and it
+    # was paying for 298 rows that had not changed.
+    #
+    # 🔒 DROPPING JUST THIS ONE IS SUFFICIENT, and the reason is worth stating:
+    # the only OTHER thing a tick changes is the project's "N armed" line, and
+    # project rows are not cached at all - Build-Manager builds those fresh on
+    # every pass. So there is nothing else stale to catch.
+    $script:mgrDirty = $true
+    if (-not $Row) { $script:mgrItems = @{}; return }
+    $null = $script:mgrItems.Remove("$($Row.Id)")
     $s = $Row.S
     $now = -not [bool]$s.enabled
     Set-Field $s 'enabled' $now
@@ -832,6 +865,7 @@ function Set-TickOn { param($Row)
 
 function Toggle-Tick {
     $script:mgrItems = @{}
+    $script:mgrDirty = $true
     $it = $ui.ManageList.SelectedItem
     if (-not $it) { return }
     if ($it.Kind -eq 'project') { $script:fold[$it.Path] = -not [bool]$script:fold[$it.Path]; Build-Manager; return }
@@ -1179,6 +1213,10 @@ function Update-Model {
     # wanted by every list build, so both are answered once here rather than
     # per row per keystroke.
     $script:mgrItems = @{}
+    # 🔒 THE MODEL CHANGING WHILE THE MANAGER IS HIDDEN is the one case the
+    # dirty flag exists for - every other thing that changes that surface
+    # rebuilds it on the spot. See Set-Surface.
+    $script:mgrDirty = $true
     foreach ($r in $rows) {
         $r.Band = Get-Band $r
         $r.Lane = (Get-LaneLabel $r "$($r.T.Text)")

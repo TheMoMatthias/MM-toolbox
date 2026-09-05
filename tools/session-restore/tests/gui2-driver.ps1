@@ -2426,6 +2426,42 @@ try {
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- switching to the manager does not rebuild it unless it has to ---'
+# ===========================================================================
+# 🔴 THE ASYMMETRY WAS ONE FUNCTION CALL. Audited: Set-Surface manage is two
+# Visibility assignments (0.18 ms) plus a full Build-Manager (80.00); the other
+# direction is the same 0.36 ms and nothing else, because the work surface is
+# kept current by the background passes and can simply SHOW what was last built.
+# The manager had no dirty flag, so the only way it could be right on arrival was
+# to rebuild every time - measured repeated (87.75) and alternating (79.92).
+#
+# 🪤 THE RISK IS NOT SPEED, IT IS A STALE SURFACE. This decides what reopens at
+# logon, so a manager that skipped a rebuild it needed would be a lie about
+# tomorrow morning. Both directions are asserted: it must NOT rebuild when
+# nothing changed, and it MUST when something did.
+$ui.ModeManage.IsChecked = $true
+Set-Surface 'manage'
+$mgrSrcA = $ui.ManageList.ItemsSource
+Set-Surface 'work'
+Set-Surface 'manage'
+$mgrSrcB = $ui.ManageList.ItemsSource
+if (-not [object]::ReferenceEquals($mgrSrcA, $mgrSrcB)) {
+    Fail 'switching away and back rebuilt the manager although nothing had changed'
+} else { Pass 'switching away and back reuses what was already built' }
+
+# And now something DOES change while the manager is not the visible surface.
+Set-Surface 'work'
+$script:mgrItems = @{}
+$script:mgrDirty = $true          # what Update-Model / Set-TickOn / Toggle-Tick do
+Set-Surface 'manage'
+$mgrSrcC = $ui.ManageList.ItemsSource
+if ([object]::ReferenceEquals($mgrSrcB, $mgrSrcC)) {
+    Fail 'the model changed while the manager was hidden and it came back stale'
+} else { Pass 'a change while it was hidden forces the rebuild on arrival' }
+if ($script:mgrDirty) { Fail 'Build-Manager left the surface marked dirty - it would rebuild on every switch' }
+else { Pass 'a completed build clears the flag' }
+
+Write-Host ''
 Write-Host '--- the manager row cache cannot show a stale tick ---'
 # ===========================================================================
 # 🔴 THE CACHE EXISTS BECAUSE SORTING REBUILT EVERY ROW. Sorting and filtering
