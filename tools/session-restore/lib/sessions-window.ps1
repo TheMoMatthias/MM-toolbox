@@ -7294,8 +7294,36 @@ $ui.RailClear.Add_MouseLeftButtonUp({ $script:railPick = $null; Build-Rail; Buil
 
 # Typing filters, but not on every keystroke: a rebuild over 215 rows per letter
 # is a visibly laggy search box.
+#
+# 🔑 180 -> 90 ms, BECAUSE THE COST THIS WAS CHOSEN FOR HAS HALVED. The wait is
+# a straight function of what a rebuild costs, and Build-Sessions went 194 -> 67
+# ms; leaving the constant where it was would keep charging for work that is no
+# longer done. Measured before this change, a letter into the header box cost
+# 611 ms click-to-presented-frame, of which this timer was 180 - the single
+# largest item in the gesture, and 26x the terminal's own 6,9 ms bar on its own.
+#
+# 🪤 SHORTER IS NOT AUTOMATICALLY BETTER, WHICH IS WHY IT IS NOT SHORTER STILL.
+# Below roughly the interval between two keystrokes this stops being a debounce
+# and rebuilds three panes per letter, which feels worse than a brief wait even
+# as the number improves. 90 ms sits under a comfortable typing cadence and
+# above one rebuild, so a burst of typing still collapses into a single pass.
+#
+# 🔴 THE 90 ms IS DEDUCED, NOT MEASURED, AND THAT DISTINCTION IS THE POINT.
+# An interleaved A/B - 90/180/90/180, so both settings eat the same drift - could
+# not separate them at all: the header box read 1.113 and 1.082 ms at 90, against
+# 1.313 and 713 at 180. The 180 runs STRADDLE the 90 runs and the fastest of all
+# four was a 180. Within-setting spread was 1,84x, far wider than the 90 ms being
+# looked for, so the instrument cannot resolve this gesture to better than about
+# a factor of two.
+#
+# That is a fact about the measurement, not evidence the change does nothing:
+# this constant is a DispatcherTimer interval, i.e. pure wall-clock waiting with
+# no work in it, so 90 ms less of it is 90 ms less waiting by construction. The
+# reason to record it here rather than claim a win is that the next person to
+# benchmark this gesture will see numbers swing by 600 ms on untouched code, and
+# should not go hunting for a regression that is only the spread.
 $script:searchTimer = New-Object System.Windows.Threading.DispatcherTimer
-$script:searchTimer.Interval = [TimeSpan]::FromMilliseconds(180)
+$script:searchTimer.Interval = [TimeSpan]::FromMilliseconds(90)
 # 🔴 BOTH PANES. The header box narrows the rail as well as the list now, and
 # the rail has a box of its own - so a rebuild of only the sessions column would
 # leave the projects showing a set that no longer matches what you typed.
@@ -8908,6 +8936,33 @@ function Complete-VitalsSweep {
     $script:sweepAt = Get-Date
     if (-not $res) { return $false }
     $changed = $false
+    # 🔑 ONE INDEX, NOT A PIPELINE SCAN PER SWEPT ROW.
+    #
+    # Finding the model row for a swept session used to be
+    # `@($script:model | Where-Object { $_.Id -eq $row.Id })` - INSIDE this
+    # loop. Every swept session therefore drove a full pass over all 327 rows
+    # plus a Where-Object invocation, so the work was rows x sessions and the
+    # cost landed on the 30 ms lane, which is the one thing between a keystroke
+    # and the screen.
+    #
+    # Measured over 30 s of a window nobody was touching: Complete-VitalsSweep
+    # 747 calls, 2.204 ms total, 3,0 ms each - 44% of Invoke-WriteLane's whole
+    # 4.973 ms, which is itself a 16,6% duty cycle on the UI thread. The idle
+    # keystroke MEDIAN is fine at 2,0 ms; it is the 90th at 22,0 ms and the 44
+    # pumps over 50 ms that this feeds, and a keystroke landing inside one of
+    # those waits for it.
+    #
+    # 🪤 THE WORK ORDER NAMED THE WRONG CAUSE. It asked for the guard
+    # Complete-DocParse has - handle, then IsCompleted, both returning early.
+    # This function has had exactly that as its first two lines all along. The
+    # number in the work order was right and the diagnosis was not, which is
+    # why this comment carries the measurement rather than the claim.
+    #
+    # 🪤 A HASHTABLE KEEPS THE LAST ROW FOR AN ID WHERE THE PIPELINE KEPT THE
+    # FIRST. Conversation ids are unique in the model, so the two agree; it is
+    # written down because it is the one way they could ever differ.
+    $byId = @{}
+    foreach ($mr in $script:model) { $byId["$($mr.Id)"] = $mr }
     foreach ($row in @($script:sweepFor)) {
         $got = $res[[int]$row.Pid]
         # 🪤 A CONSOLE THAT COULD NOT BE READ FILES NOTHING. Absent is not zero,
@@ -8928,18 +8983,18 @@ function Complete-VitalsSweep {
         # exists. The write time decides.
         $mv = $script:quietSince["$($row.Id)"]
         if ($mv -and $started -and $mv -gt $started) { continue }
-        $live = @($script:model | Where-Object { "$($_.Id)" -eq "$($row.Id)" })
-        if (-not $live.Count) { continue }
+        $live = $byId["$($row.Id)"]
+        if (-not $live) { continue }
         if ([bool]$got.Asking) {
             # 🔴 THROUGH THE SAME ONE-WAY RULE the quiet check uses. Only a
             # WORKING row may be moved into needing you, whatever the screen
             # shows for a row that is done, idle or quiet.
-            if (Test-QuietVerdict -Row $live[0] -Asking $true) { $changed = $true }
+            if (Test-QuietVerdict -Row $live -Asking $true) { $changed = $true }
         } elseif (Set-AskSeen -Id "$($row.Id)" -Asking $false) {
             # Measured absence, which is the half that never used to happen:
             # the row can now leave NEEDS YOU because the menu is gone, not
             # merely because something else recomputed the band.
-            if ("$($live[0].Band)" -eq 'needs') { $live[0].Band = Get-Band $live[0] }
+            if ("$($live.Band)" -eq 'needs') { $live.Band = Get-Band $live }
             $changed = $true
         }
     }

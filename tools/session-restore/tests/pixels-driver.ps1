@@ -897,12 +897,20 @@ else {
 }
 
 # ── TYPING IN THE SEARCH BOX ────────────────────────────────────────────────
-# 🔴 THE DEBOUNCE IS PART OF WHAT THE OPERATOR FEELS. searchTimer is 180 ms and
-# perf-driver's 'search: header box (both panes)' calls Build-Rail/Build-Sessions
-# directly, so it reports the rebuild and not the wait. A letter typed into this
-# box does not change the list for at least 180 ms by design; whether that is
-# right is a judgement, but it belongs in the number.
-$null = Measure-Px 'type one letter into the search box (includes the 180 ms debounce)' `
+# 🔴 THE DEBOUNCE IS PART OF WHAT THE OPERATOR FEELS. perf-driver's 'search:
+# header box (both panes)' calls Build-Rail/Build-Sessions directly, so it
+# reports the rebuild and not the wait. A letter typed into this box does not
+# change the list for at least one debounce interval by design; whether that
+# interval is right is a judgement, but it belongs in the number.
+#
+# 🪤 THE INTERVAL IS READ, NOT WRITTEN DOWN. This row said "the 180 ms debounce"
+# as a literal, and the constant was changed to 90 underneath it - so the table
+# went on reporting a number the window had stopped using, in the one place a
+# reader would go to check it. Interpolating the live value also means the
+# baseline key CHANGES when the interval does, which is correct: a different
+# debounce is a different operation, and comparing it against the old key would
+# read as a regression or a win that is really a redefinition.
+$null = Measure-Px ('type one letter into the search box (includes the {0:N0} ms debounce)' -f $script:searchTimer.Interval.TotalMilliseconds) `
     { $ui.Search.Text = ($ui.Search.Text + 'a') } `
     -Settled { -not $script:searchTimer.IsEnabled } `
     -Before { $ui.Search.Text = ''; Pump-Px } -Runs 5
