@@ -395,6 +395,172 @@ if ("$($byId['bbbb2222'].Title)" -eq 'Fix the slow disk') { Pass 'a nameless ses
 else { Fail "reopens as '$($byId['bbbb2222'].Title)' - the tab and the remote registration are both unidentifiable" }
 if ("$($byId['cccc3333'].Title)" -eq '(untitled)') { Pass 'with nothing to go on it still reopens, under the placeholder' }
 else { Fail "reopens as '$($byId['cccc3333'].Title)' - a session with no name at all must still launch" }
+
+# --- A PROJECT PUT AWAY IS NOT RESTORED ------------------------------------
+# 🔴 THE WHOLE POINT OF SHELVING IS WHAT HAPPENS AT LOGON, and that is the half
+# nobody sees until the morning after. Shelving takes a project off the rail
+# immediately, which is visible; it also has to stop the restore launching it,
+# which is invisible for sixteen hours. So it is asserted here, on the function
+# the logon path actually calls, with the visible half left to the gui suite.
+Write-Host ''
+Write-Host '--- a project shelved off the rail is not restored at logon ---'
+$hpReg = [PSCustomObject]@{
+    version = 3; lastScan = $null
+    directories = @(
+        [PSCustomObject]@{
+            path = $here; enabled = $true; missing = $false; shelved = $true
+            sessions = @(
+                [PSCustomObject]@{ sessionId = 'hide0001'; title = 'IN THE SHELVED ONE'; autoTitle = ''
+                                   enabled = $true; pinned = $true; gone = $false; lane = 'main'
+                                   cwd = $here; jsonl = 'x'; lastActive = (Get-Date).ToString('o') }
+            )
+        },
+        [PSCustomObject]@{
+            path = (Split-Path $here -Parent); enabled = $true; missing = $false
+            sessions = @(
+                [PSCustomObject]@{ sessionId = 'show0001'; title = 'IN THE SHOWN ONE'; autoTitle = ''
+                                   enabled = $true; pinned = $true; gone = $false; lane = 'main'
+                                   cwd = (Split-Path $here -Parent); jsonl = 'x'; lastActive = (Get-Date).ToString('o') }
+            )
+        }
+    )
+}
+$hpSel = Get-SRSelected -Registry $hpReg -Config $cfgNow
+$hpIds = @(@($hpSel) | ForEach-Object { "$($_.SessionId)" })
+if ($hpIds -contains 'hide0001') { Fail 'a shelved project is still restored at logon - shelving it changed nothing that matters' }
+else { Pass 'nothing from a shelved project reaches the restore' }
+# 🔑 THE INVERSE, on the same registry in the same call. Without it the check
+# above passes just as well on a Get-SRSelected that returns nothing at all.
+if ($hpIds -contains 'show0001') { Pass 'and the project beside it still is - the check above can go red' }
+else { Fail 'the shown project was dropped too, so the hidden check proves nothing' }
+
+# 🔴 -IgnoreTicks IS `restore-sessions -All`, AND IT MUST NOT LIFT THIS. All
+# means "never mind what is ticked", which is a statement about conversations. A
+# shelved project has been taken out of the picture entirely, and an -All restore
+# that brought back thirty put-away projects is the exact thing being fixed.
+# 🪤 ASSIGNED FIRST, WRAPPED SECOND. Get-SRSelected returns `,@(...)` to stop
+# a one-row result unrolling to a bare object - so PIPING it straight into
+# ForEach-Object hands the block the whole inner array as ONE item, and
+# "$($_.SessionId)" over an array of two comes back as the single string
+# "show0001 hide0001", which -contains matches neither of. That is how this
+# assertion first went red against a perfectly good build.
+$hpAllSel = Get-SRSelected -Registry $hpReg -Config $cfgNow -IgnoreTicks
+$hpAll = @(@($hpAllSel) | ForEach-Object { "$($_.SessionId)" })
+if ($hpAll -contains 'hide0001') { Fail '-All lifts shelving, so a put-away project comes back on the one path nobody watches' }
+elseif ($hpAll -notcontains 'show0001') { Fail '-All returned nothing at all, so it proves nothing about shelving' }
+else { Pass '-All ignores ticks but still honours shelving' }
+
+# AND SHOWING IT AGAIN PUTS IT BACK. Same object, one field flipped: this is what
+# makes "nothing is deleted" a claim rather than a hope.
+$hpReg.directories[0].shelved = $false
+$hpBackSel = Get-SRSelected -Registry $hpReg -Config $cfgNow
+$hpBack = @(@($hpBackSel) | ForEach-Object { "$($_.SessionId)" })
+if ($hpBack -contains 'hide0001') { Pass 'putting it back restores it, with its tick and its pin intact' }
+else { Fail 'a project shelved and put back never comes back - shelving is destructive' }
+
+# 🪤 AND THE HOURLY ROLL LEAVES IT ALONE. Update-SRRegistryCore walks the whole
+# machine, so this is asserted on the source rather than by running it: the
+# check has to sit INSIDE the per-project loop and BEFORE the loop that writes
+# ticks, or a hidden project would have its ticks rolled forward every hour to
+# keep it permanently ready for a restore that will never read them.
+$hpSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\_common.ps1'))
+$hpRoll = $hpSrc.IndexOf('$ordered = @($dir.sessions | Sort-Object')
+$hpGate = $hpSrc.IndexOf('if (Test-SRProjectShelved $dir) { continue }')
+if ($hpGate -lt 0) { Fail 'the tick roll no longer asks whether the project is shelved' }
+elseif ($hpRoll -lt 0) { Fail 'the tick roll has moved - this assertion can no longer find it' }
+elseif ($hpGate -gt $hpRoll) { Fail 'the shelved check sits AFTER the roll has already started ordering its sessions' }
+else { Pass 'the hourly tick roll skips a shelved project before it touches a single tick' }
+
+# --- SUGGESTING, AND ONLY SUGGESTING ---------------------------------------
+# 🔴 THE THING THAT MUST NEVER HAPPEN IS THE TOOL HIDING SOMETHING ITSELF, so
+# the first assertion is that this function cannot: it takes a directory and
+# hands back a sentence, and nothing in it writes. The rest is whether the
+# sentence is right.
+Write-Host ''
+Write-Host '--- which projects the rail would suggest shelving ---'
+$sgCfg = [PSCustomObject]@{ shelveSuggestDays = 14 }
+$sgNow = Get-Date
+function New-SgDir {
+    param([int]$QuietDays, [string]$Lane = 'main', [bool]$Shelved = $false,
+          [bool]$Missing = $false, [bool]$Gone = $false, [int]$Count = 2)
+    $ss = @()
+    for ($i = 0; $i -lt $Count; $i++) {
+        $ss += [PSCustomObject]@{
+            sessionId = ('sg{0}{1}' -f $Lane, $i); title = 'T'; enabled = $true; gone = $Gone
+            lane = $Lane; worktree = $(if ($Lane -eq 'worktree') { 'lane-a' } else { $null })
+            lastActive = $sgNow.AddDays(-$QuietDays).ToString('o')
+        }
+    }
+    return [PSCustomObject]@{ path = ('C:\p\{0}' -f [Guid]::NewGuid().ToString('N').Substring(0,6))
+                              enabled = $true; missing = $Missing; shelved = $Shelved; sessions = $ss }
+}
+
+$sgQuiet = Get-SRShelveSuggestion -Dir (New-SgDir -QuietDays 20) -Config $sgCfg -AnythingRunning $false -Now $sgNow
+if (-not $sgQuiet) { Fail 'a project quiet for 20 days with nothing running is not suggested' }
+elseif ($sgQuiet -notmatch '20') { Fail "it is suggested but does not say how long: '$sgQuiet'" }
+else { Pass "a project quiet past the threshold is suggested, and says why: '$sgQuiet'" }
+
+# 🔑 RUNNING BEATS QUIET, whatever the dates say. A live process is the one
+# piece of evidence that the operator is using it right now.
+$sgLive = Get-SRShelveSuggestion -Dir (New-SgDir -QuietDays 20) -Config $sgCfg -AnythingRunning $true -Now $sgNow
+if ($sgLive) { Fail "a project with something RUNNING was suggested for hiding: '$sgLive'" }
+else { Pass 'nothing running is required - a live project is never suggested' }
+
+$sgFresh = Get-SRShelveSuggestion -Dir (New-SgDir -QuietDays 3) -Config $sgCfg -AnythingRunning $false -Now $sgNow
+if ($sgFresh) { Fail "a project quiet only 3 days was suggested: '$sgFresh'" }
+else { Pass 'three days quiet is not enough' }
+
+# AND THE THRESHOLD IS THE SETTING, not a number in the code. Same project,
+# same clock, a different shelveSuggestDays.
+$sgShort = Get-SRShelveSuggestion -Dir (New-SgDir -QuietDays 3) -Config ([PSCustomObject]@{ shelveSuggestDays = 2 }) `
+                                -AnythingRunning $false -Now $sgNow
+if (-not $sgShort) { Fail 'shelveSuggestDays is ignored - the same project is unsuggested at a 2-day threshold' }
+else { Pass 'the threshold comes from shelveSuggestDays, not from a literal' }
+
+# 🔑 A REPO WHOSE ONLY REMAINING LANES ARE WORKTREES IS SUGGESTED SOONER. This
+# is the case that was actually complained about: a worktree is one branch of
+# work, and a repo left holding nothing but finished ones is the clutter. Eight
+# days is under the 14-day threshold and over the halved 7.
+$sgWt = Get-SRShelveSuggestion -Dir (New-SgDir -QuietDays 8 -Lane 'worktree') -Config $sgCfg -AnythingRunning $false -Now $sgNow
+if (-not $sgWt) { Fail 'a repo holding nothing but 8-day-old worktree lanes is not suggested' }
+elseif ($sgWt -notmatch 'worktree') { Fail "it is suggested but not as a worktree case: '$sgWt'" }
+else { Pass "finished worktree lanes are weighted and named: '$sgWt'" }
+# 🪤 AND THE WEIGHT IS REAL, not just wording. The same eight days in the MAIN
+# lane must NOT be suggested, or the halving above is doing nothing.
+$sgMain = Get-SRShelveSuggestion -Dir (New-SgDir -QuietDays 8 -Lane 'main') -Config $sgCfg -AnythingRunning $false -Now $sgNow
+if ($sgMain) { Fail "the same 8 days in the main lane was suggested too - the worktree weight is not a weight: '$sgMain'" }
+else { Pass 'the same eight days in the main lane is not suggested - the weighting is real' }
+
+$sgHidden = Get-SRShelveSuggestion -Dir (New-SgDir -QuietDays 40 -Shelved $true) -Config $sgCfg -AnythingRunning $false -Now $sgNow
+if ($sgHidden) { Fail 'a project that is ALREADY shelved is suggested for shelving' }
+else { Pass 'a project already shelved is not suggested again' }
+
+$sgMissing = Get-SRShelveSuggestion -Dir (New-SgDir -QuietDays 40 -Missing $true) -Config $sgCfg -AnythingRunning $false -Now $sgNow
+if ($sgMissing) { Fail 'a project whose folder is gone is suggested for shelving rather than reported as missing' }
+else { Pass 'a missing project keeps its own state instead of being called quiet' }
+
+# 🪤 A DELETED TRANSCRIPT IS NOT SILENCE. Counting `gone` conversations would
+# make a project look ancient because somebody emptied a temp folder.
+$sgGone = Get-SRShelveSuggestion -Dir (New-SgDir -QuietDays 40 -Gone $true) -Config $sgCfg -AnythingRunning $false -Now $sgNow
+if ($sgGone) { Fail "a project with nothing but deleted transcripts was suggested: '$sgGone'" }
+else { Pass 'conversations whose transcripts are gone do not count as quiet' }
+
+# 🔴 AND IT CANNOT HIDE ANYTHING. The whole promise is that the tool points and
+# the operator decides, so the function that points must have no way to act.
+$sgBody = ''
+$sgAt = $hpSrc.IndexOf('function Get-SRShelveSuggestion')
+if ($sgAt -ge 0) {
+    $sgEnd = $hpSrc.IndexOf("`nfunction ", $sgAt + 30)
+    if ($sgEnd -lt 0) { $sgEnd = $hpSrc.Length }
+    $sgBody = (((($hpSrc.Substring($sgAt, $sgEnd - $sgAt)) -split "`n") | ForEach-Object { ($_ -split '#', 2)[0] }) -join "`n")
+}
+$sgWrites = @()
+foreach ($w in @('Save-SRRegistry', 'Set-Field', 'Add-Member', 'Set-Content', 'Out-File', '.shelved =')) {
+    if ($sgBody -match [regex]::Escape($w)) { $sgWrites += $w }
+}
+if (-not $sgBody) { Fail 'Get-SRShelveSuggestion is gone' }
+elseif ($sgWrites.Count) { Fail ('the suggester can act on its own suggestion: it calls ' + ($sgWrites -join ', ')) }
+else { Pass 'the suggester only ever returns a sentence - it has no way to shelve anything' }
 # --- A SESSION THAT HAS NEVER BEEN PROMPTED --------------------------------
 # claude writes the transcript on the FIRST MESSAGE, so a window just opened and
 # not yet typed into has no .jsonl anywhere -- and a walk over transcripts cannot

@@ -1126,12 +1126,34 @@
          never have to compete for attention.
          ================================================== -->
     <DataTemplate x:Key="RailRowTpl">
+      <Grid>
+      <!-- an age band heading: TODAY / THIS WEEK / THIS MONTH / OLDER.
+           🪤 THE CARET IS THE AFFORDANCE, not the highlight the sessions
+           column uses. That one FILTERS and stays lit while it is on; this one
+           FOLDS, and a fold has a direction - a caret says which way the next
+           click goes, where a lit background would only say "this is the one
+           you pressed" about a band that is now empty on screen. -->
+      <Border Visibility="{Binding BandVis}" Padding="12,10,12,6" Margin="6,8,6,0"
+              CornerRadius="8" Background="Transparent" Cursor="Hand"
+              ToolTip="Fold this group of projects away - click again to bring it back">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock Text="{Binding BandCaret}" Style="{StaticResource Meta}"
+                     VerticalAlignment="Center" Margin="0,0,8,0"/>
+          <TextBlock Text="{Binding BandLabel}" Style="{StaticResource Caption}"
+                     VerticalAlignment="Center"/>
+          <TextBlock Text="{Binding BandCount}" Style="{StaticResource Caption}"
+                     FontWeight="Normal" Foreground="{StaticResource TextLow}"
+                     Margin="9,0,0,0" VerticalAlignment="Center"/>
+        </StackPanel>
+      </Border>
+
       <!-- 🪤 THE SAME RHYTHM THE SESSION ROWS WERE GIVEN. The tile was tuned
            when it was the only two-line thing in the window; beside the rows'
            new spacing it read tight, and a rail that is denser than the list it
            filters gets the emphasis backwards. Nothing here changes what a tile
            SAYS - only how much air it says it in. -->
-      <Border Margin="8,4,8,4" CornerRadius="9" Background="{Binding PickBg}"
+      <Border Visibility="{Binding RowVis}" ToolTip="{Binding Tip}"
+              Margin="8,4,8,4" CornerRadius="9" Background="{Binding PickBg}"
               BorderBrush="{Binding PickEdge}" BorderThickness="1"
               Padding="0,11,12,12" SnapsToDevicePixels="True">
         <Grid>
@@ -1168,6 +1190,7 @@
                      TextTrimming="CharacterEllipsis"/>
         </Grid>
       </Border>
+      </Grid>
     </DataTemplate>
 
 
@@ -1498,8 +1521,34 @@
                   <TextBlock x:Name="RailOnlyLive" Style="{StaticResource Meta}" Cursor="Hand"
                              VerticalAlignment="Center"
                              ToolTip="Show only projects with something running"/>
+                  <!-- 🔴 HOW MANY ARE SHELVED, never silence. Shelving a project
+                       takes it off this rail AND out of the logon restore, so a
+                       rail that simply drew fewer tiles would be a rail whose
+                       length lies. It appears only when something is shelved -
+                       see Update-RailShelved - because "0 shelved" is chrome
+                       explaining a state nobody is in.
+                       🪤 NOT the session-level "hidden", which is a launch flag
+                       meaning "open this console off-screen". Different object,
+                       different word, on purpose. -->
+                  <TextBlock x:Name="RailShelved" Style="{StaticResource Meta}" Cursor="Hand"
+                             VerticalAlignment="Center" Margin="10,0,0,0"
+                             Visibility="Collapsed"
+                             AutomationProperties.Name="show shelved projects"/>
                 </StackPanel>
               </Border>
+              <!-- 🔴 A LINE OF ITS OWN, AND IT IS NOT A CONTROL. The rail shows
+                   only what was touched in the last day, so a project quiet for
+                   a fortnight is never a tile here and there is nowhere on one
+                   to mark it - the count has to be able to speak for projects
+                   the rail cannot draw. It has no Cursor and no click: the tool
+                   points at what could be put away and never puts anything
+                   away, so a control that looked pressable would be promising
+                   an action that deliberately does not exist. The names are in
+                   the tooltip; hiding is the right-click on the tile. -->
+              <TextBlock x:Name="RailSuggest" Style="{StaticResource Meta}"
+                         Margin="14,0,12,9" TextWrapping="Wrap"
+                         Visibility="Collapsed"
+                         AutomationProperties.Name="projects that could be shelved"/>
             </StackPanel>
             <ListBox x:Name="RailList" Grid.Row="1" Style="{StaticResource Plain}"
                      ItemContainerStyle="{StaticResource PlainItem}"
@@ -1726,6 +1775,16 @@
                         ToolTip="Start a fresh conversation in another worktree of this project"/>
                 <Button x:Name="PaneSettings" Content="Settings" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
                         ToolTip="Name, model, effort, permissions, Remote Control, hidden"/>
+                <!-- 🔴 IT PRESSES Esc, IT DOES NOT KILL ANYTHING. Beside
+                     Relaunch on purpose: they are the two ways to stop a
+                     conversation doing what it is doing, and they differ in
+                     exactly the way the operator cares about - this one leaves
+                     the session and its turn-so-far alive, Relaunch does not.
+                     Enabled only while something is actually running; see
+                     Get-InterruptBlocker, which refuses on everything else
+                     because Esc at a prompt means something else entirely. -->
+                <Button x:Name="PaneStop" Content="Interrupt" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
+                        ToolTip="Press Esc in this conversation to stop the turn it is running. Nothing is closed and nothing is lost from the transcript."/>
                 <Button x:Name="PaneGoTo" Content="Go to terminal" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"/>
                 <Button x:Name="PaneRelaunch" Content="Relaunch" Style="{StaticResource BtnSlim}" Margin="0,0,0,4"/>
               </WrapPanel>

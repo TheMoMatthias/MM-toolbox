@@ -274,6 +274,30 @@ function Get-SRConfigRead {
         @{ k = 'transcriptTools';      v = 'folded' },
         @{ k = 'textRendering';        v = 'grayscale' },
         @{ k = 'readingWidth';         v = 'full' },
+        # WHICH AGE BANDS IN THE PROJECTS RAIL ARE FOLDED SHUT, as a comma-joined
+        # list of band keys. Everything but TODAY starts shut, because at 36
+        # projects the rail's whole job is "where was I", and a project last
+        # touched three weeks ago is not the answer to that question.
+        #
+        # 🪤 A STRING, NOT AN ARRAY. Every other setting here is a scalar and the
+        # round trip through ConvertTo-Json / ConvertFrom-Json is what decides the
+        # type coming back: a one-element array returns UNROLLED to its element,
+        # so a rail with exactly one band shut would read back as a bare string
+        # while two read back as an array, and the parse would have to handle
+        # both. Splitting a string has one shape whatever is in it.
+        @{ k = 'railBandsShut';        v = 'week,month,older' },
+        # HOW LONG A PROJECT HAS TO HAVE BEEN QUIET BEFORE THE RAIL SUGGESTS
+        # SHELVING IT. Two weeks, which is deliberately longer than
+        # recencyDays: that one decides what comes BACK tomorrow and can be
+        # wrong cheaply, this one is a nudge to stop seeing something and
+        # wants to be right.
+        #
+        # 🪤 A KEY, NOT A LITERAL, AND THAT IS A SAFETY PROPERTY HERE. Test-SRExcluded
+        # carries a note about a hard-coded staleness rule that quietly hid three
+        # 20MB+ conversations before it was removed. This one only ever SUGGESTS -
+        # see Get-SRShelveSuggestion, which has no way to shelve anything - and when
+        # the threshold is wrong for this machine it is one number in this file.
+        @{ k = 'shelveSuggestDays';      v = 14 },
         # HOW BIG EVERY SIZE ON THE SURFACE IS, as a percentage of the scale in
         # window2.xaml. One number, not a per-element setting: the complaint it
         # answers was that the work surface does not respond to the window at
@@ -1562,6 +1586,14 @@ function Update-SRRegistryCore {
         # in it was touched. So it leaves a disabled project entirely alone rather
         # than writing ticks into it that can never launch.
         if (-not $dir.enabled) { continue }
+        # 🔑 AND THE SAME ARGUMENT ONE STEP EARLIER FOR A SHELVED PROJECT. The note
+        # above says the roll must not write ticks that can never launch; a shelved
+        # project is the other way round - its ticks would launch, because they are
+        # real ticks on an enabled project, and rolling them forward every hour
+        # would keep a project the operator put away permanently ready to come
+        # back. Get-SRSelected refuses to launch it either way; this stops the
+        # registry churning ticks for something nothing will ever read.
+        if (Test-SRProjectShelved $dir) { continue }
 
         $ordered = @($dir.sessions | Sort-Object { [datetime]$_.lastActive } -Descending)
         $laneGroups = $ordered | Group-Object -Property {
@@ -1660,6 +1692,102 @@ function Update-SRRegistryCore {
 # wrong thing.
 #
 # The flat list of what should actually reopen: enabled sessions inside enabled,
+# ---------------------------------------------------------------------------
+# IS THIS PROJECT SHELVED - put away, out of the rail and out of the restore?
+#
+# 🔴 IT IS CALLED `shelved` BECAUSE `hidden` WAS ALREADY TAKEN, one object away.
+# A SESSION carries `hidden` meaning "launch this conversation's terminal
+# off-screen" - Test-SRHiddenWanted turns it into a claude flag. Putting a
+# project-level `hidden` on the DIRECTORY beside it would have been the same
+# word, in the same registry, meaning two unrelated things with completely
+# different consequences: one decides where a window appears, this one decides
+# whether anything is launched at all. Renamed before it shipped. One word
+# throughout - field, functions, config key, and every string on screen.
+#
+# 🪤 SHELVED IS NOT EXCLUDED. excludePatterns (Test-SRExcluded) works at
+# DISCOVERY and its paths never reach the registry at all - that erases history.
+# This keeps every conversation, every tick and every pin the project had; it is
+# simply out of the picture until it is put back. Never wire the two together.
+function Test-SRProjectShelved { param($Dir)
+    if (-not $Dir) { return $false }
+    return [bool]$Dir.shelved
+}
+
+# ---------------------------------------------------------------------------
+# WOULD THIS PROJECT BE WORTH SHELVING? A SUGGESTION, AND ONLY EVER THAT.
+#
+# 🔴 NOTHING IS EVER SHELVED AUTOMATICALLY. This returns a sentence and no more;
+# it has no reference to the registry it could write, and Set-ProjectShelved - the
+# one thing that does write - is reachable only from a right-click and a confirm
+# sheet. That is the whole contract: the tool may point, the operator decides.
+# A tool that tidied 36 projects down to 12 on its own would be indistinguishable
+# from a tool that lost 24 of them.
+#
+# Two conditions, both required:
+#   * nothing in it is RUNNING - liveness is the caller's to supply, because
+#     _common has no agent probe and asking for one here would put a
+#     900 ms `claude agents --json` behind a rail rebuild;
+#   * every conversation it still has went quiet more than shelveSuggestDays ago.
+#
+# 🔑 AND A REPO WHOSE ONLY REMAINING LANES ARE WORKTREES IS SUGGESTED AT HALF
+# THAT. This is the case the operator actually complained about: a worktree is
+# one lane of work, opened for a branch and finished with it, and a repo whose
+# main lane has stopped while three dead worktree lanes hang on is exactly the
+# clutter. It is a WEIGHT, not a separate rule - the project still has to be
+# quiet, just not for as long. Projects are keyed on the REPO since v3, so a
+# worktree is never a project of its own and this can only ever mean "all that
+# is left in here is finished branches".
+#
+# 🪤 `gone` CONVERSATIONS DO NOT COUNT AS QUIET. A transcript deleted off disk
+# has no lastActive worth reading, and counting it would make a project look
+# ancient because somebody cleared out a temp folder. A project with nothing BUT
+# gone conversations is not suggested at all - it has a different problem and the
+# manager already says so.
+function Get-SRShelveSuggestion {
+    param(
+        [Parameter(Mandatory)]$Dir,
+        $Config,
+        # Does anything in this project have a live process? The window knows;
+        # this does not, and must not go and find out.
+        [bool]$AnythingRunning = $false,
+        [datetime]$Now = [datetime]::Now
+    )
+    if (-not $Dir) { return '' }
+    if ($Dir.missing) { return '' }
+    if (Test-SRProjectShelved $Dir) { return '' }
+    if ($AnythingRunning) { return '' }
+
+    $days = 14
+    if ($Config -and $null -ne $Config.PSObject.Properties['shelveSuggestDays']) {
+        try { $days = [int]$Config.shelveSuggestDays } catch { $days = 14 }
+    }
+    if ($days -lt 1) { $days = 14 }
+
+    $live = @(@($Dir.sessions) | Where-Object { -not $_.gone })
+    if (-not $live.Count) { return '' }
+
+    $newest = [datetime]0
+    $allWorktree = $true
+    foreach ($s in $live) {
+        if ("$($s.lane)" -ne 'worktree') { $allWorktree = $false }
+        try { $t = [datetime]$s.lastActive; if ($t -gt $newest) { $newest = $t } } catch { }
+    }
+    # A conversation whose date will not parse leaves $newest at zero, which
+    # would read as "quiet since the year 1" - so nothing is suggested off a
+    # project we could not date at all.
+    if ($newest -eq [datetime]0) { return '' }
+
+    $cut = $days
+    if ($allWorktree) { $cut = [Math]::Max(1, [int][Math]::Ceiling($days / 2.0)) }
+    $quiet = [int]([Math]::Floor(($Now - $newest).TotalDays))
+    if ($quiet -lt $cut) { return '' }
+
+    if ($allWorktree) {
+        return ('nothing but finished worktree lanes here, quiet {0} days' -f $quiet)
+    }
+    return ('nothing running, quiet {0} days' -f $quiet)
+}
+
 # present directories. Newest first.
 function Get-SRSelected {
     param([Parameter(Mandatory)]$Registry, $Config, [switch]$IgnoreTicks)
@@ -1672,6 +1800,13 @@ function Get-SRSelected {
     $out = @()
     foreach ($d in @($Registry.directories)) {
         if ($d.missing) { continue }
+        # 🔴 SHELVED IS NOT A TICK, so -IgnoreTicks does not lift it. -All means
+        # "never mind what is ticked", which is a statement about conversations;
+        # a shelved project has been taken out of the picture entirely, and a
+        # restore that brought back thirty sessions the operator had
+        # deliberately put away would be the exact complaint this feature
+        # answers. It sits beside `missing` because it is that kind of check.
+        if (Test-SRProjectShelved $d) { continue }
         if (-not $IgnoreTicks -and -not $d.enabled) { continue }
         foreach ($s in @($d.sessions)) {
             if ($wtOff -and $s.lane -eq 'worktree') { continue }
@@ -3403,6 +3538,49 @@ function Invoke-SRAnswerMultiOnScreen {
     $r = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@(0x0D))
     if ($r -lt 0) { return "could not reach that session's console (win32 error $(-$r))" }
     Write-SRLog ("  [ok]   answered {0} with {1} of {2} option(s) ticked, then Submit" -f $Who, $Indexes.Count, $final.Options.Count)
+    return $null
+}
+
+# ---------------------------------------------------------------------------
+# INTERRUPTING A TURN, BY PRESSING WHAT A PERSON WOULD PRESS.
+#
+# 🔑 CLAUDE CODE OWNS THE INTERRUPT. Esc is its own key for "stop what you are
+# doing" and it is the same key whatever the session is in the middle of, so
+# this drives the TUI exactly as Invoke-SRAnswerOnScreen drives a menu: one
+# virtual key through the console the session is already reading. Nothing here
+# kills a process, signals anything, or touches the transcript. The alternative
+# on offer was a taskkill, which is not an interrupt - it is a relaunch that
+# loses the turn, which the window already has a button for and confirms first.
+#
+# 🪤 IT IS SENT BLIND, AND THAT IS WHY THE CALLER HAS TO GATE IT. Every other
+# send in this file reads the screen before it commits, because every other send
+# picks something. Esc picks nothing: on a running turn it stops the turn, and on
+# a session sitting at its prompt it clears the input box or opens the rewind
+# picker - a different action entirely. So there is nothing here to verify
+# against, and the safety lives in the caller only sending it to a session it
+# has just established is MID-TURN. See Get-InterruptBlocker in the window.
+#
+# 🪤 AND IT IS ONE KEY, NEVER TWO. Two Escs in one batch is the rewind gesture,
+# which offers to revert CODE - so a Count above one is refused outright rather
+# than trusted to a caller's arithmetic.
+function Send-SRInterrupt {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$ProcessId,
+        [string]$Who = ''
+    )
+    if ($ProcessId -le 0) { return 'there is no console to interrupt' }
+    # A pid is reusable. Confirm THIS one is still a claude before writing a key
+    # into its console - the same check Send-SRSessionInput makes, for the same
+    # reason: the alternative is pressing Esc in whatever inherited the number.
+    $proc = $null
+    try { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop } catch { }
+    if (-not $proc)                  { return 'that session has exited' }
+    if ($proc.Name -ne 'claude.exe') { return "pid $ProcessId is $($proc.Name), not claude.exe - refusing to type into it" }
+
+    $n = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@(0x1B))          # VK_ESCAPE
+    if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
+    Write-SRLog ("  [ok]   interrupted {0} (pid {1}) with one Esc" -f $Who, $ProcessId)
     return $null
 }
 

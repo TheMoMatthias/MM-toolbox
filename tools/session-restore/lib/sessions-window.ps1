@@ -160,10 +160,10 @@ foreach ($n in @(
     'Shell','TitleBar','WinMin','WinMax','WinClose',
     'LiveCount','Search','Stamp','Rescan','NewSession',
     'ModeWork','ModeManage','Broadcast',
-    'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear','RailSearch','RailSort','RailOnlyLive',
+    'WorkSurface','RailCol','ListCol','RailPane','RailSplit','RailList','RailClear','RailSearch','RailSort','RailOnlyLive','RailShelved','RailSuggest',
     'ListPane','ListSplit','ListCaption','ListSort','ListSearch','ListCount','SessionList',
     'AskTabs','AskFreeBox','AskFree','AskFreeSend','AskFreeLabel','AskReview',
-    'OutputPane','PaneName','PaneState','PaneStateDot','PaneGoTo','PaneRelaunch','PaneSettings',
+    'OutputPane','PaneName','PaneState','PaneStateDot','PaneStop','PaneGoTo','PaneRelaunch','PaneSettings',
     'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
     'SetToolsFold','SetAllow','SetDeny',
@@ -1276,10 +1276,71 @@ function Update-Model {
         $r.Hay     = ('{0} {1} {2} {3} {4}' -f $t, $r.S.autoTitle, $r.D.path, $r.Id, $pl).ToLower()
         $r.HayProj = ('{0} {1}' -f $pl, $r.D.path).ToLower()
     }
+    Update-ShelveSuggestions
 }
 
-# What the work surface shows: live, or spoke in the last day. It is not a
-# browser for all 215 - that is what the session manager is for.
+# ===========================================================================
+# WHICH PROJECTS THE RAIL WOULD SUGGEST PUTTING AWAY.
+#
+# 🔴 COMPUTED HERE, NOT IN Build-Rail, AND OVER THE WHOLE REGISTRY. Two reasons,
+# and the second is the important one.
+#
+# The cheap reason: Build-Rail runs on every keystroke in either search box, and
+# this walks all 36 projects and every conversation in them parsing dates. That
+# is the exact cost the note beside $r.At records already having paid once.
+# Update-Model runs on a timer and already reads far more than this.
+#
+# 🔑 THE REAL REASON: THE RAIL CANNOT SEE THE PROJECTS THIS IS ABOUT. The work
+# surface is live-or-spoke-in-the-last-day - Test-OnSurface, deliberately - so
+# every project the rail holds was touched within 24 hours, and a project quiet
+# for fourteen DAYS is by definition not on it. A suggestion computed from the
+# rail's own contents could never fire even once. So it is computed from the
+# registry, which knows about all of them, and the rail reports the COUNT in its
+# header; the per-tile mark still exists for the rare project that is on the
+# surface only because something in it is selected.
+$script:shelveSuggest = @{}
+$script:shelveSuggestNames = @()
+
+function Update-ShelveSuggestions {
+    $found = @{}
+    $names = New-Object System.Collections.Generic.List[string]
+    $now = [datetime]::Now
+    $agentMap2 = $script:agents
+    foreach ($d in $script:dirs) {
+        $running = $false
+        foreach ($s in @($d.sessions)) {
+            if ($agentMap2 -and $agentMap2["$($s.sessionId)".ToLower()]) { $running = $true; break }
+        }
+        $why = ''
+        try { $why = Get-SRShelveSuggestion -Dir $d -Config $script:cfg -AnythingRunning $running -Now $now } catch { $why = '' }
+        if ($why) {
+            $found["$($d.path)"] = $why
+            $names.Add((Get-ProjectLabel "$($d.path)"))
+        }
+    }
+    $script:shelveSuggest = $found
+    $script:shelveSuggestNames = $names.ToArray()
+}
+
+# What the CONVERSATION surface shows: live, or spoke in the last day. It is not
+# a browser for all 215 - that is what the session manager is for.
+#
+# 🔑 THAT STILL HOLDS FOR CONVERSATIONS, AND NO LONGER HOLDS FOR PROJECTS. When
+# this was written the rail asked it too, and the consequence went unnoticed
+# until the age bands went in: the rail carried 12 of 36 projects, so three of
+# its four bands could never fill and a project quiet long enough to be worth
+# shelving could not be right-clicked, because it had no tile. The operator's
+# own words for the rail were "click on further-away filtered projects to expand
+# all of the projects who are in there, and continue working on them if needed",
+# which this gate made impossible.
+#
+# So Build-Rail no longer calls this - see the note there. The reasoning above
+# is unchanged for the two callers that remain, Build-Sessions and Update-Strip,
+# and it is why the fix was made rail-local rather than by widening this: a
+# sessions column listing all 319 conversations is exactly what this prevents.
+# The one place Build-Sessions now lets an older conversation through is when
+# the rail is FILTERED to its project, which is the operator asking for it by
+# name.
 function Test-OnSurface { param($R)
     if ($R.Live) { return $true }
     # $R.Warm is the same 24-hour question, decided once when the model was
@@ -1414,6 +1475,62 @@ function Convert-HslToColor { param([double]$H, [double]$S, [double]$L)
         [byte][math]::Round(($b + $m) * 255))
 }
 
+# ===========================================================================
+# THE RAIL'S AGE BANDS - the same shape the sessions column already has.
+#
+# 🔑 THE SESSIONS LIST SOLVED THIS FIRST. $script:Bands groups conversations by
+# STATE and its headings are clickable; this groups projects by AGE and its
+# headings fold. The item shape, the heading-click gesture and the rule that
+# every heading stays on screen are all copied from there deliberately - two
+# lists in one window that group differently but behave differently as well is
+# two things to learn instead of one.
+#
+# 🪤 ROLLING DAYS, NOT CALENDAR WEEKS. "This week" on a Monday morning would
+# hold almost nothing under a calendar reading, and the rail would say a project
+# touched yesterday is older than one touched an hour ago on the same Monday.
+# Everything else in this tool that bounds by time - recencyDays, listDays,
+# sessionWindowDays - counts backwards from now for the same reason. TODAY is
+# still a real day boundary though, because "today" is the one of the four that
+# a person reads as a date rather than as a duration.
+$script:RailBands = @(
+    @{ Key = 'today'; Label = 'TODAY';      Days = 0  },
+    @{ Key = 'week';  Label = 'THIS WEEK';  Days = 7  },
+    @{ Key = 'month'; Label = 'THIS MONTH'; Days = 30 },
+    # The catch-all. Days is unused on it - nothing falls past the last cut.
+    @{ Key = 'older'; Label = 'OLDER';      Days = 0  }
+)
+
+# Which bands are folded shut, by key. Read from the config at startup and
+# written back through the queue - see Toggle-RailBand.
+$script:railBandShut = @{}
+try {
+    $cfgBands = Get-SRConfig
+    foreach ($k in ("$($cfgBands.railBandsShut)" -split ',')) {
+        $kk = "$k".Trim().ToLower()
+        if ($kk) { $script:railBandShut[$kk] = $true }
+    }
+} catch { }
+
+# The three cut-off ticks, taken ONCE per build rather than per project. Same
+# reasoning as $warmCut in Update-Model: a pass that re-reads the clock for
+# every row compares each one against a slightly different "now", which is not
+# what any of these four words mean.
+function Get-RailBandCuts {
+    $midnight = [datetime]::Today
+    return @{
+        Today = $midnight.Ticks
+        Week  = $midnight.AddDays(-7).Ticks
+        Month = $midnight.AddDays(-30).Ticks
+    }
+}
+
+function Get-RailBandKey { param([long]$At, $Cuts)
+    if ($At -ge $Cuts.Today) { return 'today' }
+    if ($At -ge $Cuts.Week)  { return 'week' }
+    if ($At -ge $Cuts.Month) { return 'month' }
+    return 'older'
+}
+
 # The rail's own ordering and its own filter, independent of the sessions column.
 $script:railSort = 'recent'
 $script:RailSorts = @(
@@ -1429,6 +1546,12 @@ $script:RailSorts = @(
     @{ Key = 'busiest'; Label = 'busiest' }
 )
 $script:railOnlyLive = $false
+# Projects put away, and whether the rail is currently showing them anyway. The
+# COUNT is recomputed by every build; the toggle is a view state and deliberately
+# not remembered - "show me the shelved ones" is something you do for a minute,
+# and a rail that came back showing them would have un-shelved them in effect.
+$script:railShowShelved = $false
+$script:railShelved = 0
 
 function Build-Rail {
     # 🔴 TWO SEARCHES, AND THEY ARE NOT THE SAME QUESTION. The header box is
@@ -1440,8 +1563,31 @@ function Build-Rail {
     $q = "$($ui.Search.Text)".Trim().ToLower()
     $qr = "$($ui.RailSearch.Text)".Trim().ToLower()
     $byProj = @{}
+    # When each project was last touched, in ticks: the key the 'recent' sort
+    # orders by AND the number that decides its age band. See the note below.
+    $newest = @{}
     foreach ($r in $script:model) {
-        if (-not (Test-OnSurface $r)) { continue }
+        # 🔴 THE RAIL CARRIES EVERY PROJECT, AND DELIBERATELY DOES NOT ASK
+        # Test-OnSurface. That gate is live-or-spoke-in-the-last-day, and against
+        # it this rail held 12 of 36 projects - so three of the four age bands
+        # could never fill, and a project quiet long enough to be worth shelving
+        # was by definition not a tile you could right-click. What the operator
+        # asked for was the opposite: "filter for only the most latest used
+        # projects, and if necessary click on further-away filtered projects to
+        # expand all of the projects who are in there, and continue working on
+        # them if needed". The 24-hour cut made the second half impossible.
+        #
+        # 🪤 RAIL-LOCAL, NOT A CHANGE TO THE GATE. Test-OnSurface has two other
+        # callers - Build-Sessions and Update-Strip - and widening it there would
+        # turn the sessions column into a browser for all 319 conversations,
+        # which is the thing the note beside it exists to prevent. The age bands
+        # are what make 36 tiles readable, and they are why this is safe now and
+        # would not have been before them.
+        #
+        # The model already drops missing directories and gone conversations, so
+        # "no filter" here means every project that still exists. A tile's count
+        # is now the project's whole conversation count rather than just its
+        # recent ones, which is what a project tile should have said all along.
         if ($q -and "$($r.Hay)" -notlike "*$q*") { continue }
         # This box matches the PROJECT, not the conversation - it is the projects
         # list, and matching conversation titles would hide projects whose names
@@ -1450,6 +1596,13 @@ function Build-Rail {
         $k = "$($r.D.path)"
         if (-not $byProj.ContainsKey($k)) { $byProj[$k] = New-Object System.Collections.Generic.List[object] }
         $byProj[$k].Add($r)
+        # 🔴 $r.At, NOT [datetime]$r.S.lastActive AGAIN. Update-Model parses that
+        # string ONCE per pass and carries the ticks - the note there records
+        # that re-parsing it per row was 51 ms of a 274 ms pass - and the 'recent'
+        # sort below was re-parsing it a second time for all 319 conversations on
+        # every rebuild, which is every keystroke in either search box. The age
+        # band wants the same number, so it is taken once here and both use it.
+        if (-not $newest.ContainsKey($k) -or [long]$r.At -gt [long]$newest[$k]) { $newest[$k] = [long]$r.At }
     }
     # 🔴 THE RAIL ORDERS ITSELF. 'recent' is the default and was the only
     # one; the others exist because at 29 projects "which has something waiting"
@@ -1462,11 +1615,7 @@ function Build-Rail {
             'name'    { (Get-ProjectLabel $k2).ToLower() }
             'waiting' { - @($kids2 | Where-Object { "$($_.Band)" -eq 'needs' }).Count }
             'busiest' { - @($kids2 | Where-Object { $_.Live }).Count }
-            default   {
-                $newest = [datetime]0
-                foreach ($x in $kids2) { try { $t = [datetime]$x.S.lastActive; if ($t -gt $newest) { $newest = $t } } catch { } }
-                - $newest.Ticks
-            }
+            default   { - [long]$newest[$k2] }
         }
     })
     if ($script:railOnlyLive) {
@@ -1474,55 +1623,224 @@ function Build-Rail {
         # next, which is the only thing this rail is for.
         $order = @($order | Where-Object { @($byProj[$_] | Where-Object { $_.Live }).Count -gt 0 })
     }
-    $items = New-Object System.Collections.Generic.List[object]
+    # 🔴 PUT AWAY, AND SAID SO. A shelved project leaves the rail - that is the
+    # whole gesture - but the number of them is COUNTED whether or not they are
+    # being shown, because a list that silently omits things is a list whose
+    # length you cannot trust. The header says how many, and clicking it brings
+    # them back; see Update-RailShelved.
+    #
+    # 🪤 $byProj[$k][0].D IS THE REGISTRY'S OWN DIRECTORY OBJECT, not a copy -
+    # Update-Model files the entry itself on every row it builds. That is what
+    # makes Set-ProjectShelved's write reach the registry, and it is also why the
+    # question is asked off a row rather than by looking the path up again.
+    $shelvedPaths = @{}
     foreach ($k in $order) {
-        $picked = ($script:railPick -eq $k)
-        $kids = $byProj[$k]
-        # WHAT IS HAPPENING IN THERE, not just how many are in there. A count of
-        # 13 is the same number whether every one of them is asleep or one is
-        # waiting on you, and the whole point of the rail is choosing where to
-        # look next. The tile says the two things that decide that.
-        $needs = 0; $working = 0
-        foreach ($r in $kids) {
-            if ("$($r.Band)" -eq 'needs') { $needs++ }
-            elseif ($r.Live) { $working++ }
-        }
-        $bits = New-Object System.Collections.Generic.List[string]
-        if ($needs)   { $bits.Add("$needs waiting") }
-        if ($working) { $bits.Add("$working working") }
-        if (-not $bits.Count) { $bits.Add("$($kids.Count) idle") }
-        # 🪤 [char], NOT A LITERAL '·'. The test harness writes a combined script
-        # and runs it, and a non-ASCII byte in a STRING LITERAL does not survive
-        # that round trip - it arrived as 'Ã‚Â·' and took the whole file's parse
-        # down with it. The same character in a COMMENT is harmless, which is why
-        # the emoji markers throughout this file are fine and this was not. The
-        # rest of the window already follows this convention (see Caret above).
-        $dot = ' ' + [string][char]0x00B7 + ' '
+        if (Test-SRProjectShelved $byProj[$k][0].D) { $shelvedPaths[$k] = $true }
+    }
+    $script:railShelved = $shelvedPaths.Count
+    if (-not $script:railShowShelved -and $script:railShelved) {
+        $order = @($order | Where-Object { -not $shelvedPaths[$_] })
+    }
+    $items = New-Object System.Collections.Generic.List[object]
+    # THE BANDS, IN ORDER, EACH HOLDING WHATEVER THE CHOSEN SORT PUT IN IT.
+    # Grouping happens OUTSIDE the sort exactly as it does in the sessions column:
+    # the band is the ordering that matters and the sort decides the order WITHIN
+    # one, so switching to 'name' still cannot bury today's work under a project
+    # untouched since July.
+    $cuts = Get-RailBandCuts
+    $inBand = @{}
+    foreach ($k in $order) {
+        $bk = Get-RailBandKey -At ([long]$newest[$k]) -Cuts $cuts
+        if (-not $inBand.ContainsKey($bk)) { $inBand[$bk] = New-Object System.Collections.Generic.List[object] }
+        $inBand[$bk].Add($k)
+    }
+    # 🪤 EVERY BINDING IN THE TEMPLATE MUST RESOLVE ON BOTH SHAPES. A heading and
+    # a tile go through one DataTemplate, and a binding to a property that is not
+    # on the object is a SILENT trace error and an empty cell - the same trap the
+    # sessions list records beside its own heading item. So each shape carries
+    # the other's properties, named and switched off, rather than omitting them.
+    $blank = [System.Windows.Media.Brush][System.Windows.Media.Brushes]::Transparent
+    foreach ($b in $script:RailBands) {
+        if (-not $inBand.ContainsKey($b.Key)) { continue }
+        $paths = $inBand[$b.Key]
+        $shut = [bool]$script:railBandShut["$($b.Key)"]
         $items.Add([PSCustomObject]@{
-            Path   = $k
-            Label  = (Get-ProjectLabel $k)
-            Count  = $kids.Count
-            State  = ($bits -join $dot)
-            # 🔴 THE CAST, AGAIN. A brush handed back from a PowerShell
-            # function arrives PSObject-WRAPPED, and WPF cannot convert that to a
-            # Brush: the binding fails SILENTLY, Background stays null, and the
-            # mark draws as nothing. Identical to the PSObject-wrapped FontFamily
-            # that killed the typeface - and just as invisible, because a missing
-            # brush looks exactly like a design choice. The suite now measures
-            # the mark on screen rather than trusting the colour behind it.
-            Accent = [System.Windows.Media.Brush](Get-ProjectAccent $k)
-            # The accent bar is always drawn; it just goes nearly transparent
-            # when the project has nothing live, so a busy project's identity is
-            # what catches the eye rather than every project shouting at once.
-            AccentOpacity = $(if ($needs) { 1.0 } elseif ($working) { 0.85 } else { 0.35 })
-            NeedsVis = $(if ($needs) { $V_Show } else { $V_Hide })
-            PickBg = [System.Windows.Media.Brush]$(if ($picked) { $window.FindResource('SelBg') } else { [System.Windows.Media.Brushes]::Transparent })
-            PickEdge = [System.Windows.Media.Brush]$(if ($picked) { $window.FindResource('EdgeLit') } else { [System.Windows.Media.Brushes]::Transparent })
-            Fg     = [System.Windows.Media.Brush]$(if ($picked) { $window.FindResource('TextMax') } else { $window.FindResource('TextHigh') })
+            Kind = 'band'; BandKey = "$($b.Key)"
+            BandVis = $V_Show; RowVis = $V_Hide
+            BandLabel = $b.Label; BandCount = $paths.Count
+            BandCaret = [string][char]$(if ($shut) { 0x25B8 } else { 0x25BE })
+            # The tile half of the template, off.
+            Path = ''; Label = ''; Count = 0; State = ''; Tip = $null
+            Accent = $blank; AccentOpacity = 0.0; NeedsVis = $V_Hide
+            PickBg = $blank; PickEdge = $blank; Fg = $blank
         })
+        foreach ($k in $paths) {
+            $picked = ($script:railPick -eq $k)
+            # 🔴 A FOLDED BAND NEVER HIDES THE PROJECT YOU ARE FILTERED TO. The
+            # pick keeps narrowing the sessions column whether or not its tile is
+            # on screen, so folding the band it lives in would leave the list
+            # showing one project's conversations with nothing anywhere saying
+            # which - and the only way back a control (RailClear) that is easy to
+            # read as "clear the search". Same principle as Test-OnSurface
+            # pinning whatever is selected onto the work surface.
+            if ($shut -and -not $picked) { continue }
+            $kids = $byProj[$k]
+            $items.Add((New-RailTile -Path $k -Kids $kids -Picked $picked -Blank $blank `
+                            -Suggest "$($script:shelveSuggest[$k])"))
+        }
     }
     $ui.RailList.ItemsSource = $items
     $ui.RailClear.Visibility = $(if ($script:railPick) { $V_Show } else { $V_Hide })
+    Update-RailShelved
+    Update-RailSuggest
+}
+
+# WHAT COULD BE SHELVED, said once for the whole registry.
+#
+# 🪤 IT COUNTS PROJECTS THE RAIL CANNOT SHOW, and that is the point rather
+# than a bug: see the note on Update-ShelveSuggestions. A count that only ever
+# reported the tiles on screen would be permanently zero, because a tile on
+# screen was touched today and a suggestion needs a fortnight of silence.
+# Absent when there is nothing to suggest - the rail is 248px wide and a line
+# saying 'nothing to put away' is a line spent on the usual case.
+function Update-RailSuggest {
+    if (-not $ui.RailSuggest) { return }
+    $n = @($script:shelveSuggestNames).Count
+    if (-not $n) { $ui.RailSuggest.Visibility = $V_Hide; return }
+    $ui.RailSuggest.Visibility = $V_Show
+    $ui.RailSuggest.Text = ('{0} quiet project(s) could be shelved' -f $n)
+    # Named in the tooltip, because the rail has nowhere to draw them: the
+    # operator finds them in the session manager, or waits for one to surface.
+    $some = @($script:shelveSuggestNames | Sort-Object | Select-Object -First 12)
+    $ui.RailSuggest.ToolTip = ((($some -join "`n") +
+        $(if ($n -gt $some.Count) { "`n...and $($n - $some.Count) more" } else { '' })) +
+        "`n`nNothing is shelved for you. Right-click a project to shelve it.")
+}
+
+# HOW MANY PROJECTS ARE SHELVED, and the way back to them. Absent entirely when
+# there are none: a control that says "0 shelved" is chrome explaining a state
+# nobody is in, on a 248px rail that already carries two other toggles.
+function Update-RailShelved {
+    if (-not $ui.RailShelved) { return }
+    if (-not $script:railShelved) { $ui.RailShelved.Visibility = $V_Hide; return }
+    $ui.RailShelved.Visibility = $V_Show
+    $ui.RailShelved.Text = $(if ($script:railShowShelved) {
+        ('{0} shelved, shown' -f $script:railShelved)
+    } else { ('{0} shelved' -f $script:railShelved) })
+    $ui.RailShelved.Foreground = $window.FindResource($(if ($script:railShowShelved) { 'TextMax' } else { 'TextLow' }))
+    $ui.RailShelved.ToolTip = $(if ($script:railShowShelved) {
+        'Shelved projects are on the rail. Click to put them away again.'
+    } else {
+        ('{0} project(s) are shelved: off this rail, and not restored at logon. Click to see them.' -f $script:railShelved)
+    })
+}
+
+# One project's tile. Lifted out of Build-Rail unchanged when the age bands went
+# in: the loop that emits it now has a band loop around it, and a tile built
+# three indents deep inside two loops is a tile nobody can read.
+function New-RailTile { param([string]$Path, $Kids, [bool]$Picked, $Blank, [string]$Suggest = '')
+    # WHAT IS HAPPENING IN THERE, not just how many are in there. A count of
+    # 13 is the same number whether every one of them is asleep or one is
+    # waiting on you, and the whole point of the rail is choosing where to
+    # look next. The tile says the two things that decide that.
+    $needs = 0; $working = 0
+    foreach ($r in $Kids) {
+        if ("$($r.Band)" -eq 'needs') { $needs++ }
+        elseif ($r.Live) { $working++ }
+    }
+    $bits = New-Object System.Collections.Generic.List[string]
+    if ($needs)   { $bits.Add("$needs waiting") }
+    if ($working) { $bits.Add("$working working") }
+    # 🪤 $Kids.Count, NOT @($Kids).Count. Kids is a List[object] and @() over
+    # one THROWS on PS 5.1 - "Argument types do not match" from inside a
+    # PSCustomObject literal, which names neither the list nor the wrap. The
+    # list answers .Count itself. [[feedback-array-wrap-trap]]
+    if (-not $bits.Count) { $bits.Add("$($Kids.Count) idle") }
+    # 🪤 [char], NOT A LITERAL '·'. The test harness writes a combined script
+    # and runs it, and a non-ASCII byte in a STRING LITERAL does not survive
+    # that round trip - it arrived as 'Ã‚Â·' and took the whole file's parse
+    # down with it. The same character in a COMMENT is harmless, which is why
+    # the emoji markers throughout this file are fine and this was not. The
+    # rest of the window already follows this convention (see Caret above).
+    $dot = ' ' + [string][char]0x00B7 + ' '
+    # 🔴 A SUGGESTION IS A SENTENCE ON THE TILE, NOT A BADGE. It is advice about
+    # something that is nobody's emergency, so it goes in the line that already
+    # says what is happening in there rather than earning a mark of its own -
+    # the rail's marks are for what is WAITING, and spending one here would
+    # teach the eye to ignore them. Nothing about it hides anything: the only
+    # write is behind the right-click and its confirm sheet.
+    $state = ($bits -join $dot)
+    if ($Suggest) { $state = $state + $dot + 'could be shelved' }
+    return [PSCustomObject]@{
+        Kind   = 'project'
+        BandVis = $V_Hide; RowVis = $V_Show
+        BandKey = ''; BandLabel = ''; BandCount = 0; BandCaret = ''
+        Path   = $Path
+        Label  = (Get-ProjectLabel $Path)
+        Count  = $Kids.Count
+        State  = $state
+        Tip    = $(if ($Suggest) { 'Right-click to shelve it: ' + $Suggest } else { $null })
+        # 🔴 THE CAST, AGAIN. A brush handed back from a PowerShell
+        # function arrives PSObject-WRAPPED, and WPF cannot convert that to a
+        # Brush: the binding fails SILENTLY, Background stays null, and the
+        # mark draws as nothing. Identical to the PSObject-wrapped FontFamily
+        # that killed the typeface - and just as invisible, because a missing
+        # brush looks exactly like a design choice. The suite now measures
+        # the mark on screen rather than trusting the colour behind it.
+        Accent = [System.Windows.Media.Brush](Get-ProjectAccent $Path)
+        # The accent bar is always drawn; it just goes nearly transparent
+        # when the project has nothing live, so a busy project's identity is
+        # what catches the eye rather than every project shouting at once.
+        AccentOpacity = $(if ($needs) { 1.0 } elseif ($working) { 0.85 } else { 0.35 })
+        NeedsVis = $(if ($needs) { $V_Show } else { $V_Hide })
+        PickBg = [System.Windows.Media.Brush]$(if ($Picked) { $window.FindResource('SelBg') } else { $Blank })
+        PickEdge = [System.Windows.Media.Brush]$(if ($Picked) { $window.FindResource('EdgeLit') } else { $Blank })
+        Fg     = [System.Windows.Media.Brush]$(if ($Picked) { $window.FindResource('TextMax') } else { $window.FindResource('TextHigh') })
+    }
+}
+
+# 🪤 THE HEADING IS THE ONLY WAY BACK TO WHAT IT FOLDED, so it is never itself
+# folded away and the count beside it is what makes folding safe to do: a shut
+# band still says how many projects are behind it. Queued rather than written on
+# the click - see Invoke-ColumnFold, which had the synchronous write taken off
+# it for costing 23.8 ms on the gesture that set it.
+function Toggle-RailBand { param([string]$Key)
+    $k = "$Key".ToLower()
+    if (-not $k) { return }
+    if ($script:railBandShut[$k]) { $null = $script:railBandShut.Remove($k) }
+    else { $script:railBandShut[$k] = $true }
+    $shut = @($script:RailBands | Where-Object { $script:railBandShut["$($_.Key)"] } | ForEach-Object { "$($_.Key)" })
+    try { Save-SRConfigLater -Name 'railBandsShut' -Value ($shut -join ',') } catch { }
+    Request-SRConfigFlush
+    Build-Rail
+}
+
+# ===========================================================================
+# SHELVING A PROJECT - putting it away without losing anything.
+#
+# 🔴 THE REGISTRY, NOT THE CONFIG. Everything else about a project already lives
+# on its `directories` entry - path, enabled, firstSeen, missing, sessions - and
+# a second home for a sixth fact about the same thing is how the two drift.
+#
+# 🪤 AND THE WRITE CAN FAIL. Save-SRRegistry has a staleness check and now throws
+# when the file cannot be replaced, so this cannot set the flag and assume it
+# stuck: another Sessions window, or the hourly scan, may have written since this
+# one read. Save-RegistryOrAsk puts that to the operator - and if they decline,
+# THE FLAG IS PUT BACK. A rail that showed a project as shelved while the file on
+# disk still said otherwise would come back with it visible at the next restart
+# and no explanation, which is worse than the gesture simply not taking.
+function Set-ProjectShelved { param($Dir, [bool]$Shelved)
+    if (-not $Dir) { return $false }
+    $was = [bool]$Dir.shelved
+    if ($was -eq $Shelved) { return $true }
+    Set-Field $Dir 'shelved' $Shelved
+    $script:dirty = $true
+    if (-not (Save-RegistryOrAsk $(if ($Shelved) { 'shelving that project' } else { 'putting that project back' }))) {
+        Set-Field $Dir 'shelved' $was
+        Build-Rail
+        return $false
+    }
+    return $true
 }
 
 # ===========================================================================
@@ -1555,9 +1873,23 @@ function Build-Sessions {
     $ql = "$($ui.ListSearch.Text)".Trim().ToLower()
 
     $keep = New-Object System.Collections.Generic.List[object]
+    # 🔴 FILTERING TO A PROJECT SHOWS THAT PROJECT, ALL OF IT. The rail now
+    # carries every project rather than only the last day's, so clicking a tile
+    # in THIS MONTH or OLDER was the first gesture that could land on a project
+    # with nothing on the surface at all - and the sessions column answered it
+    # with an empty list. "Expand the further-away projects and continue working
+    # on them" cannot mean an empty list.
+    #
+    # 🪤 ONE RULE, NOT A SPECIAL CASE FOR OLD ONES. Keeping the 24-hour cut for
+    # recent projects and lifting it only for old ones would mean a filter that
+    # shows you everything or some of it depending on a date you cannot see.
+    # A pick is the operator naming a project; the answer is its conversations.
+    # Nothing is widened while no project is picked, which is the ordinary case.
+    $pick = "$($script:railPick)"
     foreach ($r in $script:model) {
-        if (-not (Test-OnSurface $r)) { continue }
-        if ($script:railPick -and "$($r.D.path)" -ne $script:railPick) { continue }
+        if ($pick) {
+            if ("$($r.D.path)" -ne $pick) { continue }
+        } elseif (-not (Test-OnSurface $r)) { continue }
         # 🔴 ONCE PER ROW, NOT THREE TIMES. Get-Title was called for the global
         # search, again for this pane's search, and a third time when the item
         # was built - up to 573 calls over 191 conversations on a pass that runs
@@ -2902,7 +3234,26 @@ function New-FoldHeader {
     $bd.Child = $sp
     $bd.Tag = @{ Kind = $Kind; Data = $Data; Panel = $Panel; Built = $false
                  Open = $false; Caret = $car }
-    $bd.Add_MouseLeftButtonUp({ param($s, $e) Invoke-FoldToggle $s })
+    # 🔴 PreviewMouseLeftButtonDown, NOT MouseLeftButtonUp - AND THIS BLOCK NEVER
+    # OPENED FOR AS LONG AS IT HAS EXISTED. Reported as "clicking a foldable
+    # block does nothing", and it was every one of them: tool runs, THINKING,
+    # QUEUED, HOOK, NOTICES.
+    #
+    # 🔑 THE VIEWER TAKES THE MOUSE BEFORE THIS BORDER SEES IT. These headers sit
+    # in a BlockUIContainer inside PaneDoc, a FlowDocumentScrollViewer with
+    # IsSelectionEnabled="True" - and with selection on, its TextEditor handles
+    # MouseLeftButtonDown and CAPTURES the mouse. The matching Up is then
+    # delivered to the capture target, so an Up-only handler on an element inside
+    # a selectable FlowDocument can never fire. Handling the DOWN gets there
+    # first; $e.Handled stops the editor starting a selection drag from it.
+    #
+    # 🪤 REPLACED, NOT ADDED BESIDE. Wiring both would toggle twice on one click,
+    # which looks exactly like the bug that was just fixed.
+    #
+    # Losing text-selection that starts on the header is correct: it is a button,
+    # not prose. Same shape as the band heading in the sessions list, which uses
+    # Preview for the same reason - an outer layer claiming button-down first.
+    $bd.Add_PreviewMouseLeftButtonDown({ param($s, $e) Invoke-FoldToggle $s; $e.Handled = $true })
     return $bd
 }
 
@@ -3405,10 +3756,16 @@ function Add-RunDetail { param($Panel, $Calls)
                                    -Brush (Get-MarkBrush 'agent')
                 $op.Child = $ot
                 $op.Tag = @{ Sub = $mine[0]; Row = $script:docParentRow }
-                $op.Add_MouseLeftButtonUp({
+                # 🔴 SAME TRAP AS THE FOLD HEADER, and it killed this too. Anything
+                # clickable inside PaneDoc must take PREVIEW-DOWN: the viewer has
+                # IsSelectionEnabled and its editor captures the mouse on
+                # button-down, so the matching Up is delivered to the capture
+                # target and never arrives here. Found while fixing New-FoldHeader.
+                $op.Add_PreviewMouseLeftButtonDown({
                     param($s, $e)
                     $g = $s.Tag
                     if ($g -and $g.Sub -and $g.Row) { Show-AgentDoc -Sub $g.Sub -ParentRow $g.Row }
+                    $e.Handled = $true
                 })
                 $null = $ln.Children.Add($op)
             }
@@ -3709,7 +4066,10 @@ function Build-ReadDocument {
         $bt2 = New-ReadText -Text ([string][char]0x2190 + '  back to ' + "$($script:agentOpen.Row.T.Text)") `
                             -Brush $Pal.Ask
         $bb.Child = $bt2
-        $bb.Add_MouseLeftButtonUp({ param($s, $e) Close-AgentDoc })
+        # 🔴 AND THIS ONE IS THE WAY BACK. Same capture, same fix - see
+        # New-FoldHeader. With both this and the 'open its conversation' border
+        # dead, the sub-agent document could be neither entered nor left.
+        $bb.Add_PreviewMouseLeftButtonDown({ param($s, $e) Close-AgentDoc; $e.Handled = $true })
         $doc.Blocks.Add((New-RailBlock -Child $bb -Kind 'agent' -Top 0 -Bottom 10))
     }
     if ($Truncated) {
@@ -3740,11 +4100,13 @@ function Build-ReadDocument {
         $lb.VerticalAlignment = 'Center'
         $null = $sp.Children.Add($lb)
         $bd.Child = $sp
-        $bd.Add_MouseLeftButtonUp({
+        # 🔴 AND SO WAS 'load earlier' - see New-FoldHeader for the capture.
+        $bd.Add_PreviewMouseLeftButtonDown({
             param($s, $e)
             $script:tailBytes = $script:tailBytes * 2
             Update-Document
             Set-Status ('loaded the last {0} KB' -f [int]($script:tailBytes / 1KB))
+            $e.Handled = $true
         })
         $doc.Blocks.Add((New-RailBlock -Child $bd -Kind 'system' -Top 0 -Bottom 8))
     }
@@ -4019,6 +4381,37 @@ function Get-AskBlocker { param($R)
 
 function Test-AskAllowed { param($R)
     return (-not (Get-AskBlocker $R))
+}
+
+# ===========================================================================
+# 🔴 INTERRUPT IS THE EXACT OPPOSITE GATE TO Get-AskBlocker, AND THAT IS THE
+# WHOLE SAFETY ARGUMENT.
+#
+# A question can only be READ off a session that has STOPPED - that is what
+# Get-AskBlocker says. An interrupt is only MEANINGFUL on a session that is
+# still going. Same evidence, opposite answer, and they must never both allow:
+# Esc into a session sitting at its prompt does not stop anything, it clears
+# whatever is typed there, and pressed twice it opens the rewind picker, which
+# offers to revert CODE. That is why this refuses on anything but 'busy' rather
+# than merely warning - Send-SRInterrupt sends its key blind, so this gate is
+# the only thing standing between the button and that.
+#
+# 🪤 'busy' IS THE AGENT PROBE'S WORD, not an inference from the transcript. A
+# row can look busy because its transcript grew a moment ago and still be idle
+# now; the probe asks claude itself. Anything the probe has not called busy -
+# idle, waiting, a background agent, a session with no process - is refused.
+function Get-InterruptBlocker { param($R)
+    if (-not $R) { return 'nothing is selected' }
+    if (-not $R.A -or -not $R.A.Pid) {
+        return 'this conversation is not running, so there is nothing to interrupt'
+    }
+    if ("$($R.A.Kind)" -ne 'interactive') {
+        return 'that is a background agent - it has no console to press Esc in'
+    }
+    if ("$($R.A.Status)" -ne 'busy') {
+        return 'it is not mid-turn - there is nothing running to interrupt, and Esc at its prompt would clear what you have typed'
+    }
+    return ''
 }
 
 # Does the list think this conversation is waiting on the operator? That is what
@@ -4591,6 +4984,12 @@ $script:AnswerJob = {
             'move'   { $why = Invoke-SRRoundMove -ProcessId ([int]$SRAns.Pid) -Delta ([int]$SRAns.Delta) }
             'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId ([int]$SRAns.Pid) -Text "$($SRAns.Text)" -Who "$($SRAns.SessionId)" }
             'send'   { $why = Send-SRSessionInput -SessionId $SRAns.SessionId -Text "$($SRAns.Text)" }
+            # 🪤 NAMED LIKE THE REST, and it is the one arm that picks nothing:
+            # Esc stops a turn rather than choosing an option, so there is no
+            # index to be wrong about and no screen to verify against. The
+            # safety is entirely in the gate at the click - Get-InterruptBlocker
+            # - which is why THAT is what the suite asserts on.
+            'esc'    { $why = Send-SRInterrupt -ProcessId ([int]$SRAns.Pid) -Who "$($SRAns.SessionId)" }
             default  { $why = "nothing was sent - '$($SRAns.Kind)' is not a kind of send this knows" }
         }
     }
@@ -4601,7 +5000,7 @@ $script:AnswerJob = {
 # The one place a send is started, whichever gesture asked for it.
 function Start-AskSend {
     param(
-        [Parameter(Mandatory)][string]$Kind,   # answer | move | typed
+        [Parameter(Mandatory)][string]$Kind,   # answer | move | typed | send | esc
         [Parameter(Mandatory)]$Row,
         [int]$Index = -1,
         [int]$Delta = 0,
@@ -4654,6 +5053,7 @@ function Start-AskSend {
                 'move'   { $why = Invoke-SRRoundMove -ProcessId $procId -Delta $Delta }
                 'typed'  { $why = Invoke-SRAnswerTypedOnScreen -ProcessId $procId -Text $Text -Who "$($Row.Id)" }
                 'send'   { $why = Send-SRSessionInput -SessionId $Row.Id -Text $Text }
+                'esc'    { $why = Send-SRInterrupt -ProcessId $procId -Who "$($Row.Id)" }
                 default  { $why = "nothing was sent - '$Kind' is not a kind of send this knows" }
             }
         } catch { $why = $_.Exception.Message }
@@ -4708,6 +5108,19 @@ function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question,
         # Kicked rather than waited for: the same read the lane does, taken now
         # so the arrow feels like it moved the menu rather than like it will.
         try { Invoke-AskPoll } catch { }
+        return
+    }
+
+    # 🔴 AN INTERRUPT IS NOT AN ANSWER EITHER, and it is the one that would have
+    # been worst to treat as one. Nothing was chosen, so there is no answer to
+    # file; and the code below reads the screen for the NEXT question of a round
+    # and draws it - which after an Esc would put a card in front of a session
+    # that has just been told to stop. It also must not move the row to working:
+    # what an interrupted session does next is claude's to decide and the probe's
+    # to observe, and this window guessing at it is how a row starts flickering.
+    if ($Kind -eq 'esc') {
+        if ($Why) { Set-Status $Why 'bad' } else { Set-Status 'interrupted - it will stop at the next thing it can stop at' 'ok' }
+        try { Update-SendState } catch { }
         return
     }
 
@@ -6439,9 +6852,29 @@ $ui.SessionList.Add_SelectionChanged({
     Show-Selected
 })
 
+# 🪤 PreviewMouseLeftButtonDown, FOR THE REASON THE SESSIONS COLUMN GIVES ABOVE:
+# ListBoxItem marks the button-down HANDLED when it selects, so a heading click
+# would never reach a normal Click handler. Handling it here also stops the
+# selection, which is what keeps a heading from becoming a project filter.
+$ui.RailList.Add_PreviewMouseLeftButtonDown({
+    param($s, $e)
+    $it = Get-ClickedRow $e.OriginalSource
+    if (-not $it -or "$($it.Kind)" -ne 'band') { return }
+    Toggle-RailBand "$($it.BandKey)"
+    Set-Status $(if ($script:railBandShut["$($it.BandKey)"]) {
+        "$($it.BandLabel.ToLower()) folded away - click the heading again to show those $($it.BandCount) project(s)"
+    } else { "showing the $($it.BandCount) project(s) in $($it.BandLabel.ToLower())" })
+    $e.Handled = $true
+})
+
 $ui.RailList.Add_SelectionChanged({
     $it = $ui.RailList.SelectedItem
     if (-not $it) { return }
+    # 🔴 A HEADING IS NOT A PROJECT. Its Path is '', and letting that through
+    # set railPick to an empty string - which matches no project, so the sessions
+    # column filtered itself down to nothing with no tile highlighted to say why.
+    # The band click above already handles the gesture; this only has to refuse.
+    if ("$($it.Kind)" -eq 'band') { return }
     $script:railPick = $(if ($script:railPick -eq $it.Path) { $null } else { $it.Path })
     Build-Rail
     Build-Sessions
@@ -6677,6 +7110,15 @@ $ui.RailOnlyLive.Add_MouseLeftButtonDown({
     Build-Rail
     $e.Handled = $true
 })
+$ui.RailShelved.Add_MouseLeftButtonDown({
+    param($s, $e)
+    $script:railShowShelved = -not $script:railShowShelved
+    Build-Rail
+    Set-Status $(if ($script:railShowShelved) {
+        "showing the $($script:railShelved) shelved project(s) - right-click one to put it back for good"
+    } else { 'shelved projects put away again' })
+    $e.Handled = $true
+})
 Update-RailLabels
 
 # 🪤 THE SAME DEBOUNCE THE HEADER BOX USES. Rebuilding on every keystroke over
@@ -6715,6 +7157,91 @@ $ui.ManageList.Add_PreviewMouseRightButtonDown({
     $script:manageMenuRow = $it.Row
     # Select it too, so the menu and the highlight agree about the target.
     $ui.ManageList.SelectedItem = $it
+})
+
+# ===========================================================================
+# THE PROJECT TILE'S OWN MENU - one item, and it is the only way to shelve.
+#
+# Built the same way the manager's is, and for the same reason: a ContextMenu
+# lives in its own popup outside the window's visual tree, so an implicit style
+# in Window.Resources is not something to rely on reaching it. Without the two
+# explicit assignments it keeps the OPERATING SYSTEM's white slab, in the middle
+# of a black window, on a gesture that is about to change what comes back
+# tomorrow morning.
+$script:railMenuDir = $null
+$script:railMenuLabel = ''
+
+# WHICH WAY THE ONE ITEM GOES. Its own function because it is the part that can
+# be wrong: an item reading "Shelve this project" over one already shelved would
+# put it back, and the operator would have pressed the opposite of what they
+# read. Decided when the menu opens, not by carrying two items of which one is
+# always the wrong thing to offer.
+function Get-RailShelveVerb { param($Dir)
+    if (Test-SRProjectShelved $Dir) { return 'Put this project back' }
+    return 'Shelve this project'
+}
+
+function New-RailMenu {
+    $m = New-Object System.Windows.Controls.ContextMenu
+    $m.Style = [System.Windows.Style]$window.FindResource([System.Windows.Controls.ContextMenu])
+    $i = New-Object System.Windows.Controls.MenuItem
+    $i.Style = [System.Windows.Style]$window.FindResource([System.Windows.Controls.MenuItem])
+    $i.Header = 'Shelve this project'
+    $i.Add_Click({
+        $d = $script:railMenuDir
+        $script:railMenuDir = $null
+        if (-not $d) { return }
+        $lbl = $script:railMenuLabel
+        if (Test-SRProjectShelved $d) {
+            if (Set-ProjectShelved -Dir $d -Shelved $false) {
+                Build-Rail; Build-Sessions
+                Set-Status ("'{0}' is back on the rail, and will be restored at logon again" -f $lbl) 'ok'
+            }
+            return
+        }
+        # 🔴 IT CHANGES WHAT COMES BACK TOMORROW MORNING, so it says so before it
+        # does it. Hiding is undoable - nothing is deleted and the count in the
+        # header is the way back - but the consequence that matters happens while
+        # nobody is watching, at the next logon, and a gesture whose effect is
+        # invisible for sixteen hours is one to confirm.
+        $kids = @($script:model | Where-Object { "$($_.D.path)" -eq "$($d.path)" })
+        $ticked = @($kids | Where-Object { [bool]$_.S.enabled }).Count
+        if (-not (Confirm-Action 'Shelve this project' (
+            "'{0}' leaves the projects rail, and none of its conversations will be restored at the next logon{1}.`n`n" +
+            "Nothing is deleted: its {2} conversation(s) and their ticks are kept, and the rail header will say it is shelved so you can put it back." -f `
+                $lbl, $(if ($ticked) { " ($ticked of them are ticked today)" } else { '' }), $kids.Count) -Verb 'Shelve it')) {
+            Set-Status 'nothing shelved'; return
+        }
+        if (Set-ProjectShelved -Dir $d -Shelved $true) {
+            # 🪤 THE FILTER GOES WITH IT. Leaving railPick on a project that is no
+            # longer drawn would narrow the sessions column to conversations from
+            # a tile nobody can see.
+            if ("$($script:railPick)" -eq "$($d.path)") { $script:railPick = $null }
+            Build-Rail; Build-Sessions
+            Set-Status ("'{0}' is shelved - click the count in the projects header to put it back" -f $lbl) 'ok'
+        }
+    })
+    $null = $m.Items.Add($i)
+    return $m
+}
+
+$ui.RailList.ContextMenu = New-RailMenu
+$ui.RailList.Add_PreviewMouseRightButtonDown({
+    param($sender, $e)
+    $it = Get-ClickedRow $e.OriginalSource
+    # An age-band heading is not a project, so it gets no menu rather than a menu
+    # whose one item would act on whatever was right-clicked last.
+    if (-not $it -or "$($it.Kind)" -ne 'project') {
+        $script:railMenuDir = $null
+        $ui.RailList.ContextMenu.IsOpen = $false
+        $e.Handled = $true
+        return
+    }
+    $kid = @($script:model | Where-Object { "$($_.D.path)" -eq "$($it.Path)" })
+    if (-not $kid.Count) { $script:railMenuDir = $null; $e.Handled = $true; return }
+    $script:railMenuDir = $kid[0].D
+    $script:railMenuLabel = "$($it.Label)"
+    $ui.RailList.ContextMenu.Items[0].Header = Get-RailShelveVerb $script:railMenuDir
 })
 
 $ui.SaveBtn.Add_Click({
@@ -7385,6 +7912,25 @@ $ui.SendBox.Add_LostKeyboardFocus({
     }
     Close-SkillPop
 })
+
+# THE INTERRUPT. Nothing is confirmed here on purpose: stopping a turn is the
+# recoverable half of the pair beside it - the session stays open, the
+# transcript keeps everything written so far, and pressing it by mistake costs
+# the rest of one turn. Relaunch, which loses the turn AND the process, does
+# confirm. A sheet in front of a gesture whose whole point is "stop, now"
+# would be asking the operator to watch it keep going while they read.
+function Invoke-Interrupt {
+    $r = Get-SelectedRow
+    $why = Get-InterruptBlocker $r
+    if ($why) { Set-Status $why 'warn'; return }
+    # One in flight at a time, exactly as an answer is - and for a sharper
+    # reason here: the lane carries the pid captured at send time, so a second
+    # press while the first is out would queue a key against a turn that may
+    # already have stopped.
+    if ($script:ansPs) { Set-Status 'still sending the last thing...' 'warn'; return }
+    $null = Start-AskSend -Kind 'esc' -Row $r -Saying 'interrupting...'
+}
+$ui.PaneStop.Add_Click({ Invoke-Interrupt })
 
 $ui.PaneGoTo.Add_Click({
     $it = $ui.SessionList.SelectedItem

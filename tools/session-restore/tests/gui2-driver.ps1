@@ -54,8 +54,36 @@ function Lay {
 $script:foldRail = $false
 $script:foldList = $false
 $script:foldApplied = ''
+# 🔴 AND THE RAIL'S AGE BANDS ARE THE SAME KIND OF INPUT. railBandsShut is a
+# REAL OPERATOR SETTING too, and it defaults to everything-but-TODAY folded - so
+# a suite that did not own it would measure a rail holding whichever projects
+# happened to have been touched since midnight, and "12 project tiles" would be
+# a different assertion every morning. Every block below assumes all four bands
+# are open; the band block sets and restores its own state on top of this.
+# [[feedback-test-accidents]]
+$script:railBandShut = @{}
 Update-Columns
 Lay
+
+# THE WINDOW'S OWN SOURCE, and one function's body out of it. Read once, up
+# here, because blocks all the way down the driver assert on what a handler
+# CALLS - and a function has to exist before the line calling it RUNS, not
+# merely before the file ends.
+$winSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\sessions-window.ps1'))
+
+# One function's body out of a source file, comments stripped. 🪤 THE COMMENTS
+# GO FIRST, and the first version of this failed without it: the extraction
+# runs to the next `function`, so it swallows the comment block sitting between
+# two of them - and those comments NAME the very calls these checks look for.
+# The assertion is about what a handler CALLS, not what its prose mentions.
+function Get-SRBodyOf { param([string]$Src, [string]$Marker)
+    $a = $Src.IndexOf($Marker)
+    if ($a -lt 0) { return '' }
+    $b = $Src.IndexOf("`nfunction ", $a + $Marker.Length)
+    if ($b -lt 0) { $b = $Src.Length }
+    $body = $Src.Substring($a, $b - $a)
+    return ((($body -split "`n") | ForEach-Object { ($_ -split '#', 2)[0] }) -join "`n")
+}
 
 # ===========================================================================
 Write-Host ''
@@ -1001,14 +1029,14 @@ Set-Surface 'work'
 $script:bandPick = $null; $script:railPick = $null
 $ui.Search.Text = ''; $ui.RailSearch.Text = ''; $ui.ListSearch.Text = ''
 Build-Rail; Build-Sessions
-$tiles0 = @($ui.RailList.ItemsSource).Count
+$tiles0 = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' }).Count
 $rows0  = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' }).Count
 if ($tiles0 -lt 2 -or $rows0 -lt 2) { Note 'not enough on screen to pose the search' }
 else {
     # The rail's box narrows the rail and LEAVES THE SESSIONS ALONE.
     $ui.RailSearch.Text = 'algotrader'
     Build-Rail; Build-Sessions
-    $tilesR = @($ui.RailList.ItemsSource)
+    $tilesR = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' })
     $rowsR  = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' }).Count
     $offName = @($tilesR | Where-Object { "$($_.Label)".ToLower() -notlike '*algotrader*' })
     if (-not $tilesR.Count) { Fail "the rail search matched no project at all" }
@@ -1024,7 +1052,7 @@ else {
     $frag = "$anyName".Substring(0, [Math]::Min(4, "$anyName".Length)).ToLower()
     $ui.ListSearch.Text = $frag
     Build-Rail; Build-Sessions
-    $tilesL = @($ui.RailList.ItemsSource).Count
+    $tilesL = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' }).Count
     $rowsL  = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })
     $offRow = @($rowsL | Where-Object { "$($_.Name)".ToLower() -notlike "*$frag*" -and "$($_.Row.S.autoTitle)".ToLower() -notlike "*$frag*" })
     if (-not $rowsL.Count) { Fail "the sessions search on '$frag' matched nothing, not even the row it came from" }
@@ -1041,18 +1069,523 @@ foreach ($k in @('recent', 'name', 'waiting', 'busiest')) {
     try { Build-Rail } catch { Fail "ordering the rail by '$k' threw: $($_.Exception.Message)" }
 }
 $script:railSort = 'name'; Build-Rail
-$names = @($ui.RailList.ItemsSource | ForEach-Object { "$($_.Label)".ToLower() })
-$sorted = @($names | Sort-Object)
-if (($names -join '|') -ne ($sorted -join '|')) { Fail 'ordering the rail by name did not sort it' }
+# 🔴 SORTED WITHIN THE BAND, NEVER ACROSS IT - the same rule the sessions column
+# states beside Sort-SessionRows. This checked one global sequence, which held
+# only while the rail had a single band; now that it carries every project there
+# are four, and a globally-sorted list would mean the age grouping had been
+# thrown away. So the order is checked inside each band and the bands are
+# checked to be in age order elsewhere.
+$nameBad = @()
+$nameBand = ''; $nameSeen = @{}
+foreach ($it in @($ui.RailList.ItemsSource)) {
+    if ($it.Kind -eq 'band') { $nameBand = "$($it.BandKey)"; $nameSeen[$nameBand] = New-Object System.Collections.Generic.List[string]; continue }
+    if ($nameBand) { $nameSeen[$nameBand].Add("$($it.Label)".ToLower()) }
+}
+$nameTotal = 0
+foreach ($bk in @($nameSeen.Keys)) {
+    $got = @($nameSeen[$bk].ToArray())
+    $nameTotal += $got.Count
+    $want = @($got | Sort-Object)
+    if (($got -join '|') -ne ($want -join '|')) { $nameBad += $bk }
+}
+if ($nameBad.Count) { Fail "ordering the rail by name did not sort inside band(s): $($nameBad -join ', ')" }
+elseif (-not $nameTotal) { Fail 'ordering the rail by name left no projects to check' }
 else { Pass "the rail orders itself four ways ($($names.Count) projects, name order verified)" }
 $script:railSort = 'recent'
 
 $script:railOnlyLive = $true; Build-Rail
-$live = @($ui.RailList.ItemsSource)
+$live = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' })
 $dead = @($live | Where-Object { "$($_.State)" -like '*idle*' -and "$($_.State)" -notlike '*working*' -and "$($_.State)" -notlike '*waiting*' })
 if ($dead.Count) { Fail "$($dead.Count) project(s) with nothing running survived the 'only running' filter" }
 else { Pass "'only running' leaves $($live.Count) project(s), none of them idle" }
 $script:railOnlyLive = $false; Build-Rail
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the projects rail, in age bands you can fold ---'
+# ===========================================================================
+# 🔴 EVERY ONE OF THESE IS ABOUT SOMETHING BEING STRANDED. A rail that folds is
+# a rail that can hide the project you were looking for, so the assertions are
+# not "did it fold" - they are "is everything it folded still counted, still
+# reachable, and still where its age says it should be".
+$railShutWas = @{}
+foreach ($k in @($script:railBandShut.Keys)) { $railShutWas[$k] = $true }
+$railPickWas = $script:railPick
+$railSortWas = $script:railSort
+
+# 🔴 THE SUITE MUST NOT WRITE THE OPERATOR'S CONFIG, AND FOLDING A BAND QUEUES A
+# SETTING. Toggle-RailBand hands 'railBandsShut' to Save-SRConfigLater and asks
+# for a flush; the flush is a dispatcher callback, so it cannot run until this
+# thread pumps - and this takes the value straight back off the queue before
+# anything does. Nothing reaches the file, and the value it took is the evidence
+# that the fold is remembered at all, so the safety and the assertion are the
+# same line. Same reasoning as the config block further down, which redirects
+# SR_ConfigPath for the tests that genuinely need a write.
+$railCacheWas = $null
+$railCacheHad = $false
+try {
+    if ($script:SR_ConfigCache -and $null -ne $script:SR_ConfigCache.PSObject.Properties['railBandsShut']) {
+        $railCacheHad = $true; $railCacheWas = "$($script:SR_ConfigCache.railBandsShut)"
+    }
+} catch { }
+function Pop-QueuedBandFold {
+    if (-not $script:SR_ConfigPending.ContainsKey('railBandsShut')) { return $null }
+    $v = "$($script:SR_ConfigPending['railBandsShut'])"
+    $null = $script:SR_ConfigPending.Remove('railBandsShut')
+    return $v
+}
+
+$script:railPick = $null
+$script:railBandShut = @{}
+$script:railSort = 'recent'
+Build-Rail
+
+$railItems = @($ui.RailList.ItemsSource)
+$heads = @($railItems | Where-Object { $_.Kind -eq 'band' })
+$bandTiles = @($railItems | Where-Object { $_.Kind -eq 'project' })
+$bandKeys = @($script:RailBands | ForEach-Object { "$($_.Key)" })
+
+if (-not $heads.Count) { Fail 'the rail draws no age band headings at all' }
+else {
+    $strayHead = @($heads | Where-Object { $bandKeys -notcontains "$($_.BandKey)" })
+    if ($strayHead.Count) { Fail "a heading carries a band the rail does not define: $($strayHead[0].BandKey)" }
+    else { Pass "the rail bands the projects: $((@($heads | ForEach-Object { '{0} {1}' -f $_.BandLabel, $_.BandCount })) -join ', ')" }
+
+    # THE DECLARED ORDER, NEWEST FIRST. A band list that came out of a hashtable
+    # would be in whatever order .NET felt like, and "Older" above "Today" is
+    # the one arrangement that makes the whole feature pointless.
+    $seenOrder = @($heads | ForEach-Object { "$($_.BandKey)" })
+    $wantOrder = @($bandKeys | Where-Object { $seenOrder -contains $_ })
+    if (($seenOrder -join '|') -ne ($wantOrder -join '|')) {
+        Fail "the bands are drawn $($seenOrder -join ' > ') - newest is not first"
+    } else { Pass "the bands run newest to oldest ($($seenOrder -join ' > '))" }
+}
+
+# 🔑 THE COUNT ON A HEADING IS WHAT MAKES FOLDING SAFE, so it is checked against
+# the tiles actually under it rather than against itself.
+$curBand = ''; $underHead = @{}
+foreach ($it in $railItems) {
+    if ($it.Kind -eq 'band') { $curBand = "$($it.BandKey)"; $underHead[$curBand] = 0; continue }
+    if ($curBand) { $underHead[$curBand] = [int]$underHead[$curBand] + 1 }
+}
+$badCount = @($heads | Where-Object { [int]$_.BandCount -ne [int]$underHead["$($_.BandKey)"] })
+if ($badCount.Count) {
+    $b = $badCount[0]
+    Fail "$($b.BandLabel) says $($b.BandCount) but $([int]$underHead["$($b.BandKey)"]) tile(s) follow it"
+} else { Pass "every heading's count matches the tiles under it ($($bandTiles.Count) across $($heads.Count) band(s))" }
+
+# 🔴 AND THE BAND IS THE ONE THE AGE SAYS. Recomputed here from the model with
+# its own date arithmetic rather than by calling Get-RailBandKey - a test that
+# asks the code under test what the answer is cannot disagree with it.
+$midnight = [datetime]::Today
+# 🪤 NO Test-OnSurface HERE, AND THAT IS THE POINT OF THE CHANGE. This mirrored
+# the rail's old 24-hour filter, so once the rail started carrying every project
+# it disagreed on 24 of 36 - reporting them as "last touched 1 Jan", which is
+# [datetime]0, which is what an unset entry looks like. The rail bands every
+# project the registry still has; so does this.
+$newestOf = @{}
+foreach ($r in $script:model) {
+    $pp = "$($r.D.path)"
+    if (-not $newestOf.ContainsKey($pp) -or [long]$r.At -gt [long]$newestOf[$pp]) { $newestOf[$pp] = [long]$r.At }
+}
+$curBand = ''; $misband = @()
+foreach ($it in $railItems) {
+    if ($it.Kind -eq 'band') { $curBand = "$($it.BandKey)"; continue }
+    $when = [datetime]([long]$newestOf["$($it.Path)"])
+    $wantBand = 'older'
+    if     ($when -ge $midnight)               { $wantBand = 'today' }
+    elseif ($when -ge $midnight.AddDays(-7))   { $wantBand = 'week' }
+    elseif ($when -ge $midnight.AddDays(-30))  { $wantBand = 'month' }
+    if ($wantBand -ne $curBand) { $misband += "$($it.Label) last touched $($when.ToString('d MMM')) sits in $curBand, not $wantBand" }
+}
+if ($misband.Count) { Fail "$($misband.Count) project(s) are in the wrong band: $($misband[0])" }
+else { Pass "all $($bandTiles.Count) project(s) sit in the band their newest conversation puts them in" }
+
+# 🔴 THE RAIL CARRIES EVERY PROJECT, WHICH IS THE WHOLE POINT OF THE BANDS.
+# Against Test-OnSurface it held 12 of 36 - three bands could never fill, and a
+# project quiet enough to be worth shelving had no tile to right-click. Counted
+# against the registry rather than against a number, so it tracks the machine.
+$railWant = @{}
+foreach ($r in $script:model) { $railWant["$($r.D.path)"] = $true }
+$railMissing = @($railWant.Keys | Where-Object { $bandTiles.Path -notcontains $_ })
+if ($railMissing.Count) {
+    Fail "$($railMissing.Count) project(s) the registry still has never reach the rail, first: $($railMissing[0])"
+} else { Pass "every one of the $(@($railWant.Keys).Count) project(s) in the registry has a tile" }
+if (@($railWant.Keys).Count -le 12) {
+    Note 'this machine has 12 or fewer projects, so the widening cannot be told apart from the old behaviour here'
+}
+
+# 🪤 AND THE SESSIONS COLUMN DID NOT WIDEN WITH IT. Test-OnSurface has two other
+# callers and its note explains why they must keep the 24-hour cut: a sessions
+# column listing all 322 conversations is exactly what it prevents. The fix was
+# rail-local, and this is what says so.
+$railSrc = Get-SRBodyOf $winSrc 'function Build-Rail'
+$listSrc = Get-SRBodyOf $winSrc 'function Build-Sessions'
+if ($railSrc -match 'Test-OnSurface') { Fail 'Build-Rail asks Test-OnSurface again - the rail is back to the last 24 hours' }
+elseif ($listSrc -notmatch 'Test-OnSurface') { Fail 'Build-Sessions no longer asks Test-OnSurface - the sessions column has become a browser for every conversation' }
+else { Pass 'the rail ignores the 24-hour gate; the sessions column still honours it' }
+
+$onSurface = @($script:model.ToArray() | Where-Object { Test-OnSurface $_ }).Count
+$script:railPick = $null
+Build-Sessions
+$listRows = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' }).Count
+if ($listRows -gt $onSurface) {
+    Fail "the sessions column shows $listRows rows against $onSurface on the surface - it widened too"
+} else { Pass "with no project picked the sessions column still shows only the $listRows on-surface conversation(s) of $($script:model.Count)" }
+
+# 🔴 AND CLICKING AN OLDER PROJECT SHOWS ITS CONVERSATIONS. This is the gesture
+# the widening exists for - "click on further-away filtered projects... and
+# continue working on them if needed" - and before the pick-scoped lift it
+# answered with an EMPTY LIST, because nothing in an old project is on surface.
+$oldPick = $null
+foreach ($it in @($ui.RailList.ItemsSource)) {
+    if ($it.Kind -ne 'project') { continue }
+    $kidsAll = @($script:model | Where-Object { "$($_.D.path)" -eq "$($it.Path)" })
+    $kidsOn = @($kidsAll | Where-Object { Test-OnSurface $_ })
+    if ($kidsAll.Count -and -not $kidsOn.Count) { $oldPick = $it; break }
+}
+if (-not $oldPick) { Note 'every project on this rail has something on the surface - the empty-list case cannot be posed' }
+else {
+    $script:railPick = "$($oldPick.Path)"
+    Build-Sessions
+    $oldRows = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })
+    $stray = @($oldRows | Where-Object { "$($_.Row.D.path)" -ne $script:railPick })
+    if (-not $oldRows.Count) { Fail "filtering to '$($oldPick.Label)' shows nothing - the tile is there but leads to an empty list" }
+    elseif ($stray.Count) { Fail "filtering to '$($oldPick.Label)' let $($stray.Count) conversation(s) from other projects through" }
+    else { Pass "filtering to an older project shows its $($oldRows.Count) conversation(s), none of them on the surface" }
+    $script:railPick = $null
+    Build-Sessions
+}
+
+# FOLDING TAKES THE TILES AND LEAVES THE HEADING. Every heading stays on screen
+# for the same reason the sessions column keeps all five: the count beside it is
+# the reason to open it again, and a heading that folded itself away would have
+# removed the only way back.
+$foldable = @($heads | Where-Object { [int]$_.BandCount -gt 0 })
+if (-not $foldable.Count) { Note 'no band holds a project, so folding cannot be posed' }
+else {
+    $victimBand = "$($foldable[0].BandKey)"
+    $wasCount = [int]$foldable[0].BandCount
+    Toggle-RailBand $victimBand
+    $queued = Pop-QueuedBandFold
+    if ($null -eq $queued) { Fail 'folding a band remembered nothing - it will be back open at the next restart' }
+    elseif (@($queued -split ',') -notcontains $victimBand) {
+        Fail "folding $victimBand queued '$queued', which does not name it"
+    } else { Pass "folding a band queues it to be remembered ('$queued')" }
+    $after = @($ui.RailList.ItemsSource)
+    $leftIn = @($after | Where-Object { $_.Kind -eq 'project' -and "$($newestOf["$($_.Path)"])" -ne '' })
+    $headsAfter = @($after | Where-Object { $_.Kind -eq 'band' })
+    $stillThere = @($headsAfter | Where-Object { "$($_.BandKey)" -eq $victimBand })
+    # Which tiles belonged to the folded band, decided by walking the OPEN build
+    # above rather than by trusting the folded one.
+    $curBand = ''; $wantGone = @()
+    foreach ($it in $railItems) {
+        if ($it.Kind -eq 'band') { $curBand = "$($it.BandKey)"; continue }
+        if ($curBand -eq $victimBand) { $wantGone += "$($it.Path)" }
+    }
+    $survivors = @($leftIn | Where-Object { $wantGone -contains "$($_.Path)" })
+    if (-not $stillThere.Count) { Fail "folding $victimBand took its own heading away - there is no way back to it" }
+    elseif ([int]$stillThere[0].BandCount -ne $wasCount) {
+        Fail "a folded band says $($stillThere[0].BandCount) instead of the $wasCount it is holding"
+    }
+    elseif ($survivors.Count) { Fail "$($survivors.Count) tile(s) survived their band being folded" }
+    elseif ($headsAfter.Count -ne $heads.Count) { Fail "folding one band removed $($heads.Count - $headsAfter.Count) heading(s)" }
+    else { Pass "folding $victimBand hides its $wasCount tile(s), keeps every heading, and still says how many are behind it" }
+
+    # 🔴 AND THE PROJECT YOU ARE FILTERED TO IS NEVER FOLDED AWAY. The pick keeps
+    # narrowing the sessions column whether or not its tile is drawn, so a folded
+    # band that swallowed it would leave the list showing one project's
+    # conversations with nothing on screen saying which.
+    if (-not $wantGone.Count) { Note 'the folded band held nothing, so the pinned-pick case cannot be posed' }
+    else {
+        $script:railPick = $wantGone[0]
+        Build-Rail
+        $pinned = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' -and "$($_.Path)" -eq $script:railPick })
+        if (-not $pinned.Count) { Fail 'the project the rail is filtered to vanished into a folded band' }
+        else { Pass 'a folded band still shows the project the rail is filtered to' }
+        $script:railPick = $null
+    }
+
+    # UNFOLDING PUTS THEM BACK - the check above can only mean something if this
+    # one passes too.
+    Toggle-RailBand $victimBand
+    $reopened = Pop-QueuedBandFold
+    $back = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' }).Count
+    if ($back -ne $bandTiles.Count) { Fail "unfolding restored $back tile(s), not the $($bandTiles.Count) there were" }
+    elseif (@("$reopened" -split ',') -contains $victimBand) {
+        Fail "unfolding $victimBand still remembers it as folded ('$reopened')"
+    } else { Pass "unfolding restores all $back tile(s), and stops remembering it as folded" }
+}
+
+# 🔴 A HEADING IS NOT A PROJECT. Its Path is '', and a SelectionChanged that let
+# that through set railPick to an empty string - which matches nothing, so the
+# sessions column filtered itself down to zero rows with no tile lit to say why.
+# Driven through the real selection, not by calling the handler.
+$script:railPick = $null
+$ui.RailList.SelectedIndex = -1
+Build-Rail
+$headIx = -1
+$railNow = @($ui.RailList.ItemsSource)
+for ($i = 0; $i -lt $railNow.Count; $i++) { if ($railNow[$i].Kind -eq 'band') { $headIx = $i; break } }
+if ($headIx -lt 0) { Note 'no heading to select' }
+else {
+    $ui.RailList.SelectedIndex = $headIx
+    if ($null -ne $script:railPick) { Fail "selecting a band heading set the project filter to '$script:railPick'" }
+    else { Pass 'selecting a band heading is not a project filter' }
+    # And the inverse, so the assertion above cannot pass by nothing ever
+    # setting railPick at all.
+    $tileIx2 = -1
+    for ($i = 0; $i -lt $railNow.Count; $i++) { if ($railNow[$i].Kind -eq 'project') { $tileIx2 = $i; break } }
+    if ($tileIx2 -ge 0) {
+        $ui.RailList.SelectedIndex = $tileIx2
+        if (-not $script:railPick) { Fail 'selecting a project tile did NOT set the filter - the check above proves nothing' }
+        else { Pass "selecting a project tile does set it ('$(Split-Path -Leaf $script:railPick)')" }
+    }
+}
+$script:railPick = $railPickWas
+$ui.RailList.SelectedIndex = -1
+$script:railSort = $railSortWas
+# Left OPEN for the blocks below, which all count tiles - see the note beside
+# foldRail at the top. What is restored is the operator's own value, put back on
+# the cache and the queue so nothing this block did can reach the file.
+$script:railBandShut = @{}
+$null = Pop-QueuedBandFold
+try {
+    if ($railCacheHad) { $script:SR_ConfigCache.railBandsShut = $railCacheWas }
+    elseif ($script:SR_ConfigCache -and $null -ne $script:SR_ConfigCache.PSObject.Properties['railBandsShut']) {
+        $script:SR_ConfigCache.PSObject.Properties.Remove('railBandsShut')
+    }
+} catch { }
+if ($script:SR_ConfigPending.ContainsKey('railBandsShut')) {
+    Fail 'the band block left a config write queued - it would reach the operator file'
+} else { Pass 'the band block queued nothing that outlives it' }
+Note ("the operator's own folded bands were '$(@($railShutWas.Keys | Sort-Object) -join ',')' and are unchanged")
+Build-Rail; Build-Sessions
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- shelving a project takes it off the rail, and says how many are away ---'
+# ===========================================================================
+# 🔴 THIS BLOCK NEVER CALLS Set-ProjectShelved ON THE REAL REGISTRY. Shelving writes
+# through Save-SRRegistry, and this suite's rule is that it never saves - a rule
+# that exists because a test wrote over the operator's registry on 2026-08-30 and
+# cost them 210 conversations. So the DISPLAY half is driven by setting the field
+# on the model's own directory object and putting it back, and the WRITE half is
+# driven further down with SR_RegistryPath pointed at a sandbox. [[feedback-tests-reaching-live-data]]
+$hideTiles = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' })
+if ($hideTiles.Count -lt 2) { Note "only $($hideTiles.Count) project(s) on the rail - hiding cannot be posed" }
+else {
+    $hideTilesWas = $hideTiles.Count
+    $hideRow = @($script:model | Where-Object { "$($_.D.path)" -eq "$($hideTiles[0].Path)" })[0]
+    $hideDir = $hideRow.D
+    $hideLabel = "$($hideTiles[0].Label)"
+    $hideFieldWas = $null
+    $hideFieldHad = ($null -ne $hideDir.PSObject.Properties['shelved'])
+    if ($hideFieldHad) { $hideFieldWas = $hideDir.shelved }
+    $hideShowWas = $script:railShowShelved
+    try {
+        Set-Field $hideDir 'shelved' $true
+        $script:railShowShelved = $false
+        Build-Rail
+        $hideNow = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' })
+        $hideStill = @($hideNow | Where-Object { "$($_.Path)" -eq "$($hideDir.path)" })
+        if ($hideStill.Count) { Fail "'$hideLabel' is shelved and still on the rail" }
+        elseif ($hideNow.Count -ne $hideTilesWas - 1) {
+            Fail "shelving one project took $($hideTilesWas - $hideNow.Count) tile(s) off the rail"
+        } else { Pass "shelving '$hideLabel' takes exactly it off the rail ($hideTilesWas -> $($hideNow.Count))" }
+
+        # 🔑 AND THE RAIL SAYS SO. A list that silently drew fewer tiles would be
+        # a list whose length cannot be trusted, and there would be no way back
+        # to what it dropped.
+        if ([int]$script:railShelved -ne 1) { Fail "the rail counted $($script:railShelved) shelved project(s), not 1" }
+        elseif ("$($ui.RailShelved.Visibility)" -ne 'Visible') { Fail 'the rail shelves a project and says nothing about it' }
+        elseif ("$($ui.RailShelved.Text)" -notmatch '1') { Fail "the header reads '$($ui.RailShelved.Text)' and does not say how many" }
+        else { Pass "the rail header says '$($ui.RailShelved.Text)' rather than silently omitting it" }
+
+        # SHOWING THEM AGAIN PUTS IT BACK, which is what makes shelving safe to try.
+        $script:railShowShelved = $true
+        Build-Rail
+        $hideBack = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' })
+        $hideFound = @($hideBack | Where-Object { "$($_.Path)" -eq "$($hideDir.path)" })
+        if (-not $hideFound.Count) { Fail 'showing shelved projects did not bring the shelved one back' }
+        elseif ($hideBack.Count -ne $hideTilesWas) { Fail "showing them back gives $($hideBack.Count) tile(s), not $hideTilesWas" }
+        else { Pass "'show shelved' puts all $hideTilesWas back, so nothing is ever stranded" }
+
+        # The menu's one item has to read the way it will act. An item saying
+        # "Shelve this project" over a shelved one would do the opposite of what
+        # it says, which on this gesture is the whole risk.
+        $verbHidden = Get-RailShelveVerb $hideDir
+        Set-Field $hideDir 'shelved' $false
+        $verbShown = Get-RailShelveVerb $hideDir
+        if ($verbHidden -eq $verbShown) { Fail "the menu offers '$verbShown' whichever state the project is in" }
+        elseif ($verbHidden -notmatch 'Put') { Fail "over a shelved project the menu offers '$verbHidden'" }
+        elseif ($verbShown -notmatch 'Shelve') { Fail "over a visible project the menu offers '$verbShown'" }
+        else { Pass "the one menu item reads the way it acts ('$verbShown' / '$verbHidden')" }
+    } finally {
+        if ($hideFieldHad) { Set-Field $hideDir 'shelved' $hideFieldWas }
+        elseif ($null -ne $hideDir.PSObject.Properties['shelved']) { $hideDir.PSObject.Properties.Remove('shelved') }
+        $script:railShowShelved = $hideShowWas
+        Build-Rail
+    }
+    $hideAfter = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' }).Count
+    if ($hideAfter -ne $hideTilesWas) { Fail "the shelving block left the rail at $hideAfter tile(s), not the $hideTilesWas it found" }
+    else { Pass "restored - the operator's registry was never touched, and the rail is back at $hideAfter" }
+}
+
+# 🔴 THE MENU MUST BE OURS, NOT WINDOWS'. Same reasoning as the manager's, and
+# the same failure: a ContextMenu is outside the window's visual tree, so an
+# implicit style in Window.Resources is not something to rely on reaching it -
+# and the gesture underneath this one decides what comes back tomorrow morning.
+$railCm = $ui.RailList.ContextMenu
+if (-not $railCm) { Fail 'a project tile has no right-click menu, so there is no way to shelve one' }
+elseif (-not $railCm.Style) { Fail "the rail's menu carries no style - it would render as a white Windows slab" }
+elseif (-not @($railCm.Style.Setters | Where-Object { $_.Property.Name -eq 'Template' }).Count) {
+    Fail "the rail menu's style sets no Template, so the OS chrome survives underneath it"
+} else {
+    $railItems = @($railCm.Items | Where-Object { $_ -is [System.Windows.Controls.MenuItem] })
+    $railBare = @($railItems | Where-Object { -not $_.Style })
+    if (-not $railItems.Count) { Fail 'the rail menu has no items' }
+    elseif ($railBare.Count) { Fail "$($railBare.Count) rail menu item(s) carry no style - they would highlight in Windows blue" }
+    else { Pass "the project tile's menu and its $($railItems.Count) item(s) are drawn by this window, not by Windows" }
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- what the rail suggests shelving, and never does itself ---'
+# ===========================================================================
+# 🔴 THE SUGGESTION IS COMPUTED OVER THE WHOLE REGISTRY, NOT THE RAIL. The work
+# surface is live-or-spoke-in-the-last-day, so every project the rail draws was
+# touched within 24 hours and a project quiet for a fortnight is never a tile on
+# it. A count taken from the rail's own contents would be permanently zero, and
+# a green suite saying "0 suggested, correct" would be describing nothing.
+$sugShelvedWas = @{}
+foreach ($dsug in $script:dirs) {
+    if ($null -ne $dsug.PSObject.Properties['shelved']) { $sugShelvedWas["$($dsug.path)"] = $dsug.shelved }
+}
+Update-ShelveSuggestions
+$sugFound = @($script:shelveSuggestNames)
+$sugDays = 14
+try { $sugDays = [int]$script:cfg.shelveSuggestDays } catch { }
+Note ("$($sugFound.Count) of $(@($script:dirs).Count) project(s) are quiet past $sugDays days with nothing running")
+
+# 🔑 NOTHING WAS SHELVED BY LOOKING. The whole promise is that the tool points
+# and the operator decides, so the pass that points must leave every flag as it
+# found it - checked against a snapshot taken before it ran.
+$sugTouched = @()
+foreach ($dsug in $script:dirs) {
+    $now2 = $(if ($null -ne $dsug.PSObject.Properties['shelved']) { $dsug.shelved } else { $null })
+    $was2 = $(if ($sugShelvedWas.ContainsKey("$($dsug.path)")) { $sugShelvedWas["$($dsug.path)"] } else { $null })
+    if ("$now2" -ne "$was2") { $sugTouched += "$($dsug.path)" }
+}
+if ($sugTouched.Count) { Fail "the suggestion pass SHELVED $($sugTouched.Count) project(s) by itself: $($sugTouched[0])" }
+else { Pass "suggesting changed nothing - all $(@($script:dirs).Count) projects are exactly as they were" }
+
+# AND EVERY PROJECT IT NAMES REALLY IS QUIET. Recomputed here off the registry
+# with its own arithmetic, so a wrong threshold cannot agree with itself.
+$sugWrong = @()
+foreach ($dsug in $script:dirs) {
+    if ($script:shelveSuggest.ContainsKey("$($dsug.path)")) {
+        $alive = @(@($dsug.sessions) | Where-Object { -not $_.gone })
+        $newest2 = [datetime]0
+        foreach ($ssug in $alive) { try { $t2 = [datetime]$ssug.lastActive; if ($t2 -gt $newest2) { $newest2 = $t2 } } catch { } }
+        # The halved threshold is the floor a worktree-only repo can reach, so a
+        # candidate must be at least that quiet whatever lane it is in.
+        $floor = [Math]::Max(1, [int][Math]::Ceiling($sugDays / 2.0))
+        if (-not $alive.Count) { $sugWrong += "$($dsug.path) has no conversations left at all" }
+        elseif ((([datetime]::Now - $newest2).TotalDays) -lt $floor) {
+            $sugWrong += ("$($dsug.path) was touched $([int](([datetime]::Now - $newest2).TotalDays)) day(s) ago")
+        }
+        elseif ([bool]$dsug.shelved) { $sugWrong += "$($dsug.path) is already shelved" }
+        elseif ([bool]$dsug.missing) { $sugWrong += "$($dsug.path) is missing, not quiet" }
+    }
+}
+if ($sugWrong.Count) { Fail "$($sugWrong.Count) suggestion(s) are wrong: $($sugWrong[0])" }
+else { Pass "every one of the $($sugFound.Count) suggestion(s) is a project that really has gone quiet" }
+
+# 🔴 AND A CANDIDATE IS POSED, because the check above is VACUOUS WHEN NOTHING IS
+# FOUND. Emptying the pass entirely - `foreach ($d in @())` - left this suite
+# fully green: "every one of the 0 suggestions is correct" is true of a function
+# that does nothing, and the rail assertion below then takes its "nothing to
+# suggest" branch and says so too. Whether the operator's machine happens to
+# hold a quiet project is not something a test may depend on, so one is put in
+# front of the pass and taken away again. [[feedback-written-is-not-working]]
+$sugDirsWas = $script:dirs
+try {
+    $sugFixture = [PSCustomObject]@{
+        path = 'C:\posed\quiet-project'; enabled = $true; missing = $false
+        sessions = @([PSCustomObject]@{
+            sessionId = 'posedquiet01'; title = 'POSED'; enabled = $true; gone = $false; lane = 'main'
+            lastActive = ([datetime]::Now.AddDays(-($sugDays + 5))).ToString('o')
+        })
+    }
+    $script:dirs = @(@($sugDirsWas) + $sugFixture)
+    Update-ShelveSuggestions
+    if (-not $script:shelveSuggest.ContainsKey('C:\posed\quiet-project')) {
+        Fail "a project quiet for $($sugDays + 5) days with nothing running was NOT suggested - the pass finds nothing"
+    } else { Pass "a posed project quiet $($sugDays + 5) days is found, so the pass is really looking" }
+} finally {
+    $script:dirs = $sugDirsWas
+    Update-ShelveSuggestions
+}
+$sugFound = @($script:shelveSuggestNames)
+
+# THE RAIL SAYS IT, on a line of its own because it is speaking for projects it
+# cannot draw.
+$sugNamesWas = $script:shelveSuggestNames
+$sugMapWas = $script:shelveSuggest
+try {
+    Build-Rail
+    if ($sugFound.Count) {
+        if ("$($ui.RailSuggest.Visibility)" -ne 'Visible') { Fail "$($sugFound.Count) project(s) could be put away and the rail says nothing" }
+        elseif ("$($ui.RailSuggest.Text)" -notmatch "$($sugFound.Count)") {
+            Fail "the rail reads '$($ui.RailSuggest.Text)' and does not say how many"
+        }
+        elseif ("$($ui.RailSuggest.ToolTip)" -notmatch [regex]::Escape("$($sugFound[0])")) {
+            Fail "the rail counts them but names none - there is no way to find out which"
+        } else { Pass "the rail says '$($ui.RailSuggest.Text)' and names them in its tooltip" }
+    } else { Note 'nothing is quiet enough to suggest right now' }
+
+    # AND SAYS NOTHING WHEN THERE IS NOTHING TO SAY. A 248px rail cannot afford
+    # a line explaining the usual case - and without this the check above passes
+    # on a control that is simply always visible.
+    $script:shelveSuggestNames = @()
+    $script:shelveSuggest = @{}
+    Build-Rail
+    if ("$($ui.RailSuggest.Visibility)" -eq 'Visible') { Fail 'the rail keeps a suggestion line with nothing to suggest' }
+    else { Pass 'with nothing to suggest the line is gone, not empty' }
+
+    # 🔴 AND A SUGGESTED PROJECT THAT IS ON THE RAIL CARRIES IT ON THE TILE. Rare
+    # in practice for the reason above, so it is posed here rather than waited
+    # for: the reason is put on a real rail project and the tile is read back.
+    $sugTiles = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' })
+    if (-not $sugTiles.Count) { Note 'no tiles on the rail to mark' }
+    else {
+        $sugPath = "$($sugTiles[0].Path)"
+        $sugPlain = "$($sugTiles[0].State)"
+        $script:shelveSuggest = @{ $sugPath = 'nothing running, quiet 30 days' }
+        $script:shelveSuggestNames = @('posed')
+        Build-Rail
+        $sugTile = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' -and "$($_.Path)" -eq $sugPath })
+        if (-not $sugTile.Count) { Fail 'the posed project left the rail' }
+        elseif ("$($sugTile[0].State)" -notmatch 'shelved') {
+            Fail "a suggested tile reads '$($sugTile[0].State)' - nothing on it says it could be shelved"
+        }
+        elseif (-not "$($sugTile[0].Tip)") { Fail 'the tile is marked but its tooltip does not say why' }
+        elseif ("$($sugTile[0].State)" -eq $sugPlain) { Fail 'the marked tile reads exactly as the unmarked one did' }
+        else { Pass "a suggested tile says so: '$($sugTile[0].State)'" }
+        # The inverse: with the suggestion gone the tile goes back to what it said.
+        $script:shelveSuggest = @{}
+        Build-Rail
+        $sugAgain = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' -and "$($_.Path)" -eq $sugPath })
+        if (@($sugAgain).Count -and "$($sugAgain[0].State)" -ne $sugPlain) {
+            Fail "the mark did not come off: '$($sugAgain[0].State)' against '$sugPlain'"
+        } else { Pass 'and it comes off again - the mark tracks the suggestion, not the tile' }
+    }
+} finally {
+    $script:shelveSuggestNames = $sugNamesWas
+    $script:shelveSuggest = $sugMapWas
+    Build-Rail
+}
 
 # ===========================================================================
 Write-Host ''
@@ -1062,7 +1595,7 @@ $ui.ModeWork.IsChecked = $true
 Set-Surface 'work'
 Build-Rail
 Lay
-$tiles = @($ui.RailList.ItemsSource)
+$tiles = @($ui.RailList.ItemsSource | Where-Object { $_.Kind -eq 'project' })
 if ($tiles.Count -lt 2) { Fail "the rail built $($tiles.Count) tile(s)" }
 else {
     Pass "$($tiles.Count) project tiles"
@@ -1129,7 +1662,14 @@ else {
     # amount of looking at a downscaled screenshot could settle. This walks the
     # realised container and measures the mark.
     $ui.RailList.UpdateLayout()
-    $c0 = $ui.RailList.ItemContainerGenerator.ContainerFromIndex(0)
+    # 🪤 THE FIRST ITEM IS NOT THE FIRST TILE ANY MORE. Index 0 is an age-band
+    # heading, which carries a Transparent accent by design - so measuring index
+    # 0 would look for a coloured mark in the one row that is supposed not to
+    # have one, and this assertion would have gone red on a correct build.
+    $tileIx = -1
+    $railAll = @($ui.RailList.ItemsSource)
+    for ($i = 0; $i -lt $railAll.Count; $i++) { if ($railAll[$i].Kind -eq 'project') { $tileIx = $i; break } }
+    $c0 = $(if ($tileIx -ge 0) { $ui.RailList.ItemContainerGenerator.ContainerFromIndex($tileIx) } else { $null })
     if (-not $c0) { Fail 'the first tile has no realised container' }
     else {
         function Find-Mark { param($El)
@@ -1428,9 +1968,8 @@ Write-Host '--- all three sends are off the UI thread, and none of them can answ
 # answer never did, and they do the same shape of work - Invoke-SRRoundMove
 # sends up to eight keys and reads the screen after EACH one. Both now go
 # through Start-AskSend.
-$winSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\sessions-window.ps1'))
 
-foreach ($fn in @('Invoke-AskMove', 'Invoke-AskTyped', 'Invoke-Answer', 'Invoke-Send')) {
+foreach ($fn in @('Invoke-AskMove', 'Invoke-AskTyped', 'Invoke-Answer', 'Invoke-Send', 'Invoke-Interrupt')) {
     if ($winSrc -notmatch [regex]::Escape("function $fn")) { Fail "$fn is gone"; continue }
     # The body, up to the next top-level function.
     $bodyIx = $winSrc.IndexOf("function $fn")
@@ -1454,8 +1993,12 @@ foreach ($fn in @('Invoke-AskMove', 'Invoke-AskTyped', 'Invoke-Answer', 'Invoke-
     # `claude agents --json` (528-862 ms), then Start-Sleep 400 before the
     # ENTER - about 1.0-1.3 SECONDS of frozen window per press, excused in the
     # coverage map as "its gesture is a string trim".
+    # 🔴 Send-SRInterrupt IS ON THIS LIST TOO. It reads Win32_Process before it
+    # sends - a CIM call, which is the same shape of cost as the others and
+    # would freeze the window on the one gesture whose whole point is to be
+    # instant.
     foreach ($blocking in @('Invoke-SRRoundMove', 'Invoke-SRAnswerTypedOnScreen', 'Send-SRQuestionAnswer',
-                            'Send-SRSessionInput', 'Get-SRScreenQuestion')) {
+                            'Send-SRSessionInput', 'Send-SRInterrupt', 'Get-SRScreenQuestion')) {
         if ($body -match [regex]::Escape($blocking)) { $left += $blocking }
     }
     if ($left.Count) { Fail ("$fn still calls " + ($left -join ', ') + ' on the UI thread') }
@@ -1473,6 +2016,91 @@ else { Pass 'no send dispatch answers by default - an unknown kind refuses inste
 
 # ===========================================================================
 Write-Host ''
+# ===========================================================================
+Write-Host ''
+Write-Host '--- interrupting a turn, and refusing to press Esc anywhere else ---'
+# ===========================================================================
+# 🔴 THE GATE IS THE WHOLE SAFETY ARGUMENT, so it is what gets tested. Every
+# other send in this tool reads the screen before it commits, because every
+# other send PICKS something and can check it picked the right thing. Esc picks
+# nothing: on a running turn it stops the turn, at a prompt it clears the input
+# box, and pressed twice it opens the rewind picker, which offers to revert
+# CODE. There is nothing to verify after the fact, so the only thing standing
+# between the button and that is Get-InterruptBlocker refusing.
+#
+# 🔴 AND NOTHING HERE PRESSES ANYTHING. Every case asks what the gate WOULD say,
+# on fabricated rows; the suite's rule is that it never types into a real
+# session, and this is the one gesture where breaking it would cost a turn of
+# somebody's work. [[feedback-tests-reaching-live-data]]
+function New-StopRow { param([string]$Status, [string]$Kind = 'interactive', $Pid_ = 4242)
+    return [PSCustomObject]@{
+        Id = 'stop-fixture'; Band = 'working'; Live = $true
+        S = [PSCustomObject]@{ sessionId = 'stop-fixture'; title = 'STOP' }
+        D = [PSCustomObject]@{ path = 'C:\p\stop' }
+        A = $(if ($null -eq $Pid_) { $null } else {
+                [PSCustomObject]@{ Pid = $Pid_; Status = $Status; Kind = $Kind; Name = 'STOP' } })
+    }
+}
+
+$stopBusy = Get-InterruptBlocker (New-StopRow -Status 'busy')
+if ($stopBusy) { Fail "a mid-turn conversation cannot be interrupted: '$stopBusy'" }
+else { Pass 'a conversation that is mid-turn can be interrupted' }
+
+# 🔑 AND EVERY OTHER STATE IS REFUSED. This is the inverse of Get-AskBlocker -
+# a question can only be READ off a session that has stopped, an interrupt is
+# only meaningful on one that has not - and the pair must never both allow.
+$stopRefused = 0
+foreach ($st in @('idle', 'waiting', 'summarising', 'unknown', '')) {
+    $why = Get-InterruptBlocker (New-StopRow -Status $st)
+    if (-not $why) { Fail "Esc would be sent to a conversation the probe calls '$st' - at a prompt that clears what is typed there" }
+    else { $stopRefused++ }
+}
+if ($stopRefused -eq 5) { Pass 'every state but mid-turn is refused, so Esc never reaches a session sitting at its prompt' }
+
+$stopAgent = Get-InterruptBlocker (New-StopRow -Status 'busy' -Kind 'agent')
+if (-not $stopAgent) { Fail 'a background agent would be sent Esc - it has no console to press it in' }
+else { Pass "a background agent is refused: '$stopAgent'" }
+
+$stopDead = Get-InterruptBlocker (New-StopRow -Status 'busy' -Pid_ $null)
+if (-not $stopDead) { Fail 'a conversation with no process would be sent Esc' }
+else { Pass "a conversation that is not running is refused: '$stopDead'" }
+
+$stopNone = Get-InterruptBlocker $null
+if (-not $stopNone) { Fail 'with nothing selected the interrupt still goes ahead' }
+else { Pass 'nothing selected is refused rather than acted on' }
+
+# 🔴 AND THE TWO GATES DISAGREE ON EVERY ROW, which is the property that matters:
+# if both ever allowed at once, the window would be offering to read a question
+# off a session and to interrupt it in the same breath, and one of the two would
+# be wrong about what it is looking at.
+$stopBoth = @()
+foreach ($st in @('busy', 'idle', 'waiting', 'summarising', 'unknown')) {
+    $row = New-StopRow -Status $st
+    if (-not (Get-InterruptBlocker $row) -and -not (Get-AskBlocker $row)) { $stopBoth += $st }
+}
+if ($stopBoth.Count) { Fail "both gates allow at once on status '$($stopBoth[0])' - one of them is reading the session wrong" }
+else { Pass 'the interrupt gate and the question gate never both allow - they are opposites, on the same evidence' }
+
+# THE BUTTON IS WIRED, and to the gated function rather than to the send.
+if (-not $ui.PaneStop) { Fail 'there is no Interrupt button' }
+else {
+    $stopSrc = Get-SRBodyOf $winSrc 'function Invoke-Interrupt'
+    if (-not $stopSrc) { Fail 'Invoke-Interrupt is gone' }
+    elseif ($stopSrc -notmatch 'Get-InterruptBlocker') { Fail 'the Interrupt button sends without asking the gate' }
+    elseif ($stopSrc -notmatch "Kind 'esc'") { Fail 'the Interrupt button does not send the esc kind' }
+    else { Pass 'the Interrupt button asks the gate, then hands the key to the lane' }
+}
+
+# 🪤 ONE Esc, NEVER TWO. Two in one batch is the rewind gesture, which offers to
+# revert CODE - so the primitive refuses a count rather than trusting a caller's
+# arithmetic, and there is no way to ask it for two.
+$escSrc = Get-SRBodyOf ([System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\_common.ps1'))) 'function Send-SRInterrupt'
+if (-not $escSrc) { Fail 'Send-SRInterrupt is gone' }
+elseif ($escSrc -notmatch '0x1B') { Fail 'Send-SRInterrupt no longer sends VK_ESCAPE' }
+elseif (([regex]::Matches($escSrc, '0x1B')).Count -ne 1) { Fail 'Send-SRInterrupt sends Esc more than once - that is the rewind gesture' }
+elseif ($escSrc -notmatch 'claude\.exe') { Fail 'Send-SRInterrupt types into a pid without checking it is still a claude' }
+else { Pass 'the primitive sends exactly one Esc, and only into a live claude.exe' }
+
 # ===========================================================================
 Write-Host ''
 Write-Host '--- the vitals strip, and the clock that must stay cheap ---'
@@ -2962,6 +3590,168 @@ else {
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- a foldable block in the reading pane can actually be clicked ---'
+# ===========================================================================
+# 🔴 IT NEVER OPENED, FOR AS LONG AS IT HAS EXISTED. Reported as "clicking a
+# foldable block does nothing", and it was all of them - tool runs, THINKING,
+# QUEUED, HOOK, NOTICES. The header wired Add_MouseLeftButtonUp, and it lives in
+# a BlockUIContainer inside PaneDoc, a FlowDocumentScrollViewer with
+# IsSelectionEnabled="True": with selection on, the viewer's TextEditor handles
+# button-DOWN and captures the mouse, so the matching Up goes to the capture
+# target and never reaches the Border. An Up-only handler in there cannot fire.
+#
+# 🪤 AND THE OBVIOUS TEST PROVES NOTHING. WPF's MouseLeftButtonDown/Up and their
+# previews are DIRECT routed events, so raising one on the Border in a test fires
+# the handler whether or not a real click could ever reach it - a "I raised it
+# and it toggled" test passes just as well against the broken code. Both kinds
+# of check are here and they are labelled for what each one is worth.
+$foldWasView = $script:toolView
+$script:toolView = 'folded'
+$foldRow = $null
+foreach ($fr in $script:model) { if ($fr.Live) { $foldRow = $fr; break } }
+if (-not $foldRow -and $script:model.Count) { $foldRow = $script:model[0] }
+if (-not $foldRow) { Note 'no conversation to render - the fold header cannot be posed' }
+else {
+    $script:selId = $foldRow.Id
+    $ui.PaneDoc.Document = $null
+    Show-Selected
+    $foldSw = [Diagnostics.Stopwatch]::StartNew()
+    while ($foldSw.Elapsed.TotalSeconds -lt 10 -and -not $ui.PaneDoc.Document) {
+        [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
+            [System.Windows.Threading.DispatcherPriority]::Background, [action]{})
+    }
+    $ui.PaneDoc.Measure((New-Object System.Windows.Size 900, 600))
+    $ui.PaneDoc.Arrange((New-Object System.Windows.Rect 0, 0, 900, 600))
+    $ui.PaneDoc.UpdateLayout()
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
+        [System.Windows.Threading.DispatcherPriority]::Loaded, [action]{})
+
+    # A fold header is the only Border in there whose Tag carries a Caret and a
+    # Panel - that is what Invoke-FoldToggle reads, so it is what identifies one.
+    function Find-FoldHeaders { param($El, $Bag)
+        if ($El -is [System.Windows.Controls.Border]) {
+            $tg = $El.Tag
+            if ($tg -is [hashtable] -and $tg.ContainsKey('Caret') -and $tg.ContainsKey('Panel')) {
+                $null = $Bag.Add($El)
+            }
+        }
+        $n = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($El)
+        for ($i = 0; $i -lt $n; $i++) {
+            Find-FoldHeaders ([System.Windows.Media.VisualTreeHelper]::GetChild($El, $i)) $Bag
+        }
+    }
+    $foldBag = New-Object System.Collections.Generic.List[object]
+    Find-FoldHeaders $ui.PaneDoc $foldBag
+    $foldHeads = $foldBag.ToArray()
+
+    if (-not $foldHeads.Count) { Note 'this conversation rendered no foldable block - nothing to click' }
+    else {
+        Note ("$($foldHeads.Count) foldable block(s) in the rendered document")
+        $fh = $foldHeads[0]
+
+        # 🔴 THE HIT TEST CANNOT BE RUN HERE, AND THAT IS MEASURED, NOT ASSUMED.
+        # InputHitTest is the check that would really discriminate - does a click
+        # land on the header or on the selection layer in front of it - and in
+        # this suite it returns NULL for EVERYTHING: the fold header, and equally
+        # a realised SessionList row whose container this same suite measures
+        # elsewhere. Hit testing needs a PresentationSource, and the whole point
+        # of this suite is that the window is built and never shown. The control
+        # case is asserted below so this stays a known limitation rather than
+        # quietly becoming a passing test of nothing.
+        $hitCtl = $null
+        try { $hitCtl = $ui.SessionList.InputHitTest((New-Object System.Windows.Point 40, 40)) } catch { }
+        $hitHdr = $null
+        try {
+            $tf = $fh.TransformToAncestor($ui.PaneDoc)
+            $origin = $tf.Transform((New-Object System.Windows.Point 0, 0))
+            $hitHdr = $ui.PaneDoc.InputHitTest(
+                (New-Object System.Windows.Point ($origin.X + 5), ($origin.Y + [Math]::Max(2.0, $fh.ActualHeight / 2))))
+        } catch { }
+        if ($hitCtl) {
+            # A window that CAN hit-test has appeared under this suite. Then the
+            # real check is available and should be made rather than skipped.
+            if (-not $hitHdr) { Fail 'hit testing works here now, and a click inside a fold header lands on nothing' }
+            else {
+                $inHdr = $false; $walk = $hitHdr
+                while ($walk) {
+                    if ([object]::ReferenceEquals($walk, $fh)) { $inHdr = $true; break }
+                    $walk = [System.Windows.Media.VisualTreeHelper]::GetParent($walk)
+                }
+                if ($inHdr) { Pass 'a click inside a fold header lands on the header, not on the selection layer' }
+                else { Fail "a click inside a fold header lands on $($hitHdr.GetType().Name) - the header never sees it" }
+            }
+        } else {
+            Note 'InputHitTest returns null for a realised SessionList row too - no PresentationSource on an unshown window, so the hit test is unavailable here and the click-lands-where check is NOT made by this suite'
+        }
+
+        # 🔑 SO THE INVARIANT IS ASSERTED INSTEAD, and it is the one that actually
+        # explains the bug: PaneDoc has selection ON, which is what makes its
+        # TextEditor capture the mouse on button-DOWN and swallow the matching Up.
+        # These two facts are coupled - with selection off, an Up handler would
+        # have worked - so pinning both is what stops the fix being undone from
+        # either side.
+        if (-not $ui.PaneDoc.IsSelectionEnabled) {
+            Note 'PaneDoc no longer has selection enabled - the capture that broke the Up handler is gone, and the coupling below is worth less'
+        } else { Pass 'PaneDoc has selection enabled, so its editor captures button-down - an Up-only handler in there cannot fire' }
+
+        # 🪤 THIS ONE IS ABOUT THE TOGGLE, NOT THE CLICK. Direct routed event, so
+        # it would have passed against the broken code too - it is here to cover
+        # Invoke-FoldToggle's own logic and is worth exactly that much.
+        $st = $fh.Tag
+        $openWas = [bool]$st.Open
+        Invoke-FoldToggle $fh
+        $openNow = [bool]$st.Open
+        $visNow = "$($st.Panel.Visibility)"
+        Invoke-FoldToggle $fh
+        $openBack = [bool]$st.Open
+        if ($openNow -eq $openWas) { Fail 'toggling a fold header did not change its open state' }
+        elseif ($openNow -and $visNow -ne 'Visible') { Fail "it says open but its panel is $visNow" }
+        elseif ($openBack -ne $openWas) { Fail 'toggling twice did not put it back' }
+        else { Pass 'the toggle opens the panel and closes it again (logic only - a direct event proves nothing about the click)' }
+    }
+}
+$script:toolView = $foldWasView
+
+# 🔴 AND THE WIRING CANNOT BE SILENTLY REVERTED. Up-only is the shape that was
+# broken; both together would toggle twice on one click, which looks exactly
+# like the bug it replaced.
+$foldSrc = Get-SRBodyOf $winSrc 'function New-FoldHeader'
+if (-not $foldSrc) { Fail 'New-FoldHeader is gone' }
+elseif ($foldSrc -match 'Add_MouseLeftButtonUp') {
+    Fail 'the fold header is back on MouseLeftButtonUp - the viewer captures the mouse and it will never fire'
+}
+elseif ($foldSrc -notmatch 'Add_PreviewMouseLeftButtonDown') {
+    Fail 'the fold header no longer handles preview-down, so the click cannot reach it'
+}
+elseif ($foldSrc -notmatch 'Handled') {
+    Fail 'the fold header handles the click but does not mark it handled - the viewer starts a selection drag from it'
+}
+else { Pass 'the fold header takes preview-down, marks it handled, and no longer waits for an Up that never comes' }
+
+# 🔴 AND IT WAS NEVER ONLY THE FOLD HEADER. Fixing that one turned up three more
+# clickable elements built into the SAME document with the SAME Up-only wiring,
+# every one of them dead for the same reason: "open its conversation", the way
+# BACK out of a sub-agent document, and "load earlier". The first two are the
+# only way in and the only way out of that document, so between them the whole
+# sub-agent view could be neither entered nor left.
+#
+# 🪤 SO THE ASSERTION IS ABOUT THE DOCUMENT, NOT ABOUT ONE FUNCTION. Anything
+# that puts a clickable element into PaneDoc has to take preview-down; a check
+# aimed at New-FoldHeader alone would have said nothing about the other three,
+# and said it in green. These are the builders that put UIElements in there.
+$docBuilders = @('New-FoldHeader', 'Add-RunDetail', 'Build-ReadDocument', 'Add-ReadLabel', 'Add-MonoDetail')
+$deadClicks = @()
+foreach ($fn in $docBuilders) {
+    $b = Get-SRBodyOf $winSrc "function $fn"
+    if (-not $b) { Fail "$fn is gone - the reading pane's click check cannot see it"; continue }
+    if ($b -match 'Add_MouseLeftButtonUp') { $deadClicks += $fn }
+}
+if ($deadClicks.Count) {
+    Fail ('clickable elements inside the reading pane still wait for an Up that never arrives, in: ' + ($deadClicks -join ', '))
+} else { Pass "no builder that fills the reading pane wires a click to MouseLeftButtonUp ($($docBuilders.Count) checked)" }
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- how fast a status changes ---'
 # ===========================================================================
 # 🔴 THE BAND IS THE WHOLE POINT OF THE LIST. It says which conversations want
@@ -4312,6 +5102,49 @@ try {
     if (-not $ok2) { Fail 'accepting the prompt did not save - the ticks are still trapped' }
     elseif ($script:dirty) { Fail 'it saved but the window still thinks it has unsaved work' }
     else { Pass 'accepting it saves, so the ticks are never trapped in the window' }
+
+    # 🔴 AND SHELVING A PROJECT GOES THROUGH THAT SAME WRITE, so it inherits the
+    # same failure. Set-ProjectShelved sets the field and then asks; if the write
+    # is refused, THE FIELD HAS TO GO BACK. A rail showing a project as shelved
+    # while the file on disk still says otherwise would come back with it visible
+    # at the next restart and nothing to explain why - the flag would have been a
+    # lie for as long as the window stayed open. Driven here rather than in the
+    # rail block above because this is the only place the registry path is
+    # sandboxed, and this assertion writes.
+    # 🪤 $script:model[0], NOT @($script:model)[0]. The model is a List[object]
+    # and @() over one THROWS on PS 5.1 - "Argument types do not match", which
+    # names neither the list nor the wrap and takes the whole harness down.
+    # [[feedback-array-wrap-trap]]
+    $hideDirW = $script:model[0].D
+    $hideWasW = $null
+    $hideHadW = ($null -ne $hideDirW.PSObject.Properties['shelved'])
+    if ($hideHadW) { $hideWasW = $hideDirW.shelved }
+    try {
+        Set-SRRegistryStamp 'a-stamp-from-before-something-else-wrote'
+        $script:dirty = $true
+        Press 'SheetB1'   # "Leave it for now"
+        $hideRefused = Set-ProjectShelved -Dir $hideDirW -Shelved $true
+        if ($hideRefused) { Fail 'a refused save still reported the project as shelved' }
+        elseif ([bool]$hideDirW.shelved) {
+            Fail 'the save was refused and the project is still marked shelved - the rail now disagrees with the file'
+        } else { Pass 'a refused save puts the shelved flag back rather than leaving the rail lying' }
+
+        # And the accepted path really does persist it, or the check above is
+        # only measuring a function that never works.
+        Set-SRRegistryStamp 'a-stamp-from-before-something-else-wrote'
+        $script:dirty = $true
+        Press 'SheetB3'   # "Save mine anyway"
+        $hideTook = Set-ProjectShelved -Dir $hideDirW -Shelved $true
+        $onDisk = $null
+        try { $onDisk = (Get-Content -LiteralPath $sandReg -Raw | ConvertFrom-Json) } catch { }
+        $wrote = @(@($onDisk.directories) | Where-Object { "$($_.path)" -eq "$($hideDirW.path)" -and $_.shelved })
+        if (-not $hideTook) { Fail 'shelving was accepted at the prompt and still reported failure' }
+        elseif (-not $wrote.Count) { Fail 'shelving reported success but the registry on disk does not say shelved' }
+        else { Pass 'shelving reaches the registry file, so it survives a restart' }
+    } finally {
+        if ($hideHadW) { $hideDirW.shelved = $hideWasW }
+        elseif ($null -ne $hideDirW.PSObject.Properties['shelved']) { $hideDirW.PSObject.Properties.Remove('shelved') }
+    }
 } finally {
     $script:SR_RegistryPath = $realRegPath
     Remove-Item -LiteralPath $sandReg -Force -ErrorAction SilentlyContinue
@@ -4520,18 +5353,12 @@ finally {
 }
 
 # AND THE THREE GESTURES ACTUALLY GO THROUGH IT. Same body extraction as the
-# send lane above, comments stripped first for the same reason.
+# send lane above - Get-SRBodyOf is defined up there beside $winSrc, because a
+# function has to exist before the line that calls it RUNS and the interrupt
+# block reaches for it several hundred lines earlier than this one.
 $cfgSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\sessions-window.ps1'))
-function Get-SRBodyOf { param([string]$Src, [string]$Marker)
-    $a = $Src.IndexOf($Marker)
-    if ($a -lt 0) { return '' }
-    $b = $Src.IndexOf("`nfunction ", $a + $Marker.Length)
-    if ($b -lt 0) { $b = $Src.Length }
-    $body = $Src.Substring($a, $b - $a)
-    return ((($body -split "`n") | ForEach-Object { ($_ -split '#', 2)[0] }) -join "`n")
-}
 
-foreach ($fn in @('Invoke-ColumnFold', 'Step-ToolView', 'Step-Zoom')) {
+foreach ($fn in @('Invoke-ColumnFold', 'Step-ToolView', 'Step-Zoom', 'Toggle-RailBand')) {
     $body = Get-SRBodyOf $cfgSrc "function $fn"
     if (-not $body) { Fail "$fn is gone"; continue }
     if ($body -match 'Save-SRConfigValue') { Fail "$fn still writes the config synchronously on the click" }

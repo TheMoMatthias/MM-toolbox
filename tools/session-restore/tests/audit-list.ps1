@@ -158,13 +158,17 @@ $ui.ModeWork.IsChecked = $true
 Set-Surface 'work'
 $ui.Search.Text = ''; $ui.RailSearch.Text = ''; $ui.ListSearch.Text = ''
 $script:railPick = $null; $script:bandPick = $null; $script:railOnlyLive = $false
+# The rail's age bands are a real operator setting and default to everything
+# but TODAY folded, so an audit that did not own them would time a rail
+# holding whichever projects happened to be touched since midnight.
+$script:railBandShut = @{}
 $script:listSort = 'recent'; $script:railSort = 'recent'
 Build-Rail; Build-Sessions; aLay
 
 $aLall = @($ui.SessionList.Items)
 $aLsess = @($aLall | Where-Object { $_.Kind -eq 'session' })
 $aLbands = @($aLall | Where-Object { $_.Kind -eq 'band' })
-$aLrails = @($ui.RailList.Items)
+$aLrails = @($ui.RailList.Items | Where-Object { $_.Kind -eq 'project' })
 aNote ("{0} conversations across {1} projects; the list holds {2} rows ({3} sessions, {4} headings), the rail {5} projects" -f `
        $script:model.Count, @($script:dirs).Count, $aLall.Count, $aLsess.Count, $aLbands.Count, $aLrails.Count)
 aNote ("the machine: a fixed CPU loop took {0:N0} ms with {1} claude session(s) running" -f $aLspinStart, $aLbusyStart)
@@ -302,7 +306,11 @@ if ($aLrails.Count -ge 1) {
     $null = aBench 'RailList: pick a project (SelectionChanged -> Build-Rail + Build-Sessions)' 'RailList' 'SelectionChanged' `
         { $ui.RailList.SelectedItem = $script:aLprojCur } `
         { $script:railPick = $null; $ui.RailList.SelectedIndex = -1
-          $script:aLprojCur = @($ui.RailList.Items)[0] } 15 ''
+          # 🪤 THE FIRST ITEM IS AN AGE-BAND HEADING, and selecting one is
+          # deliberately not a project pick - so timing it would measure a
+          # gesture that does nothing and the raise check below would read
+          # an empty railPick on a correct build.
+          $script:aLprojCur = @($ui.RailList.Items | Where-Object { $_.Kind -eq 'project' })[0] } 15 ''
     aNote ("raise check - RailList selection left railPick = '{0}' (it must not be empty)" -f $script:railPick)
     $script:railPick = $null; $ui.RailList.SelectedIndex = -1
     Build-Rail; Build-Sessions
