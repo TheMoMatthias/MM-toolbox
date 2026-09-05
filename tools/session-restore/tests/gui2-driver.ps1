@@ -2098,8 +2098,16 @@ $escSrc = Get-SRBodyOf ([System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\_
 if (-not $escSrc) { Fail 'Send-SRInterrupt is gone' }
 elseif ($escSrc -notmatch '0x1B') { Fail 'Send-SRInterrupt no longer sends VK_ESCAPE' }
 elseif (([regex]::Matches($escSrc, '0x1B')).Count -ne 1) { Fail 'Send-SRInterrupt sends Esc more than once - that is the rewind gesture' }
-elseif ($escSrc -notmatch 'claude\.exe') { Fail 'Send-SRInterrupt types into a pid without checking it is still a claude' }
-else { Pass 'the primitive sends exactly one Esc, and only into a live claude.exe' }
+# 🪤 THE CHECK, NOT THE SPELLING. This used to look for the literal 'claude.exe',
+# which left the file when the WMI guard was replaced: Win32_Process.Name is
+# "claude.exe" but Process.ProcessName is "claude", so the new guard cannot
+# contain that string and the assertion went red on a send path that had just
+# become MORE careful, not less. It follows the call now. The helper's own
+# behaviour - refuse a non-claude pid, accept a real one - is driven directly in
+# tests\ask-spec.ps1, which is where that belongs: it can be called without
+# typing into anybody's console, which is why it was extracted.
+elseif ($escSrc -notmatch 'Test-SRClaudeProcess') { Fail 'Send-SRInterrupt types into a pid without checking it is still a claude' }
+else { Pass 'the primitive sends exactly one Esc, and only into a process it has confirmed is claude' }
 
 # ===========================================================================
 Write-Host ''
@@ -3821,6 +3829,108 @@ else {
     if ($lwMs -gt 50) { Fail ("the status pass costs {0:N0} ms and now runs on every write" -f $lwMs) }
     else { Pass ("the status pass costs {0:N1} ms" -f $lwMs) }
 }
+
+Write-Host ''
+Write-Host '--- closing the window does not abandon a send mid-flight ---'
+# ===========================================================================
+# 🔴 THE BAD DIRECTION HAS TO BE REACHABLE OR THIS PROVES NOTHING. A disposal
+# test that passes because nothing was ever in flight is the same green that
+# cannot go red as the three already found in this suite today.
+#
+# So the stand-in job SLEEPS AND THEN WRITES ITS MARKER, in that order - which is
+# the shape of the thing being protected. Every send types and then submits as
+# two steps (Invoke-SRAnswerTypedOnScreen writes the text, re-reads the screen,
+# and only then sends ENTER; Send-SRSessionInput says the same of itself). A
+# teardown that does not wait kills the thread between them, and the marker - the
+# ENTER - never happens. The marker file IS the submit.
+# ===========================================================================
+$mark = Join-Path $SR_StateDir ('sendmark-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+function Start-FakeSend {
+    param([int]$Ms, [string]$Marker)
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.ApartmentState = 'MTA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
+    $rs.SessionStateProxy.SetVariable('SRMark', $Marker)
+    $rs.SessionStateProxy.SetVariable('SRMs', $Ms)
+    $ps = [powershell]::Create(); $ps.Runspace = $rs
+    $null = $ps.AddScript({
+        Start-Sleep -Milliseconds $SRMs
+        [System.IO.File]::WriteAllText($SRMark, 'submitted')
+    })
+    $script:ansRs = $rs
+    $script:ansPs = $ps
+    $script:ansHandle = $ps.BeginInvoke()
+    $script:ansFor = @{ Row = [PSCustomObject]@{ Id = 'FAKE-SEND' }; Pid = 0; Index = 0; Kind = 'typed'; At = (Get-Date) }
+}
+try {
+    # 1. NOTHING IN FLIGHT. It must say so rather than inventing work.
+    $script:ansPs = $null; $script:ansRs = $null; $script:ansHandle = $null
+    $r0 = Stop-SendInFlight -BudgetMs 200
+    if ($r0 -ne 'idle') { Fail "with no send in flight it reported '$r0'" }
+    else { Pass 'with nothing in flight it reports idle and touches nothing' }
+
+    # 2. IN FLIGHT, AND IT WAITS. The job is deliberately still running when the
+    #    close begins - asserted, not assumed - so a teardown that did not wait
+    #    would take it apart here.
+    Remove-Item -LiteralPath $mark -Force -ErrorAction SilentlyContinue
+    Start-FakeSend -Ms 600 -Marker $mark
+    if ($script:ansHandle.IsCompleted) {
+        Fail 'the stand-in send finished before the close began - the test proves nothing'
+    } elseif (Test-Path -LiteralPath $mark) {
+        Fail 'the marker existed before the send completed - the test proves nothing'
+    } else {
+        $r1 = Stop-SendInFlight -BudgetMs 5000
+        if ($r1 -ne 'landed') { Fail "a send that had time to finish reported '$r1'" }
+        elseif (-not (Test-Path -LiteralPath $mark)) {
+            Fail 'the close returned before the send submitted - text would be left typed and unsent'
+        } else { Pass 'a send in flight is waited for, and its submit actually happens' }
+        if ($script:ansPs -or $script:ansRs -or $script:ansHandle) {
+            Fail 'the send runspace was left behind after a clean landing'
+        } else { Pass 'and the runspace is released once it has landed' }
+    }
+
+    # 3. THE BAD DIRECTION, REACHED ON PURPOSE. A send that outlives the budget
+    #    must be REPORTED as abandoned, not silently swallowed - that is the one
+    #    case where the operator has to go and look at the session.
+    Remove-Item -LiteralPath $mark -Force -ErrorAction SilentlyContinue
+    Start-FakeSend -Ms 4000 -Marker $mark
+    $r2 = Stop-SendInFlight -BudgetMs 150
+    if ($r2 -ne 'abandoned') {
+        Fail "a send that outran the budget reported '$r2' - the half-delivered case is not being detected"
+    } elseif (Test-Path -LiteralPath $mark) {
+        Fail 'the marker appeared anyway - the stand-in is not modelling a two-step send'
+    } else {
+        Pass 'a send that outruns the budget is reported as abandoned, not swallowed'
+    }
+    if ($script:ansPs -or $script:ansRs -or $script:ansHandle) {
+        Fail 'the send runspace was left behind after an abandoned send'
+    } else { Pass 'and the runspace is released either way' }
+} finally {
+    Remove-Item -LiteralPath $mark -Force -ErrorAction SilentlyContinue
+    $script:ansPs = $null; $script:ansRs = $null; $script:ansHandle = $null; $script:ansFor = $null
+}
+
+# THE HANDLER ACTUALLY CALLS IT. The function can be perfect and unreached.
+$closedSrc = Get-SRBodyOf $winSrc 'Add_Closed'
+if (-not $closedSrc) {
+    # Add_Closed is a method call taking a scriptblock, not a function, so fall
+    # back to the raw text rather than reporting a false pass.
+    $closedSrc = $winSrc
+}
+foreach ($needed in @('Stop-SendInFlight', 'Stop-ReadJobs')) {
+    if ($winSrc -notmatch ([regex]::Escape($needed) + '\s*\}?\s*catch')) {
+        if ($winSrc -notmatch [regex]::Escape($needed)) {
+            Fail "the close handler never calls $needed"
+        } else { Pass "$needed is called on close" }
+    } else { Pass "$needed is called on close" }
+}
+# 🪤 AND THE CONFIG FLUSH STAYS FIRST. It is deliberately ahead of the timers,
+# the runspaces and the child process because each of those can throw and skip
+# whatever came after; the new cleanup went in AFTER it, not before.
+$iFlush = $winSrc.IndexOf('Save-SRConfigWrites')
+$iSend  = $winSrc.IndexOf('Stop-SendInFlight')
+if ($iFlush -lt 0 -or $iSend -lt 0) { Fail 'could not locate the close-handler ordering' }
+elseif ($iFlush -gt $iSend) { Fail 'the send wait now runs BEFORE the settings flush - a throw there loses the settings' }
+else { Pass 'the settings flush still runs first, before the send wait' }
 
 Write-Host ''
 Write-Host '--- the skill picker ---'

@@ -5248,6 +5248,86 @@ function Complete-AnswerSend {
 }
 
 # ===========================================================================
+# 🔴 CLOSING THE WINDOW MID-SEND CAN LEAVE TEXT TYPED INTO A LIVE SESSION AND
+# NEVER SUBMITTED, AND NOTHING USED TO WAIT FOR IT.
+#
+# The close handler stopped the timers, the probe, the sweep and the reader, and
+# never looked at $ansPs at all - the send runspace was simply abandoned, and its
+# thread died with the process partway through whatever it was doing.
+#
+# 🔑 WHY THAT IS NOT A LEAKED THREAD BUT A CORRECTNESS BUG. The sends are not
+# atomic and cannot be: Invoke-SRAnswerTypedOnScreen writes the text, re-reads
+# the screen to confirm the row is holding it, and only THEN sends ENTER - a
+# deliberate order, because ENTER on an empty editor row throws the whole round
+# away. Send-SRSessionInput has the same two-step shape and says so. Kill the
+# thread between the text and the ENTER and the operator's message is sitting in
+# a live session's input box, unsent, with the window that put it there gone.
+#
+# So this WAITS rather than stopping. The job is on its own runspace thread and
+# does not need the dispatcher, so blocking here cannot deadlock it.
+#
+# 🪤 AND THE BUDGET IS NOT $SR_AnswerTimeout. That is 25 s, which is the right
+# budget for a card that must eventually be given back but the wrong one for a
+# window the operator has just closed - a close that hangs for 25 s reads as a
+# crash. Measured, the whole job is ~1.4 s and the key choreography ~300 ms, so
+# five seconds covers it several times over and anything past that is a job that
+# is not coming back.
+#
+# 🔒 IT REPORTS WHICH OF THE THREE HAPPENED rather than returning a bool, because
+# 'abandoned' is not a failure to be swallowed - it is the one case where a
+# message may be half-delivered, and the log is the only place that can say so
+# after the window is gone. Its own function so the suite can drive it with a
+# send genuinely in flight; inside the close handler it could only be reached by
+# closing a real window over a real send.
+function Stop-SendInFlight {
+    param([int]$BudgetMs = 5000)
+    if (-not $script:ansPs -or -not $script:ansHandle) { return 'idle' }
+    $landed = $false
+    try { $landed = [bool]$script:ansHandle.AsyncWaitHandle.WaitOne($BudgetMs) } catch { $landed = $false }
+    if ($landed) {
+        # Collect it properly. EndInvoke also surfaces anything the job threw.
+        try { $null = $script:ansPs.EndInvoke($script:ansHandle) } catch { }
+    } else {
+        # 🪤 SAY IT PLAINLY AND DO NOT GUESS WHICH HALF LANDED. The same rule the
+        # answer timeout keeps: claiming nothing was sent would have the operator
+        # answer twice.
+        $who = ''
+        try { if ($script:ansFor) { $who = " to $($script:ansFor.Row.Id)" } } catch { }
+        try {
+            Write-SRLog ("  [warn] the window closed while a send{0} was still going out after {1} ms - it may have typed without submitting; check that session" -f $who, $BudgetMs)
+        } catch { }
+        try { $script:ansPs.Stop() } catch { }
+    }
+    try { $script:ansPs.Dispose() } catch { }
+    try { if ($script:ansRs) { $script:ansRs.Close(); $script:ansRs.Dispose() } } catch { }
+    $script:ansPs = $null; $script:ansRs = $null; $script:ansHandle = $null; $script:ansFor = $null
+    return $(if ($landed) { 'landed' } else { 'abandoned' })
+}
+
+# The two READ jobs, which are a different problem with a different answer. A
+# screen read or a transcript parse types nothing into anything, so there is
+# nothing to half-deliver and nothing to wait for - they are stopped, not
+# awaited. What they DO hold is a thread and, for the ask probe, a child
+# process, and the close handler was leaving both.
+function Stop-ReadJobs {
+    foreach ($pair in @(
+        @{ Ps = 'askPs'; Rs = 'askRs'; H = 'askHandle' }
+        @{ Ps = 'docPs'; Rs = 'docRs'; H = 'docHandle' })) {
+        $ps = $null
+        try { $ps = Get-Variable -Name $pair.Ps -Scope Script -ValueOnly -ErrorAction SilentlyContinue } catch { }
+        if (-not $ps) { continue }
+        try { $ps.Stop() } catch { }
+        try { $ps.Dispose() } catch { }
+        $rs = $null
+        try { $rs = Get-Variable -Name $pair.Rs -Scope Script -ValueOnly -ErrorAction SilentlyContinue } catch { }
+        try { if ($rs) { $rs.Close(); $rs.Dispose() } } catch { }
+        try { Set-Variable -Name $pair.Ps -Scope Script -Value $null } catch { }
+        try { Set-Variable -Name $pair.Rs -Scope Script -Value $null } catch { }
+        try { Set-Variable -Name $pair.H  -Scope Script -Value $null } catch { }
+    }
+}
+
+# ===========================================================================
 # THE QUESTION CARD FOLLOWS THE SCREEN, NOT THE FIFTEEN-SECOND PROBE.
 #
 # 🔴 REPORTED AS "the questions are also not immediately updated", AND MEASURED
@@ -10192,6 +10272,17 @@ $window.Add_Closed({
                      $script:searchTimer, $script:launchTimer, $script:castTimer, $script:askTimer)) {
         try { $t.Stop() } catch { }
     }
+    # 🔴 A SEND IN FLIGHT IS WAITED FOR, NOT TORN DOWN. Everything else in this
+    # handler releases a resource; this one is about what is happening to somebody
+    # else's console. See Stop-SendInFlight: the sends type and then submit as two
+    # steps, so a thread killed between them leaves the operator's text sitting
+    # unsent in a live session. AFTER the timers, so ansTimer cannot race the
+    # collection, and BEFORE the runspaces below, which is what used to abandon it.
+    try { $null = Stop-SendInFlight } catch { }
+    try { $script:ansTimer.Stop() } catch { }
+    # The read jobs hold a thread each and the ask probe holds a child process.
+    # Nothing to wait for - they type into nothing.
+    try { Stop-ReadJobs } catch { }
     # 🔴 STOP BEFORE DISPOSE. A runspace left open holds a thread after the
     # window is gone - but Dispose() on a PowerShell instance that is STILL
     # RUNNING is not a clean shutdown: it can block the close or leave the

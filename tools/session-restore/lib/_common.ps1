@@ -3138,6 +3138,52 @@ public static class SRCon {
 '@
 }
 
+# ===========================================================================
+# 🔴 A PID IS REUSABLE, SO EVERY SEND CONFIRMS WHAT IT IS ABOUT TO TYPE INTO -
+# AND THAT CONFIRMATION WAS COSTING A SECOND OF THE OPERATOR'S GESTURE.
+#
+# All three send paths asked WMI: Get-CimInstance Win32_Process -Filter
+# "ProcessId=n". Measured on this machine with 31 sessions live, the same
+# question three ways:
+#
+#     Get-CimInstance Win32_Process -Filter   824 - 1,367 ms
+#     Get-Process -Id                          23.8 -    30.8 ms
+#     [Diagnostics.Process]::GetProcessById     2.8 -     7.1 ms
+#
+# All three read the live process table and give the same answer. The WMI round
+# trip was ~1 s of every option click, every message sent and every Esc - about
+# 40% of a 2,540 ms send path that had no business being slow.
+#
+# 🪤 THE NAME IS SPELLED DIFFERENTLY, AND IT IS A TOTAL OUTAGE IF YOU MISS IT.
+# Win32_Process.Name is "claude.exe". Process.ProcessName is "claude", with no
+# extension. A straight port that kept `-ne 'claude.exe'` would refuse EVERY
+# send on EVERY path, with a message saying the session is not claude when it
+# is. tests\ask-spec.ps1 drives both sides of this - refuse this powershell's
+# own $PID, accept a real claude - so the trap cannot be reintroduced quietly.
+#
+# 🔑 ITS OWN FUNCTION SO THE RULE CAN BE PUT UNDER TEST, the same reason
+# Test-QuietVerdict was extracted. Inside the send paths it could only be
+# reached by actually typing into somebody's live console, which is not a thing
+# a test suite may do.
+function Test-SRClaudeProcess {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    if ($ProcessId -le 0) { return 'there is no console to type into' }
+    $p = $null
+    # Throws rather than returning null when the pid is gone, which is the
+    # common case here - a session that closed while the card was still up.
+    try { $p = [System.Diagnostics.Process]::GetProcessById($ProcessId) } catch { return 'that session has exited' }
+    if (-not $p) { return 'that session has exited' }
+    $name = ''
+    # It can exit between the lookup and the read, and asking a dead process for
+    # its name throws too.
+    try { $name = "$($p.ProcessName)" } catch { return 'that session has exited' }
+    if ($name -ne 'claude') {
+        return "pid $ProcessId is $name, not claude - refusing to type into it"
+    }
+    return ''
+}
+
 # Returns $null when the line was delivered, or a reason string when it was not.
 # A reason is always a refusal to act, never a partial send.
 function Send-SRSessionInput {
@@ -3165,10 +3211,8 @@ function Send-SRSessionInput {
 
     # A pid is reusable. Confirm THIS one is still the claude that owns the
     # session before writing anything into its console.
-    $proc = $null
-    try { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($a.Pid)" -ErrorAction Stop } catch { }
-    if (-not $proc)                      { return 'that session has exited' }
-    if ($proc.Name -ne 'claude.exe')     { return "pid $($a.Pid) is $($proc.Name), not claude.exe - refusing to type into it" }
+    $notClaude = Test-SRClaudeProcess -ProcessId ([int]$a.Pid)
+    if ($notClaude) { return $notClaude }
 
     # 🔴 THE TEXT AND THE SUBMIT ARE TWO CALLS, and that is not tidiness.
     # Send() wrote the characters and a trailing ENTER in ONE WriteConsoleInput
@@ -3231,10 +3275,8 @@ function Send-SRQuestionAnswer {
     # a command nobody typed.
     if ("$($a.Status)" -ne 'waiting') { return 'that session is not waiting for an answer any more' }
 
-    $proc = $null
-    try { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($a.Pid)" -ErrorAction Stop } catch { }
-    if (-not $proc)                  { return 'that session has exited' }
-    if ($proc.Name -ne 'claude.exe') { return "pid $($a.Pid) is $($proc.Name), not claude.exe - refusing to type into it" }
+    $notClaude = Test-SRClaudeProcess -ProcessId ([int]$a.Pid)
+    if ($notClaude) { return $notClaude }
 
     $why = Invoke-SRAnswerOnScreen -ProcessId ([int]$a.Pid) -Index $Index -Who "$($a.Name)"
     return $why
@@ -3573,10 +3615,8 @@ function Send-SRInterrupt {
     # A pid is reusable. Confirm THIS one is still a claude before writing a key
     # into its console - the same check Send-SRSessionInput makes, for the same
     # reason: the alternative is pressing Esc in whatever inherited the number.
-    $proc = $null
-    try { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop } catch { }
-    if (-not $proc)                  { return 'that session has exited' }
-    if ($proc.Name -ne 'claude.exe') { return "pid $ProcessId is $($proc.Name), not claude.exe - refusing to type into it" }
+    $notClaude = Test-SRClaudeProcess -ProcessId $ProcessId
+    if ($notClaude) { return $notClaude }
 
     $n = [SRCon]::SendKeys([uint32]$ProcessId, [uint16[]]@(0x1B))          # VK_ESCAPE
     if ($n -lt 0) { return "could not reach that session's console (win32 error $(-$n))" }
