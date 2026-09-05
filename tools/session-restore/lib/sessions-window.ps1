@@ -5333,6 +5333,24 @@ $script:DocJob = {
         # an array is the identity. The two forms are not interchangeable.
         $got = Get-SRTranscriptBlocks -JsonlPath $SRDoc.Path -MaxRecords 220 -MaxTailBytes $SRDoc.Tail
         $out.Blocks = @($got)
+        # 🔑 FOLD THE BLOCKS INTO TURNS OUT HERE TOO, not back on the dispatcher.
+        # Get-ReadTurns was 16.3 ms on the UI THREAD on every conversation
+        # opened - over the bar on its own, before a single WPF object is made -
+        # and there is nothing thread-affine about it: 113 lines over plain
+        # records, calling nothing but built-ins. The parse beside it has run off
+        # the UI thread for months; this had simply never been looked at.
+        #
+        # 🪤 THE FUNCTION IS SENT IN, NOT MOVED. It belongs to the reading pane
+        # and moving 113 lines into _common.ps1 to reach a runspace would be the
+        # tail wagging the dog - so Start-DocParse hands its source across and it
+        # is redefined here. One definition, still living where it is edited.
+        if ($SRDoc.TurnsFn) {
+            try {
+                Set-Item -Path 'function:Get-ReadTurns' -Value ([scriptblock]::Create($SRDoc.TurnsFn))
+                $turned = Get-ReadTurns $out.Blocks
+                $out.Turns = @($turned)
+            } catch { $out.Turns = $null }
+        }
     } catch { }
     $out
 }
@@ -5355,7 +5373,11 @@ function Start-DocParse { param([string]$Path)
         # gesture in the tool. See New-SRRunspace.
         $rs = Get-SRRunspace
         if (-not $rs) { throw 'no runspace' }
-        $rs.SessionStateProxy.SetVariable('SRDoc', @{ Path = $Path; Tail = $script:tailBytes })
+        $rs.SessionStateProxy.SetVariable('SRDoc', @{
+            Path = $Path; Tail = $script:tailBytes
+            # See the note in DocJob: the fold-into-turns pass goes with it.
+            TurnsFn = ${function:Get-ReadTurns}.ToString()
+        })
         $ps = [powershell]::Create()
         $ps.Runspace = $rs
         $null = $ps.AddScript($script:DocJob)
@@ -5388,7 +5410,7 @@ function Complete-DocParse {
     if (-not $it -or $it.Kind -ne 'session') { return $false }
     $now = ('{0}|{1}' -f "$($it.Row.S.jsonl)".ToLower(), $script:tailBytes)
     if ($now -ne $script:docFor) { return $false }
-    Set-ReadDocument -Blocks $res.Blocks -Truncated $script:docTrunc
+    Set-ReadDocument -Blocks $res.Blocks -Truncated $script:docTrunc -PreTurns $res.Turns
     return $true
 }
 
@@ -5466,7 +5488,11 @@ function Add-ReadDocumentTail { param($NewTurns)
     $script:docTurns = $new
 }
 
-function Set-ReadDocument { param($Blocks, [bool]$Truncated = $false)
+# 🪤 $PreTurns, NOT $Turns. PowerShell is case-insensitive, and this function's
+# working local is $turns - so a parameter called $Turns would BE that local,
+# and the assignment below would silently overwrite the thing it was reading.
+# This codebase has been bitten by that shape before; the names are kept apart.
+function Set-ReadDocument { param($Blocks, [bool]$Truncated = $false, $PreTurns = $null)
     # 🔴 NEVER REPLACE A CONVERSATION WITH AN EMPTY ONE. Reported as "the session
     # loaded up, I could see the conversation, however I then entered something
     # and the content of the conversation was gone."
@@ -5488,7 +5514,10 @@ function Set-ReadDocument { param($Blocks, [bool]$Truncated = $false)
         return
     }
     $key = ('{0}|{1}|{2}' -f "$($script:docPath)".ToLower(), $script:tailBytes, $script:toolView)
-    $turns = @(Get-ReadTurns $Blocks)
+    # 🔑 THE PARSE RUNSPACE ALREADY FOLDED THESE. Recomputing costs 16.3 ms on
+    # the dispatcher for an identical answer; see the note in DocJob. The
+    # fallback is the inline path, which is what -Wait and every test use.
+    $turns = $(if ($null -ne $PreTurns) { @($PreTurns) } else { @(Get-ReadTurns $Blocks) })
     if ((-not $Truncated) -and (Test-CanAppend -NewTurns $turns -Key $key)) {
         $stickA = Test-AtBottom
         if ($script:docToBottom) { $stickA = $true; $script:docToBottom = $false }
@@ -9301,11 +9330,21 @@ function Start-LiveProbe {
         $selRow = Get-SelectedRow
         if ($selRow -and $selRow.A -and $selRow.A.Pid) { $selPid = [int]$selRow.A.Pid; $selId = "$($selRow.Id)" }
 
-        $rs = [runspacefactory]::CreateRunspace()
-        $rs.ApartmentState = 'MTA'
-        $rs.ThreadOptions  = 'ReuseThread'
-        $rs.Open()
-        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        # 🔑 THE WARM ONE HERE TOO, and this is the case that showed why it
+        # matters beyond the average. The suite asserts this function returns
+        # promptly - "starting the live probe blocked for 893 ms - it is not in
+        # the background" - and that assertion goes off at random, because the
+        # only slow thing in here IS runspace.Open() and it occasionally takes
+        # most of a second under load. A 17 ms median with a 900 ms tail, on the
+        # dispatcher, every fifteen seconds.
+        #
+        # 🪤 IT COMPETES WITH THE GESTURES FOR THE SPARE, and that is acceptable
+        # rather than free: taking it here means the next click may pay full
+        # price, which is exactly what every click paid before this existed. The
+        # refill is queued immediately and runs at idle, so the window between
+        # them is the one moment nothing is being asked of the dispatcher.
+        $rs = Get-SRRunspace
+        if (-not $rs) { throw 'no runspace' }
         $rs.SessionStateProxy.SetVariable('SRData', @{ SelPid = $selPid; SelId = $selId })
         $ps = [powershell]::Create()
         $ps.Runspace = $rs

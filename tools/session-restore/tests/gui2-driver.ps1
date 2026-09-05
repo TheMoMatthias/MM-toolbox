@@ -2426,6 +2426,66 @@ try {
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the turns folded off-thread are the turns folded inline ---'
+# ===========================================================================
+# 🔴 Get-ReadTurns RAN ON THE UI THREAD AT 16.3 ms ON EVERY CONVERSATION OPENED
+# - over the bar on its own, before a single WPF object is made, while the parse
+# beside it had been off-thread for months. It is 113 lines over plain records
+# calling nothing but built-ins, so there was never a reason for it to be there.
+#
+# 🪤 THE FUNCTION IS SENT INTO THE RUNSPACE AS SOURCE, not moved into
+# _common.ps1 - it belongs to the reading pane. That makes the round trip the
+# risk: ${function:X}.ToString() gives the BODY, and if anything is lost
+# recreating it the pane would render one thing off-thread and another inline,
+# which is precisely the class of bug that stays invisible until someone reads
+# a transcript carefully. So the two are compared on real blocks.
+# 🪤 BLOCKS BUILT HERE, NOT A TRANSCRIPT FOUND SOMEWHERE. Two earlier versions
+# of this test looked for input and both produced a comparison that proved
+# nothing: the operator's live conversations gave one folding into a SINGLE turn
+# (on which "same count, same kinds" holds for almost any implementation,
+# including a broken one), and the committed .jsonl fixtures are message and
+# queue captures rather than conversation transcripts, so they fold into none.
+#
+# A block is a plain record - Kind, Head, Body, Meta, When - so the input can
+# simply be written down. That makes the test deterministic, independent of what
+# the operator was doing, and readable: the turns it should fold into are
+# visible right here.
+function New-TurnBlock { param([string]$Kind, [string]$Head = '', [string]$Body = '', [string]$Meta = '')
+    return [PSCustomObject]@{ Kind = $Kind; Head = $Head; Body = $Body; Meta = $Meta; When = (Get-Date) }
+}
+$turnBlocks = @(
+    (New-TurnBlock -Kind 'you'  -Body 'first thing the operator asked')
+    (New-TurnBlock -Kind 'said' -Body "an answer with two lines`nand a second one")
+    (New-TurnBlock -Kind 'run'  -Head 'Bash' -Meta 'ls -la' -Body 'a b c')
+    (New-TurnBlock -Kind 'run'  -Head 'Read' -Meta 'a/file.ps1' -Body 'contents')
+    (New-TurnBlock -Kind 'said' -Body 'a second answer, after the tools')
+    (New-TurnBlock -Kind 'you'  -Body 'a follow-up question')
+    (New-TurnBlock -Kind 'said' -Body 'the last thing it said')
+)
+if (@(Get-ReadTurns $turnBlocks).Count -lt 3) {
+    Fail ('the hand-built blocks fold into {0} turn(s) - the round-trip comparison cannot prove anything' -f @(Get-ReadTurns $turnBlocks).Count)
+}
+else {
+    $inline = @(Get-ReadTurns $turnBlocks)
+    $viaSrc = $null
+    try {
+        $sbTurns = [scriptblock]::Create(${function:Get-ReadTurns}.ToString())
+        $viaSrc = @(& $sbTurns $turnBlocks)
+    } catch { $viaSrc = $null }
+    if ($null -eq $viaSrc) { Fail 'Get-ReadTurns could not be recreated from its own source - the off-thread fold would silently do nothing' }
+    elseif ($viaSrc.Count -ne $inline.Count) {
+        Fail ("recreated Get-ReadTurns folded {0} turns where the original folded {1}" -f $viaSrc.Count, $inline.Count)
+    } else {
+        $sameKinds = $true
+        for ($ti = 0; $ti -lt $inline.Count; $ti++) {
+            if ("$($viaSrc[$ti].Kind)" -ne "$($inline[$ti].Kind)") { $sameKinds = $false; break }
+        }
+        if (-not $sameKinds) { Fail 'recreated Get-ReadTurns produced different turn kinds - the pane would differ off-thread' }
+        else { Pass ("the fold survives the round trip into a runspace: {0} turns, same kinds" -f $inline.Count) }
+    }
+}
+
+Write-Host ''
 Write-Host '--- the strip selects a conversation without rebuilding the list ---'
 # ===========================================================================
 # 🔴 IT REBUILT EVERY ROW TO CHANGE WHICH ONE WAS HIGHLIGHTED. The handler set

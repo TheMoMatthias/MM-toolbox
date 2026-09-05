@@ -1,6 +1,6 @@
 ﻿{
-    "recordedAt":  "2026-09-05T11:35:02",
-    "spin":  10.263,
+    "recordedAt":  "2026-09-05T11:53:45",
+    "spin":  9.128,
     "note":  "ops values are ms-per-spin-ms; expected = value * spinNow. See the gate in perf-driver.ps1.",
     "ops":  {
                 "a growth tick, APPENDING the tail (now)":  1.358376,
@@ -33,7 +33,7 @@
                 "Get-SelectedRow":  0.016625,
                 "Get-SRAgentStatus -Refresh (spawns claude)":  40.255371,
                 "Get-SRCredStamp (what Sign in costs before the terminal opens)":  0.126864,
-                "Get-SRLastSaid x23 (what the probe does)":  0.953898,
+                "Get-SRLastSaid x24 (what the probe does)":  0.972782,
                 "Get-SRRegistry (read from disk)":  3.100129,
                 "Get-TickedPlan":  1.21707,
                 "Get-Title for every conversation":  1.884456,
