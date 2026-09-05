@@ -4038,13 +4038,43 @@ function Show-AskWhy { param($R, [string]$Why)
     $ui.AskBox.Visibility = $V_Show
 }
 
+# ===========================================================================
+# 🔴 A NUMBERED LIST IS NOT A MENU, AND THE WINDOW SPENT A DAY INSISTING IT WAS.
+#
+# Reported: the card demanded an answer to a question neither the terminal nor
+# the phone was showing. The session had written two decisions as ORDINARY PROSE
+# in a numbered list - it wrote them that way precisely BECAUSE a rule forbade it
+# using the selectable prompt - and Invoke-SRParseScreenQuestion turned the prose
+# straight back into a prompt. Its defences are "starts at 1", "consecutive" and
+# "at least two", and a 1./2. list clears all three.
+#
+# 🔑 THE THING THAT TELLS THEM APART IS THE HIGHLIGHT. A live TUI menu always has
+# its cursor somewhere; prose never does. The parser already knows this and says
+# so in its own contract - "-1 when no cursor could be seen. A caller that cannot
+# see the cursor must not send arrows on a guess" - and every caller on the
+# SENDING side honours it. The drawing side never asked.
+#
+# 🪤 SCREEN-DERIVED ONLY. A question built from the TRANSCRIPT by
+# Get-SRPendingQuestion carries no cursor at all, because a transcript has no
+# highlight to read; gating Show-Ask itself would blank the card for every
+# question the pane recovers that way. So this guards the three places that draw
+# from a SCREEN, and nothing else.
+function Test-ScreenMenu { param($Q)
+    if (-not $Q -or -not @($Q.Options).Count) { return $false }
+    $at = -1
+    try {
+        if ($Q.PSObject.Properties['CursorAt'] -and $null -ne $Q.CursorAt) { $at = [int]$Q.CursorAt }
+    } catch { $at = -1 }
+    return ($at -ge 0)
+}
+
 function Update-Ask { param($R)
     $why = Get-AskBlocker $R
     if ($why) { Show-AskWhy -R $R -Why $why; return }
     $q = $null
     $err = ''
     try { $q = Get-SRScreenQuestion -ProcessId ([int]$R.A.Pid) } catch { $err = "$($_.Exception.Message)" }
-    if ($q) { Show-Ask $q; return }
+    if (Test-ScreenMenu $q) { Show-Ask $q; return }
     # 🪤 READING THE SCREEN IS THE PART THAT BREAKS ON A NEW MACHINE. The reader
     # is a small C# helper compiled into .state\ on demand, and .state\ is
     # gitignored - so a fresh clone builds it on first use and a machine without
@@ -4709,7 +4739,7 @@ function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question,
         $sel = $null
         try { $sel = Get-SelectedRow } catch { }
         $stillOn = ($sel -and "$($sel.Id)" -eq "$($Row.Id)")
-        if ($seen) {
+        if (Test-ScreenMenu $seen) {
             if ($stillOn) { Show-Ask $seen }
         } else {
             if ($stillOn) {
@@ -4943,7 +4973,10 @@ function Invoke-AskPoll {
     try { $q = Invoke-SRParseScreenQuestion -Text $txt } catch { }
     if ($q) { $q | Add-Member -NotePropertyName Screen -NotePropertyValue $txt -Force }
 
-    if (-not $q -or -not @($q.Options).Count) {
+    # Cursorless parses fall through to the CLEAR path rather than a separate
+    # branch, so a card already showing prose is taken down by the same two-miss
+    # rule that takes down a menu that has gone. See Test-ScreenMenu above.
+    if (-not (Test-ScreenMenu $q)) {
         $script:askMiss++
         if ($script:askMiss -ge 2 -and $script:askSig) {
             $script:askSig = ''

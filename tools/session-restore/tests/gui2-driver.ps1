@@ -4561,6 +4561,93 @@ else {
     else { Pass 'closing the window writes whatever is still queued' }
 }
 
+# ===========================================================================
+Write-Host ''
+Write-Host '--- a numbered list in prose is not a menu ---'
+# ===========================================================================
+# 🔴 REPORTED LIVE: the card demanded an answer to a question neither the
+# terminal nor the phone was showing. The session had written two decisions as
+# ORDINARY PROSE in a numbered list - it wrote them that way precisely because a
+# rule forbade it using the selectable prompt - and the screen parser turned the
+# prose straight back into a prompt. Its defences are "starts at 1",
+# "consecutive" and "at least two"; a 1./2. list clears all three.
+$CURg = [string][char]0x276F
+
+$proseScreen = @(
+    ''
+    'Two decisions are yours. R-269 forbids me putting them through the'
+    'selectable prompt, so here they are in prose.'
+    ''
+    '  1. What does "no planned successor" mean in R-423 section 1?'
+    '  2. May the R-h file-by-file mass go wholesale?'
+    ''
+) -join "`n"
+
+$proseQ = Invoke-SRParseScreenQuestion -Text $proseScreen
+# 🪤 THE FIXTURE HAS TO REPRODUCE THE BUG OR THE TEST IS VACUOUS. If the parser
+# stopped seeing this as a question, the assertion below would pass for the
+# wrong reason and would keep passing if the gate were deleted - so a fixture
+# that no longer parses is itself a failure, not a relief.
+if (-not $proseQ -or @($proseQ.Options).Count -lt 2) {
+    Fail 'the prose fixture no longer parses as a question - this test can no longer prove anything'
+} else {
+    Pass ("the parser still reads plain prose as a {0}-option question - which is why the gate exists" -f @($proseQ.Options).Count)
+    $pAt = -1
+    try { if ($proseQ.PSObject.Properties['CursorAt']) { $pAt = [int]$proseQ.CursorAt } } catch { }
+    if ($pAt -ge 0) { Fail ("the prose fixture reports a cursor at {0} - it cannot stand in for a cursorless parse" -f $pAt) }
+    elseif (Test-ScreenMenu $proseQ) { Fail 'prose with no cursor passed Test-ScreenMenu - the card would be drawn from it' }
+    else { Pass 'prose with no highlight is refused: no cursor, no menu' }
+}
+
+# 🔴 AND THE INVERSE, or the gate could be `return $false` and still pass. A real
+# menu has its highlight somewhere, and must still draw.
+$menuScreen = @(
+    ''
+    'R-136 rollback: what should happen to the four migrations?'
+    ''
+    "$CURg 1. Record the correction, leave the rollback standing"
+    '  2. Re-apply all four now'
+    '  3. Type something'
+) -join "`n"
+$menuQ = Invoke-SRParseScreenQuestion -Text $menuScreen
+if (-not $menuQ) { Fail 'a real menu was not parsed at all' }
+elseif (-not (Test-ScreenMenu $menuQ)) {
+    Fail ("a real menu with its cursor at {0} was refused - the gate rejects everything" -f $menuQ.CursorAt)
+} else { Pass ("a real menu is still accepted: cursor at {0}" -f $menuQ.CursorAt) }
+
+if (Test-ScreenMenu $null) { Fail 'Test-ScreenMenu accepted $null' }
+else { Pass 'nothing on screen is not a menu either' }
+
+# 🪤 SCREEN-DERIVED ONLY. A question recovered from the TRANSCRIPT carries no
+# cursor - a transcript has no highlight to read - so the gate must not sit on
+# Show-Ask itself or every one of those would be blanked. This is the assertion
+# that would have caught putting it in the wrong place.
+$transQ = [PSCustomObject]@{
+    Header   = 'from the transcript'
+    Question = 'Which way should the migration go?'
+    Options  = @('Forward', 'Back')
+    Details  = @('', '')
+    Footer   = ''
+}
+Show-Ask $transQ
+if ("$($ui.AskBox.Visibility)" -ne 'Visible') {
+    Fail 'a transcript-derived question no longer draws - the cursor gate was put on Show-Ask instead of the screen paths'
+} else { Pass 'a transcript-derived question still draws, cursor or no cursor' }
+Show-Ask $null
+
+# And the three screen-derived draw sites actually go through it.
+$gateSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\sessions-window.ps1'))
+foreach ($fn in @('Update-Ask', 'Invoke-AskPoll')) {
+    $b = Get-SRBodyOf $gateSrc "function $fn"
+    if (-not $b) { Fail "$fn is gone" }
+    elseif ($b -notmatch 'Test-ScreenMenu') { Fail "$fn draws the card from a screen parse without asking whether it is a menu" }
+    else { Pass "$fn asks whether the screen parse is really a menu" }
+}
+$landed = Get-SRBodyOf $gateSrc 'function Complete-AnswerLanded'
+if (-not $landed) { Fail 'Complete-AnswerLanded is gone' }
+elseif ($landed -notmatch 'Test-ScreenMenu') { Fail 'the answer landing redraws the card from a screen parse without the menu check' }
+else { Pass 'the answer landing checks it too' }
+
 Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
 Write-Host 'the shipped window holds' -ForegroundColor Green
