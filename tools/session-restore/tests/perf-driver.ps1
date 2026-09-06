@@ -624,6 +624,18 @@ else {
             Lay
         } 'SLOW'
     } else { Note ('only {0} conversation(s) - cannot profile stepping' -f $sessions.Count) }
+    # 🔴 PUT THE SELECTION BACK. Every bench below this reads SelectedItem, and
+    # the stepping benches leave it on row 8 - so introducing them silently
+    # re-pointed Update-Document, Move-ToBottom and `load earlier` at an
+    # arbitrary conversation instead of the pinned biggest one, which is the
+    # exact defect the note above about $sessions[1] exists to prevent. A bench
+    # that changes the subject for the benches after it is a bench that broke
+    # the suite, not one that added to it.
+    if ($sessions.Count -ge 2) {
+        $script:selId = $null
+        $ui.SessionList.SelectedItem = $sessions[1]
+        Show-Selected
+    }
 
     $jp = "$($sessions[1].Row.S.jsonl)"
     $null = Bench 'parse the transcript tail' {

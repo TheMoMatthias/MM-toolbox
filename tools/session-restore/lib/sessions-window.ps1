@@ -4933,9 +4933,6 @@ function Show-Ask { param($q)
     $ui.AskTabs.ItemsSource = $null
     $ui.AskTabs.Visibility = $V_Hide
     $ui.AskFreeBox.Visibility = $V_Hide
-    # The question is gone, so nothing typed against it is owed protection any
-    # more - and the next one has to be free to prefill itself.
-    $script:askFreeDirty = $false
     $ui.AskReview.ItemsSource = $null
     $ui.AskReview.Visibility = $V_Hide
     # 🔴 CLEARED ON EVERY PATH. It used to be set only after the early return, so
@@ -5152,6 +5149,30 @@ function Show-Ask { param($q)
         # the box dirty on any change would mark it dirty the first time the
         # panel drew - and the prefill would then never happen again for the
         # life of the window. $askFreeWriting is what tells the two apart.
+        # 🔴 THE RESET BELONGS TO A CHANGE OF QUESTION, NOT TO A REDRAW - AND
+        # THE FIRST VERSION OF THIS GUARD GOT THAT WRONG IN A WAY THAT MADE IT
+        # INERT. It cleared the flag where AskFreeBox is hidden, on the reading
+        # that a hidden panel means the question is gone. But Show-Ask hides
+        # that box in its OPENING LINES, on every single call, including the
+        # calls that re-show it moments later - so the reset ran at body line 8
+        # and the guard that reads it at body line 225, and the flag was always
+        # false by the time it mattered. Caught by the control audit, which
+        # watched the flag directly: after typing True, after ONE redraw of the
+        # SAME question False, box empty. The hidden state the reset keyed on is
+        # never a state the operator sees; it lasts microseconds inside a redraw.
+        #
+        # 🪤 AND THE KEY DELIBERATELY OMITS CursorAt AND Ticked. Get-AskSignature
+        # includes both because a round being WORKED changes only those and a
+        # card that ignored them would freeze on its first frame. Here the
+        # question is exactly the opposite thing: moving the terminal cursor one
+        # row is the same question, and treating it as a new one would empty the
+        # box on a keystroke in another window - which is the reported defect
+        # wearing a different cause.
+        $qKey = "$($q.Question)|$($q.Header)|" + ((@($q.Options) | ForEach-Object { "$_" }) -join ([string][char]1))
+        if ($qKey -ne $script:askFreeKey) {
+            $script:askFreeKey = $qKey
+            $script:askFreeDirty = $false
+        }
         if (-not $script:askFreeDirty) {
             $script:askFreeWriting = $true
             try { $ui.AskFree.Text = "$($q.FreeText)" } finally { $script:askFreeWriting = $false }
@@ -8631,6 +8652,9 @@ $ui.AskFreeSend.Add_Click({ Invoke-AskTyped })
 # panel reads this before it prefills the box.
 $script:askFreeDirty = $false
 $script:askFreeWriting = $false
+# Which question the box is currently answering. Typing is protected until this
+# changes - see the note at the guard for why it is not Get-AskSignature.
+$script:askFreeKey = $null
 $ui.AskFree.Add_TextChanged({ if (-not $script:askFreeWriting) { $script:askFreeDirty = $true } })
 
 $ui.AskFree.Add_PreviewKeyDown({
