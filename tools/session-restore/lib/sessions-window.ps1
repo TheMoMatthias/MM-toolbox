@@ -224,6 +224,35 @@ foreach ($bn in @('SheetB1', 'SheetB2', 'SheetB3')) {
     })
 }
 
+# 🔴 IS THE KEYBOARD IN A PLACE WHERE LETTERS ARE LETTERS?
+#
+# A FUNCTION, NOT AN EXPRESSION, BECAUSE THE SUITE COULD NOT SEE THE OLD ONE. The
+# window's bare-letter shortcuts stood down for two named boxes while the window
+# had nine, and `hello` typed into the broadcast box arrived as `heo` with each
+# swallowed `l` doubling the transcript tail budget. Nothing caught it, because
+# the decision lived inline inside a PreviewKeyDown handler that a headless
+# suite cannot raise an event into - there is no PresentationSource on a window
+# that has never been shown, so a KeyEventArgs cannot even be constructed.
+#
+# 🔑 SO THE DECISION MOVES SOMEWHERE CALLABLE. The handler still owns WHEN to
+# ask; this owns WHAT the answer is, and gui2 asserts it against real controls.
+# That is the difference between a defect the suite can catch and one that has
+# to be reported by a person typing into a box.
+#
+# 🪤 ASK THE ELEMENT WHAT IT IS, NEVER LIST THE BOXES. A list was correct when
+# there were two text boxes and has been silently wrong for every one added
+# since. TextBoxBase covers TextBox and RichTextBox; PasswordBox is not a
+# TextBoxBase and has to be named. An editable ComboBox hosts a TextBox as its
+# focused element, so it is covered by the first test rather than needing a
+# third.
+function Test-SRTypingTarget { param($Element)
+    if ($null -eq $Element) { return $false }
+    if ($Element -is [System.Windows.Controls.Primitives.TextBoxBase]) { return $true }
+    if ($Element -is [System.Windows.Controls.PasswordBox]) { return $true }
+    return $false
+}
+
+
 # Esc answers with whatever the caller nominated as the safe way out; Enter
 # takes the primary. Preview, so the sheet gets the key before the list below
 # it does - the transcript and the session list both bind arrows and Enter.
@@ -2166,19 +2195,7 @@ function Build-Sessions {
             # 🪤 NO DATE ANYWHERE MEANS "COULD NOT TELL" AND STILL DRAWS. The
             # test only ever HIDES something, so it must fire on positive
             # evidence of age and never on the absence of evidence.
-            $qFresh = $true
-            if ($qRec) {
-                $qDated = 0
-                $qYoung = 0
-                foreach ($qi in @($qRec.Items)) {
-                    if (-not $qi.At) { continue }
-                    $qAt = $null
-                    try { $qAt = [datetime]$qi.At } catch { continue }
-                    $qDated++
-                    if (($nowDate - $qAt).TotalHours -le $SR_QueueStaleHours) { $qYoung++ }
-                }
-                if ($qDated -gt 0) { $qFresh = ($qYoung -gt 0) }
-            }
+            $qFresh = Test-SRQueueFresh -Rec $qRec -Now $nowDate -MaxHours $SR_QueueStaleHours
             if ($qRec -and [int]$qRec.Count -gt 0 -and $qFresh) {
                 $qVis = $V_Show
                 if ([int]$qRec.Mine -gt 0) {
@@ -2453,6 +2470,44 @@ $Pal = @{
 # measured. Green below 200k, amber past it, red past 600k.
 $SR_CtxWarnTokens = 200000
 $SR_CtxBadTokens  = 600000
+
+# 🔴 IS ANYTHING IN THIS QUEUE STILL WORTH A MARK?
+#
+# 🪤 THE AGE THAT MATTERS IS THE MESSAGE'S, NOT THE FILE'S - and the first
+# version of this test measured the file. It read the transcript's own
+# LastWriteTime, so it could only ever fire on a session that had STOPPED
+# writing, which is precisely never for the live ones that show a phantom mark.
+# Reported with a screenshot an hour after that fix shipped: "1 OF YOURS WAITING
+# - OLDEST HAS WAITED 1H", on a message long since read.
+#
+# 🪤 ANY ITEM STILL YOUNG KEEPS THE WHOLE MARK, and the counts are never
+# re-derived here. Items is what the panel dates and there is no guarantee it
+# holds every item the count covers, so it answers "is anything here still
+# current?" and nothing else. That is what keeps a conservative gate
+# conservative.
+#
+# 🪤 NO DATE ANYWHERE MEANS "COULD NOT TELL" AND STILL DRAWS. This test only
+# ever HIDES something, so it must fire on positive evidence of age and never on
+# the absence of evidence.
+#
+# A function rather than eleven lines inside Build-Sessions, so the suite can
+# put a stale record and an undated one in front of it and see what it says.
+function Test-SRQueueFresh {
+    param($Rec, [datetime]$Now, [double]$MaxHours)
+    if (-not $Rec) { return $true }
+    $dated = 0
+    $young = 0
+    foreach ($qi in @($Rec.Items)) {
+        if (-not $qi.At) { continue }
+        $at = $null
+        try { $at = [datetime]$qi.At } catch { continue }
+        $dated++
+        if (($Now - $at).TotalHours -le $MaxHours) { $young++ }
+    }
+    if ($dated -le 0) { return $true }
+    return ($young -gt 0)
+}
+
 
 function Get-CtxBrush { param([int]$Tokens)
     if ($Tokens -gt $SR_CtxBadTokens)  { return $Pal.Bad }
@@ -10467,8 +10522,7 @@ $window.Add_PreviewKeyDown({
     # The two original tests stay as an OR because IsKeyboardFocusWithin also
     # catches focus sitting on a template part rather than on the box itself.
     $fe = [System.Windows.Input.Keyboard]::FocusedElement
-    $typing = ($fe -is [System.Windows.Controls.Primitives.TextBoxBase]) -or
-              ($fe -is [System.Windows.Controls.PasswordBox]) -or
+    $typing = (Test-SRTypingTarget $fe) -or
               $ui.Search.IsKeyboardFocusWithin -or $ui.SendBox.IsKeyboardFocusWithin
     if ($typing) {
         # The one shortcut a text field does want: Escape empties a search box
