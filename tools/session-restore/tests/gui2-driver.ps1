@@ -4185,15 +4185,42 @@ $e2eRows = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and "
 #
 # 🪤 AN INTERMITTENT SUITE IS WORSE THAN A MISSING ONE. It teaches whoever
 # inherits it to re-run until green, and that is how a real regression gets
-# waved through. So the pick is the LARGEST TRANSCRIPT ON DISK - a property of
-# the data, stable between runs minutes apart, and immune to any future change
-# in how the sessions column sorts.
-function Get-E2EBiggest { param($Rows)
-    $best = $null; $bestLen = -1
+# waved through. So the pick has to be a property of the DATA, stable between
+# runs minutes apart and immune to any future change in how the column sorts.
+#
+# 🔴 BUT IT MUST NOT BE FILE SIZE, AND THAT IS WHAT IT WAS. Size stopped
+# tracking readable content once this machine began writing sidecar records per
+# turn - attachment, bridge-session, artifact-autoreact-ledger, cost-state and
+# a dozen more. Measured on the largest transcript on disk (198 MB): its last
+# 96 KB holds 29 whole records, ALL of which parse, of which exactly TWO are
+# conversation - one user turn of 33 characters and one assistant turn of 22.
+# A single agent_listing_delta attachment takes 43% of the reading budget.
+#
+# So ranking by size picked the conversation with the LEAST conversation in it,
+# and every assertion downstream ran against a 7-block document that renders
+# 372 characters. That is why the alignment sweep could never discriminate: it
+# was not a weak assertion, it was a fixture with nothing in it to align.
+#
+# 🔑 RANK BY WHAT THE TEST ACTUALLY NEEDS - body text in the tail the pane will
+# read. Same budget, same parser, so the number is the document that is about
+# to be built rather than a proxy for it. On this machine it moves the pick
+# from 2 conversation records to 21. Ties break on the path so the answer stays
+# order-independent, which the assertion below still proves by reversing.
+function Get-E2EMostReadable { param($Rows)
+    $best = $null; $bestScore = -1; $bestPath = ''
     foreach ($e in @($Rows)) {
-        $len = 0
-        try { $len = (Get-Item -LiteralPath "$($e.Row.S.jsonl)" -ErrorAction Stop).Length } catch { $len = 0 }
-        if ($len -gt $bestLen) { $bestLen = $len; $best = $e }
+        $jp = "$($e.Row.S.jsonl)"
+        $score = 0
+        try {
+            # 🪤 ASSIGN, THEN WRAP. Get-SRTranscriptBlocks ends on a comma guard,
+            # so @(Get-SRTranscriptBlocks ...) is ONE element holding every block
+            # and every score would come out identical.
+            $got = Get-SRTranscriptBlocks -JsonlPath $jp -MaxRecords 220 -MaxTailBytes $script:TailBase
+            foreach ($b in @($got)) { $score += "$($b.Body)".Length }
+        } catch { $score = 0 }
+        if ($score -gt $bestScore -or ($score -eq $bestScore -and $jp -lt $bestPath)) {
+            $bestScore = $score; $best = $e; $bestPath = $jp
+        }
     }
     return $best
 }
@@ -4231,20 +4258,28 @@ else {
     # blocks at all, some of those blocks carry the conversation's own words,
     # and those words are not just the header the pane draws for itself.
     # ===================================================================
-    $docRow = Get-E2EBiggest $e2eRows
+    $docRow = Get-E2EMostReadable $e2eRows
     # 🔑 AND THE CHOICE MUST NOT DEPEND ON THE ORDER, or a later change to how
     # the sessions column sorts reintroduces the flake while this test carries
     # on passing on a lucky machine. Reversing the list has to pick the same
     # conversation - that is the property, and asserting the document is merely
     # non-empty would not have caught any of this.
     $docRev = @($e2eRows); [array]::Reverse($docRev)
-    $docRow2 = Get-E2EBiggest $docRev
+    $docRow2 = Get-E2EMostReadable $docRev
     if (-not $docRow) { Fail 'no conversation with a readable transcript to render' }
     elseif (-not [object]::ReferenceEquals($docRow, $docRow2)) {
         Fail 'the conversation under test depends on the list order - this block will flake again the next time the sort changes'
     } else {
-        Pass ("the conversation under test is picked by transcript size, not position ('{0}', {1:N0} KB)" -f `
-            $docRow.Name, ((Get-Item -LiteralPath "$($docRow.Row.S.jsonl)").Length / 1KB))
+        # Reports the quantity it now ranks on, not the one it used to. A label
+        # that still says "size" after the rule changed is how the next reader
+        # concludes the fixture is fine because the number looks plausible.
+        $pickChars = 0
+        try {
+            $pg = Get-SRTranscriptBlocks -JsonlPath "$($docRow.Row.S.jsonl)" -MaxRecords 220 -MaxTailBytes $script:TailBase
+            foreach ($pb in @($pg)) { $pickChars += "$($pb.Body)".Length }
+        } catch { }
+        Pass ("the conversation under test is picked by readable content, not position or size ('{0}', {1:N0} chars in tail, file {2:N0} KB)" -f `
+            $docRow.Name, $pickChars, ((Get-Item -LiteralPath "$($docRow.Row.S.jsonl)").Length / 1KB))
     }
     $script:selId = $null
     $ui.PaneDoc.Document = $null
@@ -4372,6 +4407,17 @@ else {
             foreach ($blk in $doc.Blocks) {
                 $bx = $null
                 $sample = ''
+                # 🔑 WHICH BRANCH MEASURED IT, CARRIED TO THE FAILURE. The two
+                # halves of this loop read a position in genuinely different
+                # ways - GetCharacterRect off a text pointer for a paragraph,
+                # TransformToAncestor off a visual for a rail block - so an
+                # off-column report that does not say which one produced it
+                # sends the next reader to check prose that was never involved.
+                # Verified 2026-09-06: every PARAGRAPH in the fixture is on the
+                # column (83 at 66px, 14 list items at 84px, 9 whose negative
+                # TextIndent is the gutter mark's space and whose words are also
+                # at 66px), so an offender can only come from the rail branch.
+                $via = 'prose'
                 if ($blk -is [System.Windows.Documents.Paragraph]) {
                     foreach ($inl in $blk.Inlines) {
                         if ($inl -is [System.Windows.Documents.Run] -and "$($inl.Text)".Trim().Length -gt 3) {
@@ -4383,6 +4429,7 @@ else {
                         }
                     }
                 } elseif ($blk -is [System.Windows.Documents.BlockUIContainer]) {
+                    $via = 'rail'
                     $g = $blk.Child
                     if ($g -and $g.Children.Count -ge 1) {
                         $content = $g.Children[$g.Children.Count - 1]
@@ -4405,7 +4452,7 @@ else {
                 if ($null -eq $bx) { continue }
                 $b = [int][Math]::Round($bx)
                 if ($cols.ContainsKey($b)) { $cols[$b] = $cols[$b] + 1 } else { $cols[$b] = 1 }
-                $null = $seen.Add([PSCustomObject]@{ X = $bx; S = "$sample".Trim() })
+                $null = $seen.Add([PSCustomObject]@{ X = $bx; S = "$sample".Trim(); Via = $via })
             }
             if ($seen.Count -lt 4) {
                 Note ("only {0} measurable block(s) in this tail - the column sweep needs more" -f $seen.Count)
@@ -4429,7 +4476,7 @@ else {
                         if ($shown -ge 6) { break }
                         $txt = $s.S
                         if ($txt.Length -gt 46) { $txt = $txt.Substring(0, 46) + '...' }
-                        Note ("    {0,6:N1}px  {1}" -f $s.X, $txt)
+                        Note ("    {0,6:N1}px  [{1}]  {2}" -f $s.X, $s.Via, $txt)
                         $shown++
                     }
                 } else {
@@ -4574,7 +4621,7 @@ else {
     # redraws. This is the number behind "I want to see what is happening".
     # Same reasoning as the document row above: a conversation chosen by
     # position is a different one every run.
-    $liveRow = Get-E2EBiggest $e2eRows
+    $liveRow = Get-E2EMostReadable $e2eRows
     $liveFile = "$($liveRow.Row.S.jsonl)"
     $ui.SessionList.SelectedItem = $liveRow
     $script:selId = $null
