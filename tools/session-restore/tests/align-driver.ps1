@@ -304,7 +304,13 @@ if ($env:SR_AL_STEPS) { $modes = @("$env:SR_AL_STEPS" -split ',' | ForEach-Objec
 $lastDoc = $null; $lastName = ''
 foreach ($js in $picks) {
     if (-not (Test-Path -LiteralPath $js)) { AL-Say ("  [skip] {0}" -f $js); continue }
-    $kb = (Get-Item -LiteralPath $js).Length / 1KB
+    # 🪤 MB, NOT KB, AND NOT WITH GROUP SEPARATORS. This printed "{0:N0} KB",
+    # which on a de-DE machine renders 207,647,199 bytes as "202.780 KB" - a
+    # dot that reads as a decimal point in English and is a THOUSANDS separator
+    # here. That number was carried into another session's notes as 202 KB for
+    # a 198 MB file, and the whole diagnosis of that fixture was aimed at the
+    # wrong order of magnitude because of it.
+    $kb = (Get-Item -LiteralPath $js).Length / 1MB
     $trunc = $false
     try { $trunc = ((Get-Item -LiteralPath $js).Length -gt $script:tailBytes) } catch { }
     $got = $null
@@ -319,7 +325,7 @@ foreach ($js in $picks) {
         Set-ReadMeasure -Doc $doc -PadL 44
         AL-Layout
         AL-MeasureDoc -doc $doc -DocName (Split-Path -Leaf $js) -Mode $m
-        AL-Say ("  {0,-42} {1,8:N0} KB  steps={2,-7} blocks={3,4}  turns={4,4}" -f `
+        AL-Say ("  {0,-42} {1,8:N1} MB  steps={2,-7} blocks={3,4}  turns={4,4}" -f `
             (Split-Path -Leaf $js), $kb, $m, $doc.Blocks.Count, $turns.Count)
         $lastDoc = $doc; $lastName = (Split-Path -Leaf $js)
     }
