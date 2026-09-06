@@ -6276,6 +6276,38 @@ if ($boxSeen -lt 5) {
 Write-Host ''
 Write-Host '--- the queue mark ages the message, not the transcript file ---'
 
+# 🔴 THE PER-ROW COPY AND THE FUNCTION MUST AGREE ON EVERY ROW. Build-Sessions
+# inlines this test because 71% of its cost was the invocation; the panel above
+# the composer calls the function. Two copies of one rule is how a window ends
+# up telling you two different things about the same queue, so the suite holds
+# them together rather than trusting them to stay in step.
+$agreeChecked = 0
+$agreeBad = @()
+# 🪤 NOT @($script:model). It is a List[object], and wrapping one in @() throws
+# "Argument types do not match" in PowerShell 5.1 - a script-level
+# ArgumentException with no inner line number, which took down this suite and,
+# three hours earlier and undiagnosed, the perf suite as well. A List is
+# already enumerable; foreach wants it bare.
+foreach ($mr in $script:model) {
+    $rec = $mr.Q
+    if (-not $rec -or [int]$rec.Count -le 0) { continue }
+    $agreeChecked++
+    $wantFresh = [bool](Test-SRQueueFresh -Rec $rec -Now (Get-Date) `
+                            -MaxHours $SR_QueueStaleHours -MachineMins $SR_QueueMachineStaleMins)
+    $row = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and "$($_.Id)" -eq "$($mr.Id)" })
+    if (-not $row.Count) { continue }
+    $drawn = ("$($row[0].QVis)" -eq 'Visible')
+    if ($drawn -ne $wantFresh) { $agreeBad += "$($mr.Id) drawn=$drawn function=$wantFresh" }
+}
+if ($agreeChecked -eq 0) {
+    Note 'COULD NOT BE CHECKED THIS RUN: no conversation on this machine has anything queued, so the two copies of the freshness rule were not compared. It is NOT a pass.'
+} elseif ($agreeBad.Count) {
+    Fail ("the row mark and Test-SRQueueFresh disagree on {0} of {1} queued row(s): {2}" -f $agreeBad.Count, $agreeChecked, ($agreeBad -join '; '))
+} else {
+    Pass ("the inlined row mark and Test-SRQueueFresh agree on all {0} queued row(s)" -f $agreeChecked)
+}
+
+
 # 🔴 THE FIRST VERSION OF THIS GATE READ THE TRANSCRIPT'S LastWriteTime, so it
 # could only fire on a session that had STOPPED writing - never on the live ones
 # that show a phantom mark. Reported with a screenshot an hour after it shipped.

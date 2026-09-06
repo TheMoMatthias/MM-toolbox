@@ -2195,8 +2195,41 @@ function Build-Sessions {
             # 🪤 NO DATE ANYWHERE MEANS "COULD NOT TELL" AND STILL DRAWS. The
             # test only ever HIDES something, so it must fire on positive
             # evidence of age and never on the absence of evidence.
-            $qFresh = Test-SRQueueFresh -Rec $qRec -Now $nowDate `
-                            -MaxHours $SR_QueueStaleHours -MachineMins $SR_QueueMachineStaleMins
+            # 🔴 INLINED, AND THE MEASUREMENT IS WHY. This was a call to
+            # Test-SRQueueFresh for exactly one hour - extracted so the suite
+            # could see it, which was right, and then left in the one loop that
+            # runs per row, which was not. Measured directly at high repetition
+            # rather than by subtraction: 0,096 ms a call, 12,1 ms across 126
+            # rows - of which 8,6 ms is the INVOCATION, because an empty
+            # PowerShell function call measures 0,068 ms. 71% of the cost is the
+            # act of calling it.
+            #
+            # 🔑 THE SAME RESULT THIS FILE ALREADY RECORDED, twice: Test-OnSurface
+            # was inlined here for it ("nearly all of it is per-call overhead;
+            # the body it reaches is three property reads"), and WO-2 proved that
+            # removing an invocation moved 35 ms while removing the work inside
+            # three others moved nothing. Measured a third time, independently.
+            #
+            # 🪤 THE FUNCTION STAYS AND IS NOT A DEAD COPY. It is what the panel
+            # above the composer calls - once per redraw, where 0,096 ms is
+            # nothing - and what gui2 tests. This is the per-row copy, exactly
+            # the arrangement Get-RowScreenSig has a few lines above, and gui2
+            # asserts the two agree on every row so they cannot drift apart.
+            $qFresh = $true
+            if ($qRec) {
+                $qDated = 0
+                $qYoung = 0
+                foreach ($qi in @($qRec.Items)) {
+                    if (-not $qi.At) { continue }
+                    $qAt = $null
+                    try { $qAt = [datetime]$qi.At } catch { continue }
+                    $qDated++
+                    $qLim = $SR_QueueStaleHours
+                    if (-not $qi.Mine) { $qLim = $SR_QueueMachineStaleMins / 60.0 }
+                    if (($nowDate - $qAt).TotalHours -le $qLim) { $qYoung++ }
+                }
+                if ($qDated -gt 0) { $qFresh = ($qYoung -gt 0) }
+            }
             if ($qRec -and [int]$qRec.Count -gt 0 -and $qFresh) {
                 $qVis = $V_Show
                 if ([int]$qRec.Mine -gt 0) {
