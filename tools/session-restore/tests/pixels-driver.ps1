@@ -704,6 +704,25 @@ else {
         }
         return ,$pxFound
     }
+    # 🔴 A BENCH THAT MEASURES FOLDING HAS TO ASK FOR A VIEW THAT FOLDS.
+    # The bench above presses Steps SIX times - two full cycles - so it lands
+    # back exactly where it started, which on this machine is 'hidden'. Under
+    # 'hidden' a run of tool calls is not drawn AT ALL; that is the feature, and
+    # it is the operator's own request ("I would expect the background commands
+    # to not be shown at all"). So Find-FoldHeaders correctly found nothing, and
+    # the harness turned that into "the reading pane has stopped folding",
+    # printed the operator's words back as evidence, and failed the inventory
+    # for a bench it had itself made impossible.
+    #
+    # 🪤 THE STATE THE PREVIOUS BENCH LEAVES BEHIND IS AN INPUT TO THIS ONE, and
+    # an input nothing here owned. Same shape as the three gui2 assertions that
+    # read whichever live conversation happened to sort first: not a wrong
+    # answer, an unasked question.
+    if ("$($script:toolView)" -ne 'folded') {
+        $script:toolView = 'folded'
+        Show-Selected -Force
+        Lay-Px
+    }
     $pxHeads = Find-FoldHeaders
     Note ("{0} foldable block(s) realized in the pane" -f $pxHeads.Count)
     if ($pxHeads.Count) { $pxFoldSeen = $true }

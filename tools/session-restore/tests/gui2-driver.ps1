@@ -570,7 +570,15 @@ else {
     # A SECOND, DIFFERENT stamp is real growth and must still move the row.
     $script:followStamp = 'a-stamp-that-is-definitely-stale'
     Invoke-FollowTick
-    if ("$($row.Band)" -eq 'needs') {
+    # 🪤 UNLESS THE ROW BELONGS IN 'needs' ANYWAY, in which case a tick that
+    # leaves it there is CORRECT and this cannot tell the difference. $liveItem
+    # is whichever running conversation sorts first out of the ~30 on this
+    # machine, so what it is doing is not the harness's to decide - and a row
+    # that was already waiting for the operator made this go red once while the
+    # runs either side of it, same commit, were green.
+    if ("$bandWas" -eq 'needs') {
+        Note ("'{0}' genuinely belongs in NEEDS YOU, so a tick that leaves it there is right - the inverse cannot be posed on this row" -f $liveItem.Name)
+    } elseif ("$($row.Band)" -eq 'needs') {
         Fail 'a transcript that genuinely grew did not move the row - the reactivity is gone'
     } else { Pass 'but a transcript that actually grows still moves it' }
 
@@ -2341,6 +2349,86 @@ else { Pass 'the primitive sends exactly one Esc, and only into a process it has
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- hide the shells panel and it comes back when one starts ---'
+# ===========================================================================
+# 🔴 THE BUTTON MADE A PROMISE THE CODE DID NOT KEEP. ShellFold's tooltip says
+# "It comes back on its own when another shell starts"; $script:shellHidden was
+# cleared on ONE condition, a change of selected conversation. A new shell in
+# the same conversation left it hidden, and the panel stayed gone through any
+# number of new shells and sub-agents.
+#
+# 🪤 AND IT PRESENTED AS INTERMITTENT. If everything stops first, a different
+# branch resets $script:shellFor and the next shell does revive the panel - so
+# hiding it while something runs keeps it hidden, hiding it after everything
+# finishes does not. Cases 5 and 6 are that pair, and they are the reason this
+# is a table rather than one assertion.
+foreach ($sc in @(
+    @('a different conversation, same count',  'aaa', 'bbb', 2, 2, $true),
+    @('the same one, nothing new started',     'aaa', 'aaa', 2, 2, $false),
+    @('the same one, one more shell started',  'aaa', 'aaa', 2, 3, $true),
+    @('the same one, a shell finished',        'aaa', 'aaa', 3, 2, $false),
+    @('the same one, all of them finished',    'aaa', 'aaa', 3, 0, $false),
+    @('first sight of a conversation',         '',    'aaa', -1, 1, $true)
+)) {
+    $got = Test-SRShellReveal -For $sc[1] -Id $sc[2] -Was $sc[3] -Now $sc[4]
+    if ([bool]$got -ne [bool]$sc[5]) {
+        Fail ("{0}: the panel would {1} - expected {2}" -f $sc[0], $(if ($got) { 'reappear' } else { 'stay hidden' }), $sc[5])
+    } else { Pass ("{0} -> {1}" -f $sc[0], $(if ($got) { 'it comes back' } else { 'it stays hidden' })) }
+}
+# The promise itself, so the tooltip and the code cannot drift apart again.
+if ("$($ui.ShellFold.ToolTip)" -notmatch 'comes back') {
+    Note 'the ShellFold tooltip no longer promises a recovery - if that was deliberate, this block is now over-strict'
+} else { Pass 'and the tooltip that promises it is still the one on the button' }
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- a running shell or sub-agent is something you can click ---'
+# ===========================================================================
+# 🔴 THE ROWS CARRIED Cursor="Hand" AND NO HANDLER. Every other clickable
+# surface in this window pairs a transparent background with a hand cursor and
+# has one; ShellList had none, and an ItemsControl does not even select. The
+# pointer changed over a row naming a running sub-agent and the click was
+# swallowed - "when I click on the respective background running agent or task,
+# I cannot see its output".
+if (-not (Get-Command Open-SRShellRow -ErrorAction SilentlyContinue)) {
+    Fail 'Open-SRShellRow is gone - the shells rows are unclickable again'
+} else {
+    Pass 'the shells rows have a handler to run'
+    # 🪤 DRIVEN, NOT READ. Every one of these is a row that resolves to nothing,
+    # which is exactly the path that must not throw: a sub-agent dispatched but
+    # not yet on disk, and a shell that has printed nothing into this
+    # conversation. Both used to be unreachable because nothing called them.
+    $shellCases = @(
+        @('a sub-agent with no transcript yet', ([PSCustomObject]@{ ShId = 'no-such-agent-99'; ShIsAgent = $true })),
+        @('a shell with no block in the pane',  ([PSCustomObject]@{ ShId = 'no-such-shell-99'; ShIsAgent = $false })),
+        @('a row carrying no id at all',        ([PSCustomObject]@{ ShId = '';                 ShIsAgent = $false })),
+        @('no row at all',                      $null)
+    )
+    foreach ($shc in $shellCases) {
+        try { Open-SRShellRow $shc[1]; Pass ("{0}: handled without throwing" -f $shc[0]) }
+        catch { Fail ("{0}: threw {1}" -f $shc[0], $_.Exception.Message) }
+    }
+    # And the one that resolves: a shell registered in the document's own
+    # registry is found and brought into view.
+    $shWas = $script:liveShells.Count
+    $shTb = New-Object System.Windows.Controls.TextBlock
+    $shTb.Text = 'a registered shell'
+    $script:liveShells.Add(@{ Label = $shTb; Body = $null; Panel = $null; Shell = 'unit-shell-1'; Session = 'unit' })
+    try {
+        Open-SRShellRow ([PSCustomObject]@{ ShId = 'unit-shell-1'; ShIsAgent = $false })
+        Pass 'a shell that IS registered resolves to its block'
+    } catch { Fail "a registered shell threw: $($_.Exception.Message)" }
+    while ($script:liveShells.Count -gt $shWas) { $script:liveShells.RemoveAt($script:liveShells.Count - 1) }
+    # 🪤 THE ROWS MUST CARRY AN ID OR NONE OF THE ABOVE CAN EVER FIRE. This is
+    # the half that actually regressed: the row objects were pure display.
+    $shSrc = Get-SRBodyOf ([System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\sessions-window.ps1'))) 'function Update-ShellPanel'
+    if ($shSrc -notmatch 'ShId') {
+        Fail 'the shell rows no longer carry ShId - every click resolves to nothing'
+    } else { Pass 'and the rows carry the id the handler reads' }
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the vitals strip, and the clock that must stay cheap ---'
 # ===========================================================================
 Build-Sessions
@@ -2350,8 +2438,35 @@ else {
     $ui.SessionList.SelectedItem = $chipRow[0]
     Update-Chips $chipRow[0].Row -Force
     $chipKids = @($ui.PaneChips.Children)
-    if ($chipKids.Count -lt 2) {
-        Fail "the strip drew $($chipKids.Count) chip(s) - model and context are unconditional"
+    # =======================================================================
+    # 🔴 THIS WENT RED ON A MACHINE, NOT ON A DIFF. Observed once as "the strip
+    # drew 0 chip(s)" and green on both runs either side of it, same commit.
+    # $chipRow[0] is whichever conversation sorts first at that instant, out of
+    # the ~30 the operator has running, and Update-Chips returns before it draws
+    # anything at all when Get-SRSessionVitals cannot read that transcript. So
+    # the assertion was reporting the state of somebody else's session.
+    #
+    # 🪤 SO IT ABSTAINS RATHER THAN FAILING - a third state, not a softer bar.
+    # A check that cannot tell must not print green, and it must not print red
+    # either: a suite that goes red depending on what a live session happened to
+    # be doing teaches you to skim the red, which costs more than the assertion
+    # is worth. If the vitals DID read, zero chips is still a hard failure.
+    #
+    # 🪤 AND THE OLD MESSAGE WAS WRONG ON ITS OWN TERMS. "model and context are
+    # unconditional" stopped being true when the context chip was deliberately
+    # made conditional on a screen reading - a background agent has no console,
+    # and a confidently wrong figure was judged worse than an absent one. The
+    # bar is the MODEL chip; context is checked where that decision lives.
+    # =======================================================================
+    $chipV = $null
+    try {
+        $chipV = Get-SRSessionVitals -JsonlPath "$($chipRow[0].Row.S.jsonl)" `
+                                     -Session $chipRow[0].Row.S -WorkDir "$($chipRow[0].Row.D.path)"
+    } catch { }
+    if (-not $chipV -or -not $chipV.Ok) {
+        Note ("vitals for '{0}' could not be read on this run - the strip cannot be checked here" -f $chipRow[0].Name)
+    } elseif ($chipKids.Count -lt 1) {
+        Fail "vitals read cleanly and the strip still drew nothing - the model chip is unconditional"
     } else { Pass "$($chipKids.Count) chips: the strip is reading the transcript, not a placeholder" }
 
     # 🔴 THE PER-SECOND PATH MUST NOT READ THE TRANSCRIPT. Step-ChipClock runs
@@ -2614,7 +2729,23 @@ else {
     } else { Pass 'the click clears the strip and reads nothing' }
 
     Invoke-FollowTick
-    if (-not $script:chipVitals -or @($ui.PaneChips.Children).Count -eq 0) {
+    # 🪤 THE FILL HALF CAN ONLY BE ASKED OF A ROW WHOSE VITALS READ. Update-Chips
+    # deliberately clears the strip and returns when Get-SRSessionVitals fails -
+    # an absent figure beats a wrong one - so on a conversation it cannot read,
+    # an empty strip is the CORRECT outcome and this assertion was accusing the
+    # follow tick of a bug belonging to the fixture. $clickRows[0] is whichever
+    # of the ~30 live conversations sorts first, so which one it lands on is not
+    # something the harness controls. Went red once; green either side, same
+    # commit. The clear half above needs no such guard - it must clear whatever
+    # happens.
+    $fillV = $null
+    try {
+        $fillV = Get-SRSessionVitals -JsonlPath "$($clickRows[0].Row.S.jsonl)" `
+                                     -Session $clickRows[0].Row.S -WorkDir "$($clickRows[0].Row.D.path)"
+    } catch { }
+    if (-not $fillV -or -not $fillV.Ok) {
+        Note ("vitals for '{0}' could not be read on this run, so an empty strip is correct - the fill half cannot be posed here" -f $clickRows[0].Name)
+    } elseif (-not $script:chipVitals -or @($ui.PaneChips.Children).Count -eq 0) {
         Fail 'and then nothing filled it - the header would stay empty forever'
     } else { Pass "one tick later the strip is back, with $(@($ui.PaneChips.Children).Count) chips" }
 }
@@ -3735,6 +3866,100 @@ else {
                     Fail ("the gutter does not line up: prose starts at {0:N1}px, a rail block at {1:N1}px - {2:N1}px apart" -f $proseX, $railX, $drift)
                 } else {
                     Pass ("prose and rail blocks start at the same x ({0:N1} vs {1:N1})" -f $proseX, $railX)
+                }
+            }
+
+            # ===============================================================
+            # 🔴 AND THE CHECK ABOVE READS THE FIRST OF EACH, WHICH IS THE ONE
+            # KIND OF BLOCK THAT CANNOT BE WRONG.
+            #
+            # A document opens with prose and its first rail block is a fold
+            # header; both are built straight off the gutter width with no
+            # indent, so they agree by construction. The assertion was green
+            # for months across three separate "the text is not left bounded"
+            # reports - including a rail control whose caret pushed its words
+            # 15px right of every other line in the document, sitting eleven
+            # blocks below the pair being measured.
+            #
+            # 🪤 SO THE SWEEP WALKS EVERY BLOCK, and the legitimate indents are
+            # DATA rather than a skip. The distinction matters: "ignore what
+            # fails" and "these two columns are correct and a third is not" are
+            # the same code until the day something drifts onto a new column,
+            # and then only one of them says so.
+            #
+            # The column is the MODE, not a constant. A hard-coded 66 would
+            # have to be retuned for every font change - the caret bug above
+            # moved from 84px to 81px purely because the pane's face gained a
+            # fallback chain - and a test that needs retuning after an
+            # unrelated change gets retuned without being read.
+            # ===============================================================
+            $cols = @{}
+            $seen = New-Object System.Collections.Generic.List[object]
+            foreach ($blk in $doc.Blocks) {
+                $bx = $null
+                $sample = ''
+                if ($blk -is [System.Windows.Documents.Paragraph]) {
+                    foreach ($inl in $blk.Inlines) {
+                        if ($inl -is [System.Windows.Documents.Run] -and "$($inl.Text)".Trim().Length -gt 3) {
+                            try {
+                                $r = $inl.ContentStart.GetCharacterRect([System.Windows.Documents.LogicalDirection]::Forward)
+                                if ($r.X -gt 0) { $bx = [double]$r.X; $sample = "$($inl.Text)".Trim() }
+                            } catch { }
+                            break
+                        }
+                    }
+                } elseif ($blk -is [System.Windows.Documents.BlockUIContainer]) {
+                    $g = $blk.Child
+                    if ($g -and $g.Children.Count -ge 1) {
+                        $content = $g.Children[$g.Children.Count - 1]
+                        try {
+                            $t = $content.TransformToAncestor($ui.PaneDoc)
+                            $bx = [double]($t.Transform((New-Object System.Windows.Point 0, 0))).X
+                        } catch { }
+                        # Down to the first TextBlock, so a failure names the row
+                        # you can see rather than a control type. Bounded depth -
+                        # a rail child is a Border round a panel, never deeper.
+                        $node = $content
+                        for ($d = 0; $d -lt 4 -and $node; $d++) {
+                            if ($node -is [System.Windows.Controls.TextBlock]) { $sample = "$($node.Text)"; break }
+                            if ($node.Child) { $node = $node.Child; continue }
+                            if ($node.Children -and $node.Children.Count -gt 0) { $node = $node.Children[0]; continue }
+                            break
+                        }
+                    }
+                }
+                if ($null -eq $bx) { continue }
+                $b = [int][Math]::Round($bx)
+                if ($cols.ContainsKey($b)) { $cols[$b] = $cols[$b] + 1 } else { $cols[$b] = 1 }
+                $null = $seen.Add([PSCustomObject]@{ X = $bx; S = "$sample".Trim() })
+            }
+            if ($seen.Count -lt 4) {
+                Note ("only {0} measurable block(s) in this tail - the column sweep needs more" -f $seen.Count)
+            } else {
+                $base = ($cols.GetEnumerator() | Sort-Object -Property Value -Descending | Select-Object -First 1).Key
+                # THE EXEMPTIONS. A list item is indented BECAUSE it is a list
+                # item - $bump in Add-ReadProse - and that is the only offset
+                # any block is built with. Anything else on screen is drift.
+                $listBump = 18
+                $allowed = @([double]$base, [double]($base + $listBump))
+                $off = New-Object System.Collections.Generic.List[object]
+                foreach ($s in $seen) {
+                    $ok = $false
+                    foreach ($a in $allowed) { if ([Math]::Abs($s.X - $a) -le 1.5) { $ok = $true; break } }
+                    if (-not $ok) { $null = $off.Add($s) }
+                }
+                if ($off.Count -gt 0) {
+                    Fail ("{0} of {1} blocks sit off the column - it is {2}px, or {3}px for a list item" -f $off.Count, $seen.Count, $base, ($base + $listBump))
+                    $shown = 0
+                    foreach ($s in $off) {
+                        if ($shown -ge 6) { break }
+                        $txt = $s.S
+                        if ($txt.Length -gt 46) { $txt = $txt.Substring(0, 46) + '...' }
+                        Note ("    {0,6:N1}px  {1}" -f $s.X, $txt)
+                        $shown++
+                    }
+                } else {
+                    Pass ("all {0} blocks sit on the column ({1}px) or its list indent ({2}px)" -f $seen.Count, $base, ($base + $listBump))
                 }
             }
             # Pull every run of text out of the flow, whatever it is nested in.

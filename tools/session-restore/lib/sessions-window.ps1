@@ -3921,6 +3921,18 @@ function Update-LivePane {
     $ui.PaneEmpty.Visibility = $V_Hide
 }
 
+# WHEN A HIDDEN SHELL PANEL COMES BACK. Extracted for the same reason
+# Test-SRQueueFresh and Test-SRTypingTarget were: the decision is four operators
+# and a promise made in a tooltip, and the function around it cannot be called
+# in a test without reading a live conversation off the disk. One call per tick,
+# so the invocation cost that mattered for the per-row queue check does not
+# apply here.
+function Test-SRShellReveal {
+    param([string]$For, [string]$Id, [int]$Was, [int]$Now)
+    if ($For -ne $Id) { return $true }     # a different conversation entirely
+    return ($Now -gt $Was)                 # or something NEW started in this one
+}
+
 function Update-ShellPanel {
     $id = ''
     $jsonl = ''
@@ -3950,7 +3962,26 @@ function Update-ShellPanel {
 
     $stale = ($script:shellFor -ne $id) -or ($script:shellCount -ne $n) -or
              (-not $script:shellAt) -or (((Get-Date) - $script:shellAt).TotalSeconds -ge $SR_ShellRescan)
-    if ($script:shellFor -ne $id) { $script:shellHidden = $false }
+    # 🔴 THE BUTTON PROMISED A RECOVERY THAT WAS NEVER WRITTEN. Both the tooltip
+    # ("It comes back on its own when another shell starts") and the comment at
+    # the handler said this clears on a change of conversation OR on a new set
+    # of shells. Only the first half existed. A new shell in the SAME
+    # conversation changes $n, not $id - so it made $stale true, re-read the
+    # list, and was then collapsed again nine lines below and the fresh list
+    # thrown away. One press of `hide` and the panel was gone for that
+    # conversation through any number of new shells and sub-agents.
+    #
+    # 🪤 IT LOOKED INTERMITTENT, WHICH IS WHY IT SURVIVED. If every shell stops
+    # first, the `-not $id -or $n -le 0` branch above resets $script:shellFor,
+    # so the next shell DOES revive the panel. Hide it while something is still
+    # running and it stays hidden; hide it after everything finishes and it
+    # comes back. Same symptom, opposite outcomes, no pattern to report.
+    #
+    # 🪤 A COUNT THAT ROSE, NOT A COUNT THAT CHANGED. A shell FINISHING also
+    # changes $n, and un-hiding the panel because something stopped would be a
+    # second wrong promise. $script:shellCount still holds the previous count
+    # here - it is not updated until the $stale block below.
+    if (Test-SRShellReveal -For $script:shellFor -Id $id -Was $script:shellCount -Now $n) { $script:shellHidden = $false }
     if ($stale) {
         $got = @()
         try { $got = @(Get-SRLiveTasks -JsonlPath $jsonl) } catch { $got = @() }
@@ -3999,6 +4030,12 @@ function Update-ShellPanel {
         $desc = "$($s.Desc)".Trim()
         if (-not $desc) { $desc = $s.Shell }
         $rows += [PSCustomObject]@{
+            # 🔴 THE ROW CARRIED NOTHING THAT IDENTIFIED IT. Every field on it
+            # was for display, so even once the template grew a Cursor="Hand"
+            # there was nothing a handler could have acted on. These two are
+            # what make the click possible; see Open-SRShellRow.
+            ShId     = "$($s.Shell)"
+            ShIsAgent = $isAgent
             ShDesc   = $desc
             # An agent's "command" is the kind of agent it is, which is the
             # nearest thing it has to one and the thing you actually want to
@@ -4619,24 +4656,26 @@ function Build-ReadDocument {
         $bd.Background = [System.Windows.Media.Brushes]::Transparent
         $bd.Cursor = 'Hand'
         $bd.ToolTip = 'Load an earlier slice of this conversation (or press L)'
-        $sp = New-Object System.Windows.Controls.StackPanel
-        $sp.Orientation = 'Horizontal'
-        $up = New-Object System.Windows.Controls.TextBlock
-        $up.Text = [string][char]0x25B4
-        $up.Foreground = $Pal.TextLow
-        $up.FontSize = $script:PaneSize
-        $up.FontFamily = $script:PaneFace
-        $up.VerticalAlignment = 'Center'
-        $up.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
-        $null = $sp.Children.Add($up)
+        # 🔴 THIS ROW CARRIED TWO MARKERS AND WORE THE COST OF BOTH. New-RailBlock
+        # already draws this block's dot in the gutter at x=44; the caret below it
+        # was a SECOND marker, living inside the text column, and its glyph plus a
+        # 7px margin pushed the words to x=81 while every other line in the
+        # document starts at 66. Measured at 15px off-column - the only rail block
+        # that was, and one of the "text is not left bounded" reports.
+        #
+        # 🪤 IT IS NOT A CASE FOR MOVING THE CARET INTO THE LABEL'S OWN TEXT. That
+        # would put the TextBlock's left edge back on 66 and turn the alignment
+        # harness green while the WORDS still started 15px in - the measurement
+        # satisfied and the complaint untouched. The second marker had to go, not
+        # relocate. It also spent a shape the operator had already ruled out:
+        # one dot, colour only, no competing glyphs.
         $lb = New-Object System.Windows.Controls.TextBlock
         $lb.Text = ('load earlier   showing the last {0} KB of a longer conversation' -f [int]($script:tailBytes / 1KB))
         $lb.Foreground = $Pal.TextDim
         $lb.FontSize = $script:PaneSize
         $lb.FontFamily = $script:ProseFace
         $lb.VerticalAlignment = 'Center'
-        $null = $sp.Children.Add($lb)
-        $bd.Child = $sp
+        $bd.Child = $lb
         # 🔴 AND SO WAS 'load earlier' - see New-FoldHeader for the capture.
         $bd.Add_PreviewMouseLeftButtonDown({
             param($s, $e)
@@ -9233,6 +9272,77 @@ $ui.ShellFold.Add_Click({
     $script:shellHidden = $true
     $ui.ShellBox.Visibility = 'Collapsed'
 })
+
+# ===========================================================================
+# 🔴 THE ROWS LOOKED CLICKABLE AND WERE NOT. The template carries
+# Background="Transparent" with Cursor="Hand" - the exact pair StripList,
+# CastList, TickBox and the rail tiles use, all four of which have handlers -
+# and ShellList had none at all. No Add_Click, no PreviewMouseLeftButtonDown,
+# and as an ItemsControl it does not even select. So the pointer changed over a
+# row naming a running sub-agent and the click was swallowed. Reported as "when
+# I click on the respective background running agent or task, I cannot see its
+# output".
+#
+# 🔑 IT DOES WHAT ITS OWN TOOLTIP ALREADY TOLD YOU TO DO BY HAND. The agent tip
+# ends "select it in the list to read the whole thing" - so the click selects
+# it, and the whole existing path takes over from there (SessionList's
+# SelectionChanged opens a sub-agent document for a row of Kind 'agent'). No
+# second way to open the same thing.
+function Open-SRShellRow { param($Ctx)
+    if (-not $Ctx) { return }
+    $sid = "$($Ctx.ShId)"
+    if (-not $sid) { return }
+    if ($Ctx.ShIsAgent) {
+        # The list builds sub-agent rows as Id = 'agent:' + the agent's id.
+        $want = 'agent:' + $sid
+        foreach ($it in $ui.SessionList.Items) {
+            if ("$($it.Id)" -eq $want) {
+                $ui.SessionList.SelectedItem = $it
+                try { $ui.SessionList.ScrollIntoView($it) } catch { }
+                return
+            }
+        }
+        # 🪤 AND IT SAYS SO RATHER THAN DOING NOTHING. An agent that has been
+        # dispatched but has not written its transcript yet has no row to
+        # select, and a click that silently does nothing is what this whole
+        # block exists to fix.
+        Set-Status 'that sub-agent has no transcript yet - it appears in the list once it writes one'
+        return
+    }
+    # A shell is not a conversation; its output is a block in the one already
+    # open. liveShells is the registry the document fills as it builds.
+    foreach ($le in $script:liveShells) {
+        if ("$($le.Shell)" -eq $sid) {
+            $tgt = $(if ($le.Panel) { $le.Panel } else { $le.Label })
+            if ($tgt) { try { $tgt.BringIntoView() } catch { } }
+            return
+        }
+    }
+    Set-Status 'that shell has not printed anything into this conversation yet'
+}
+
+# 🪤 ONE HANDLER ON THE LIST, NOT ONE PER ROW. A handler attached inside the
+# DataTemplate would be re-attached on every ItemsSource assignment - which is
+# every rescan - and the rows are rebuilt wholesale each time. This walks up
+# from whatever was actually hit to the first element carrying one of our row
+# objects, which is also why it needs ShId to exist on them.
+$ui.ShellList.AddHandler(
+    [System.Windows.UIElement]::PreviewMouseLeftButtonDownEvent,
+    [System.Windows.Input.MouseButtonEventHandler] {
+        param($s, $e)
+        $node = $e.OriginalSource
+        $ctx = $null
+        for ($d = 0; $d -lt 8 -and $node; $d++) {
+            if ($node -is [System.Windows.FrameworkElement]) {
+                $dc = $node.DataContext
+                if ($dc -and $dc.PSObject.Properties['ShId']) { $ctx = $dc; break }
+            }
+            try { $node = [System.Windows.Media.VisualTreeHelper]::GetParent($node) } catch { break }
+        }
+        if (-not $ctx) { return }
+        Open-SRShellRow $ctx
+        $e.Handled = $true
+    })
 $ui.PaneCompact.Add_Click({ Invoke-Compact })
 
 # ===========================================================================
