@@ -262,10 +262,28 @@
          keeps the reference live, so replacing the entry reaches all 15 styles.
          The gui2 suite now asserts this from a realised TextBlock.
          ========================================== -->
-    <FontFamily x:Key="FontSmall">Segoe UI Variable Small, Segoe UI</FontFamily>
-    <FontFamily x:Key="FontText">Segoe UI Variable Text, Segoe UI</FontFamily>
-    <FontFamily x:Key="FontDisplay">Segoe UI Variable Display, Segoe UI</FontFamily>
-    <FontFamily x:Key="FontMono">Cascadia Mono, Consolas, Courier New</FontFamily>
+    <!-- 🔴 FIVE FACES WERE ON SCREEN WHERE THIS FILE DECLARED TWO. Measured over
+         450,467 characters of 24 real transcripts: the gutter dot U+25CF is in
+         NEITHER declared face and was being drawn by Arial; the fold carets by
+         Segoe UI Emoji; the running-shell square by Segoe UI; the thin space
+         between every letter of every tracked label by Arial again. None of it
+         was tofu - WPF picked something reasonable each time - but nothing on
+         that list was chosen, and a marker rendered by a font nobody picked is
+         the literal definition of "not unified".
+
+         🪤 THE SYMBOL FACES GO LAST, so they catch only what the text faces
+         lack. Measured against the alternative: 0 of 6 emoji bases gain width
+         under the declaration, so it cannot open a gap after one.
+
+         🪤 AND IT IS ALSO THE ONLY FIX FOR THE TWO REAL BOXES. 🪤 U+1FAA4 and
+         🪶 U+1FAB6 measure exactly Manrope's .notdef - 29.60 x 30.80 at 40px,
+         calibrated against three unassigned codepoints - while the installed
+         Segoe UI Emoji 1.60 HAS both. WPF's automatic fallback does not reach
+         them; an explicitly declared family does. -->
+    <FontFamily x:Key="FontSmall">Segoe UI Variable Small, Segoe UI, Segoe UI Emoji, Segoe UI Symbol</FontFamily>
+    <FontFamily x:Key="FontText">Segoe UI Variable Text, Segoe UI, Segoe UI Emoji, Segoe UI Symbol</FontFamily>
+    <FontFamily x:Key="FontDisplay">Segoe UI Variable Display, Segoe UI, Segoe UI Emoji, Segoe UI Symbol</FontFamily>
+    <FontFamily x:Key="FontMono">Cascadia Mono, Consolas, Courier New, Segoe UI Emoji, Segoe UI Symbol</FontFamily>
 
     <!-- ================== THE TYPE SCALE - SIX SIZES, AND THAT IS ALL ==========
          🔴 THE CLAIM ABOVE ("one scale, every size comes from it") WAS FALSE
@@ -323,7 +341,7 @@
          SIL OFL) and is loaded privately at startup; the stack behind it is
          what draws if the file is ever missing. Humanist rather than
          terminal-drawn, which is the whole reason it is not Cascadia. -->
-    <FontFamily x:Key="FontPane">IBM Plex Mono, Cascadia Mono, Consolas, Courier New</FontFamily>
+    <FontFamily x:Key="FontPane">IBM Plex Mono, Cascadia Mono, Consolas, Courier New, Segoe UI Emoji, Segoe UI Symbol</FontFamily>
     <!-- There is no FontUi alias any more. It existed as a bridge during the
          rebuild and became the way two styles quietly stayed off the scale -
          the buttons and the surface switch were still at 12px while everything

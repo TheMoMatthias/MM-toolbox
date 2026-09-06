@@ -2681,7 +2681,18 @@ function Install-SRPaneFace {
             Write-SRLog ('  [skip] IBM Plex Mono exposes only {0} face - a synthesised bold is worse than Cascadia' -f $faces.Count)
             return $false
         }
-        $window.Resources['FontPane'] = $fam
+        # 🔴 A BARE EMBEDDED FAMILY HAS NO FALLBACK, and assigning one here threw
+        # away the chain window2.xaml declares. $fam stays the thing that gets
+        # VALIDATED above - it is what carries the typefaces - and what gets
+        # INSTALLED is a composite built on the same base uri, so a codepoint
+        # IBM Plex Mono lacks still reaches a face somebody chose rather than
+        # one WPF picked.
+        $famFB = $fam
+        try {
+            $famFB = New-Object System.Windows.Media.FontFamily $base, `
+                '#IBM Plex Mono, Cascadia Mono, Consolas, Courier New, Segoe UI Emoji, Segoe UI Symbol'
+        } catch { Write-SRLog ('  [skip] composite pane face failed, using the bare family: ' + $_.Exception.Message) }
+        $window.Resources['FontPane'] = $famFB
         # 🔴 THE CHROME NO LONGER TAKES IT, AND THAT REVERSES A DATED DECISION.
         #
         # 2026-09-03 put "one face across the entire window, not just the
@@ -2701,7 +2712,7 @@ function Install-SRPaneFace {
         # grid, so pointing it at the shipped mono face is the whole point of
         # shipping one. The three TEXT keys keep Manrope, loaded just above.
         foreach ($k in @('FontMono')) {
-            $window.Resources[$k] = $fam
+            $window.Resources[$k] = $famFB
         }
         Write-SRLog ('  [ok]   IBM Plex Mono loaded from lib\fonts ({0} faces) - pane and chrome' -f $faces.Count)
         return $true
@@ -3089,18 +3100,35 @@ function Add-ReadProse {
             # x - so this is the same pixels for one fewer UIElement per line.
             $p.TextIndent = 0
         }
-        $body = $ln; $size = $Size; $weight = 'Normal'; $bump = 0
+        $body = $ln; $size = $Size; $weight = 'Normal'; $bump = 0; $markN = 0
         # 🪤 A HEADING IS WEIGHT NOW, NOT SIZE. `$Size + 2` was one of the twelve
         # sizes that made this pane ragged, and it is the easiest one to justify
         # and still wrong: one size means one size. SemiBold carries it.
         if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold' }
-        elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [string][char]0x2022 + '   ' + $Matches[1]; $bump = 18 }
-        elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.   ' + $Matches[2]; $bump = 18 }
+        # 🔴 $markN IS HOW MANY CHARACTERS THE MARKER OCCUPIES, and it exists so
+        # a wrapped line can hang from the WORDS. Measured across 8 transcripts:
+        # every list item put its second line at x=84, under the bullet, while
+        # prose correctly wrapped to x=66 - so the one block type that is meant
+        # to be a column was the one with a ragged left edge. Reported as "the
+        # text also sometimes looks misaligned and not unified. It is not left
+        # bounded."
+        elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [string][char]0x2022 + '   ' + $Matches[1]; $bump = 18; $markN = 4 }
+        elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.   ' + $Matches[2]; $bump = 18; $markN = $Matches[1].Length + 4 }
         # 🪤 THE GUTTER STAYS IN THE MARGIN. A bullet re-sets the whole Margin,
         # so leaving the original arithmetic here would have dropped the gutter
         # offset on exactly the lines that are indented anyway - every bullet in
         # every reply sliding one column left of the prose above it.
-        if ($bump) { $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW + $bump - $padX), $groundPad, 0, $groundPad }
+        if ($bump) {
+            # 🪤 THE HANG IS ARITHMETIC, NOT A HOSTED BOX. A fixed-width element
+            # per bullet would guarantee the column exactly, and measures
+            # 0,85 ms EACH - the reason the gutter mark was removed from every
+            # continuation line. The marker's width is the advance of the face
+            # times the characters in it, which is a pixel or two out on a
+            # proportional face and invisible against a 22px gutter.
+            $hang = [Math]::Round($size * $script:PaneAdvanceEm * $markN, 1)
+            $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW + $bump - $padX + $hang), $groundPad, 0, $groundPad
+            $p.TextIndent = -$hang
+        }
         # 🔴 HOW MANY INLINES THIS PARAGRAPH STARTED WITH, because that number is
         # no longer a constant. The blank-line test below used to read
         # `-le 1`, meaning "nothing here but the gutter box" - and the note on it
