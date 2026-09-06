@@ -6060,6 +6060,38 @@ function New-SRUserBlock { param([string]$Text)
 # worst case seen and still a bounded read on a 180 MB file.
 $SR_TailCeiling = 25165824
 
+# 🔴 AND A SECOND REASON TO WIDEN, WITH ITS OWN MUCH LOWER CEILING.
+#
+# The loop above widens when the window lands INSIDE one record. It cannot help
+# with the other way a tail comes back empty, because 29 whole records is not
+# too few records - it is too few of the RIGHT ones. Measured on the largest
+# transcript on this machine (198 MB): the last 96 KB holds 29 records, all of
+# which parse, of which exactly TWO are conversation - a user turn of 33
+# characters and an assistant turn of 22. The rest are sidecar: attachment,
+# bridge-session, artifact-autoreact-ledger, cost-state, last-prompt, mode,
+# history-suppression and a dozen more, one agent_listing_delta attachment
+# taking 43% of the budget by itself. The operator opens that conversation and
+# sees two lines.
+#
+# So the budget is spent on BYTES when only renderable conversation is worth
+# spending it on. This widens until the window holds a few real turns.
+#
+# 🪝 IT MUST NOT INHERIT THE 24 MB CEILING. That one is sized for a single
+# enormous record and is paid rarely; this rule fires on any conversation whose
+# recent traffic is mostly machinery, which on an orchestration-heavy machine is
+# many of them. A 1 MB read parses in ~36 ms measured, a 24 MB one does not, and
+# a pane that is slow for everyone is not a fix for a pane that is empty for
+# some. Fifteen turns is comfortably more than a screenful.
+$SR_TailMinConv = 6
+$SR_TailConvCeiling = 1048576
+
+# 🪝 COUNTED WITH A REGEX, NOT BY PARSING. This runs inside the widening loop,
+# once per doubling, so it must not be the cost of the thing it is deciding
+# whether to do. ConvertFrom-Json on every line of a 1 MB window to decide
+# whether to read 1 MB is the tail wagging the dog; a substring count over text
+# already in hand is microseconds and only ever decides how far to read.
+$SR_RxConvRec = [regex]::new('"type"\s*:\s*"(?:user|assistant)"')
+
 function Get-SRTranscriptBlocks {
     [CmdletBinding()]
     param(
@@ -6106,9 +6138,17 @@ function Get-SRTranscriptBlocks {
                 # would widen on one rule and then keep nothing by another.
                 $whole = 0
                 foreach ($ln in ($text -split "`n")) { if ($ln.Trim().StartsWith('{')) { $whole++; break } }
-                if ($whole -gt 0) { break }
-                if ($take -ge $fi.Length -or $take -ge $SR_TailCeiling) { break }
-                $take = [int][Math]::Min([Math]::Min($fi.Length, $SR_TailCeiling), $take * 2)
+                # Nothing whole yet: the original rule, and it owns the high ceiling.
+                if ($whole -le 0) {
+                    if ($take -ge $fi.Length -or $take -ge $SR_TailCeiling) { break }
+                    $take = [int][Math]::Min([Math]::Min($fi.Length, $SR_TailCeiling), $take * 2)
+                    continue
+                }
+                # Whole records, but are any of them the conversation? See the note
+                # beside $SR_TailMinConv.
+                if ($SR_RxConvRec.Matches($text).Count -ge $SR_TailMinConv) { break }
+                if ($take -ge $fi.Length -or $take -ge $SR_TailConvCeiling) { break }
+                $take = [int][Math]::Min([Math]::Min($fi.Length, $SR_TailConvCeiling), $take * 2)
             }
         } finally { $fs.Dispose() }
     } catch {

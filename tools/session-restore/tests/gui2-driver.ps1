@@ -4549,10 +4549,19 @@ else {
                     $lead = $null
                     try { $lead = @($blk.Inlines)[0] } catch { }
                     $marked = ($lead -is [System.Windows.Documents.InlineUIContainer])
+                    # 🪝 PADDING IS PART OF WHERE THE WORDS START, and leaving it out
+                    # reported 68 blocks off the column the moment the fixture grew
+                    # enough to include the operator's OWN turns. A grounded
+                    # paragraph - the tinted ground behind your own messages - is
+                    # built with Margin.Left REDUCED by padX and that same padX
+                    # given back as Padding, so the ground extends into the gutter
+                    # while the text stays on the column. Margin alone reads 11
+                    # against a modal 22 and looks like drift; it is the same 66px.
                     $words = 0.0
                     try {
-                        $words = $(if ($marked) { [double]$blk.Margin.Left }
-                                   else { [double]$blk.Margin.Left + [double]$blk.TextIndent })
+                        $padL = [double]$blk.Padding.Left
+                        $words = $(if ($marked) { [double]$blk.Margin.Left + $padL }
+                                   else { [double]$blk.Margin.Left + [double]$blk.TextIndent + $padL })
                     } catch { continue }
                     # The page padding is what makes this comparable with the rail
                     # branch below, which reports a real transform against the pane.
