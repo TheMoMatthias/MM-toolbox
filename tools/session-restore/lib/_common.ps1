@@ -6632,6 +6632,16 @@ $SR_QueueTailBytes = 4194304
 # and the enqueue is an orphan. On the audit the split was clean: the two live
 # marks were 0 and 0,1 hours quiet, every phantom was 2,9 hours or more.
 $SR_QueueStaleHours = 1.0
+# 🔴 AND MACHINE TRAFFIC GOES STALE IN MINUTES, NOT HOURS. A message of the
+# operator's can legitimately sit in a queue for an hour while a session works.
+# A <task-notification> cannot: the session consumes it on its very next turn,
+# within seconds. Claude Code does not reliably write the record that CANCELS an
+# enqueue, so an unremoved machine enqueue would otherwise claim to be waiting
+# for a full hour.
+#
+# Reported with a screenshot at eight minutes: "1 QUEUED, NONE OF THEM YOURS /
+# a background task reported back", against a queue with nothing in it.
+$SR_QueueMachineStaleMins = 2.0
 
 # ---------------------------------------------------------------------------
 # 🔴 THE ENQUEUE AND THE REMOVE OF ONE MESSAGE ARE NOT THE SAME STRING, and

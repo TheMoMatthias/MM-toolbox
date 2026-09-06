@@ -2195,7 +2195,8 @@ function Build-Sessions {
             # 🪤 NO DATE ANYWHERE MEANS "COULD NOT TELL" AND STILL DRAWS. The
             # test only ever HIDES something, so it must fire on positive
             # evidence of age and never on the absence of evidence.
-            $qFresh = Test-SRQueueFresh -Rec $qRec -Now $nowDate -MaxHours $SR_QueueStaleHours
+            $qFresh = Test-SRQueueFresh -Rec $qRec -Now $nowDate `
+                            -MaxHours $SR_QueueStaleHours -MachineMins $SR_QueueMachineStaleMins
             if ($qRec -and [int]$qRec.Count -gt 0 -and $qFresh) {
                 $qVis = $V_Show
                 if ([int]$qRec.Mine -gt 0) {
@@ -2493,7 +2494,7 @@ $SR_CtxBadTokens  = 600000
 # A function rather than eleven lines inside Build-Sessions, so the suite can
 # put a stale record and an undated one in front of it and see what it says.
 function Test-SRQueueFresh {
-    param($Rec, [datetime]$Now, [double]$MaxHours)
+    param($Rec, [datetime]$Now, [double]$MaxHours, [double]$MachineMins = 0)
     if (-not $Rec) { return $true }
     $dated = 0
     $young = 0
@@ -2502,7 +2503,14 @@ function Test-SRQueueFresh {
         $at = $null
         try { $at = [datetime]$qi.At } catch { continue }
         $dated++
-        if (($Now - $at).TotalHours -le $MaxHours) { $young++ }
+        # 🪤 THE WINDOW DEPENDS ON WHOSE MESSAGE IT IS. An item that is not
+        # yours is machine traffic the session eats on its next turn, so it is
+        # stale in minutes; one of yours can wait an hour. Passing 0 keeps the
+        # single-window behaviour, which is what the row mark used before the
+        # panel needed this.
+        $limit = $MaxHours
+        if ($MachineMins -gt 0 -and -not $qi.Mine) { $limit = $MachineMins / 60.0 }
+        if (($Now - $at).TotalHours -le $limit) { $young++ }
     }
     if ($dated -le 0) { return $true }
     return ($young -gt 0)
@@ -6253,6 +6261,20 @@ function Update-QueuePanel {
     $it = $ui.SessionList.SelectedItem
     $rec = $null
     if ($it -and $it.Kind -eq 'session' -and $it.Row) { $rec = $it.Row.Q }
+    # 🔴 THIS PANEL HAD NO FRESHNESS GATE AT ALL. The row mark in the sessions
+    # list got one; the strip above the composer - the thing actually on screen
+    # while he types - drew on `Count -gt 0` and nothing else. So the phantom he
+    # screenshotted was showing in the one place he could not miss it.
+    #
+    # 🪤 IT GATES BEFORE THE SIGNATURE IS BUILT, deliberately. The note below
+    # records that staleness has to be part of the signature or the panel keeps
+    # a picture that has stopped being true; the same argument applies to
+    # whether the panel should be there at all, so this runs first and the
+    # signature is computed from what survives.
+    if ($rec -and -not (Test-SRQueueFresh -Rec $rec -Now (Get-Date) `
+                            -MaxHours $SR_QueueStaleHours -MachineMins $SR_QueueMachineStaleMins)) {
+        $rec = $null
+    }
 
     # 🔴 REBUILT ONLY WHEN THE QUEUE ACTUALLY MOVED. This hangs off
     # Update-SendState, and one of that function's callers is the composer's

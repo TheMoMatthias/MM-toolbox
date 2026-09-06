@@ -6280,23 +6280,34 @@ Write-Host '--- the queue mark ages the message, not the transcript file ---'
 # could only fire on a session that had STOPPED writing - never on the live ones
 # that show a phantom mark. Reported with a screenshot an hour after it shipped.
 $qNow = Get-Date
-function New-QRec { param($Ats, $LastWrite)
-    $items = @()
-    foreach ($a in @($Ats)) { $items += [PSCustomObject]@{ At = $a } }
-    return [PSCustomObject]@{ Items = $items; LastWrite = $LastWrite }
+# 🪤 ITEMS CARRY WHOSE THEY ARE, and the window depends on it: machine traffic
+# is eaten by the session on its next turn, so it is stale in MINUTES; one of
+# his can legitimately wait an hour while a session works.
+function New-QRec { param($Items)
+    $list = @()
+    foreach ($it in @($Items)) { $list += [PSCustomObject]@{ At = $it[0]; Mine = $it[1] } }
+    return [PSCustomObject]@{ Items = $list; LastWrite = $qNow }
 }
+$MINE = $true
+$MACH = $false
 $queueCases = @(
-    @{ N = 'every item hours old';                     Rec = (New-QRec @($qNow.AddHours(-5)) $qNow.AddHours(-5)); Want = $false }
-    @{ N = 'a stale item on a session still writing';  Rec = (New-QRec @($qNow.AddHours(-5)) $qNow);              Want = $false }
-    @{ N = 'an item from three minutes ago';           Rec = (New-QRec @($qNow.AddMinutes(-3)) $qNow);            Want = $true }
-    @{ N = 'one old and one new';                      Rec = (New-QRec @($qNow.AddHours(-5), $qNow.AddMinutes(-3)) $qNow); Want = $true }
-    @{ N = 'an item carrying no date at all';          Rec = (New-QRec @($null) $qNow);                           Want = $true }
-    @{ N = 'a record with no items to date';           Rec = (New-QRec @() $qNow);                                Want = $true }
-    @{ N = 'no record at all';                         Rec = $null;                                               Want = $true }
+    @{ N = 'one of yours, hours old';                  Rec = (New-QRec @(,@($qNow.AddHours(-5),   $MINE))); Want = $false }
+    @{ N = 'one of yours, stale, session still writing';Rec = (New-QRec @(,@($qNow.AddHours(-5),  $MINE))); Want = $false }
+    @{ N = 'one of yours, three minutes ago';           Rec = (New-QRec @(,@($qNow.AddMinutes(-3),$MINE))); Want = $true }
+    @{ N = 'one of yours, one old and one new';         Rec = (New-QRec @(@($qNow.AddHours(-5), $MINE), @($qNow.AddMinutes(-3), $MINE))); Want = $true }
+    @{ N = 'an item carrying no date at all';           Rec = (New-QRec @(,@($null,             $MINE))); Want = $true }
+    @{ N = 'a record with no items to date';            Rec = (New-QRec @());                              Want = $true }
+    @{ N = 'no record at all';                          Rec = $null;                                       Want = $true }
+    # 🔴 THE SCREENSHOT: "1 QUEUED, NONE OF THEM YOURS / a background task
+    # reported back", eight minutes after the notification had been consumed.
+    @{ N = 'a machine notification, eight minutes old'; Rec = (New-QRec @(,@($qNow.AddMinutes(-8), $MACH))); Want = $false }
+    @{ N = 'a machine notification, thirty seconds old';Rec = (New-QRec @(,@($qNow.AddSeconds(-30),$MACH))); Want = $true }
+    # ...and the same age is still YOURS, which is the whole point of splitting them.
+    @{ N = 'one of yours, eight minutes old';           Rec = (New-QRec @(,@($qNow.AddMinutes(-8), $MINE))); Want = $true }
 )
 foreach ($qc in $queueCases) {
     $got = $true
-    try { $got = [bool](Test-SRQueueFresh -Rec $qc.Rec -Now $qNow -MaxHours 1.0) }
+    try { $got = [bool](Test-SRQueueFresh -Rec $qc.Rec -Now $qNow -MaxHours 1.0 -MachineMins 2.0) }
     catch { Fail "Test-SRQueueFresh threw on $($qc.N): $($_.Exception.Message)"; continue }
     if ($got -ne $qc.Want) {
         if ($qc.Want) { Fail "$($qc.N) was called stale - a mark only ever HIDES, so it must never fire on the absence of evidence" }
