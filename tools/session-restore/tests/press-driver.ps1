@@ -254,9 +254,19 @@ if ("$($script:railMenuDir)" -eq 'stale') {
 } else { Pass 'right-clicking a non-project clears the menu target instead of keeping the last one' }
 
 # ---- the sub-agent document: open it, and close it -------------------------
+# 🪤 NOT Get-RowSubAgents, AND THAT IS WHY THIS SECTION USED TO ABSTAIN. That
+# helper reads $script:subAgents, a cache filled by a BACKGROUND PASS that never
+# runs in a spliced window - so it answered "no sub-agents anywhere" on a machine
+# holding hundreds of them, and the abstain was my finder rather than the
+# controls being unreachable. Get-SRSubAgents reads the meta files itself.
+# See [[feedback_cache_under_its_own_view]]: a cache consulted outside the loop
+# that fills it reports the state you already had, which here was none.
 $subRow = $null; $sub = $null
 foreach ($m in $script:model) {
-    $ss = @(Get-RowSubAgents $m)
+    $jp = "$($m.S.jsonl)"
+    if (-not $jp -or -not (Test-Path -LiteralPath $jp)) { continue }
+    $ss = @()
+    try { $ss = @(Get-SRSubAgents -JsonlPath $jp) } catch { continue }
     foreach ($one in $ss) {
         if ("$($one.Path)" -and (Test-Path -LiteralPath "$($one.Path)")) { $subRow = $m; $sub = $one; break }
     }

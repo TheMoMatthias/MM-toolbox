@@ -359,9 +359,9 @@ suite already covers.
 
 | verdict | count |
 |---|---|
-| WORKS | 68 |
-| UNPROVEN | 22 |
-| UNPRESSABLE-BY-POLICY | 20 |
+| WORKS | 70 |
+| UNPROVEN | 19 |
+| UNPRESSABLE-BY-POLICY | 21 |
 | BROKEN | 0 |
 | INERT | 0 |
 | split verdict (Shift+Enter WORKS / Enter policy-blocked) | 2 |
@@ -372,8 +372,22 @@ given a handler → WORKS; `RailSort`, `ListSort`, `RailOnlyLive`, `RailClear` U
 pressed → WORKS; `Rescan` UNPROVEN → **UNPRESSABLE-BY-POLICY**, because reading it more
 carefully showed it can write the registry.
 
-Of the 22 still unproven, **17 cannot be reached at all** — seven need a shown window,
-ten have no handler. The honest remaining figure is **five**.
+Also moved: `Show-AgentDoc` and `Close-AgentDoc` UNPROVEN → pressed → WORKS; the
+round-navigation buttons UNPROVEN → **UNPRESSABLE-BY-POLICY** (they send arrow keys into a
+live session — see the row).
+
+⚠️ **That agent-doc pair abstained on its first run for a reason worth keeping.** The test
+looked for sub-agents through `Get-RowSubAgents`, which reads `$script:subAgents` — a cache
+filled by a background pass that never runs in a spliced window. It answered "none anywhere"
+on a machine holding hundreds, and the section reported an honest abstain about the wrong
+thing entirely. `Get-SRSubAgents` reads the meta files itself and both controls passed
+immediately. A cache consulted outside the loop that fills it reports the state you already
+had, which here was none.
+
+Of the 19 still unproven, **17 cannot be reached at all** — seven need a shown window, ten
+have no handler. The honest remaining figure is **two**: the agent-doc fold (the same handler
+shape as the pane fold, which is covered) and the `RailList` right-click's project branch,
+which needs a generated item container.
 
 Plus §17, which lists the surfaces that look like controls and carry no handler by design
 — recorded so a later sweep does not re-open them as findings.
