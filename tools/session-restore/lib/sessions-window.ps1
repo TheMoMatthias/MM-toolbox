@@ -9448,8 +9448,17 @@ function Complete-SRDrop { param($E, $Box, [string]$What, [switch]$Named)
 # keep the path and say why rather than swallow the drag.
 #
 # 🪤 PLAIN SCRIPTBLOCKS, NAMING $ui - no .GetNewClosure() factory. A closure
-# runs in its own dynamic module, where `$script:x = ...` writes to THAT module
-# and is invisible to the rest of this file. Measured while building this.
+# runs in its own dynamic module, where a "$script:" assignment inside it
+# writes to THAT module and is invisible to the rest of this file. Measured.
+#
+# 🪤 AND THAT NAME IS NOT SPELLED OUT ABOVE, ON PURPOSE. New-GuiHarness
+# harvests every "$script:" name in THIS FILE - COMMENTS INCLUDED - and
+# refuses to build the gui2 harness if the driver assigns any of them. The
+# first version of this note illustrated the point with a worked example,
+# which made a one-letter name GUI state - and gui2-driver.ps1 has looped over
+# a variable of that name since long before any of this. The suite then would
+# not BUILD: it threw on the clash before a single assertion ran. Do not put a
+# literal "$script:" followed by a name into prose anywhere in this file.
 $ui.SendDock.Add_PreviewDragOver({ param($s, $e) Set-SRDropEffect $e })
 $ui.SendDock.Add_PreviewDrop({ param($s, $e) Complete-SRDrop -E $e -Box $ui.SendBox -What 'the message box' -Named })
 # The other two boxes that type into a session, on the same terms. Both live

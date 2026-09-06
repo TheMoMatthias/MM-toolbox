@@ -19,7 +19,6 @@
                  "manager sort header: HdrName":  25.558738,
                  "sessions strip: change the sort order":  39.276841,
                  "type one letter into the SESSIONS search box":  55.957985,
-                 "type one letter into the search box (includes the 180 ms debounce)":  74.603033,
                  "open a folded block of steps (the FIRST open - the lazy build)":  10.091401,
                  "CONTROL: Build-Rail + Build-Sessions called directly (no ListBox)":  24.334662,
                  "load earlier (doubles the transcript tail)":  85.898963,

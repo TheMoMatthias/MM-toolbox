@@ -1300,8 +1300,11 @@ if ($ui.PaneDoc.Document) {
     Pump-Px
     if ($pxOn -and $pxOff) {
         $pxSave = $pxOn.Laid - $pxOff.Laid
+        # 🔑 KEPT, NOT JUST PRINTED. The gate at the end of the run needs this
+        # number and did not have it - see the note there.
+        $script:pxAbScreens = $(if ($pxSv2 -and $pxSv2.ViewportHeight -gt 0) { $pxExtent / $pxSv2.ViewportHeight } else { 0 })
         Note ("the A/B ran over {0:N0} px of document ({1:N1} screens). The saving scales with this - do not compare the ratio between runs without it." -f `
-              $pxExtent, $(if ($pxSv2 -and $pxSv2.ViewportHeight -gt 0) { $pxExtent / $pxSv2.ViewportHeight } else { 0 }))
+              $pxExtent, $script:pxAbScreens)
         if ($pxSave -gt 5) {
             Note ("WHOLE-WINDOW, TWO PASSES: {0,6:N1} -> {1,6:N1} ms   delta {2,6:N1} ms   ratio {3:N2}x" -f `
                   $pxOn.Laid, $pxOff.Laid, $pxSave, ($pxOn.Laid / [Math]::Max($pxOff.Laid, 0.001)))
@@ -1996,10 +1999,23 @@ if ($pxOnly) {
             # so a threshold set near the big-document value fails honestly on a
             # small one. This is a "has the A/B stopped separating at all" guard,
             # not a speed gate, and it is set where only ~1,0 trips it.
-            if ($pxAbRatio -lt 1.25) {
-                Fail ("the optimal-paragraph A/B now reads {0:N2}x. At this value the A/B is no longer demonstrating anything and the figures quoted in this file's header have stopped being evidence." -f $pxAbRatio)
+            # 🔴 AND THE THRESHOLD HAS A FLOOR IT WAS CALIBRATED AGAINST. The
+            # note two lines above says "measured 1,65x over 2,9 screens against
+            # 3,7x over 8,9" and the Note beside the A/B itself says do not
+            # compare the ratio between runs without the document size - and
+            # then this compared it anyway. Measured on a run that failed here:
+            # 1,24x over 1,7 SCREENS, against a previous run of 2,45x over 6,4.
+            # The conversation whose tail happens to be loaded is not something
+            # this harness picks, so below the smallest size the threshold was
+            # ever calibrated on, the gate cannot tell a collapsed A/B from a
+            # short document. It abstains there rather than reporting the
+            # fixture as a regression.
+            if ($script:pxAbScreens -gt 0 -and $script:pxAbScreens -lt 2.5) {
+                Note ("the optimal-paragraph A/B read {0:N2}x over only {1:N1} screens - below the 2,9 screens the 1,25 threshold was calibrated on, so it is not gated this run." -f $pxAbRatio, $script:pxAbScreens)
+            } elseif ($pxAbRatio -lt 1.25) {
+                Fail ("the optimal-paragraph A/B now reads {0:N2}x over {1:N1} screens. At this value the A/B is no longer demonstrating anything and the figures quoted in this file's header have stopped being evidence." -f $pxAbRatio, $script:pxAbScreens)
             } else {
-                Note ("the optimal-paragraph A/B still separates: {0:N2}x." -f $pxAbRatio)
+                Note ("the optimal-paragraph A/B still separates: {0:N2}x over {1:N1} screens." -f $pxAbRatio, $script:pxAbScreens)
             }
         }
     }

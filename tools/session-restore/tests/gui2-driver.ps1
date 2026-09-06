@@ -2349,6 +2349,320 @@ else { Pass 'the primitive sends exactly one Esc, and only into a process it has
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- every box you can type into takes a file dragged onto it ---'
+# ===========================================================================
+# 🔴 THE DEFAULT IS THE BUG, AND IT IS NOT THE ONE ANYBODY GUESSES.
+# TextBox.AllowDrop defaults to FALSE - measured; RichTextBox defaults to True -
+# so before the markup said otherwise, this window simply never offered itself
+# as a drop target and a dragged file did nothing at all, silently. That is why
+# this reads the property off the REAL controls rather than trusting the markup:
+# a fabricated element would pass a check the shipped one fails.
+foreach ($zzN in 'SendDock', 'SendBox', 'AskFreeBox', 'AskFree', 'CastBox', 'CastText') {
+    if (-not $ui[$zzN]) { Fail "$zzN is not a named element - the drop targets and the markup disagree" }
+    elseif (-not $ui[$zzN].AllowDrop) { Fail "$zzN has AllowDrop=False, so Windows will not offer it a drop" }
+    else { Pass "$zzN accepts a drop" }
+}
+
+# --- how a drop is performed on a window that is never shown ---------------
+# 🔴 THE DROP IS SYNTHESISED, AND THE HALF THAT IS NOT COVERED IS NAMED. An
+# unshown window has no PresentationSource, so a real drag cannot be performed.
+# But DragEventArgs CAN be built - its only constructor is non-public and
+# reflection reaches it - and raised down the real route, which fires the real
+# handlers on the real elements with real data.
+$zzDropCtor = @([System.Windows.DragEventArgs].GetConstructors(([System.Reflection.BindingFlags]'NonPublic,Instance')))[0]
+function New-SRDropArgs { param([string[]]$Paths, $Target, [string]$Keys = 'None', [string]$Format = 'FileDrop')
+    $zzDo = New-Object System.Windows.DataObject
+    if ($Format -eq 'FileDrop') { $zzDo.SetData([System.Windows.DataFormats]::FileDrop, [string[]]$Paths) }
+    else { $zzDo.SetData([System.Windows.DataFormats]::UnicodeText, ($Paths -join ' ')) }
+    # 🪤 New-Object hands back a PSObject, and ConstructorInfo.Invoke will not
+    # unwrap one into a Point parameter - it throws. Build an object[] and CAST
+    # every element. [[feedback-psobject-into-wpf]]
+    $zzA = New-Object object[] 5
+    $zzA[0] = [System.Windows.IDataObject]$zzDo
+    $zzA[1] = [System.Windows.DragDropKeyStates]$Keys
+    $zzA[2] = [System.Windows.DragDropEffects]'All'
+    $zzA[3] = [System.Windows.DependencyObject]$Target
+    $zzA[4] = [System.Windows.Point]::new(5.0, 5.0)
+    return $zzDropCtor.Invoke($zzA)
+}
+function Send-SRDrop { param($On, $Target, [string[]]$Paths, [string]$Keys = 'None', [string]$Format = 'FileDrop', [switch]$OverOnly)
+    $zzE = New-SRDropArgs -Paths $Paths -Target $Target -Keys $Keys -Format $Format
+    $zzE.RoutedEvent = $(if ($OverOnly) { [System.Windows.DragDrop]::PreviewDragOverEvent }
+                         else { [System.Windows.DragDrop]::PreviewDropEvent })
+    $On.RaiseEvent($zzE)
+    return $zzE
+}
+function Send-SRRawDrop { param($Data, [switch]$OverOnly)
+    $zzArr = New-Object object[] 5
+    $zzArr[0] = [System.Windows.IDataObject]$Data
+    $zzArr[1] = [System.Windows.DragDropKeyStates]'None'
+    $zzArr[2] = [System.Windows.DragDropEffects]'All'
+    $zzArr[3] = [System.Windows.DependencyObject]$ui.SendBox
+    $zzArr[4] = [System.Windows.Point]::new(5.0, 5.0)
+    $zzR = $zzDropCtor.Invoke($zzArr)
+    $zzR.RoutedEvent = $(if ($OverOnly) { [System.Windows.DragDrop]::PreviewDragOverEvent }
+                         else { [System.Windows.DragDrop]::PreviewDropEvent })
+    $ui.SendBox.RaiseEvent($zzR)
+    return $zzR
+}
+function New-SRFormatData { param([hashtable]$Formats)
+    $zzD = New-Object System.Windows.DataObject
+    foreach ($zzF in $Formats.Keys) { $zzD.SetData($zzF, $Formats[$zzF]) }
+    return $zzD
+}
+Note 'whether Windows offers this window the drop at all, and what the cursor looks like on the way, cannot be posed here - that half is a person dragging one file in once'
+Note 'nor can the bubbling Drop be raised: TextEditorDragDrop.OnClearState is a class handler on it with handledEventsToo=True and it dereferences drag state that only exists during a real OLE drag - which is the second reason the handlers live on the Preview events'
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- what a dragged file actually types into the box ---'
+# ===========================================================================
+# A bare path reads as part of a sentence, which is what the box is for. A path
+# with a space in it has to be quoted or it reads as two. Several files are
+# separated by one space, the same as a multi-file drag into a terminal.
+foreach ($zzC in @(
+    @(@('C:\Users\mauri\notes.txt'),               'C:\Users\mauri\notes.txt',            'one plain path'),
+    @(@('C:\My Docs\a b.md'),                      '"C:\My Docs\a b.md"',                 'a path with spaces is quoted'),
+    @(@('C:\a.txt', 'C:\My Docs\b.md', 'D:\c.py'), 'C:\a.txt "C:\My Docs\b.md" D:\c.py',  'three files, space separated'),
+    @(@('C:\Users\mauri\Documents\MM-toolbox'),    'C:\Users\mauri\Documents\MM-toolbox', 'a directory, exactly as a file'),
+    @(@('\\nas\share\x.txt'),                      '\\nas\share\x.txt',                   'a UNC path is not mangled'),
+    @(@('', 'C:\a.txt', '   '),                    'C:\a.txt',                            'blanks are dropped')
+)) {
+    $zzGot = Format-SRDropPaths -Paths ([string[]]$zzC[0])
+    if ($zzGot -ceq $zzC[1]) { Pass ("{0}: {1}" -f $zzC[2], $zzGot) }
+    else { Fail ("{0}: got [{1}] wanted [{2}]" -f $zzC[2], $zzGot, $zzC[1]) }
+}
+
+# 🪤 EVERYTHING BELOW TYPES INTO THE OPERATOR'S OWN COMPOSER, which may have
+# a half-written message in it right now, and into the answer box, whose dirty
+# flag decides whether a repaint may overwrite it. All of it is put back in the
+# finally - a test that leaves the composer dirty is found three sections later
+# by something unrelated. [[feedback-test-accidents]]
+$zzSavedText = "$($ui.SendBox.Text)"
+$zzSavedStart = 0
+$zzSavedLen = 0
+try { $zzSavedStart = [int]$ui.SendBox.SelectionStart; $zzSavedLen = [int]$ui.SendBox.SelectionLength } catch { }
+$zzSavedAsk = "$($ui.AskFree.Text)"
+$zzSavedDirty = $script:askFreeDirty
+$zzSavedWriting = $script:askFreeWriting
+
+try {
+    # =======================================================================
+    Write-Host ''
+    Write-Host '--- a dropped path joins the sentence you were already writing ---'
+    # =======================================================================
+    # AT THE CARET, NOT OVER THE TOP: the box holds a message being written and
+    # a drop that replaced it would throw away the sentence it was meant to join.
+    foreach ($zzP in @(
+        @('',              0, 0, @('C:\a.txt'),                'C:\a.txt ',                   9,  'an empty box'),
+        @('look at',       7, 0, @('C:\a.txt'),                'look at C:\a.txt ',           17, 'a space is added after a word'),
+        @('look at ',      8, 0, @('C:\a.txt'),                'look at C:\a.txt ',           17, 'and not doubled when one is there'),
+        @('read  and stop', 5, 0, @('C:\a.txt'),               'read C:\a.txt and stop',      13, 'at the caret, mid-sentence'),
+        @('read XXX now',  5, 3, @('C:\a.txt'),                'read C:\a.txt now',           13, 'a selection is replaced'),
+        @('diff',          4, 0, @('C:\a.txt', 'C:\b b.txt'),  'diff C:\a.txt "C:\b b.txt" ', 27, 'two files after a word')
+    )) {
+        $ui.SendBox.Text = $zzP[0]
+        $ui.SendBox.Select([int]$zzP[1], [int]$zzP[2])
+        $null = Add-SRDroppedPaths -Box $ui.SendBox -Paths ([string[]]$zzP[3])
+        if (("$($ui.SendBox.Text)" -ceq $zzP[4]) -and ([int]$ui.SendBox.CaretIndex -eq [int]$zzP[5])) {
+            Pass ("{0}: [{1}] caret={2}" -f $zzP[6], $ui.SendBox.Text, $ui.SendBox.CaretIndex)
+        } else {
+            Fail ("{0}: got [{1}] caret={2}, wanted [{3}] caret={4}" -f $zzP[6], $ui.SendBox.Text, $ui.SendBox.CaretIndex, $zzP[4], $zzP[5])
+        }
+    }
+
+    # =======================================================================
+    Write-Host ''
+    Write-Host '--- dragging with shift held cannot take the file off the disk ---'
+    # =======================================================================
+    # 🔴 THIS IS THE ASSERTION THAT PROTECTS A FILE, not a UI detail. Shift is
+    # the Windows modifier for MOVE, and it is the key the operator said he holds
+    # out of habit. A target that answers Move to a shell drag is telling Explorer
+    # the file has been moved - Explorer then DELETES THE ORIGINAL. The handler
+    # never reads KeyStates or AllowedEffects at all; it answers Copy and only
+    # Copy, whatever is held.
+    foreach ($zzK in 'None', 'ShiftKey', 'ControlKey', 'AltKey') {
+        $zzE = Send-SRDrop -On $ui.SendBox -Target $ui.SendBox -Paths @('C:\a.txt') -Keys $zzK -OverOnly
+        if ($zzE.Effects -eq [System.Windows.DragDropEffects]::Copy) { Pass "a drag held with $zzK is answered Copy" }
+        else { Fail "a drag held with $zzK was answered $($zzE.Effects) - Move here can delete the operator's file" }
+    }
+    $zzE = Send-SRDrop -On $ui.SendBox -Target $ui.SendBox -Paths @('C:\a.txt') -OverOnly
+    if ($zzE.Handled) { Pass 'the drag is handled in the tunnel, before the TextBox editor answers None' }
+    else { Fail 'PreviewDragOver did not handle the drag - the editor answers None and an OLE source told None withdraws the drop entirely' }
+
+    # =======================================================================
+    Write-Host ''
+    Write-Host '--- a drop on the strip around the box still lands in the box ---'
+    # =======================================================================
+    # The handlers hang on the dock, not the TextBox: the strip is 18px of
+    # padding wider on every side, and a drop on that margin is a drop the
+    # operator meant. It is also what still works when the box is disabled.
+    $ui.SendBox.Text = 'look at'
+    $ui.SendBox.Select(7, 0)
+    $null = Send-SRDrop -On $ui.SendBox -Target $ui.SendBox -Paths @('C:\a.txt', 'C:\My Docs\b.md')
+    if ("$($ui.SendBox.Text)" -ceq 'look at C:\a.txt "C:\My Docs\b.md" ') { Pass ("a drop on the box types: {0}" -f $ui.SendBox.Text) }
+    else { Fail ("a drop on the box gave [{0}]" -f $ui.SendBox.Text) }
+
+    $ui.SendBox.Text = ''
+    $ui.SendBox.Select(0, 0)
+    $null = Send-SRDrop -On $ui.SendDock -Target $ui.SendDock -Paths @('C:\x.txt')
+    if ("$($ui.SendBox.Text)" -ceq 'C:\x.txt ') { Pass 'a drop on the strip around the box lands in the box' }
+    else { Fail ("a drop on the dock gave [{0}]" -f $ui.SendBox.Text) }
+
+    # =======================================================================
+    Write-Host ''
+    Write-Host '--- dragging something that is not a file leaves the box alone ---'
+    # =======================================================================
+    # 🔴 THIS PATH EXISTS WHETHER IT IS DESIGNED FOR OR NOT. A selection of
+    # text out of a browser, a URL, a mail item, a source that lies about what it
+    # holds or throws when asked - all of them reach the same handler, on the UI
+    # thread, where an exception is a crash dialog in front of thirty live
+    # sessions. Not a file: DECLINED, so the TextBox keeps the behaviour it
+    # already had. Claims to be a file and is not: TAKEN, so nothing else acts on
+    # a broken payload, and reported.
+    if (-not ('SRThrowingData' -as [type])) {
+        Add-Type -ReferencedAssemblies PresentationCore, WindowsBase, PresentationFramework -TypeDefinition @'
+using System;
+public class SRThrowingData : System.Windows.IDataObject {
+    public object GetData(string f) { throw new InvalidOperationException("boom"); }
+    public object GetData(Type f) { throw new InvalidOperationException("boom"); }
+    public object GetData(string f, bool a) { throw new InvalidOperationException("boom"); }
+    public bool GetDataPresent(string f) { throw new InvalidOperationException("boom"); }
+    public bool GetDataPresent(Type f) { throw new InvalidOperationException("boom"); }
+    public bool GetDataPresent(string f, bool a) { throw new InvalidOperationException("boom"); }
+    public string[] GetFormats() { throw new InvalidOperationException("boom"); }
+    public string[] GetFormats(bool a) { throw new InvalidOperationException("boom"); }
+    public void SetData(object d) { } public void SetData(string f, object d) { }
+    public void SetData(Type f, object d) { } public void SetData(string f, object d, bool a) { }
+}
+public class SRLyingData : System.Windows.IDataObject {
+    public object GetData(string f) { return null; }
+    public object GetData(Type f) { return null; }
+    public object GetData(string f, bool a) { return null; }
+    public bool GetDataPresent(string f) { return true; }
+    public bool GetDataPresent(Type f) { return true; }
+    public bool GetDataPresent(string f, bool a) { return true; }
+    public string[] GetFormats() { return new string[0]; }
+    public string[] GetFormats(bool a) { return new string[0]; }
+    public void SetData(object d) { } public void SetData(string f, object d) { }
+    public void SetData(Type f, object d) { } public void SetData(string f, object d, bool a) { }
+}
+'@
+    }
+    foreach ($zzH in @(
+        @('a text selection',     (New-SRFormatData @{ 'UnicodeText' = 'some selected words' })),
+        @('a URL from a browser', (New-SRFormatData @{ 'UniformResourceLocator' = 'https://example.com/x'; 'UnicodeText' = 'https://example.com/x' })),
+        @('a mail item',          (New-SRFormatData @{ 'FileGroupDescriptorW' = 'x'; 'FileContents' = 'y' })),
+        @('html',                 (New-SRFormatData @{ 'HTML Format' = '<b>hi</b>' })),
+        @('a source that throws', (New-Object SRThrowingData))
+    )) {
+        $ui.SendBox.Text = 'untouched'
+        $ui.SendBox.Select(9, 0)
+        $zzOk = $true
+        $zzE = $null
+        try {
+            $zzE = Send-SRRawDrop -Data $zzH[1]
+            $null = Send-SRRawDrop -Data $zzH[1] -OverOnly
+        } catch { Fail ("{0}: threw out of the handler - {1}" -f $zzH[0], $_.Exception.Message); $zzOk = $false }
+        if ($zzOk) {
+            if ("$($ui.SendBox.Text)" -ceq 'untouched' -and -not $zzE.Handled) { Pass ("{0}: declined, box untouched" -f $zzH[0]) }
+            else { Fail ("{0}: text=[{1}] handled={2} - a non-file drop was taken" -f $zzH[0], $ui.SendBox.Text, $zzE.Handled) }
+        }
+    }
+    foreach ($zzH in @(
+        @('an empty FileDrop',  (New-SRFormatData @{ 'FileDrop' = ([string[]]@()) })),
+        @('a source that lies', (New-Object SRLyingData))
+    )) {
+        $ui.SendBox.Text = 'untouched'
+        $ui.SendBox.Select(9, 0)
+        $zzE = Send-SRRawDrop -Data $zzH[1]
+        if ("$($ui.SendBox.Text)" -ceq 'untouched' -and $zzE.Handled) { Pass ("{0}: taken, reported, box untouched" -f $zzH[0]) }
+        else { Fail ("{0}: text=[{1}] handled={2}" -f $zzH[0], $ui.SendBox.Text, $zzE.Handled) }
+    }
+
+    # =======================================================================
+    Write-Host ''
+    Write-Host '--- a dropped path survives the next repaint of the question panel ---'
+    # =======================================================================
+    # 🔴 A DROP IS NOT TYPING, WHICH IS EXACTLY WHY THIS IS MEASURED. The
+    # answer box is re-prefilled by every redraw unless the operator has made it
+    # theirs, and the flag that says so is set by TextChanged when
+    # $script:askFreeWriting is false. A drop assigns .Text outside any writing
+    # window, so it marks the box dirty the same way a keystroke does - through
+    # the same handler, not a second mechanism. If that ever stops being true the
+    # path appears, the next probe tick repaints, and it is gone with nothing on
+    # screen to say why - which is the defect that guard was written for.
+    $script:askFreeDirty = $false
+    $null = Send-SRDrop -On $ui.AskFreeBox -Target $ui.AskFree -Paths @('C:\a.txt')
+    if ("$($ui.AskFree.Text)".Contains('C:\a.txt') -and $script:askFreeDirty) {
+        Pass 'a path dropped into the answer box marks it dirty, so a redraw cannot wipe it'
+    } else {
+        Fail ("a dropped path left the answer box clean (dirty={0}) - the next redraw would wipe it" -f $script:askFreeDirty)
+    }
+} finally {
+    # Put back everything above touched, whatever happened above.
+    try {
+        $ui.SendBox.Text = $zzSavedText
+        $zzAt = [Math]::Min($zzSavedStart, $ui.SendBox.Text.Length)
+        $ui.SendBox.Select($zzAt, [Math]::Min($zzSavedLen, $ui.SendBox.Text.Length - $zzAt))
+    } catch { }
+    try {
+        $script:askFreeWriting = $true
+        $ui.AskFree.Text = $zzSavedAsk
+    } catch { } finally { $script:askFreeWriting = $zzSavedWriting }
+    $script:askFreeDirty = $zzSavedDirty
+}
+if ("$($ui.SendBox.Text)" -ceq $zzSavedText -and "$($ui.AskFree.Text)" -ceq $zzSavedAsk) {
+    Pass 'the composer and the answer box were put back exactly as they were found'
+} else {
+    Fail 'the drop tests did not restore the boxes they typed into'
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- nothing a dropped file can reach is able to send anything ---'
+# ===========================================================================
+# 🔴 THE ONE OUTCOME THAT IS NOT ALLOWED. This window types into and sends to
+# around thirty live sessions the operator cannot relaunch. The behavioural
+# checks above prove the text ARRIVES in the box; these prove there is no route
+# from a drop to a live session's keyboard at all - which is not something a
+# headless test can demonstrate by doing it.
+$zzA1 = $winSrc.IndexOf('# DRAGGING A FILE INTO THE MESSAGE', [System.StringComparison]::Ordinal)
+$zzB1 = $winSrc.IndexOf('# THE INTERRUPT.', [System.StringComparison]::Ordinal)
+$zzDropRaw = $(if ($zzA1 -ge 0 -and $zzB1 -gt $zzA1) { $winSrc.Substring($zzA1, $zzB1 - $zzA1) } else { '' })
+# 🪤 THE COMMENTS GO FIRST, and both of the checks below failed on their first
+# run without it. The block's own prose says "NEVER $E.AllowedEffects" and "no
+# .GetNewClosure()" - a substring search cannot tell a WARNING from the thing it
+# warns about, so it read the warnings as the offence. Same reason Get-SRBodyOf
+# strips them. Do not delete this line to simplify the check.
+$zzDropSrc = ((($zzDropRaw -split "`n") | ForEach-Object { ($_ -split '#', 2)[0] }) -join "`n")
+if ($zzDropSrc.Length -lt 500) {
+    Fail 'the drop block could not be read out of the source - this check inspected nothing'
+} else {
+    $zzSends = @()
+    foreach ($zzBad in @('Send-SRSessionInput', 'Start-AskSend', 'Invoke-Send', 'Invoke-AskTyped',
+                         'Send-SRQuestionAnswer', 'Send-SRInterrupt', 'Invoke-Compact', 'SendKeys')) {
+        if ($zzDropSrc.IndexOf($zzBad, [System.StringComparison]::Ordinal) -ge 0) { $zzSends += $zzBad }
+    }
+    if ($zzSends.Count) { Fail ("the drop path can reach {0} - a dropped path could be SENT" -f ($zzSends -join ', ')) }
+    else { Pass ("nothing in the {0} characters of the drop path can send anything" -f $zzDropSrc.Length) }
+
+    if ($zzDropSrc.IndexOf('AllowedEffects', [System.StringComparison]::Ordinal) -ge 0) {
+        Fail 'the drop path reads $E.AllowedEffects - a shift-drag would be answered Move and Explorer would delete the file'
+    } else { Pass 'the effect is never taken from the drag source' }
+
+    if (([regex]::Matches($zzDropSrc, 'DragDropEffects\]::Copy')).Count -lt 2) {
+        Fail 'the drag-over and the drop do not both pin the effect to Copy'
+    } else { Pass 'both the drag-over and the drop pin the effect to Copy' }
+
+    if ($zzDropSrc.IndexOf('GetNewClosure', [System.StringComparison]::Ordinal) -ge 0) {
+        Fail 'a drop handler is a closure - $script: inside one writes to its own module, not this file'
+    } else { Pass 'the drop handlers are plain scriptblocks over $ui' }
+}
+
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- you can see that something is working without leaving the transcript ---'
 # ===========================================================================
 # 🔴 "I HAVE NO INDICATION EXCEPT RUNNING AT THE TOP OF THE SESSION, IF
