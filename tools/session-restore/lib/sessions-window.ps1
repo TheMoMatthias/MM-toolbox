@@ -10358,10 +10358,9 @@ Update-Frame
 # the list. The three panes are Tab stops in reading order.
 $window.Add_PreviewKeyDown({
     param($sender, $e)
-    if ($e.Key -eq 'Escape') {
-        if ($ui.Search.IsKeyboardFocusWithin -and $ui.Search.Text) { $ui.Search.Text = ''; $e.Handled = $true; return }
-        $null = $ui.SessionList.Focus(); $e.Handled = $true; return
-    }
+    # 🔴 ESCAPE MOVED BELOW THE TYPING GUARD. It was checked FIRST, so pressing
+    # it while the cursor was in any box other than the header Search threw the
+    # focus out to the sessions list and lost the box you were in.
     # Ctrl+N is checked BEFORE the typing guard: a new session is worth starting
     # even when the cursor happens to be in the search box, and no text field
     # wants Ctrl+N for itself.
@@ -10375,7 +10374,44 @@ $window.Add_PreviewKeyDown({
         if ($e.Key -eq 'D1' -or $e.Key -eq 'NumPad1') { Invoke-ColumnFold -Which 'rail'; $e.Handled = $true; return }
         if ($e.Key -eq 'D2' -or $e.Key -eq 'NumPad2') { Invoke-ColumnFold -Which 'list'; $e.Handled = $true; return }
     }
-    if ($ui.Search.IsKeyboardFocusWithin -or $ui.SendBox.IsKeyboardFocusWithin) { return }
+    # 🔴 THE TYPING GUARD NAMED TWO BOXES AND THIS WINDOW HAS NINE. Everything
+    # below is a bare-letter shortcut, and PreviewKeyDown TUNNELS - it runs
+    # before the focused TextBox ever sees the key - so seven boxes were having
+    # their keystrokes eaten by shortcuts: RailSearch, ListSearch, CastText,
+    # SetName, SetAllow, SetDeny and AskFree.
+    #
+    # Measured by the control audit by invoking this delegate with neither named
+    # box focused, which is exactly the state a focused RailSearch produces:
+    # typing `hello` into the broadcast box yields `heo`, and EACH swallowed `l`
+    # doubled the transcript tail budget (98304 -> 196608 -> 393216) and rebuilt
+    # the reading pane. `/` jumped the focus to the header search mid-word. On
+    # the manage surface `o` toggled showOlder at 174,4 ms a press and space
+    # ticked whatever row was selected.
+    #
+    # 🪤 ASK THE FOCUSED ELEMENT WHAT IT IS, DO NOT LIST THE BOXES. A list is
+    # how this broke: it was correct when the window had two text boxes and
+    # silently wrong for every one added afterwards. TextBoxBase covers TextBox
+    # and RichTextBox; PasswordBox is not a TextBoxBase and has to be named.
+    # The two original tests stay as an OR because IsKeyboardFocusWithin also
+    # catches focus sitting on a template part rather than on the box itself.
+    $fe = [System.Windows.Input.Keyboard]::FocusedElement
+    $typing = ($fe -is [System.Windows.Controls.Primitives.TextBoxBase]) -or
+              ($fe -is [System.Windows.Controls.PasswordBox]) -or
+              $ui.Search.IsKeyboardFocusWithin -or $ui.SendBox.IsKeyboardFocusWithin
+    if ($typing) {
+        # The one shortcut a text field does want: Escape empties a search box
+        # if it has anything in it, and otherwise leaves the box.
+        if ($e.Key -eq 'Escape') {
+            foreach ($sb in @($ui.Search, $ui.RailSearch, $ui.ListSearch)) {
+                if ($sb.IsKeyboardFocusWithin -and "$($sb.Text)") {
+                    $sb.Text = ''; $e.Handled = $true; return
+                }
+            }
+            $null = $ui.SessionList.Focus(); $e.Handled = $true; return
+        }
+        return
+    }
+    if ($e.Key -eq 'Escape') { $null = $ui.SessionList.Focus(); $e.Handled = $true; return }
     if ($e.Key -eq 'Oem2') { $null = $ui.Search.Focus(); $e.Handled = $true; return }
     if ($script:surface -eq 'manage') {
         if ($e.Key -eq 'Space') { Toggle-Tick; $e.Handled = $true; return }
