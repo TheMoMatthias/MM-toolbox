@@ -2147,9 +2147,37 @@ function Build-Sessions {
             # 🪤 MinValue MEANS "COULD NOT TELL" AND STILL DRAWS. The staleness
             # test only ever HIDES something, so it must fire on positive
             # evidence of age and never on the absence of evidence.
+            # 🔴 THE AGE THAT MATTERS IS THE MESSAGE'S, NOT THE FILE'S - AND
+            # THE FIRST VERSION OF THIS GATE MEASURED THE FILE. It tested
+            # $qRec.LastWrite, the transcript's own LastWriteTime, so it could
+            # only ever fire on a session that had stopped writing. A LIVE
+            # session writes constantly, which means the gate was structurally
+            # incapable of firing on precisely the conversations that show a
+            # phantom mark. Reported with a screenshot an hour after the fix
+            # shipped: "1 OF YOURS WAITING - OLDEST HAS WAITED 1H", on a message
+            # that had long since been read.
+            #
+            # 🪤 ANY ITEM STILL YOUNG KEEPS THE WHOLE MARK, and the counts are
+            # left alone. $qRec.Items is what the panel dates, and there is no
+            # guarantee it holds every item the count covers - so it is used to
+            # answer "is anything here still current?" and never to re-derive a
+            # number, which is how a conservative gate stays conservative.
+            #
+            # 🪤 NO DATE ANYWHERE MEANS "COULD NOT TELL" AND STILL DRAWS. The
+            # test only ever HIDES something, so it must fire on positive
+            # evidence of age and never on the absence of evidence.
             $qFresh = $true
-            if ($qRec -and $qRec.LastWrite -gt [datetime]::MinValue) {
-                $qFresh = (($nowDate - $qRec.LastWrite).TotalHours -le $SR_QueueStaleHours)
+            if ($qRec) {
+                $qDated = 0
+                $qYoung = 0
+                foreach ($qi in @($qRec.Items)) {
+                    if (-not $qi.At) { continue }
+                    $qAt = $null
+                    try { $qAt = [datetime]$qi.At } catch { continue }
+                    $qDated++
+                    if (($nowDate - $qAt).TotalHours -le $SR_QueueStaleHours) { $qYoung++ }
+                }
+                if ($qDated -gt 0) { $qFresh = ($qYoung -gt 0) }
             }
             if ($qRec -and [int]$qRec.Count -gt 0 -and $qFresh) {
                 $qVis = $V_Show
@@ -3248,31 +3276,42 @@ $script:MonoSize = $script:Type.Pane
 # said should be carrying the difference. `said` has no hue at all: Claude's
 # reply is the document's default voice, and a voice that is everywhere does
 # not need marking.
+# 🔴 ONE SHAPE, COLOUR ONLY - THE OPERATOR'S CALL, AND IT REVERSES THE NOTE
+# THAT USED TO BE HERE. This table gave every kind its own glyph on the
+# reasoning that "every kind is meant to be distinct BEFORE you read it, so the
+# shape carries the difference and the hue reinforces it". Asked what he wanted
+# after living with it: "I like that we have the messages trailing with a little
+# dot on the left side, and maybe we can just simply adopt that and do not use
+# any different shapes or styles just different colours".
+#
+# 🪤 THE CATEGORY IS NOT LOST, BECAUSE IT WAS NEVER ONLY IN THE GLYPH. Every
+# machine block is a FOLD whose caption names it in capitals - HOOK, NOTICE,
+# THINKING, QUEUED, `3 STEPS`, the run summary - sitting at the text column two
+# characters from the marker. The glyph was saying a second time what the words
+# already said. What is left for hue to carry is the three things words do not:
+# whether this is you, another session, or the machine.
+#
+# 🪤 GLYPH IS STILL A CHAR CODE, NEVER A LITERAL. PowerShell 5.1 reads a
+# BOM-less UTF-8 file as ANSI, so a literal dot here would reach the screen as
+# two mojibake characters - the trap that made the group headers read
+# "93 A- 9 armed". One code, sixteen rows, and it stays a code.
+$SR_MarkDot = 0x25CF
 $SR_Marks = @{
-    said     = @{ G = 0x25CF; H = 'TextMid' }  # filled dot   - claude speaking
-    you      = @{ G = 0x203A; H = 'Out'     }  # angle        - you said
-    thinking = @{ G = 0x223C; H = 'Tool'    }  # tilde        - thinking
-    # 🪤 NOT THE SAME DOT AS `said`. The terminal uses one glyph for both and
-    # separates them by colour alone - and in review that is exactly what it
-    # looked like: Claude's marker and a tool call's marker were one shape in
-    # two hues a few degrees apart, indistinguishable at 11px on a dark ground.
-    # Every kind is meant to be distinct BEFORE you read it, so the shape
-    # carries the difference and the hue reinforces it.
-    run      = @{ G = 0x25A0; H = 'Tool'    }  # filled square- a tool call
-    result   = @{ G = 0x2514; H = 'Tool'    }  # corner       - its result
-    system   = @{ G = 0x00B7; H = 'Tool'    }  # middle dot   - a notice
-    hook     = @{ G = 0x25C6; H = 'Tool'    }  # diamond      - a hook fired
-    file     = @{ G = 0x2261; H = 'Tool'    }  # triple bar   - files re-read
-    asked    = @{ G = 0x003F; H = 'Ask'     }  # question     - you answered
-    queued   = @{ G = 0x00BB; H = 'Out'     }  # guillemet    - queued input
-    compact  = @{ G = 0x2014; H = 'Tool'    }  # em dash      - the break
-    agent    = @{ G = 0x0040; H = 'Tool'    }  # at           - a sub-agent
-    shell    = @{ G = 0x0024; H = 'Tool'    }  # dollar       - a background shell
-    # ONE CATEGORY, TWO DIRECTIONS. Session-to-session traffic is a single kind
-    # of event and the arrow says which way it went, so it takes one hue and
-    # two glyphs rather than two hues you would have to learn separately.
-    msgin    = @{ G = 0x2190; H = 'In'      }  # left arrow   - a message arrived
-    msgout   = @{ G = 0x2192; H = 'In'      }  # right arrow  - a message sent
+    said     = @{ G = $SR_MarkDot; H = 'TextMid' }  # claude speaking
+    you      = @{ G = $SR_MarkDot; H = 'Out'     }  # you said
+    thinking = @{ G = $SR_MarkDot; H = 'Tool'    }  # thinking
+    run      = @{ G = $SR_MarkDot; H = 'Tool'    }  # a tool call
+    result   = @{ G = $SR_MarkDot; H = 'Tool'    }  # its result
+    system   = @{ G = $SR_MarkDot; H = 'Tool'    }  # a notice
+    hook     = @{ G = $SR_MarkDot; H = 'Tool'    }  # a hook fired
+    file     = @{ G = $SR_MarkDot; H = 'Tool'    }  # files re-read
+    asked    = @{ G = $SR_MarkDot; H = 'Ask'     }  # you answered
+    queued   = @{ G = $SR_MarkDot; H = 'Out'     }  # queued input
+    compact  = @{ G = $SR_MarkDot; H = 'Tool'    }  # the break
+    agent    = @{ G = $SR_MarkDot; H = 'Tool'    }  # a sub-agent
+    shell    = @{ G = $SR_MarkDot; H = 'Tool'    }  # a background shell
+    msgin    = @{ G = $SR_MarkDot; H = 'In'      }  # a message arrived
+    msgout   = @{ G = $SR_MarkDot; H = 'In'      }  # a message sent
 }
 
 function Get-MarkGlyph { param([string]$Kind)
@@ -4503,9 +4542,13 @@ function Convert-SRSpoken { param([string]$Text)
     # the thing being skipped. Ordinal: a culture-sensitive compare on a tag
     # prefix is the trap CONTEXT.md already records.
     if ($Text.IndexOf('<local-command', [System.StringComparison]::Ordinal) -lt 0 -and
+        $Text.IndexOf('<system-reminder', [System.StringComparison]::Ordinal) -lt 0 -and
         $Text.IndexOf('<command-', [System.StringComparison]::Ordinal) -lt 0) { return $Text }
     $s = $Text
     $s = [regex]::Replace($s, '(?s)<local-command-caveat>.*?</local-command-caveat>', '')
+    # A real message can carry one of these appended to it, and it is context
+    # for the model rather than anything the operator wrote.
+    $s = [regex]::Replace($s, '(?s)<system-reminder>.*?</system-reminder>', '')
     $s = [regex]::Replace($s, '(?s)<command-message>.*?</command-message>', '')
     $s = [regex]::Replace($s, '(?s)<command-args>\s*</command-args>', '')
     $s = [regex]::Replace($s, '(?s)<command-args>(.*?)</command-args>', '$1')
@@ -4658,7 +4701,15 @@ function Add-ReadTurn { param($Doc, $Turn)
                         # DECIDED, and it is the one thing in the document you
                         # should never have to hunt for.
                         $ab = New-ReadText -Text $at -Brush $Pal.Ask -Semi -Wrap -Line $script:readLead
-                        $ab.Margin = New-Object System.Windows.Thickness 12, 2, 0, 0
+                        # 🔴 THE SAME COLUMN AS THE QUESTION ABOVE IT. This was
+                        # indented 12px, which made the one block in the
+                        # document holding your DECISIONS the one block that
+                        # did not line up with anything. Reported as "questions,
+                        # or user prompts have different colors or different
+                        # alignment than the rest of the text", alongside the
+                        # ruling that difference should be carried by colour
+                        # alone. The hue already says which line is the answer.
+                        $ab.Margin = New-Object System.Windows.Thickness 0, 2, 0, 0
                         $null = $st.Children.Add($ab)
                     }
                 }

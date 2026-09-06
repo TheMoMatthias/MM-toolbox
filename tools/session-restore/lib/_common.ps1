@@ -5957,9 +5957,46 @@ $script:SR_RxMsgEnd  = [regex]::new('</(cross-session-message|teammate-message)>
 $script:SR_RxMsgFrom = [regex]::new('from-name="([^"]*)"')
 $script:SR_RxMsgMate = [regex]::new('teammate_id="([^"]*)"')
 
+# 🔴 AND NEITHER IS A NOTIFICATION THE HARNESS WROTE. Reported with a
+# screenshot: a <task-notification> announcing a background command finishing -
+# task-id, tool-use-id, output-file, "exit code 0" - drawn as YOU SAID, on the
+# operator's own ground, with his marker. His words: "messages appear to be
+# shown to be sent from me, which I actually didn't send".
+#
+# 🪤 THE ROLE IS `user` AND THE AUTHOR IS NOT. Claude Code injects several
+# things into the transcript as user records: background-task notifications,
+# <system-reminder> context, and the caveat block that wraps a slash command.
+# Reading "role: user" as "the human said this" is what put them in his voice,
+# on the one surface whose entire job is saying who is speaking.
+#
+# 🪤 STRIPPED FOR THE TEST, KEPT FOR THE BLOCK. A record is machinery only if
+# NOTHING is left once the envelopes come off - a real message with a
+# <system-reminder> appended is still a real message. What the block carries is
+# the full text either way: a NOTICE folds, and opening one should show exactly
+# what arrived rather than an edited version of it.
+$script:SR_RxMachineWrap = [regex]::new(
+    '(?s)<(task-notification|system-reminder|local-command-caveat)\b[^>]*>.*?</\1>')
+$script:SR_RxMachineLine = [regex]::new(
+    '(?m)^\s*\[(Cross-session idle notice|Request interrupted[^\]]*)\][^\r\n]*$')
+
+function Test-SRMachineUserRecord { param([string]$Text)
+    if (-not $Text) { return $false }
+    # Cheap gate: every envelope above opens with one of these two characters,
+    # and the overwhelming majority of what the operator types carries neither.
+    if ($Text.IndexOf('<', [System.StringComparison]::Ordinal) -lt 0 -and
+        $Text.IndexOf('[', [System.StringComparison]::Ordinal) -lt 0) { return $false }
+    $s = $script:SR_RxMachineWrap.Replace($Text, '')
+    $s = $script:SR_RxMachineLine.Replace($s, '')
+    return (-not "$s".Trim())
+}
+
 function New-SRUserBlock { param([string]$Text)
     $m = $script:SR_RxMsgIn.Match($Text)
-    if (-not $m.Success) { return (New-Block 'you' '' $Text '') }
+    if (-not $m.Success) {
+        # Not from another session. Is it from a person at all?
+        if (Test-SRMachineUserRecord $Text) { return (New-Block 'system' '' $Text '') }
+        return (New-Block 'you' '' $Text '')
+    }
     $attrs = $m.Groups[2].Value
     $who = ''
     $f = $script:SR_RxMsgFrom.Match($attrs)

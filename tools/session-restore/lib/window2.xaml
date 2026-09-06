@@ -196,7 +196,13 @@
          difference. Hue reinforced it; now it does not. -->
     <SolidColorBrush x:Key="HueIn"    Color="#8FA8C8"/>   <!-- came in  - claude speaking -->
     <SolidColorBrush x:Key="HueOut"   Color="#D97757"/>   <!-- went out - you speaking -->
-    <SolidColorBrush x:Key="HueTool"  Color="#8A8578"/>   <!-- the machinery between them -->
+    <!-- 🔴 DIMMER THAN TextMid, ON PURPOSE, NOW THAT SHAPE CARRIES NOTHING.
+         With one glyph for every kind, the ONLY thing separating Claude
+         speaking from the machine working is this value against TextMid
+         #9A9DA6 - and #8A8578 was within a few points of it, so the two read
+         as one grey. The machine is meant to be quieter than the reply, not
+         beside it. -->
+    <SolidColorBrush x:Key="HueTool"  Color="#6F6A61"/>   <!-- the machinery between them -->
     <SolidColorBrush x:Key="HueBad"   Color="#E2687E"/>   <!-- a call that failed -->
     <SolidColorBrush x:Key="HueAsk"   Color="#5EC8B7"/>   <!-- a question waiting on you -->
     <SolidColorBrush x:Key="HueWarn"  Color="#D9B45F"/>
@@ -206,7 +212,7 @@
     <SolidColorBrush x:Key="HueOk"    Color="#7FB98A"/>
 
     <SolidColorBrush x:Key="HueOutWash"  Color="#D97757" Opacity="0.13"/>
-    <SolidColorBrush x:Key="HueToolWash" Color="#8A8578" Opacity="0.15"/>
+    <SolidColorBrush x:Key="HueToolWash" Color="#6F6A61" Opacity="0.15"/>
     <SolidColorBrush x:Key="CtxTrack"    Color="#000000" Opacity="0.38"/>
     <SolidColorBrush x:Key="HueAskWash"  Color="#5EC8B7" Opacity="0.10"/>
     <SolidColorBrush x:Key="HueAskFilm"  Color="#5EC8B7" Opacity="0.05"/>
