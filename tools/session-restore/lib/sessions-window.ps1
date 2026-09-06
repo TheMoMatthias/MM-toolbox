@@ -5168,7 +5168,15 @@ function Show-Ask { param($q)
         # row is the same question, and treating it as a new one would empty the
         # box on a keystroke in another window - which is the reported defect
         # wearing a different cause.
-        $qKey = "$($q.Question)|$($q.Header)|" + ((@($q.Options) | ForEach-Object { "$_" }) -join ([string][char]1))
+        # 🔴 AND THE CONVERSATION IT BELONGS TO. Without this the key is the
+        # QUESTION alone, and two sessions running the same prompt ask a
+        # byte-identical one - so typing meant for A survived a switch to B and
+        # could be SENT there, into a different live console. Found by the
+        # control audit as a residual it could not reproduce but could read off
+        # the key, which is the right way to report a hazard you cannot stage.
+        # Losing what you typed is an annoyance; sending it to the wrong session
+        # is the class of mistake this whole tool is built to avoid.
+        $qKey = "$($script:selId)|$($q.Question)|$($q.Header)|" + ((@($q.Options) | ForEach-Object { "$_" }) -join ([string][char]1))
         if ($qKey -ne $script:askFreeKey) {
             $script:askFreeKey = $qKey
             $script:askFreeDirty = $false
