@@ -2349,6 +2349,64 @@ else { Pass 'the primitive sends exactly one Esc, and only into a process it has
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- you can see that something is working without leaving the transcript ---'
+# ===========================================================================
+# 🔴 "I HAVE NO INDICATION EXCEPT RUNNING AT THE TOP OF THE SESSION, IF
+# SOMETHING IS WORKING." The line goes at the BOTTOM of the document, where the
+# pane already scrolls and where the terminal puts the same thing.
+$ltDoc = New-Object System.Windows.Documents.FlowDocument
+$ltPara = New-Object System.Windows.Documents.Paragraph
+$ltPara.Inlines.Add((New-ReadRun -Text 'a turn that was already here' -Brush $Pal.TextHigh -Size 13))
+$ltDoc.Blocks.Add($ltPara)
+$ltWasDoc = $ui.PaneDoc.Document
+$ltWasOpen = $script:agentOpen
+$ui.PaneDoc.Document = $ltDoc
+$script:agentOpen = $null
+Remove-SRLiveTail
+$ltBusy  = [PSCustomObject]@{ A = [PSCustomObject]@{ Status = 'busy' }; Live = $true }
+$ltIdle  = [PSCustomObject]@{ A = [PSCustomObject]@{ Status = 'idle' }; Live = $true }
+try {
+    Set-SRLiveTail -Row $ltBusy
+    if ($ltDoc.Blocks.Count -ne 2) {
+        Fail ("a busy conversation drew {0} block(s) - the working line is not there" -f $ltDoc.Blocks.Count)
+    } elseif (-not [object]::ReferenceEquals($ltDoc.Blocks.LastBlock, $script:liveTail)) {
+        Fail 'the working line is in the document but not at the bottom, where the eye is'
+    } else { Pass 'a busy conversation grows a working line at the bottom of its transcript' }
+
+    # 🪤 A SECOND TICK MUST NOT GROW A SECOND LINE. This is called once a second
+    # for as long as a turn runs; building rather than mutating would add a
+    # block per second to a document that is already the slowest thing here.
+    $ltBefore = $ltDoc.Blocks.Count
+    Set-SRLiveTail -Row $ltBusy
+    Set-SRLiveTail -Row $ltBusy
+    if ($ltDoc.Blocks.Count -ne $ltBefore) {
+        Fail ("three ticks left {0} blocks where there were {1} - it is building, not mutating" -f $ltDoc.Blocks.Count, $ltBefore)
+    } else { Pass 'and further ticks mutate it in place rather than stacking' }
+
+    # 🔴 REMOVED, NOT HIDDEN. A hidden block carries a stale "working" into a
+    # finished conversation.
+    Set-SRLiveTail -Row $ltIdle
+    if ($ltDoc.Blocks.Count -ne 1) {
+        Fail ("the turn ended and {0} block(s) remain - a finished conversation still says it is working" -f $ltDoc.Blocks.Count)
+    } elseif ($script:liveTail) {
+        Fail 'the block went but the handle did not - the next append would remove a real turn'
+    } else { Pass 'when the turn ends the line is removed rather than hidden' }
+
+    # 🪤 SOMEBODY ELSE'S TRANSCRIPT IS NOT THIS ROW'S TURN.
+    $script:agentOpen = @{ Sub = 'x'; Row = 'y' }
+    Set-SRLiveTail -Row $ltBusy
+    if ($ltDoc.Blocks.Count -ne 1) {
+        Fail 'a sub-agent document got the parent conversation working line pinned to it'
+    } else { Pass 'and a sub-agent document does not inherit the parent turn' }
+    $script:agentOpen = $null
+} finally {
+    Remove-SRLiveTail
+    $ui.PaneDoc.Document = $ltWasDoc
+    $script:agentOpen = $ltWasOpen
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- emphasis reaches the screen as emphasis, not as asterisks ---'
 # ===========================================================================
 # 🔴 FIVE LITERAL ASTERISK RUNS ON ONE SCREENFUL of his own prose. The old

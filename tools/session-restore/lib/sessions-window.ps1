@@ -3741,6 +3741,104 @@ function New-RailBlock {
 }
 
 # ===========================================================================
+# THE LINE THAT SAYS SOMETHING IS HAPPENING
+#
+# 🔴 "I HAVE NO INDICATION EXCEPT RUNNING AT THE TOP OF THE SESSION, IF
+# SOMETHING IS WORKING." The information existed and was correct - the header
+# dot pulses, the strip carries the elapsed clock and the token count - and all
+# of it was in the wrong place. The terminal puts the same thing at the BOTTOM
+# of the transcript, which is where the eye already is: the pane auto-scrolls
+# there, and it is where the next words will appear.
+#
+# 🪤 NO INVENTED VERB. The terminal says "Hashing…", "Ruminating…" - that comes
+# from claude's own internal state. This pane reads a transcript and a screen,
+# so it says WORKING and nothing more. Guessing a gerund would be the pane
+# claiming to know something it cannot see, which is the same failure the
+# fabricated question panel had.
+#
+# 🪤 REMOVED, NEVER HIDDEN. A hidden block carries a stale "working" line into a
+# finished conversation, and this pane's standing rule is that it must not
+# assert a live state it can no longer confirm.
+#
+# 🪤 ONE HOSTED ELEMENT FOR THE WHOLE DOCUMENT, built once when a turn starts
+# and mutated in place after that. Not one per line, not one per turn.
+$script:liveTail     = $null
+$script:liveTailDot  = $null
+$script:liveTailVerb = $null
+$script:liveTailMeta = $null
+
+# The pulse, in one place. Set-WorkingPulse built this inline; the live line
+# wants the identical animation, and two copies of a 900 ms sine is how they
+# drift apart.
+function New-SRPulse {
+    $a = New-Object System.Windows.Media.Animation.DoubleAnimation
+    $a.From = 1.0
+    $a.To = 0.25
+    $a.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(900))
+    $a.AutoReverse = $true
+    $a.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+    # Eased, not linear: a linear fade reads as a fault light, a sine one reads
+    # as breathing.
+    $ease = New-Object System.Windows.Media.Animation.SineEase
+    $ease.EasingMode = 'EaseInOut'
+    $a.EasingFunction = $ease
+    return $a
+}
+
+function Remove-SRLiveTail {
+    if (-not $script:liveTail) { return }
+    $d = $ui.PaneDoc.Document
+    if ($d) { try { $null = $d.Blocks.Remove($script:liveTail) } catch { } }
+    $script:liveTail = $null; $script:liveTailDot = $null
+    $script:liveTailVerb = $null; $script:liveTailMeta = $null
+}
+
+function Set-SRLiveTail { param($Row)
+    $busy = [bool]($Row -and $Row.A -and "$($Row.A.Status)" -eq 'busy')
+    # 🪤 A SUB-AGENT DOCUMENT IS NOT THIS ROW'S TURN. While one is open the pane
+    # is showing somebody else's transcript, and pinning "working" to the bottom
+    # of it would attribute the parent's activity to the agent you are reading.
+    if ($script:agentOpen) { $busy = $false }
+    if (-not $busy) { Remove-SRLiveTail; return }
+    $d = $ui.PaneDoc.Document
+    if (-not $d) { return }
+    if (-not $script:liveTail) {
+        $sp = New-Object System.Windows.Controls.StackPanel
+        $sp.Orientation = 'Horizontal'
+        $tv = New-Object System.Windows.Controls.TextBlock
+        $tv.Text = 'WORKING'
+        $tv.Foreground = $Pal.TextMid
+        $tv.FontSize = $script:PaneSize
+        $tv.FontFamily = $script:UiFace
+        $tv.FontWeight = $FW_Semi
+        $null = $sp.Children.Add($tv)
+        $tm = New-Object System.Windows.Controls.TextBlock
+        $tm.Foreground = $Pal.TextLow
+        $tm.FontSize = $script:PaneSize
+        $tm.FontFamily = $script:UiFace
+        $tm.Margin = New-Object System.Windows.Thickness 10, 0, 0, 0
+        $null = $sp.Children.Add($tm)
+        $blk = New-RailBlock -Child $sp -Kind 'run' -Top 6 -Bottom 10
+        $null = $d.Blocks.Add($blk)
+        $script:liveTail = $blk
+        $script:liveTailVerb = $tv
+        $script:liveTailMeta = $tm
+        # The marker is the Grid's first child - see New-RailBlock.
+        try {
+            $script:liveTailDot = $blk.Child.Children[0]
+            $script:liveTailDot.BeginAnimation([System.Windows.UIElement]::OpacityProperty, (New-SRPulse))
+        } catch { }
+    }
+    # 🔑 THE SAME TEXT THE STRIP IS SHOWING, read off the strip. Deriving the
+    # elapsed and the token count a second time would give two figures that
+    # disagree by a tick, and the strip's is the one already reconciled against
+    # what the terminal prints for itself.
+    if ($script:liveTailMeta -and $script:chipClock) {
+        $script:liveTailMeta.Text = "$($script:chipClock.Text)"
+    }
+}
+
+# ===========================================================================
 # FOLDS THAT ARE ACTUALLY FOLDS
 #
 # 🔴 The old ones were a LABEL and a GLOBAL SWITCH, and the two together were
@@ -4844,6 +4942,12 @@ function Build-ReadDocument {
     # registered against it are gone with it. The APPEND path deliberately does
     # not do this: those controls are still the ones on screen.
     $script:liveShells.Clear()
+    # The live line was a block in the document that is being replaced, so the
+    # handle is stale rather than removable. Dropped, not removed - the next
+    # follow tick rebuilds it against the new document if the turn is still in
+    # flight.
+    $script:liveTail = $null; $script:liveTailDot = $null
+    $script:liveTailVerb = $null; $script:liveTailMeta = $null
     # Folding blocks into turns is not free, and Set-ReadDocument has already
     # done it to decide whether this build was needed at all. Reuse it.
     if ($Turns) { $script:docTurns = @($Turns) } else { $script:docTurns = @(Get-ReadTurns $Blocks) }
@@ -7121,6 +7225,13 @@ function Test-CanAppend { param($NewTurns, [string]$Key)
 
 function Add-ReadDocumentTail { param($NewTurns)
     $doc = $ui.PaneDoc.Document
+    # 🔴 THE LIVE LINE COMES OFF FIRST, AND THIS IS THE ONE WAY IT COULD CORRUPT
+    # THE DOCUMENT. It belongs to no turn, so it is in no docTurnCounts entry -
+    # and the loop below removes a COUNT of blocks from the end. Left in place it
+    # would be eaten as if it were part of the last turn, and then one block of
+    # the actual last turn would be eaten too, silently, on every append. The
+    # next follow tick puts it back.
+    Remove-SRLiveTail
     $old = @($script:docTurns)
     $new = @($NewTurns)
     # Drop the blocks belonging to the last rendered turn - it is the one that
@@ -7311,18 +7422,7 @@ function Set-WorkingPulse { param([bool]$On)
         return
     }
     try {
-        $a = New-Object System.Windows.Media.Animation.DoubleAnimation
-        $a.From = 1.0
-        $a.To = 0.25
-        $a.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(900))
-        $a.AutoReverse = $true
-        $a.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
-        # Eased, not linear: a linear fade reads as a fault light, a sine one
-        # reads as breathing.
-        $ease = New-Object System.Windows.Media.Animation.SineEase
-        $ease.EasingMode = 'EaseInOut'
-        $a.EasingFunction = $ease
-        $ui.PaneStateDot.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $a)
+        $ui.PaneStateDot.BeginAnimation([System.Windows.UIElement]::OpacityProperty, (New-SRPulse))
     } catch { $script:pulseOn = $false }
 }
 
@@ -7868,6 +7968,12 @@ function Invoke-FollowTick {
     # showing. Behind the Live return it would have filled for busy sessions
     # only, and every idle one would have shown an empty header forever.
     if (-not $script:chipVitals) { try { Update-Chips $r } catch { } }
+    # 🪤 BEFORE the Live return, and deliberately every tick. This is the one
+    # place per second where liveness is already known and the document is
+    # already in hand, and a row that has STOPPED being live still has to have
+    # its line taken away - behind the return it would be pinned to the bottom
+    # of a finished conversation forever.
+    try { Set-SRLiveTail -Row $r } catch { }
     if (-not $r.Live) { return }
     $j = "$($r.S.jsonl)"
     if (-not $j -or -not (Test-Path -LiteralPath $j)) { return }
