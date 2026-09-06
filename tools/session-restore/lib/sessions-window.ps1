@@ -8714,6 +8714,16 @@ function Complete-Skill {
 $ui.SendBox.Add_TextChanged({ Update-SendState; Update-SkillPop })
 $ui.SendBtn.Add_Click({ Invoke-Send })
 
+# 🔑 RULED ON, 2026-09-06, AND NOT TO BE RE-LITIGATED WITHOUT ASKING HIM.
+# Put to the operator directly after he reported losing text in this box: keep
+# Enter as send, or make it a newline with Ctrl+Enter or the button to send.
+# He chose to KEEP IT, so the whole window has one muscle memory - this box,
+# the composer three inches below it, and the terminal all commit on Enter.
+#
+# 🪤 THE ASYMMETRY IS WHY IT WAS WORTH ASKING RATHER THAN ASSUMING. A stray
+# Enter here does not lose your text, it TYPES A PARTIAL ANSWER INTO A LIVE
+# SESSION - so this is a send gesture, and a send gesture is not something to
+# change on a reading of what someone probably meant.
 # Answering a question in your own words. Enter sends it, the same key that
 # commits it in the terminal - but only through Invoke-AskTyped, which will not
 # send an empty one.
