@@ -4394,60 +4394,6 @@ function Add-MonoDetail { param($Panel, [string]$Text, $Brush)
     $null = $Panel.Children.Add((New-BoundedText $tb))
 }
 
-# 🔴 A COMPOUND COMMAND IS SEVERAL COMMANDS, AND IT SHOULD READ AS SEVERAL.
-#
-# The pane used to clip the whole thing mid-path with an ellipsis - the
-# reported "git -C C:\...\Millwri..." - so the one view you open to see WHAT RAN
-# showed less than the folded one. Splitting on the separators first means each
-# statement starts at a predictable place; wrapping with a hanging indent means
-# nothing is ever cut.
-#
-# Quote-aware, because a `;` inside a quoted argument is not a separator and
-# splitting on it would print a command that was never run.
-function Split-SRCommandLine { param([string]$Cmd)
-    $out = New-Object System.Collections.Generic.List[string]
-    $buf = New-Object System.Text.StringBuilder
-    $q = [char]0; $i = 0; $n = "$Cmd".Length
-    # 🪤 DEPTH, OR A `foreach {a; b}` COMES APART INTO PIECES THAT ARE NOT
-    # COMMANDS. A semicolon inside braces or parentheses separates statements
-    # WITHIN one command; splitting there printed a single loop as four
-    # fragments, each of which reads like something that ran on its own. Only a
-    # separator at depth zero is a separator.
-    $depth = 0
-    while ($i -lt $n) {
-        $ch = $Cmd[$i]
-        if ($q -ne [char]0) {
-            $null = $buf.Append($ch)
-            if ($ch -eq $q -and ($i -eq 0 -or $Cmd[$i - 1] -ne '`')) { $q = [char]0 }
-            $i++
-            continue
-        }
-        if ($ch -eq '"' -or $ch -eq "'") { $q = $ch; $null = $buf.Append($ch); $i++; continue }
-        if ($ch -eq '{' -or $ch -eq '(' -or $ch -eq '[') { $depth++ }
-        elseif ($ch -eq '}' -or $ch -eq ')' -or $ch -eq ']') { if ($depth -gt 0) { $depth-- } }
-        $two = ''
-        if ($i + 1 -lt $n) { $two = $Cmd.Substring($i, 2) }
-        if ($depth -eq 0 -and ($two -eq '&&' -or $two -eq '||')) {
-            $out.Add(($buf.ToString().Trim() + ' ' + $two)); $null = $buf.Clear(); $i += 2; continue
-        }
-        if ($depth -eq 0 -and $ch -eq ';') {
-            $out.Add(($buf.ToString().Trim() + ';')); $null = $buf.Clear(); $i++; continue
-        }
-        $null = $buf.Append($ch)
-        $i++
-    }
-    $tail = $buf.ToString().Trim()
-    if ($tail) { $out.Add($tail) }
-    # 🪤 `.ToArray()` HERE THREW ON A STRING, and the reason is the one this
-    # codebase keeps re-learning: `@(...)` produces an ARRAY, arrays have no
-    # ToArray, and member access on a ONE-ELEMENT array UNROLLS to the element -
-    # so a single-statement command reached `[String].ToArray()` and the whole
-    # document failed to build. A plain array out, `@()` at the call site.
-    $keep = @($out | Where-Object { $_.Trim(' ', ';') })
-    if (-not $keep.Count) { return @("$Cmd") }
-    return $keep
-}
-
 # One tool call, opened: its name, what it was given, and what came back.
 function Add-RunDetail { param($Panel, $Calls)
     foreach ($c in @($Calls)) {
@@ -4463,11 +4409,40 @@ function Add-RunDetail { param($Panel, $Calls)
         $hue = $(if ($c.Bad) { $Pal.Bad } elseif ($ck -ne 'run') { Get-MarkBrush $ck } else { $Pal.Tool })
         $head = New-Object System.Windows.Controls.StackPanel
         $head.Orientation = 'Horizontal'
-        if ($ck -ne 'run') {
-            $gm = New-ReadText -Text ((Get-MarkGlyph $ck) + '  ') -Brush $hue -Mono
-            $null = $head.Children.Add($gm)
+        # 🔴 THE NAME AND WHAT IT WAS GIVEN, ON ONE LINE.
+        #
+        # This was a NAME on its own line with the whole argument wrapped
+        # underneath it, and that is why an opened run block spends six or
+        # seven lines on a call the terminal states in two. Measured on the
+        # same conversation at the same width: two calls and their results ran
+        # to FOURTEEN lines here and four there.
+        #
+        # 🪤 THE PREPENDED MARK GLYPH IS GONE, AND IT WAS ALSO AN
+        # ALIGNMENT BUG. `(Get-MarkGlyph $ck) + '  '` was added as an ordinary
+        # Run for every agent, shell and msgout call - three characters of IBM
+        # Plex Mono at a fixed 7.80px advance - so the tool NAME started at
+        # x=90 for those kinds and at x=66 for every other one. Measured both
+        # ways, 24px apart, and it was the only horizontal contributor: $head
+        # has no margin, $ln is bottom-only and the fold's panel is top-only.
+        # The kind is not lost with it - $hue is on the name itself, and the
+        # fold caption two levels up already names the kind in words.
+        $hd = [System.Windows.Controls.TextBlock]::new()
+        $hd.FontSize = $script:PaneSize
+        $hd.FontFamily = $script:PaneFace
+        $hd.TextWrapping = 'NoWrap'
+        $hd.TextTrimming = 'CharacterEllipsis'
+        $null = $hd.Inlines.Add((New-ReadRun -Text "$($c.Name)".ToUpper() -Brush $hue))
+        $argHead = Get-SRHeadLine ("$($c.Arg)".Trim()) 120
+        if ($argHead) {
+            $null = $hd.Inlines.Add((New-ReadRun -Text ('   ' + $argHead) -Brush $Pal.TextLow `
+                                                 -Size $script:MonoSize -Mono))
+            # 🪤 A STRING, NOT A ToolTip OBJECT. WPF builds the ToolTip
+            # control on demand at hover time, so assigning a string here is a
+            # property set and not a hosted element - which is the whole
+            # constraint on this block.
+            $hd.ToolTip = "$($c.Arg)".Trim()
         }
-        $null = $head.Children.Add((New-ReadText -Text "$($c.Name)".ToUpper() -Brush $hue))
+        $null = $head.Children.Add($hd)
         $null = $ln.Children.Add($head)
 
         # What it was FOR, above what it was GIVEN. On a Task this is the one
@@ -4533,27 +4508,23 @@ function Add-RunDetail { param($Panel, $Calls)
         # is the reported "cut off", arriving from the shortener rather than from
         # the layout, and it survived the wrap fix because it is baked into the
         # text before the control ever sees it. What ran is shown as it ran.
-        $argText = "$($c.Arg)".Trim()
-        if ($argText) {
-            # 🪤 A SUB-AGENT'S ARGUMENT IS A PROMPT, NOT A COMMAND, and the
-            # splitter must not touch it: prose is full of semicolons, and
-            # breaking an instruction at each one would print the briefing as a
-            # list of statements that were never separate. Only a shell command
-            # is split.
-            $stmts = @($argText)
-            if ($ck -ne 'agent') { $stmts = @(Split-SRCommandLine $argText) }
-            foreach ($stmt in $stmts) {
-                $ar = New-ReadText -Text $stmt -Brush $(if ($c.Bad) { $Pal.Bad } else { $Pal.TextHigh }) `
-                                   -Size $script:MonoSize -Mono -Wrap -Line $script:readLead
-                # The hanging indent that makes a wrapped command readable: the
-                # statement starts at the left and its continuation lines sit in
-                # from it, so you can see where one command ends and the next
-                # begins without reading either.
-                $ar.Margin = New-Object System.Windows.Thickness 0, 3, 0, 0
-                $ar.Padding = New-Object System.Windows.Thickness 0, 0, 0, 0
-                $null = $ln.Children.Add($ar)
-            }
-        }
+        # 🔴 THE ARGUMENT IS ON THE HEAD LINE NOW, and this block goes
+        # with it. It emitted one wrapped TextBlock per statement of a split
+        # compound command - typically two, each running to two lines - and
+        # that is most of what a single call used to cost vertically.
+        #
+        # 🔑 AND THIS TRADES AWAY SOMETHING THE NOTE IT REPLACES WAS
+        # RIGHT ABOUT. That note recorded a real report - "the one line you
+        # open this block to read verbatim came out as `-Shot "C:\...\444f9..."
+        # - and insisted the command be shown as it ran. It still is, but on
+        # the head line's ToolTip rather than on a line you can read without
+        # hovering. If that turns out to be the wrong trade, the head line
+        # keeps the full string and restoring a verbatim line here is additive.
+        #
+        # 🪤 Split-SRCommandLine had exactly one caller and it was this
+        # block. It is unreferenced from here on; leaving a splitter in the
+        # file is the same invitation the note on New-ReadCard warns about, so
+        # decide it deliberately rather than by omission.
 
         $resText = "$($c.ResFull)"
         if (-not $resText) { $resText = "$($c.Res)" }
