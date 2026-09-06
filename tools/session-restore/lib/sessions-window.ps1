@@ -2913,7 +2913,11 @@ function Add-ReadProse {
     # five separate cards stacked up. The vertical margin goes to zero for a
     # grounded turn and the leading, which lives INSIDE the paragraph, goes on
     # keeping the lines apart exactly as it did.
-    $groundPs = New-Object System.Collections.Generic.List[object]
+    # ::new(), and only when there IS a ground. New-Object drives a generic
+    # type through the command pipeline on every call of a function that runs
+    # once per turn, to hold a list most turns never put anything in.
+    $groundPs = $null
+    if ($Ground) { $groundPs = [System.Collections.Generic.List[object]]::new() }
     $groundPad = 3.0
     if ($Ground) { $groundPad = 0.0 }
     $lines = @((Remove-SRAnsi $Text) -replace "`r", '' -split "`n")
@@ -4487,7 +4491,19 @@ function Build-ReadDocument {
 # off the overwhelming majority of turns, which contain no tag at all.
 function Convert-SRSpoken { param([string]$Text)
     if (-not $Text) { return '' }
-    if ($Text.IndexOf('<', [System.StringComparison]::Ordinal) -lt 0) { return $Text }
+    # 🔴 A BARE '<' IS NOT AN ENVELOPE, AND ALMOST EVERY TURN HAS ONE. The
+    # first version of this guard tested for '<' alone, which is true of any
+    # body carrying a <system-reminder>, a <task-notification>, an HTML tag or
+    # a less-than sign - so eight regex passes ran over most of the document
+    # instead of over the handful of slash-command turns they exist for.
+    # Measured as a 2.36x regression in "build AND lay out with every block
+    # open" the first time this suite saw it.
+    #
+    # 🪤 TWO IndexOf CALLS, NOT A REGEX, because the point is to be cheaper than
+    # the thing being skipped. Ordinal: a culture-sensitive compare on a tag
+    # prefix is the trap CONTEXT.md already records.
+    if ($Text.IndexOf('<local-command', [System.StringComparison]::Ordinal) -lt 0 -and
+        $Text.IndexOf('<command-', [System.StringComparison]::Ordinal) -lt 0) { return $Text }
     $s = $Text
     $s = [regex]::Replace($s, '(?s)<local-command-caveat>.*?</local-command-caveat>', '')
     $s = [regex]::Replace($s, '(?s)<command-message>.*?</command-message>', '')
@@ -7503,6 +7519,74 @@ $ui.SessionList.Add_PreviewMouseLeftButtonDown({
     $e.Handled = $true
 })
 
+# ===========================================================================
+# STEPPING THROUGH THE LIST WITH THE ARROW KEYS
+#
+# 🔴 EIGHT ROWS COST 747-973 ms, AND THERE IS NO ARROW HANDLER AT ALL. WPF
+# moves the selection on its own and SelectionChanged then runs the WHOLE of
+# Show-Selected for every row - including every row you are only passing
+# THROUGH on the way to the one you want. Nothing was wrong with Show-Selected;
+# it was simply being asked to draw eight conversations to show one.
+#
+# The operator's ruling, asked directly: the chrome moves on every key, the
+# DOCUMENT settles once you stop. So the first press draws immediately - a
+# single arrow key has to feel exactly like a click - and everything after it
+# inside the window coalesces onto ONE draw when the stepping ends.
+#
+# 🪤 THE LEADING EDGE IS WHAT KEEPS ONE PRESS INSTANT. A plain trailing
+# debounce puts the full interval in front of EVERY arrow key, including the
+# single press that is not a scan at all - which trades a 100 ms stall for a
+# 140 ms one and would have measured as an improvement across eight rows while
+# making the common gesture worse.
+#
+# 🪤 AND THE TRAILING TICK ONLY DRAWS IF SOMETHING WAS ACTUALLY COALESCED.
+# Arming the timer after the leading draw is what lets a second key find it
+# running; without $showPending it would then fire on a selection that is
+# already on screen and spend a second full Show-Selected doing nothing, 140 ms
+# after every single click in the list.
+$script:showPending = $false
+$script:showTimer = New-Object System.Windows.Threading.DispatcherTimer
+# 🔴 90 ms, AND THE NUMBER IS THE KEY-REPEAT RATE, NOT A FEELING. Windows
+# repeats a held key about every 32 ms, so anything comfortably above that
+# coalesces a run and anything below it draws mid-scan. 140 was the first guess
+# and it measured badly for a reason worth writing down: the settle is INSIDE
+# what the operator waits for, so an interval that is longer than the work it
+# saves makes the gesture slower while making the bench look better. Measured
+# over eight rows: 276 ms drawing every one, 244 ms with a 140 ms settle - of
+# which 140 ms WAS the settle, so the real work fell from 276 to about 104 and
+# the operator got almost none of it.
+$script:showTimer.Interval = [TimeSpan]::FromMilliseconds(90)
+$script:showTimer.Add_Tick({
+    $script:showTimer.Stop()
+    if ($script:showPending) {
+        $script:showPending = $false
+        try { Show-Selected } catch { Write-SRLog ('  [skip] the settled draw failed: ' + $_.Exception.Message) }
+    }
+})
+
+# A named function rather than an inline handler, for the reason Invoke-FollowTick
+# gives: a gesture the suite cannot call is a gesture the suite cannot check.
+# 🔴 THE CONTROL HAS TO BE MEASURABLE IN THE SAME RUN. A bar in milliseconds
+# cannot say whether this debounce moved anything on a machine whose floor
+# drifts between runs - only the old path, timed beside the new one, can. So the
+# suite can turn it off, step the list, and time what it used to cost. It is
+# never written anywhere but a bench; the window ships with it on.
+$script:showDebounce = $true
+
+function Request-ShowSelected {
+    if (-not $script:showDebounce) { Show-Selected; return }
+    if ($script:showTimer.IsEnabled) {
+        $script:showPending = $true
+        $script:showTimer.Stop()
+        $script:showTimer.Start()
+        return
+    }
+    $script:showPending = $false
+    Show-Selected
+    $script:showTimer.Start()
+}
+
+
 $ui.SessionList.Add_SelectionChanged({
     $it = $ui.SessionList.SelectedItem
     if ($it -and $it.Kind -eq 'band') {
@@ -7511,7 +7595,7 @@ $ui.SessionList.Add_SelectionChanged({
         if ($i -lt @($ui.SessionList.Items).Count) { $ui.SessionList.SelectedIndex = $i }
         return
     }
-    Show-Selected
+    Request-ShowSelected
 })
 
 # 🪤 PreviewMouseLeftButtonDown, FOR THE REASON THE SESSIONS COLUMN GIVES ABOVE:

@@ -578,6 +578,53 @@ else {
         Show-Selected
     } 'GESTURE'
     $null = Bench 'select the same one again (warm)' { Show-Selected } 'INSTANT'
+
+    # =====================================================================
+    # STEPPING THE LIST WITH THE ARROW KEYS - THE GESTURE, NOT THE HANDLER.
+    #
+    # 🔴 WHAT THIS MEASURES THAT NOTHING ELSE DID. Every selection bench above
+    # calls Show-Selected directly, so none of them can see the path an arrow
+    # key actually takes: WPF moves the selection, SelectionChanged fires, and
+    # the handler runs for EVERY row passed through on the way to the one you
+    # want. Eight rows measured 747-973 ms for a gesture with one destination.
+    #
+    # 🪤 THE SETTLE IS INSIDE THE STOPWATCH, DELIBERATELY. The debounce defers
+    # the final draw by 140 ms, and 140 ms the operator waits is 140 ms this
+    # bench owes him. Leaving it out would report the saving and hide the cost,
+    # which is exactly the shape of the "deferred is not removed" trap this
+    # suite has already been caught by once.
+    #
+    # 🪤 AND THE CONTROL RUNS THE OLD PATH FOR REAL, through $showDebounce,
+    # rather than calling Show-Selected in a loop beside it. Setting
+    # SelectedItem fires SelectionChanged whatever the bench then does, so a
+    # "control" that also called the handler would have been the new path plus
+    # an extra draw - a control that measures the thing it is controlling for.
+    if ($sessions.Count -ge 9) {
+        $stepN = 8
+        $null = Bench ('step {0} rows, drawing every one (the OLD path)' -f $stepN) {
+            $script:showDebounce = $false
+            try {
+                for ($k = 1; $k -le $stepN; $k++) {
+                    $script:selId = $null
+                    $ui.SessionList.SelectedItem = $sessions[$k]
+                }
+            } finally { $script:showDebounce = $true }
+            Lay
+        } 'STALL'
+        $null = Bench ('step {0} rows with the arrow keys (+ the settle)' -f $stepN) {
+            for ($k = 1; $k -le $stepN; $k++) {
+                $script:selId = $null
+                $ui.SessionList.SelectedItem = $sessions[$k]
+            }
+            $sw2 = [Diagnostics.Stopwatch]::StartNew()
+            while ($script:showTimer.IsEnabled -and $sw2.ElapsedMilliseconds -lt 900) {
+                $window.Dispatcher.Invoke(
+                    [System.Windows.Threading.DispatcherPriority]::ApplicationIdle, [action]{}) | Out-Null
+            }
+            Lay
+        } 'SLOW'
+    } else { Note ('only {0} conversation(s) - cannot profile stepping' -f $sessions.Count) }
+
     $jp = "$($sessions[1].Row.S.jsonl)"
     $null = Bench 'parse the transcript tail' {
         $script:__b = Get-SRTranscriptBlocks -JsonlPath $jp -MaxRecords 220 -MaxTailBytes $script:tailBytes
@@ -720,7 +767,25 @@ if ($sessions.Count -ge 2 -and $script:__b) {
     Note ("turns: {0} ({1} prose, {2} runs)" -f $turnsAll.Count,
           @($turnsAll | Where-Object { $_.Kind -eq 'said' -or $_.Kind -eq 'you' }).Count,
           @($turnsAll | Where-Object { $_.Kind -eq 'run' }).Count)
-    $proseT = @($turnsAll | Where-Object { ($_.Kind -eq 'said' -or $_.Kind -eq 'you') -and "$($_.Body)".Length -gt 200 } | Select-Object -First 1)
+    # 🔴 IT PICKED ITS OWN SUBJECT OUT OF LIVE STATE, AND THE BASELINE COMPARES
+    # RUNS. `-First 1` over `Length -gt 200` takes whatever prose turn happens
+    # to come first in whichever conversation is at index 1 today - so one run
+    # profiles a 300-character reply, the next a 6,000-character one, and the
+    # baseline reports the difference as a 15.8x REGRESSION. This is the same
+    # hole that was closed for the document subject on 2026-09-05 and missed
+    # here: a harness that chooses from live machine state cannot be compared
+    # against itself.
+    #
+    # 🪤 CLOSEST TO A TARGET, NOT THE LONGEST. Longest is still live state - it
+    # tracks whatever the operator happened to write - and it would also drift
+    # the bench onto an outlier. A fixed target picks the most comparable real
+    # turn available, and the Note below prints what was actually chosen so two
+    # runs can be checked for having profiled the same size of thing.
+    $proseTarget = 2000
+    $proseT = @($turnsAll |
+        Where-Object { ($_.Kind -eq 'said' -or $_.Kind -eq 'you') -and "$($_.Body)".Length -gt 200 } |
+        Sort-Object { [Math]::Abs("$($_.Body)".Length - $proseTarget) } |
+        Select-Object -First 1)
     if ($proseT.Count) {
         $ptxt = "$($proseT[0].Body)"
         Note ("the prose turn profiled is {0:N0} characters over {1} source lines" -f $ptxt.Length, @($ptxt -split "`n").Count)
