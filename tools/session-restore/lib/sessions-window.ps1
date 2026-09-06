@@ -3330,7 +3330,18 @@ function Get-MarkBrush { param([string]$Kind)
 # summary names what the block is about rather than only counting it. "16
 # NOTICES" tells you how much; "16 NOTICES  Remote Control disconnected" tells
 # you whether to open it.
-function Get-SRHeadLine { param([string]$Text, [int]$Max = 88)
+# 🪤 -Plain FOR A BODY THAT IS AN ENVELOPE. A machine record arrives wrapped -
+# <task-notification>, <system-reminder>, <local-command-caveat> - and the
+# summary line is one line of prose, not markup. Without this the fold caption
+# read "NOTICE  <local-command-caveat>Caveat: The messages below were...", which
+# spends the only line you get before opening the block on a tag name.
+#
+# 🪤 THE TAGS COME OFF THE PREVIEW ONLY. The block still carries its full text,
+# because opening a notice should show what actually arrived rather than an
+# edited version of it.
+$script:SR_RxAnyTag = [regex]::new('</?[a-zA-Z][a-zA-Z0-9-]*[^>]*>')
+function Get-SRHeadLine { param([string]$Text, [int]$Max = 88, [switch]$Plain)
+    if ($Plain -and $Text) { $Text = $script:SR_RxAnyTag.Replace($Text, ' ') }
     $head = @("$Text" -replace "`r", '' -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1) -join ' '
     $head = "$head".Trim()
     if ($head.Length -gt $Max) { $head = $head.Substring(0, $Max - 1) + [string][char]0x2026 }
@@ -4638,7 +4649,7 @@ function Add-ReadTurn { param($Doc, $Turn)
                 if ($script:toolView -eq 'hidden') { $script:docHidden++; break }
                 $body = "$($t.Body)".Trim()
                 $fp = New-FoldPanel -Caption ("HOOK  " + $t.Head) -Brush $Pal.Tool -Kind 'text' `
-                                    -Data $body -Trailing (Get-SRHeadLine $body 84) `
+                                    -Data $body -Trailing (Get-SRHeadLine $body 84 -Plain) `
                                     -Open ($script:toolView -eq 'full')
                 $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'hook' -Rail))
             }
@@ -4654,7 +4665,7 @@ function Add-ReadTurn { param($Doc, $Turn)
                 $body = "$($t.Body)"
                 $fp = New-FoldPanel -Caption $(if ($n -eq 1) { 'NOTICE' } else { "$n NOTICES" }) `
                                     -Brush $Pal.Tool -Kind 'text' -Data $body `
-                                    -Trailing (Get-SRHeadLine $body 88) `
+                                    -Trailing (Get-SRHeadLine $body 88 -Plain) `
                                     -Open ($script:toolView -eq 'full')
                 $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'system' -Top 9 -Bottom 5))
             }
