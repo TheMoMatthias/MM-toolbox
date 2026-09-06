@@ -171,6 +171,51 @@ try {
         Set-Surface 'work'
     }
 
+    # ---- the A/B that decides whether the list patch was worth anything ----
+    # 🔴 BOTH ARMS IN ONE RUN, ALTERNATING. The keystroke measured 199,6 ms in
+    # one run of this file, 491,7 in another and 290,8 in a third, on identical
+    # source - so comparing a number from after the patch against a number from
+    # before it can say anything you like. Every speed claim in this repo made
+    # that way has since been withdrawn.
+    Write-Host ''
+    $abOn = @(); $abOff = @()
+    foreach ($round in 1..6) {
+        foreach ($off in @($false, $true, $true, $false)) {
+            $script:listPatchOff = $off
+            # Force the next call down the chosen path from a known state.
+            if ($off) { $ui.SessionList.ItemsSource = $null }
+            $ui.Search.Text = 'a'; Build-Sessions
+            Drain
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $ui.Search.Text = ''
+            Build-Sessions
+            Drain
+            $sw.Stop()
+            if ($off) { $abOff += $sw.Elapsed.TotalMilliseconds } else { $abOn += $sw.Elapsed.TotalMilliseconds }
+        }
+    }
+    $script:listPatchOff = $false
+    $ui.Search.Text = ''; Build-Sessions; Drain
+
+    function MedOf { param($a) $x = @($a | Sort-Object); return $x[[int]($x.Count/2)] }
+    $mOn  = MedOf $abOn
+    $mOff = MedOf $abOff
+    $nOn  = ($abOn  | Measure-Object -Min).Minimum
+    $nOff = ($abOff | Measure-Object -Min).Minimum
+    Note ("list PATCHED : {0} samples, med {1,7:N1}  best {2,7:N1} ms" -f $abOn.Count, $mOn, $nOn)
+    Note ("list REPLACED: {0} samples, med {1,7:N1}  best {2,7:N1} ms" -f $abOff.Count, $mOff, $nOff)
+    $dMed = $mOff - $mOn
+    $dBest = $nOff - $nOn
+    # The minimum is the least noisy statistic: contention only ever makes a
+    # sample slower, so the fastest run of each arm is closest to the work.
+    if ($dMed -gt 15 -and $dBest -gt 15) {
+        Pass ("patching the list instead of replacing it saves {0:N1} ms at the median and {1:N1} ms best-of" -f $dMed, $dBest)
+    } elseif ($dMed -lt -15 -or $dBest -lt -15) {
+        Fail ("the patch is SLOWER than replacing the list (median {0:N1}, best-of {1:N1}) - it should be reverted" -f (-$dMed), (-$dBest))
+    } else {
+        Huh ("INCONCLUSIVE: median delta {0:N1} ms, best-of {1:N1} ms - the patch cannot be shown to help, and unproven complexity on the hottest path is not worth keeping" -f $dMed, $dBest)
+    }
+
     # ---- the verdict -------------------------------------------------------
     Write-Host ''
     # 🔴 THE BAR IS THE TERMINAL'S, 6,9 ms, and nothing here will reach it. What

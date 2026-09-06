@@ -2109,11 +2109,17 @@ Write-Host '--- the question stays on screen while the choices scroll ---'
 # every pixel it takes comes off the transcript. What had to change is which
 # parts are allowed to scroll away, so that is what this asks - by walking the
 # visual ancestry, not by measuring a number that any layout change can move.
+# 🪝 THE LOGICAL TREE, NOT THE VISUAL ONE. The first version of this walked
+# VisualTreeHelper and passed - until the suite ran in a different order and the
+# ask panel had not been realised, at which point GetParent returned null on the
+# first step and the check reported that the options are not in the scroller.
+# Whether one element is nested inside another is a property of the DECLARED
+# structure; it must not depend on whether anything has been drawn yet.
 function Test-SRUnderAskScroll { param($El)
     $n = $El
     for ($d = 0; $d -lt 12 -and $n; $d++) {
         if ([object]::ReferenceEquals($n, $ui.AskScroll)) { return $true }
-        try { $n = [System.Windows.Media.VisualTreeHelper]::GetParent($n) } catch { return $false }
+        try { $n = [System.Windows.LogicalTreeHelper]::GetParent($n) } catch { return $false }
     }
     return $false
 }

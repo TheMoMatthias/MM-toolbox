@@ -1998,6 +1998,83 @@ function Sort-SessionRows { param($Rows)
     }
 }
 
+# ===========================================================================
+# THE LIST IS PATCHED, NOT REPLACED.
+#
+# 🔴 MEASURED WITH A REAL FRAME ON THE END, which is the only reason this is the
+# right fix. Every headless harness here says a search keystroke costs 43,5 ms
+# and Build-Sessions 35,5 - and three separate speed suspects were eliminated on
+# numbers like those before anyone noticed none of those harnesses DRAW. With
+# the window shown (tests/render-driver.ps1) the same keystroke is 199-491 ms.
+# The data work was never the cost. Replacing ItemsSource was: every keypress
+# handed the ListBox a brand new collection, so WPF tore down and re-realised a
+# container, a template and every binding in it for all ~46 rows.
+#
+# 🪤 AND A POSITIONAL DIFF WOULD HAVE BOUGHT NOTHING, which is the trap in the
+# obvious version. Typing REMOVES rows, so every surviving row shifts index; a
+# compare of old[i] against new[i] mismatches from the first removal onward and
+# rebuilds the whole tail anyway. The diff has to be KEYED - match on Id, move
+# what moved, replace only what actually changed - or it is the same cost with
+# more code.
+#
+# 🪤 THE SIGNATURE SKIPS Row AND Sub DELIBERATELY. They are live object
+# references the row carries for the click handlers, not anything the template
+# draws, and stringifying them would make every row's signature differ on every
+# rebuild - which is precisely the "cache that never hits" this replaces.
+$script:listItems = New-Object System.Collections.ObjectModel.ObservableCollection[object]
+
+function Get-SRItemSig { param($It)
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($pr in $It.PSObject.Properties) {
+        $n = $pr.Name
+        if ($n -eq 'Row' -or $n -eq 'Sub' -or $n -eq 'Sig') { continue }
+        $null = $sb.Append($n).Append('=').Append([string]$pr.Value).Append('|')
+    }
+    return $sb.ToString()
+}
+
+# Transform the collection the ListBox is already bound to into $Target, with the
+# fewest notifications that will do it. Every row this does NOT touch keeps its
+# container, its template instance and its bindings.
+function Sync-SRSessionItems { param($Target)
+    $col = $script:listItems
+    # 🪝 NOT @($Target). Build-Sessions hands this a List[object], and @() on
+    # one throws "Argument types do not match" in PS 5.1 with NO line number to
+    # say where. The list indexes and counts perfectly well as it is.
+    $want = $Target
+
+    # 🪤 REMOVALS FIRST, BACK TO FRONT. Forward removal shifts every later index
+    # under the loop's own feet - the classic off-by-one that silently drops
+    # every second row it meant to keep.
+    $keep = @{}
+    foreach ($t in $want) { $keep["$($t.Id)"] = $true }
+    for ($i = $col.Count - 1; $i -ge 0; $i--) {
+        if (-not $keep.ContainsKey("$($col[$i].Id)")) { $col.RemoveAt($i) }
+    }
+
+    for ($i = 0; $i -lt $want.Count; $i++) {
+        $t = $want[$i]
+        if ($i -ge $col.Count) { $col.Add($t); continue }
+        if ("$($col[$i].Id)" -eq "$($t.Id)") {
+            # Same row, same place. Touch it only if what it DRAWS changed.
+            if ("$($col[$i].Sig)" -ne "$($t.Sig)") { $col[$i] = $t }
+            continue
+        }
+        # It is here but not here yet: move it rather than rebuild it.
+        $at = -1
+        for ($j = $i + 1; $j -lt $col.Count; $j++) {
+            if ("$($col[$j].Id)" -eq "$($t.Id)") { $at = $j; break }
+        }
+        if ($at -ge 0) {
+            $col.Move($at, $i)
+            if ("$($col[$i].Sig)" -ne "$($t.Sig)") { $col[$i] = $t }
+        } else {
+            $col.Insert($i, $t)
+        }
+    }
+    while ($col.Count -gt $want.Count) { $col.RemoveAt($col.Count - 1) }
+}
+
 function Build-Sessions {
     $q  = "$($ui.Search.Text)".Trim().ToLower()
     $ql = "$($ui.ListSearch.Text)".Trim().ToLower()
@@ -2429,7 +2506,27 @@ function Build-Sessions {
         }
     }
 
-    $ui.SessionList.ItemsSource = $items
+    # 🔑 BOUND ONCE, PATCHED FOREVER AFTER. Re-assigning ItemsSource is what
+    # cost the keystroke; see the note above Sync-SRSessionItems.
+    foreach ($it in $items) { $it | Add-Member -NotePropertyName Sig -NotePropertyValue (Get-SRItemSig $it) -Force }
+    # 🔑 THE OLD PATH IS KEPT REACHABLE ON PURPOSE, and this flag is the only
+    # way the patch can be shown to be worth anything. Every speed claim in this
+    # repo that was made without an A/B in ONE run has since been withdrawn - the
+    # parse, the probes, Build-Sessions itself. A fix measured against a number
+    # from a different run is a guess with a stopwatch next to it.
+    if ($script:listPatchOff) {
+        # 🪝 THE OFF PATH HANDS OVER A BRAND NEW COLLECTION, exactly as the line
+        # this replaced did. Re-filling the SAME ObservableCollection would not
+        # reproduce the old cost - a stable instance is half of what the fix is -
+        # and the A/B would flatter the patch by measuring it against itself.
+        $ui.SessionList.ItemsSource = $items
+    } elseif (-not [object]::ReferenceEquals($ui.SessionList.ItemsSource, $script:listItems)) {
+        $script:listItems.Clear()
+        foreach ($it in $items) { $script:listItems.Add($it) }
+        $ui.SessionList.ItemsSource = $script:listItems
+    } else {
+        Sync-SRSessionItems $items
+    }
     $sessions = @($items | Where-Object { $_.Kind -eq 'session' })
     $ui.ListCount.Text = ('{0}' -f $sessions.Count)
     $ui.ListCaption.Text = $(if ($script:railPick) { 'SESSIONS  ' + (Get-ProjectLabel $script:railPick).ToUpper() } else { 'SESSIONS' })
