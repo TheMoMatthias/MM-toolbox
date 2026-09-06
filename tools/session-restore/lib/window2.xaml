@@ -1870,7 +1870,7 @@
                dangerous button in the window - so it names every conversation
                it will type into, and it will not touch one that is mid-turn.
                ================================================== -->
-          <Border x:Name="CastBox" Grid.Row="1" Visibility="Collapsed" Panel.ZIndex="20"
+          <Border x:Name="CastBox" AllowDrop="True" Grid.Row="1" Visibility="Collapsed" Panel.ZIndex="20"
                   VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,10,18,0"
                   Width="470" Background="{StaticResource PanelHi}" CornerRadius="10"
                   BorderBrush="{StaticResource Hairline}" BorderThickness="1" Padding="18,16,18,16">
@@ -1910,7 +1910,7 @@
                    newline here would be an ENTER in every terminal it reaches,
                    submitting the message half-typed. Wrapping is visual;
                    AcceptsReturn is what a keystroke does. -->
-              <TextBox x:Name="CastText" Style="{StaticResource Composer}" AcceptsReturn="False"
+              <TextBox x:Name="CastText" AllowDrop="True" Style="{StaticResource Composer}" AcceptsReturn="False"
                        Tag="The one line every ticked conversation will receive" Margin="0,0,0,12"/>
               <Grid>
                 <!-- 🔴 IT FILLS THE BOX, IT DOES NOT SEND. Twenty sessions
@@ -2217,7 +2217,7 @@
                      committed until there is something to commit, which is the
                      one order that cannot decline the round by mistake.
                      ======================================================= -->
-                <Border x:Name="AskFreeBox" Visibility="Collapsed" Margin="0,4,0,0"
+                <Border x:Name="AskFreeBox" AllowDrop="True" Visibility="Collapsed" Margin="0,4,0,0"
                         Background="{StaticResource PanelHi}" CornerRadius="8"
                         BorderBrush="{StaticResource Hairline}" BorderThickness="1"
                         Padding="12,10,12,11">
@@ -2229,7 +2229,7 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                       </Grid.ColumnDefinitions>
-                      <TextBox x:Name="AskFree" Grid.Column="0" Style="{StaticResource Composer}"
+                      <TextBox x:Name="AskFree" AllowDrop="True" Grid.Column="0" Style="{StaticResource Composer}"
                                Tag="Answer in your own words - Shift+Enter for a new line" Margin="0,0,8,0"
                                AutomationProperties.Name="answer this question in your own words"/>
                       <Button x:Name="AskFreeSend" Grid.Column="1" Content="Send"
@@ -2255,7 +2255,11 @@
             </ScrollViewer>
           </Border>
 
-          <Border Grid.Row="4" Background="{StaticResource Panel}"
+          <!-- 18px of padding wider than the box on every side, and a drop that
+               lands on that margin is a drop the operator meant. Named because
+               the handlers hang here rather than on the TextBox - see
+               "DRAGGING A FILE INTO THE MESSAGE" in sessions-window.ps1. -->
+          <Border x:Name="SendDock" AllowDrop="True" Grid.Row="4" Background="{StaticResource Panel}"
                   BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,0" Padding="18,10,18,12">
             <Grid>
               <Grid.RowDefinitions>
@@ -2320,7 +2324,7 @@
                    read one back before sending. Sixteen-ish lines, then it
                    scrolls, and the transcript above it still owns the rest. -->
               <TextBox x:Name="SendBox" Grid.Row="2" Grid.Column="0" Style="{StaticResource Composer}"
-                       MaxHeight="260"
+                       MaxHeight="260" AllowDrop="True"
                        Tag="Type here to send it into this session's terminal - / for skills, Shift+Enter for a new line"
                        Margin="0,0,8,0"
                        AutomationProperties.Name="type into this session"/>

@@ -171,7 +171,7 @@ foreach ($n in @(
     'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'LivePane','LiveMark','LiveHead','LiveText',
     'RailFold','ListFold','RailStrip','RailOpen','ListOpen','ListStrip','StripList','StripCount','AskScroll',
-    'SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
+    'SendDock','SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'QueueBox','QueueHead','QueueList',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
     'OpenNotRunning','RelaunchSessions','SignIn','BridgeNote',
@@ -9295,6 +9295,171 @@ $ui.SendBox.Add_LostKeyboardFocus({
     }
     Close-SkillPop
 })
+
+# ===========================================================================
+# DRAGGING A FILE INTO THE MESSAGE
+#
+# Reported as: "I also cannot drag and drop any files into the conversation,
+# which is usually done by pressing shift and then dragging the feature into
+# the text box, or if we can directly drag and drop it, that would be even
+# better." The habit comes from the terminal, where a dragged file arrives as
+# its PATH - and that is exactly what happens here. The path lands in the box
+# AT THE CARET, the words already typed around it are left alone, and NOTHING
+# IS SENT: Enter or the Send button still commits, like anything else typed.
+#
+# 🔴 THE PREVIEW EVENTS, NOT THE PLAIN ONES, AND THE REASON IS MEASURED. A
+# TextBox carries a class handler of its own on the bubbling Drop -
+# TextEditorDragDrop.OnClearState, registered handledEventsToo=True - and the
+# editor answers a drag whose format it cannot use with Effects=None. None is
+# not merely a wrong-looking cursor: a drag source that is told None DOES NOT
+# DELIVER THE DROP AT ALL. Taking the tunnelling PreviewDragOver/PreviewDrop
+# and marking them handled is what keeps the editor's opinion out of it. The
+# same shape as the fold headers and the composer's own key handler.
+#
+# 🔴 COPY, ALWAYS, NEVER $E.AllowedEffects. Hold Shift over a drag out of
+# Explorer and the allowed effect becomes MOVE - and a target that answers Move
+# is telling Explorer the file has been moved, at which point EXPLORER DELETES
+# THE ORIGINAL. This window copies nothing and moves nothing; it reads a path.
+# Copy is the only answer that is both honest enough for the source and unable
+# to destroy the operator's file, and it is pinned regardless of which keys are
+# held. That is also why Shift is given no meaning of its own here: the habit he
+# described has to be HARMLESS, not clever - shift-drag and plain drag put the
+# identical text in the box.
+#
+# 🪤 CHECKING THE FORMAT IS NOT FETCHING IT. PreviewDragOver fires continuously
+# while the mouse moves over the strip; GetDataPresent is a lookup, GetData
+# marshals the whole HDROP. Only the drop itself pays for the paths.
+# ===========================================================================
+$script:dropFmt = [System.Windows.DataFormats]::FileDrop
+
+function Test-SRDropHasFiles { param($E)
+    if (-not $E) { return $false }
+    try { return [bool]$E.Data.GetDataPresent($script:dropFmt) } catch { return $false }
+}
+
+# 🪤 A List[string] and .ToArray(), not @($list) - see the note on the ask
+# options for what @() does to a generic list under 5.1. [[feedback-list-object-trap]]
+function Get-SRDropPaths { param($E)
+    if (-not (Test-SRDropHasFiles $E)) { return @() }
+    $raw = $null
+    try { $raw = $E.Data.GetData($script:dropFmt) } catch { return @() }
+    if (-not $raw) { return @() }
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $raw) { $s = "$p".Trim(); if ($s) { $out.Add($s) } }
+    return $out.ToArray()
+}
+
+# WHAT ACTUALLY GETS TYPED. One path goes in bare, because a bare path reads as
+# part of a sentence and that is what the box is for: "look at C:\x\y.py and
+# tell me". A path with a space in it is quoted, because unquoted it reads as
+# two paths. Several files are separated by a single space - the same thing the
+# terminal does with a multi-file drag.
+#
+# 🪤 -match '\s', not .Contains(' ') or .IndexOf(' '). String.IndexOf(string) is
+# CULTURE-SENSITIVE on this runtime; the regex is not, and it catches a tab or a
+# non-breaking space in a filename too. [[feedback-culture-sensitive-compare]]
+function Format-SRDropPaths { param([string[]]$Paths)
+    if (-not $Paths) { return '' }
+    $bits = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $Paths) {
+        $s = "$p".Trim()
+        if (-not $s) { continue }
+        if ($s.Length -gt 1 -and $s[0] -eq '"' -and $s[$s.Length - 1] -eq '"') { $bits.Add($s); continue }
+        if ($s -match '\s') { $bits.Add('"' + $s + '"') } else { $bits.Add($s) }
+    }
+    return ($bits.ToArray() -join ' ')
+}
+
+# AT THE CARET, NOT OVER THE TOP. The box holds a message being written; a drop
+# that replaced it would throw away the sentence it was meant to join. A
+# selection is replaced, exactly as typing would replace it.
+#
+# The one space either side is what stops "look at" + a path becoming
+# "look atC:\x", and the trailing one is what lets the next word - or the next
+# dropped file - be typed straight away.
+function Add-SRDroppedPaths { param($Box, [string[]]$Paths)
+    if (-not $Box) { return 0 }
+    $ins = Format-SRDropPaths -Paths $Paths
+    if (-not $ins) { return 0 }
+    $t = "$($Box.Text)"
+    $at = 0; $len = 0
+    try { $at = [int]$Box.SelectionStart; $len = [int]$Box.SelectionLength } catch { }
+    if ($at -lt 0 -or $at -gt $t.Length) { $at = $t.Length; $len = 0 }
+    if ($at + $len -gt $t.Length) { $len = $t.Length - $at }
+    $before = $(if ($at -gt 0) { "$($t[$at - 1])" } else { '' })
+    $after  = $(if ($at + $len -lt $t.Length) { "$($t[$at + $len])" } else { '' })
+    $lead  = $(if ($before -and $before -notmatch '\s') { ' ' } else { '' })
+    $trail = $(if ($after -and $after -match '\s') { '' } else { ' ' })
+    $add = $lead + $ins + $trail
+    $Box.Text = $t.Remove($at, $len).Insert($at, $add)
+    try { $Box.CaretIndex = $at + $add.Length } catch { }
+    try { $null = $Box.Focus() } catch { }
+    return @($Paths | Where-Object { "$_".Trim() }).Count
+}
+
+# 🔑 WHICH CONVERSATION IT WENT INTO, BY NAME. The composer is NOT cleared when
+# the selection changes - it is cleared on a successful send and nowhere else -
+# so a path dropped for one conversation is still sitting there after you click
+# another. That is not new and it is not this feature's to fix, but a drop is a
+# gesture with no keystrokes in it, which makes it the easiest way yet to
+# forget. The status line names the conversation the text just joined.
+function Get-SRDropWhere { param([string]$What, [switch]$Named)
+    if (-not $Named) { return $What }
+    try {
+        $r = Get-SelectedRow
+        if ($r) { return ('the message for ' + (Get-Title $r.S $r.D).Text) }
+    } catch { }
+    return $What
+}
+
+function Set-SRDropEffect { param($E)
+    if (-not (Test-SRDropHasFiles $E)) { return }
+    $E.Effects = [System.Windows.DragDropEffects]::Copy
+    $E.Handled = $true
+}
+
+function Complete-SRDrop { param($E, $Box, [string]$What, [switch]$Named)
+    # NOT OURS: a drag of selected TEXT out of another window is left entirely
+    # alone - unhandled, no effect set - so the TextBox keeps the ordinary
+    # behaviour it has always had for that.
+    if (-not (Test-SRDropHasFiles $E)) { return }
+    $E.Effects = [System.Windows.DragDropEffects]::Copy
+    $E.Handled = $true
+    # 🪤 Assign, then wrap - the comma guard. [[feedback-array-wrap-trap]]
+    $got = Get-SRDropPaths $E
+    $paths = @($got)
+    if (-not $paths.Count) { Set-Status 'that drop carried no file path' 'warn'; return }
+    $n = Add-SRDroppedPaths -Box $Box -Paths $paths
+    if (-not $n) { return }
+    $where = Get-SRDropWhere -What $What -Named:$Named
+    $msg = $(if ($n -eq 1) { 'added the path to ' } else { ('added {0} paths to ' -f $n) }) + $where
+    # 🔴 "nothing was sent" IS THE POINT OF THE LINE. A drop is the one gesture
+    # in this window that could plausibly be read as an action against a live
+    # session, so the status says, every time, that it was not.
+    if (-not $Box.IsEnabled) { Set-Status ($msg + ' - it cannot be typed into yet') 'warn' }
+    else { Set-Status ($msg + ' - nothing was sent') 'ok' }
+}
+
+# ON THE DOCK, NOT THE BOX. The strip is 18px of padding wider than the TextBox
+# on every side, and a drop landing on that margin is a drop the operator meant.
+# It also still works when the box is DISABLED - a conversation waiting on a
+# question cannot be typed into, and a disabled element cannot be relied on to
+# raise input events at all, so handling it a level up is what lets the window
+# keep the path and say why rather than swallow the drag.
+#
+# 🪤 PLAIN SCRIPTBLOCKS, NAMING $ui - no .GetNewClosure() factory. A closure
+# runs in its own dynamic module, where `$script:x = ...` writes to THAT module
+# and is invisible to the rest of this file. Measured while building this.
+$ui.SendDock.Add_PreviewDragOver({ param($s, $e) Set-SRDropEffect $e })
+$ui.SendDock.Add_PreviewDrop({ param($s, $e) Complete-SRDrop -E $e -Box $ui.SendBox -What 'the message box' -Named })
+# The other two boxes that type into a session, on the same terms. Both live
+# inside panels that are Collapsed unless they are in use, and a collapsed
+# element is not hit-tested - so neither can take a drop that was not aimed at
+# an open question or an open broadcast.
+$ui.AskFreeBox.Add_PreviewDragOver({ param($s, $e) Set-SRDropEffect $e })
+$ui.AskFreeBox.Add_PreviewDrop({ param($s, $e) Complete-SRDrop -E $e -Box $ui.AskFree -What 'your answer' })
+$ui.CastBox.Add_PreviewDragOver({ param($s, $e) Set-SRDropEffect $e })
+$ui.CastBox.Add_PreviewDrop({ param($s, $e) Complete-SRDrop -E $e -Box $ui.CastText -What 'the broadcast' })
 
 # THE INTERRUPT. Nothing is confirmed here on purpose: stopping a turn is the
 # recoverable half of the pair beside it - the session stays open, the

@@ -205,6 +205,17 @@ function New-GuiHarness {
     foreach ($part in @(Get-ChildItem -LiteralPath (Join-Path $lib 'gui') -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
         $allSrc += "`n" + (Get-Content -LiteralPath $part.FullName -Raw)
     }
+    # 🪤 COMMENTS FIRST, OR THE GUARD READS THE PROSE THAT WARNS ABOUT IT. A
+    # block explaining why closures are avoided says, in a comment, that
+    # `$script:x = ...` writes to the closure's own module - and the scanner
+    # took that x for a real piece of GUI state, then failed the whole suite
+    # because the driver happened to use $x. A substring search cannot tell a
+    # warning from the thing it warns about; the same reason Get-SRBodyOf strips
+    # comments before its own source-level assertions.
+    #
+    # Line comments only. A here-string containing a # is left alone because it
+    # is not a comment, and `$script:` inside one would be real code somewhere.
+    $allSrc = [regex]::Replace($allSrc, '(?m)(?<=^|\s)#[^\r\n]*', '')
     $scriptNames = @{}
     foreach ($m in [regex]::Matches($allSrc, '\$script:([A-Za-z_]\w*)')) {
         $scriptNames[$m.Groups[1].Value.ToLower()] = $true
