@@ -158,23 +158,59 @@
          appear in the same place: bands live in the rail and the list, hues
          live inside the reading pane and on the project tiles.
          ============================================== -->
-    <SolidColorBrush x:Key="HueIn"    Color="#7AA2FF"/>   <!-- came in  - claude speaking -->
-    <SolidColorBrush x:Key="HueOut"   Color="#FFB86B"/>   <!-- went out - you speaking -->
-    <SolidColorBrush x:Key="HueTool"  Color="#A78BFA"/>   <!-- the machinery between them -->
-    <SolidColorBrush x:Key="HueBad"   Color="#FF7A8A"/>   <!-- a call that failed -->
-    <SolidColorBrush x:Key="HueAsk"   Color="#5EEAD4"/>   <!-- a question waiting on you -->
-    <SolidColorBrush x:Key="HueWarn"  Color="#FFD166"/>
+    <!-- 🔴 ONE RULE PER HUE, AND THE OLD SET HAD NONE. Reported as "I do not
+         like the colouring, it feels like a random colouring" - and the reason
+         it feels that way is structural rather than a matter of taste. Seven
+         saturated hues at the same chroma were carrying THREE UNRELATED
+         QUESTIONS in one channel: who is speaking (blue/orange), what kind of
+         machinery ran (violet/green/teal), and how it went (green/amber/red).
+         No rule can be inferred from a channel that answers three questions,
+         so the eye reads it as noise.
+
+         🪤 TWO PAIRS WERE ALSO INDISTINGUISHABLE. #FFB86B "you" against
+         #FFD166 "a message from another session" is about 25 degrees of hue;
+         #5EEAD4 "a question waiting on you" against #5FD68A "a background
+         shell" is about the same. Two of those four meanings are the ones you
+         most need to catch at a glance.
+
+         Now each hue answers exactly one question, and the set is warmed to
+         Claude's own clay rather than the neon pastels:
+
+           HueOut  #D97757  YOU. Claude clay. Your turns also carry a ground.
+           HueIn   #8FA8C8  ANOTHER SESSION speaking. Claude itself is PLAIN -
+                            the reply is the default voice and needs no hue.
+           HueTool #8A8578  THE MACHINE, all of it - runs, shells, sub-agents,
+                            hooks, notices, file lists, thinking. The GLYPH
+                            says which; the hue only says "not a person".
+           HueAsk  #5EC8B7  SOMETHING IS WAITING ON YOU. The one bright accent
+                            in the window, spent on nothing else.
+           HueBad  #E2687E  IT FAILED. Pushed to magenta so it cannot be read
+                            as the clay of your own turns.
+           HueWarn #D9B45F  a caution in the chrome.
+           HueOk   #7FB98A  a healthy state in the chrome.
+
+         🪤 THE COST, STATED: a run of Reads and a run that spawned a sub-agent
+         are now the same colour. That is deliberate - the marker table already
+         gives them different SHAPES (filled square against an at-sign) and the
+         note there records that shape, not hue, was always meant to carry the
+         difference. Hue reinforced it; now it does not. -->
+    <SolidColorBrush x:Key="HueIn"    Color="#8FA8C8"/>   <!-- came in  - claude speaking -->
+    <SolidColorBrush x:Key="HueOut"   Color="#D97757"/>   <!-- went out - you speaking -->
+    <SolidColorBrush x:Key="HueTool"  Color="#8A8578"/>   <!-- the machinery between them -->
+    <SolidColorBrush x:Key="HueBad"   Color="#E2687E"/>   <!-- a call that failed -->
+    <SolidColorBrush x:Key="HueAsk"   Color="#5EC8B7"/>   <!-- a question waiting on you -->
+    <SolidColorBrush x:Key="HueWarn"  Color="#D9B45F"/>
     <!-- A context window with room left. Its own green rather than the teal
          HueAsk, which already means "a question is waiting on you" - a bar that
          borrowed it would have said that on every healthy session. -->
-    <SolidColorBrush x:Key="HueOk"    Color="#5FD68A"/>
+    <SolidColorBrush x:Key="HueOk"    Color="#7FB98A"/>
 
-    <SolidColorBrush x:Key="HueOutWash"  Color="#FFB86B" Opacity="0.13"/>
-    <SolidColorBrush x:Key="HueToolWash" Color="#A78BFA" Opacity="0.15"/>
+    <SolidColorBrush x:Key="HueOutWash"  Color="#D97757" Opacity="0.13"/>
+    <SolidColorBrush x:Key="HueToolWash" Color="#8A8578" Opacity="0.15"/>
     <SolidColorBrush x:Key="CtxTrack"    Color="#000000" Opacity="0.38"/>
-    <SolidColorBrush x:Key="HueAskWash"  Color="#5EEAD4" Opacity="0.10"/>
-    <SolidColorBrush x:Key="HueAskFilm"  Color="#5EEAD4" Opacity="0.05"/>
-    <SolidColorBrush x:Key="HueAskEdge"  Color="#5EEAD4" Opacity="0.34"/>
+    <SolidColorBrush x:Key="HueAskWash"  Color="#5EC8B7" Opacity="0.10"/>
+    <SolidColorBrush x:Key="HueAskFilm"  Color="#5EC8B7" Opacity="0.05"/>
+    <SolidColorBrush x:Key="HueAskEdge"  Color="#5EC8B7" Opacity="0.34"/>
 
     <!-- The bevel: a dark outer stroke with a light inner highlight, so a
          surface looks lit from above rather than outlined. One pair, used by

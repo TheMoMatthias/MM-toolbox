@@ -2455,6 +2455,16 @@ foreach ($hueKey in @('In', 'Out', 'Tool', 'Bad', 'Ask', 'Warn')) {
 }
 $PalGlass   = New-SRTint $Pal.TextMax 0.035
 $PalGlassHi = New-SRTint $Pal.TextMax 0.055
+# 🔴 THE GROUND BEHIND YOUR OWN WORDS. Reported as "I cannot see any noticeable
+# difference between what I prompted and what the session is", with the terminal
+# named as the reference: there, what you typed sits on a ground and everything
+# else does not.
+#
+# 🪤 NEUTRAL, NOT THE `Out` HUE. Orange is already saying "you" twice - in the
+# gutter marker and in the label above - and a third orange device sits BEHIND
+# the text rather than beside it, so it tints the words themselves. White at 8%
+# reads as a surface, not as a colour, which is what a ground is for.
+$PalYouGround = New-SRTint $Pal.TextMax 0.08
 $PalHair    = New-SRTint $Pal.TextMax 0.07
 $PalSunk    = New-SRTint $Pal.Ink 0.55
 # ===========================================================================
@@ -2601,7 +2611,12 @@ $SR_GutterBase = 22.0
 # they disagreed (1.48 against 1.38) and the one that runs on EVERY layout won,
 # so the value the scale set was decoration. That is the third time a number in
 # this file has been written down twice and the invisible copy has won.
-$SR_LeadFactor = 1.48
+# 1.48 -> 1.62 on report: "it feels the text is sometimes too dense". 1.48 is a
+# tight setting for a MONOSPACED face, which is what this pane used to be; on a
+# proportional face with a shorter x-height the same ratio reads packed. One
+# number, so every paragraph, every fold body and the measure that sizes the
+# column all move together.
+$SR_LeadFactor = 1.62
 $script:TypeBase = @{}
 foreach ($k in @('Micro', 'Caption', 'Body', 'Mono', 'Strong', 'Display', 'Pane')) {
     # 🪤 CAST, DO NOT TRUST THE LOOKUP. A missing key returns $null and would
@@ -2881,9 +2896,26 @@ function New-ReadText {
 # engine, which is not what this needs to be.
 function Add-ReadProse {
     param($Doc, [string]$Text, $Brush, [double]$Size = 0, [double]$Line = 0,
-          [double]$Indent = 0, [string]$Kind = '')
+          [double]$Indent = 0, [string]$Kind = '', $Ground = $null)
     if ($Size -le 0) { $Size = $script:PaneSize }
     if ($Line -le 0) { $Line = $script:readLead }
+    # A grounded paragraph is inset from its own background so the words are not
+    # flush against the edge of it, and the box is pulled LEFT by the same
+    # amount so the text still starts on the one x every other block uses. Pad
+    # without the offset and every line you wrote sits a column right of every
+    # line Claude did - which is the alignment complaint, not the fix for it.
+    $padX = 0.0
+    if ($Ground) { $padX = 11.0 }
+    # 🔴 THE BANDS HAVE TO TOUCH OR IT IS NOT A GROUND. Every source line is its
+    # own Paragraph with 3px of margin above and below it, so painting the
+    # background per-paragraph drew a STRIPE PER LINE with the ground colour
+    # missing between them - looked at in a shot, a five-line message read as
+    # five separate cards stacked up. The vertical margin goes to zero for a
+    # grounded turn and the leading, which lives INSIDE the paragraph, goes on
+    # keeping the lines apart exactly as it did.
+    $groundPs = New-Object System.Collections.Generic.List[object]
+    $groundPad = 3.0
+    if ($Ground) { $groundPad = 0.0 }
     $lines = @((Remove-SRAnsi $Text) -replace "`r", '' -split "`n")
     $i = 0
     # The marker is drawn ONCE, on the first line that carries words. A turn is
@@ -2904,10 +2936,14 @@ function Add-ReadProse {
             continue
         }
         $p = New-Object System.Windows.Documents.Paragraph
-        $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW), 3, 0, 3
+        $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW - $padX), $groundPad, 0, $groundPad
         $p.TextIndent = -$script:GutterW
         $p.LineHeight = $Line
         $p.LineStackingStrategy = 'BlockLineHeight'
+        if ($Ground) {
+            $p.Background = $Ground
+            $p.Padding = New-Object System.Windows.Thickness $padX, 0, $padX, 0
+        }
         if ($firstMark -and $ln.Trim()) {
             $p.Inlines.Add((New-GutterMark -Glyph (Get-MarkGlyph $Kind) -Brush (Get-MarkBrush $Kind)))
             $firstMark = $false
@@ -2936,7 +2972,7 @@ function Add-ReadProse {
         # so leaving the original arithmetic here would have dropped the gutter
         # offset on exactly the lines that are indented anyway - every bullet in
         # every reply sliding one column left of the prose above it.
-        if ($bump) { $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW + $bump), 2, 0, 2 }
+        if ($bump) { $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW + $bump - $padX), $groundPad, 0, $groundPad }
         # 🔴 HOW MANY INLINES THIS PARAGRAPH STARTED WITH, because that number is
         # no longer a constant. The blank-line test below used to read
         # `-le 1`, meaning "nothing here but the gutter box" - and the note on it
@@ -2970,7 +3006,17 @@ function Add-ReadProse {
         # added in front of it.
         if ($p.Inlines.Count -eq $inl0) { $p.Inlines.Add((New-ReadRun -Text ' ' -Brush $Brush -Size ($Size * 0.4))) }
         $Doc.Blocks.Add($p)
+        if ($Ground) { $groundPs.Add($p) }
         $i++
+    }
+    # The first and last lines get the ground's own top and bottom inset. Done
+    # here rather than per-paragraph because which paragraph is last is only
+    # known once there are no more of them.
+    if ($Ground -and $groundPs.Count -gt 0) {
+        $pf = $groundPs[0]
+        $pf.Padding = New-Object System.Windows.Thickness $padX, 9, $padX, $pf.Padding.Bottom
+        $pl = $groundPs[$groundPs.Count - 1]
+        $pl.Padding = New-Object System.Windows.Thickness $padX, $pl.Padding.Top, $padX, 9
     }
 }
 
@@ -3191,10 +3237,17 @@ $script:MonoSize = $script:Type.Pane
 # mojibake characters - the same trap that made the group headers read
 # "93 A- 9 armed". CONTEXT.md records it; this table is exactly where it would
 # happen again.
+# 🔴 THE HUE COLUMN NOW ANSWERS ONE QUESTION: is this you, another session,
+# the machine, or something waiting on you. It used to answer three at once -
+# see the note on the palette in window2.xaml. Every machine kind points at
+# `Tool` and is told apart by its GLYPH, which is what the note below already
+# said should be carrying the difference. `said` has no hue at all: Claude's
+# reply is the document's default voice, and a voice that is everywhere does
+# not need marking.
 $SR_Marks = @{
-    said     = @{ G = 0x25CF; H = 'In'      }  # filled dot   - claude speaking
+    said     = @{ G = 0x25CF; H = 'TextMid' }  # filled dot   - claude speaking
     you      = @{ G = 0x203A; H = 'Out'     }  # angle        - you said
-    thinking = @{ G = 0x223C; H = 'TextLow' }  # tilde        - thinking
+    thinking = @{ G = 0x223C; H = 'Tool'    }  # tilde        - thinking
     # 🪤 NOT THE SAME DOT AS `said`. The terminal uses one glyph for both and
     # separates them by colour alone - and in review that is exactly what it
     # looked like: Claude's marker and a tool call's marker were one shape in
@@ -3202,20 +3255,20 @@ $SR_Marks = @{
     # Every kind is meant to be distinct BEFORE you read it, so the shape
     # carries the difference and the hue reinforces it.
     run      = @{ G = 0x25A0; H = 'Tool'    }  # filled square- a tool call
-    result   = @{ G = 0x2514; H = 'TextLow' }  # corner       - its result
-    system   = @{ G = 0x00B7; H = 'TextLow' }  # middle dot   - a notice
+    result   = @{ G = 0x2514; H = 'Tool'    }  # corner       - its result
+    system   = @{ G = 0x00B7; H = 'Tool'    }  # middle dot   - a notice
     hook     = @{ G = 0x25C6; H = 'Tool'    }  # diamond      - a hook fired
-    file     = @{ G = 0x2261; H = 'TextLow' }  # triple bar   - files re-read
+    file     = @{ G = 0x2261; H = 'Tool'    }  # triple bar   - files re-read
     asked    = @{ G = 0x003F; H = 'Ask'     }  # question     - you answered
     queued   = @{ G = 0x00BB; H = 'Out'     }  # guillemet    - queued input
-    compact  = @{ G = 0x2014; H = 'Ask'     }  # em dash      - the break
-    agent    = @{ G = 0x0040; H = 'Ask'     }  # at           - a sub-agent
-    shell    = @{ G = 0x0024; H = 'Ok'      }  # dollar       - a background shell
+    compact  = @{ G = 0x2014; H = 'Tool'    }  # em dash      - the break
+    agent    = @{ G = 0x0040; H = 'Tool'    }  # at           - a sub-agent
+    shell    = @{ G = 0x0024; H = 'Tool'    }  # dollar       - a background shell
     # ONE CATEGORY, TWO DIRECTIONS. Session-to-session traffic is a single kind
     # of event and the arrow says which way it went, so it takes one hue and
     # two glyphs rather than two hues you would have to learn separately.
-    msgin    = @{ G = 0x2190; H = 'Warn'    }  # left arrow   - a message arrived
-    msgout   = @{ G = 0x2192; H = 'Warn'    }  # right arrow  - a message sent
+    msgin    = @{ G = 0x2190; H = 'In'      }  # left arrow   - a message arrived
+    msgout   = @{ G = 0x2192; H = 'In'      }  # right arrow  - a message sent
 }
 
 function Get-MarkGlyph { param([string]$Kind)
@@ -3429,7 +3482,25 @@ function New-FoldHeader {
     $car.FontSize = $script:PaneSize
     $car.FontFamily = $script:PaneFace
     $car.VerticalAlignment = 'Center'
-    $car.Margin = New-Object System.Windows.Thickness 0, 0, 7, 0
+    # 🔴 THE CARET HANGS IN THE GUTTER, so a fold caption starts on exactly the x
+    # every line of prose starts on. It sat INSIDE the text column and pushed
+    # its caption ~16px right of everything above and below it - so every
+    # foldable block in the document was the one thing not aligned with the
+    # rest. Reported as "we need to make the text all aligned".
+    #
+    # 🪤 THE WIDTH IS FIXED AND THE MARGIN IS DERIVED FROM IT. A glyph's advance
+    # moves with the face and with the zoom, so a hand-tuned negative margin
+    # would be right at 100% on one font and wrong at every other size.
+    # -(w + gap), then the caret's own w, then gap, nets to exactly zero.
+    #
+    # 🪤 IT SHARES THE GUTTER WITH THE CATEGORY MARKER, so it is sized to fit
+    # BESIDE one rather than on top of it: the marker sits at the left of a
+    # 22px gutter and the caret is pulled flush to the right of it.
+    $carW = [Math]::Round($script:PaneSize * 0.70, 1)
+    $carGap = 3.0
+    $car.Width = $carW
+    $car.TextAlignment = 'Left'
+    $car.Margin = New-Object System.Windows.Thickness (-($carW + $carGap)), 0, $carGap, 0
     $null = $sp.Children.Add($car)
 
     $cap = New-Object System.Windows.Controls.TextBlock
@@ -4188,7 +4259,7 @@ function Format-TurnTime { param($When)
 
 function Add-ReadLabel {
     param($Doc, [string]$Text, $Brush, [string]$Trailing = '', $TrailBrush, $When,
-          [double]$Size = 0, [double]$Top = 13, [double]$Bottom = 4)
+          [double]$Size = 0, [double]$Top = 20, [double]$Bottom = 5)
     if ($Size -le 0) { $Size = $script:PaneSize }
     $p = New-Object System.Windows.Documents.Paragraph
     # INDENTED INTO THE TEXT COLUMN, not sitting out at the page edge. The
@@ -4395,6 +4466,42 @@ function Build-ReadDocument {
 # incremental path and the full build are the SAME code - a second renderer
 # that drew "the new turns" slightly differently from the first would be a bug
 # nobody could see, because both halves would look right on their own.
+# ===========================================================================
+# WHAT YOU ACTUALLY TYPED, NOT THE ENVELOPE AROUND IT.
+#
+# 🔴 A SLASH COMMAND ARRIVED AS SIX LINES OF XML. Looked at in a shot: one
+# `/compact` drew <local-command-caveat> and its whole paragraph of boilerplate,
+# then <command-name>, <command-message>, <command-args> and
+# <local-command-stdout>, each on its own line, INSIDE the block that is meant
+# to be the clearest thing in the document. Reported as "the style is sometimes
+# not intuitive and not obvious".
+#
+# 🪤 STRIP THE WRAPPER, NEVER THE WORDS. A user record routinely carries a
+# command envelope AND typed prose in one body - this very conversation does -
+# so this rewrites only the tags it knows and leaves everything else exactly as
+# it found it. The caveat block is the one thing dropped outright: it is
+# addressed to the model rather than to you, it is identical every time, and it
+# is longer than most of the messages it wraps.
+#
+# 🪤 THE `<` TEST IS NOT AN OPTIMISATION, it is what keeps eight regex passes
+# off the overwhelming majority of turns, which contain no tag at all.
+function Convert-SRSpoken { param([string]$Text)
+    if (-not $Text) { return '' }
+    if ($Text.IndexOf('<', [System.StringComparison]::Ordinal) -lt 0) { return $Text }
+    $s = $Text
+    $s = [regex]::Replace($s, '(?s)<local-command-caveat>.*?</local-command-caveat>', '')
+    $s = [regex]::Replace($s, '(?s)<command-message>.*?</command-message>', '')
+    $s = [regex]::Replace($s, '(?s)<command-args>\s*</command-args>', '')
+    $s = [regex]::Replace($s, '(?s)<command-args>(.*?)</command-args>', '$1')
+    $s = [regex]::Replace($s, '(?s)<command-name>/?(.*?)</command-name>', '/$1')
+    $s = [regex]::Replace($s, '(?s)<local-command-stdout>\s*</local-command-stdout>', '')
+    $s = [regex]::Replace($s, '(?s)<local-command-stdout>(.*?)</local-command-stdout>', '$1')
+    # What is left where a block was removed is a run of blank lines.
+    $s = [regex]::Replace($s, '(\r?\n[ \t]*){3,}', "`n`n")
+    return $s.Trim()
+}
+
+
 function Add-ReadTurn { param($Doc, $Turn)
     $doc = $Doc
     $t = $Turn
@@ -4410,7 +4517,7 @@ function Add-ReadTurn { param($Doc, $Turn)
                 if ($script:docHidden -gt 0) { $trail = "$script:docHidden steps hidden"; $script:docHidden = 0 }
                 Add-ReadLabel -Doc $doc -Text 'you said' -Brush $Pal.Out -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
-                Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextMax -Size $script:readSize -Line $script:readLead -Kind 'you'
+                Add-ReadProse -Doc $inner -Text (Convert-SRSpoken $t.Body) -Brush $Pal.TextMax -Size $script:readSize -Line $script:readLead -Kind 'you' -Ground $PalYouGround
                 # Blocks is a live collection: moving them while enumerating it
                 # silently drops every second one, hence the @() snapshot. And
                 # $null = on Remove is not tidiness - it returns a BOOL, and an
@@ -4427,7 +4534,7 @@ function Add-ReadTurn { param($Doc, $Turn)
                 # means inbound.
                 $trail = ''
                 if ($script:docHidden -gt 0) { $trail = "$script:docHidden steps hidden"; $script:docHidden = 0 }
-                Add-ReadLabel -Doc $doc -Text ('message from ' + $t.Head) -Brush $Pal.Warn `
+                Add-ReadLabel -Doc $doc -Text ('message from ' + $t.Head) -Brush $Pal.In `
                               -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
                 Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextHigh -Size $script:readSize -Line $script:readLead -Kind 'msgin'
@@ -4436,7 +4543,7 @@ function Add-ReadTurn { param($Doc, $Turn)
             'said' {
                 $trail = ''
                 if ($script:docHidden -gt 0) { $trail = "$script:docHidden steps hidden"; $script:docHidden = 0 }
-                Add-ReadLabel -Doc $doc -Text 'claude' -Brush $Pal.In -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
+                Add-ReadLabel -Doc $doc -Text 'claude' -Brush $Pal.TextMid -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
                 Add-ReadProse -Doc $inner -Text $t.Body -Brush $Pal.TextHigh -Size $script:readSize -Line $script:readLead -Kind 'said'
                 foreach ($blk in @($inner.Blocks)) { $null = $inner.Blocks.Remove($blk); $doc.Blocks.Add($blk) }
@@ -4449,7 +4556,7 @@ function Add-ReadTurn { param($Doc, $Turn)
                 # showed nothing happening.
                 $st = New-Object System.Windows.Controls.StackPanel
                 $st.Orientation = 'Horizontal'
-                $null = $st.Children.Add((New-ReadText -Text 'COMPACTED' -Brush $Pal.Ask))
+                $null = $st.Children.Add((New-ReadText -Text 'COMPACTED' -Brush $Pal.Tool))
                 if ("$($t.Body)".Trim()) {
                     $tb = New-ReadText -Text "$($t.Body)" -Brush $Pal.TextLow
                     $tb.Margin = New-Object System.Windows.Thickness 10, 0, 0, 0
@@ -4463,6 +4570,13 @@ function Add-ReadTurn { param($Doc, $Turn)
                 #
                 # The 600-character cap is gone with the rest of them: folded it
                 # is one line, opened it is the whole hook.
+                # 🔴 A HOOK IS MACHINERY AND `hidden` MEANS HIDDEN. Every one of
+                # the other machine kinds took this gate and this one did not,
+                # which on a machine whose UserPromptSubmit hook fires on every
+                # prompt left a HOOK block over every turn in the document with
+                # Steps set to hidden. The count is kept, so the next thing
+                # somebody says still reports how much was put away.
+                if ($script:toolView -eq 'hidden') { $script:docHidden++; break }
                 $body = "$($t.Body)".Trim()
                 $fp = New-FoldPanel -Caption ("HOOK  " + $t.Head) -Brush $Pal.Tool -Kind 'text' `
                                     -Data $body -Trailing (Get-SRHeadLine $body 84) `
@@ -4480,18 +4594,19 @@ function Add-ReadTurn { param($Doc, $Turn)
                 if ($n -lt 1) { $n = 1 }
                 $body = "$($t.Body)"
                 $fp = New-FoldPanel -Caption $(if ($n -eq 1) { 'NOTICE' } else { "$n NOTICES" }) `
-                                    -Brush $Pal.TextLow -Kind 'text' -Data $body `
+                                    -Brush $Pal.Tool -Kind 'text' -Data $body `
                                     -Trailing (Get-SRHeadLine $body 88) `
                                     -Open ($script:toolView -eq 'full')
                 $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'system' -Top 9 -Bottom 5))
             }
             'file' {
                 # The list a compact prints when it re-reads what it needs.
+                if ($script:toolView -eq 'hidden') { $script:docHidden++; break }
                 $n = [int]$t.Count
                 $word = 'files'; if ($n -eq 1) { $word = 'file' }
                 $body = "$($t.Body)".Trim()
                 $fp = New-FoldPanel -Caption ('{0}  {1} {2}' -f $t.Head, $n, $word) `
-                                    -Brush $Pal.TextLow -Kind 'text' -Data $body `
+                                    -Brush $Pal.Tool -Kind 'text' -Data $body `
                                     -Trailing (Get-SRHeadLine $body 84) `
                                     -Open ($script:toolView -eq 'full')
                 $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'file' -Rail))
@@ -4536,7 +4651,7 @@ function Add-ReadTurn { param($Doc, $Turn)
             'queued' {
                 # The 400-character cap is gone: folded is a line, opened is what
                 # you actually typed.
-                $body = "$($t.Body)".Trim()
+                $body = Convert-SRSpoken $t.Body
                 $fp = New-FoldPanel -Caption 'QUEUED' -Brush $Pal.Out -Kind 'text' -Data $body `
                                     -Trailing (Get-SRHeadLine $body 84) `
                                     -Open ($script:toolView -eq 'full')
@@ -4547,7 +4662,7 @@ function Add-ReadTurn { param($Doc, $Turn)
                 # rest of it. It folds like everything else now.
                 if ($script:toolView -eq 'hidden') { break }
                 $body = "$($t.Body)".Trim()
-                $fp = New-FoldPanel -Caption 'THINKING' -Brush $Pal.TextLow -Kind 'text' -Data $body `
+                $fp = New-FoldPanel -Caption 'THINKING' -Brush $Pal.Tool -Kind 'text' -Data $body `
                                     -Trailing (Get-SRHeadLine $body 96) `
                                     -Open ($script:toolView -eq 'full')
                 $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'thinking' -Top 9 -Bottom 5))
@@ -4802,6 +4917,9 @@ function Show-Ask { param($q)
     $ui.AskTabs.ItemsSource = $null
     $ui.AskTabs.Visibility = $V_Hide
     $ui.AskFreeBox.Visibility = $V_Hide
+    # The question is gone, so nothing typed against it is owed protection any
+    # more - and the next one has to be free to prefill itself.
+    $script:askFreeDirty = $false
     $ui.AskReview.ItemsSource = $null
     $ui.AskReview.Visibility = $V_Hide
     # 🔴 CLEARED ON EVERY PATH. It used to be set only after the early return, so
@@ -5004,7 +5122,24 @@ function Show-Ask { param($q)
     # text; this box shows the same thing, so what you typed is visible rather
     # than something you have to remember. That was the operator's actual ask.
     if ($freeAt -ge 0) {
-        $ui.AskFree.Text = "$($q.FreeText)"
+        # 🔴 IT TYPED OVER YOU. Reported as "I just tried typing into the free
+        # text answer field and the text just simply disappeared after I
+        # typed". This line ran on EVERY dressing of the panel, and the panel
+        # is re-dressed by the background probe and by the follow tick - so a
+        # few seconds after you started typing, whatever the terminal's own row
+        # held (usually nothing) was written over what you were in the middle
+        # of writing. The prefill above is still the right behaviour when you
+        # arrive at a question; it is only wrong once the box is yours.
+        #
+        # 🪤 THE FLAG IS SET BY TYPING, NOT BY THE TEXT CHANGING. This
+        # assignment raises TextChanged itself, so a handler that simply marked
+        # the box dirty on any change would mark it dirty the first time the
+        # panel drew - and the prefill would then never happen again for the
+        # life of the window. $askFreeWriting is what tells the two apart.
+        if (-not $script:askFreeDirty) {
+            $script:askFreeWriting = $true
+            try { $ui.AskFree.Text = "$($q.FreeText)" } finally { $script:askFreeWriting = $false }
+        }
         $ui.AskFreeLabel.Text = $(if ("$($q.FreeText)" -and $chosenAt -eq $freeAt) {
                 'YOUR ANSWER, IN YOUR OWN WORDS'
             } elseif ("$($q.FreeText)") { 'TYPED, NOT YET SENT' }
@@ -5484,7 +5619,11 @@ function Complete-AnswerLanded { param($Row, [int]$Pid_, [int]$Index, $Question,
 
     if ($Why) { Set-Status $Why 'bad' } else {
         Set-Status $(if ($Kind -eq 'typed') { 'answered in your own words' } else { 'answered' }) 'ok'
-        if ($Kind -eq 'typed') { try { $ui.AskFree.Text = '' } catch { } }
+        if ($Kind -eq 'typed') {
+            $script:askFreeDirty = $false
+            $script:askFreeWriting = $true
+            try { $ui.AskFree.Text = '' } catch { } finally { $script:askFreeWriting = $false }
+        }
         # 🔑 A ROUND DOES NOT END WITH ONE ANSWER. Measured: answering a
         # single-select AUTO-ADVANCES the terminal to the next question, so
         # closing the panel here left the operator staring at a session that was
@@ -8404,6 +8543,12 @@ $ui.SendBtn.Add_Click({ Invoke-Send })
 # commits it in the terminal - but only through Invoke-AskTyped, which will not
 # send an empty one.
 $ui.AskFreeSend.Add_Click({ Invoke-AskTyped })
+# Typed here, by you, and not yet sent. Everything that redraws the question
+# panel reads this before it prefills the box.
+$script:askFreeDirty = $false
+$script:askFreeWriting = $false
+$ui.AskFree.Add_TextChanged({ if (-not $script:askFreeWriting) { $script:askFreeDirty = $true } })
+
 $ui.AskFree.Add_PreviewKeyDown({
     param($sender, $e)
     # Shift+Enter falls through to the box as a newline - see the SendBox
