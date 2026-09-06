@@ -3089,6 +3089,11 @@ else {
     $null = Set-RowScreenSig -Id "$($chipRow[0].Row.Id)" -Shells 2 -Agents 1 -Effort 'xhigh' `
                              -CtxTokens 184000 -CtxWindow 1000000
     try {
+        # 🔴 THE STUB ABOVE REPLACES WHERE VITALS COME FROM, so anything
+        # already read from the REAL source has to go. Without this the strip
+        # painted a live conversation's model, branch and context straight past
+        # the stub and nine assertions failed describing a session nobody staged.
+        Clear-SRVitalsCache
         Update-Chips $chipRow[0].Row -Force
         $chipText = @()
         foreach ($chipEl in @($ui.PaneChips.Children)) {
@@ -3142,6 +3147,11 @@ else {
         # keep showing them - and this assertion, which exists to prove the
         # chips are conditional, would be proving nothing.
         $null = $script:rowScreen.Remove("$($chipRow[0].Row.Id)")
+        # 🔴 THE STUB ABOVE REPLACES WHERE VITALS COME FROM, so anything
+        # already read from the REAL source has to go. Without this the strip
+        # painted a live conversation's model, branch and context straight past
+        # the stub and nine assertions failed describing a session nobody staged.
+        Clear-SRVitalsCache
         Update-Chips $chipRow[0].Row -Force
         $quiet = @()
         foreach ($chipEl in @($ui.PaneChips.Children)) {
@@ -3240,14 +3250,59 @@ Build-Sessions
 $clickRows = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' })
 if ($clickRows.Count -lt 2) { Fail 'need two conversations to test selecting between them' }
 else {
+    # COLD - nothing warmed for this row, so the old guarantee stands exactly:
+    # clear the strip, read nothing, let the follow tick fill it.
+    Clear-SRVitalsCache
     $ui.SessionList.SelectedItem = $clickRows[0]
     $script:selId = $null
     Show-Selected
     if ($script:chipVitals) {
-        Fail 'selecting a conversation read its vitals - that is 120 ms and a git call on the click path'
+        Fail 'a cold click read its vitals - that is 113 ms median on the click path'
     } elseif (@($ui.PaneChips.Children).Count -ne 0) {
         Fail "the strip kept $(@($ui.PaneChips.Children).Count) chip(s) from the conversation you just left"
-    } else { Pass 'the click clears the strip and reads nothing' }
+    } else { Pass 'a cold click clears the strip and reads nothing' }
+
+    # WARM - the answer is already in hand, so the strip appears ON the click.
+    # 🔴 THIS IS THE HALF THAT WOULD ROT SILENTLY. If the cache stopped reaching
+    # Show-Selected, every assertion above would still pass and the operator
+    # would simply be back to waiting - which is the state that was reported.
+    $wrow = $clickRows[1].Row
+    $wv = $null
+    try { $wv = Get-SRSessionVitals -JsonlPath "$($wrow.S.jsonl)" -Session $wrow.S -WorkDir "$($wrow.D.path)" } catch { }
+    if (-not ($wv -and $wv.Ok)) {
+        Note 'COULD NOT BE CHECKED THIS RUN: the second conversation would not read, so no warm click could be staged. It is NOT a pass.'
+    } else {
+        Set-SRVitalsCached $wrow $wv
+        # 🪤 THE READER IS MADE TO COUNT AND RETURN NOTHING for the duration, so
+        # a warm click that quietly falls through to it cannot pass by painting
+        # the same chips a moment later.
+        $clickOrigVitals = ${function:Get-SRSessionVitals}
+        $script:clickVitalsReads = 0
+        function Get-SRSessionVitals {
+            param([string]$JsonlPath, $Session, [string]$WorkDir, [int]$MaxTailBytes = 600000, [switch]$NoDiff)
+            $script:clickVitalsReads++
+            return $null
+        }
+        try {
+            $ui.SessionList.SelectedItem = $clickRows[1]
+            $script:selId = $null
+            Show-Selected
+            if ($script:clickVitalsReads -gt 0) {
+                Fail ('a warm click still read the vitals {0} time(s) - the cache is not reaching Show-Selected' -f $script:clickVitalsReads)
+            } elseif (-not $script:chipVitals) {
+                Fail 'a warm click painted nothing - the strip is still waiting for the follow tick'
+            } elseif (@($ui.PaneChips.Children).Count -eq 0) {
+                Fail 'a warm click set the vitals but drew no chips'
+            } else {
+                Pass ('a warm click paints {0} chip(s) on the click, reading nothing' -f @($ui.PaneChips.Children).Count)
+            }
+        } finally {
+            ${function:Get-SRSessionVitals} = $clickOrigVitals
+            Clear-SRVitalsCache
+            $script:selId = $null
+            Update-Chips $null
+        }
+    }
 
     Invoke-FollowTick
     # 🪤 THE FILL HALF CAN ONLY BE ASKED OF A ROW WHOSE VITALS READ. Update-Chips

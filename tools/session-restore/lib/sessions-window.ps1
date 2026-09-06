@@ -7530,10 +7530,17 @@ function Update-Chips { param($R, [switch]$Force)
     # follow that rather than whatever was true when you clicked.
     Set-WorkingPulse ([bool]($R -and $R.A -and "$($R.A.Status)" -eq 'busy'))
     if (-not $R) { $ui.PaneChips.Children.Clear(); $script:chipStamp = ''; $script:chipClock = $null; $script:chipVitals = $null; $script:clockId = ''; return }
-    $v = $null
-    try {
-        $v = Get-SRSessionVitals -JsonlPath "$($R.S.jsonl)" -Session $R.S -WorkDir "$($R.D.path)"
-    } catch { }
+    # 🔑 THE WARM ANSWER FIRST. Measured: this read is 112,9 ms median
+    # (60,1-273,9) while painting from an answer in hand is 5,3. A miss falls
+    # straight through to the read, so the cache can only ever make the strip
+    # EARLIER - never a different number. See Start-VitalsWarm.
+    $v = Get-SRVitalsCached $R
+    if (-not $v) {
+        try {
+            $v = Get-SRSessionVitals -JsonlPath "$($R.S.jsonl)" -Session $R.S -WorkDir "$($R.D.path)"
+        } catch { }
+        if ($v -and $v.Ok) { Set-SRVitalsCached $R $v }
+    }
     if (-not $v -or -not $v.Ok) {
         $ui.PaneChips.Children.Clear(); $script:chipStamp = ''; $script:chipClock = $null; $script:chipVitals = $null; $script:clockId = ''; return
     }
@@ -7850,7 +7857,19 @@ function Show-Selected { param([switch]$Force)
     # filled by the follow tick within a second - exactly the arrangement the
     # question panel already uses, and for the same reason. A strip that arrives
     # a beat late is barely noticeable; a click that takes an extra beat is.
-    if (-not $same) { try { Update-Chips $null } catch { } }
+    # 🔑 AND IF IT IS ALREADY WARM, PAINT IT NOW. Clearing the strip and
+    # waiting for the follow tick was the right trade when the answer cost
+    # 113 ms. It is the wrong one when the answer is in hand and costs 5, and
+    # the operator reported the wait: the context "is not instantaneous".
+    #
+    # 🪝 A MISS STILL CLEARS, and must. Leaving the previous conversation's
+    # model, branch and context bar up while this one's is read is how a strip
+    # gets believed about the wrong session - the same defect Show-Ask's own
+    # comment was written for, in the row of chips instead of the question.
+    if (-not $same) {
+        if (Get-SRVitalsCached $r) { try { Update-Chips $r } catch { } }
+        else { try { Update-Chips $null } catch { } }
+    }
 
     # Everything above is a few string assignments and is always safe to redo.
     # Everything below reads files and spawns a process.
@@ -10175,6 +10194,154 @@ function Complete-VitalsSweep {
     return $changed
 }
 
+# ===========================================================================
+# THE VITALS A CLICK WOULD OTHERWISE WAIT FOR.
+#
+# 🔴 MEASURED, BECAUSE THE COMMENT THAT SENT ME HERE WAS HALF STALE.
+# Show-Selected clears the strip on every click and lets the follow tick refill
+# it, on the stated grounds that the read is "~120 ms of JSONL parsing plus a
+# git call". There is no git call - the branch comes off the record
+# (_common.ps1:6444) - but the parse is real: over 12 conversations,
+# Get-SRSessionVitals is 60,1 / 112,9 / 273,9 ms (min/median/max) while painting
+# the chips from an answer in hand is 4,5 / 5,3 / 80,5. So 95% of the wait is
+# one function, and the operator reported exactly that wait: the context
+# "is not instantaneous and also not fully there".
+#
+# 🔑 THE ANSWER IS ALREADY KNOWN BEFORE THE CLICK, for any row on screen. This
+# warms them off-thread, so selecting a conversation paints from an answer in
+# hand instead of starting a read the operator waits on.
+#
+# 🪤 IT DOES NOT WARM ALL 262 CONVERSATIONS. At 113 ms each that is thirty
+# seconds a pass, which is not a warm cache, it is a permanently cold one that
+# also burns a core. Only rows the operator can actually click next are warmed,
+# newest first, capped - and the cap is a number this comment owns rather than
+# a guess left in the code.
+$script:vitalsCache = @{}
+$SR_VitalsTTL   = 20        # seconds an answer stays good
+$SR_VitalsEvery = 4000      # ms between warms, once one has finished
+$SR_VitalsBatch = 24        # rows per warm - 24 x 113 ms is under three seconds
+$script:vitalsPs = $null; $script:vitalsRs = $null; $script:vitalsHandle = $null
+$script:vitalsFor = @(); $script:vitalsAt = $null
+
+# 🪤 A TTL ALONE WOULD SERVE A STALE STRIP FOR A SESSION THAT IS TYPING. The
+# transcript is append-only, so its LENGTH answers "has anything happened since
+# I read this" for nothing but a file stat. It guards a READ here, never a
+# write, so a collision costs one slightly old strip and not data - and an
+# unreadable stamp means RECOMPUTE, never "unchanged".
+# See the length+mtime note in the project memory: this is the safe half of it.
+function Get-SRVitalsCached { param($R)
+    if (-not $R) { return $null }
+    $e = $script:vitalsCache["$($R.Id)"]
+    if (-not $e) { return $null }
+    if (((Get-Date) - $e.At).TotalSeconds -gt $SR_VitalsTTL) { return $null }
+    # 🪝 AN ID IS NOT IDENTITY HERE. A sub-agent is filed under its
+    # PARENT id, and a staged row in the suite reuses a real one, so an entry
+    # that matches on id alone can answer for a different transcript entirely.
+    # The path it was read from is part of the key.
+    if ("$($e.J)" -ne "$($R.S.jsonl)") { return $null }
+    $len = -1
+    try { $len = [long](Get-Item -LiteralPath "$($R.S.jsonl)" -ErrorAction Stop).Length } catch { return $null }
+    if ($len -ne [long]$e.Len) { return $null }
+    return $e.V
+}
+
+# 🔴 A CACHE OF A SOURCE THAT CAN BE REPLACED MUST BE INVALIDABLE, and
+# this exists because leaving it out was a real defect, not a courtesy to the
+# suite. The window swaps Get-SRSessionVitals for a stub in two places to
+# stage a strip; without a reset the cache answered from a REAL conversation
+# straight past the stub, and nine assertions failed describing a session
+# nobody had staged. Anything that changes where vitals come from calls this.
+function Clear-SRVitalsCache { $script:vitalsCache = @{} }
+
+function Set-SRVitalsCached { param($R, $V)
+    if (-not $R -or -not $V) { return }
+    $len = -1
+    try { $len = [long](Get-Item -LiteralPath "$($R.S.jsonl)" -ErrorAction Stop).Length } catch { return }
+    $script:vitalsCache["$($R.Id)"] = @{ V = $V; At = (Get-Date); Len = $len; J = "$($R.S.jsonl)" }
+}
+
+$script:VitalsJob = {
+    . (Join-Path $SRHere '_common.ps1')
+    $out = @{}
+    foreach ($t in $SRVit.Rows) {
+        try {
+            $vv = Get-SRSessionVitals -JsonlPath $t.J -Session $t.S -WorkDir $t.W
+            if ($vv -and $vv.Ok) { $out[$t.Id] = @{ V = $vv; Len = $t.Len; J = $t.J } }
+        } catch { }
+    }
+    $out
+}
+
+function Start-VitalsWarm {
+    if ($script:vitalsPs) { return }
+    if ($script:vitalsAt -and ((Get-Date) - $script:vitalsAt).TotalMilliseconds -lt $SR_VitalsEvery) { return }
+    # The rows on screen, in the order they are on screen - what a click can
+    # reach next. A row already warm is skipped rather than re-read.
+    $want = New-Object System.Collections.Generic.List[object]
+    foreach ($it in $ui.SessionList.Items) {
+        if ($want.Count -ge $SR_VitalsBatch) { break }
+        if ("$($it.Kind)" -ne 'session') { continue }
+        $r = $it.Row
+        if (-not $r) { continue }
+        if (Get-SRVitalsCached $r) { continue }
+        $j = "$($r.S.jsonl)"
+        if (-not $j) { continue }
+        $len = -1
+        try { $len = [long](Get-Item -LiteralPath $j -ErrorAction Stop).Length } catch { continue }
+        $null = $want.Add([PSCustomObject]@{ Id = "$($r.Id)"; J = $j; S = $r.S; W = "$($r.D.path)"; Len = $len })
+    }
+    if (-not $want.Count) { $script:vitalsAt = Get-Date; return }
+    try {
+        $rs = Get-SRRunspace
+        if (-not $rs) { throw 'no runspace' }
+        $rs.SessionStateProxy.SetVariable('SRVit', @{ Rows = $want.ToArray() })
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript($script:VitalsJob)
+        $script:vitalsRs = $rs
+        $script:vitalsPs = $ps
+        $script:vitalsHandle = $ps.BeginInvoke()
+        $script:vitalsFor = $want.ToArray()
+        $script:vitalsAt = Get-Date
+    } catch {
+        # 🔴 THE RUNSPACE GOES WITH IT - Get-SRRunspace hands back one that is
+        # already OPEN, so a throw after that point leaks a thread. Same shape
+        # as Start-DocParse's catch.
+        try { if ($rs) { $rs.Close(); $rs.Dispose() } } catch { }
+        $script:vitalsPs = $null; $script:vitalsRs = $null
+    }
+}
+
+function Complete-VitalsWarm {
+    if (-not $script:vitalsPs -or -not $script:vitalsHandle) { return $false }
+    if (-not $script:vitalsHandle.IsCompleted) {
+        if ($script:vitalsAt -and ((Get-Date) - $script:vitalsAt).TotalSeconds -gt 30) { Stop-VitalsWarm }
+        return $false
+    }
+    $res = $null
+    try { $res = @($script:vitalsPs.EndInvoke($script:vitalsHandle))[0] } catch { }
+    try { $script:vitalsPs.Dispose(); $script:vitalsRs.Close(); $script:vitalsRs.Dispose() } catch { }
+    $script:vitalsPs = $null; $script:vitalsRs = $null; $script:vitalsHandle = $null
+    if (-not $res) { return $false }
+    $now = Get-Date
+    foreach ($k in $res.Keys) {
+        $e = $res[$k]
+        if (-not $e -or -not $e.V) { continue }
+        # 🪤 THE LENGTH FILED IS THE ONE READ BEFORE THE PARSE, not one taken
+        # now. Taking it now would stamp the answer with a file that may have
+        # grown WHILE the parse ran, and the cache would then believe a stale
+        # read matched a newer file - the one way this guard could lie.
+        $script:vitalsCache["$k"] = @{ V = $e.V; At = $now; Len = [long]$e.Len; J = "$($e.J)" }
+    }
+    return $true
+}
+
+function Stop-VitalsWarm {
+    try { if ($script:vitalsPs) { $script:vitalsPs.Stop(); $script:vitalsPs.Dispose() } } catch { }
+    try { if ($script:vitalsRs) { $script:vitalsRs.Close(); $script:vitalsRs.Dispose() } } catch { }
+    $script:vitalsPs = $null; $script:vitalsRs = $null; $script:vitalsHandle = $null
+}
+
 function Stop-VitalsSweep {
     if (-not $script:sweepPs) { return }
     try { $script:sweepPs.Stop(); $script:sweepPs.Dispose() } catch { }
@@ -10461,6 +10628,12 @@ function Invoke-WriteLane {
         # the window opening instead of trickling in over a quarter of a minute.
         try { if (Complete-VitalsSweep) { Build-Sessions } } catch { }
         try { Start-VitalsSweep } catch { }
+        # 🔑 THE STRIP'S OWN WARM, on the same tick and behind its own gate.
+        # It does NOT rebuild the list when it lands: nothing on a row comes
+        # from these vitals - the row's context bar is the swept screen reading
+        # - so a rebuild here would be 190 ms of relayout for no pixel change.
+        try { $null = Complete-VitalsWarm } catch { }
+        try { Start-VitalsWarm } catch { }
     }
     # Returns whether it actually redrew. The tick discards it; the suite needs
     # it, because the flag is consumed in the same call that sets it and there
