@@ -185,6 +185,99 @@ Send-SRClick $ui.CastCancel
 if ($ui.CastBox.Visibility -eq $V_Show) { Fail 'CastCancel left the send-to-many panel open' }
 else { Pass 'CastCancel closes the send-to-many panel' }
 
+# ---- the guards that stand between a click and a SEND ----------------------
+# 🔴 THE TABLE WAS WRONG ABOUT THIS ONE AND IT IS THE DANGEROUS DIRECTION.
+# CONTROL-TABLE.md said the round-navigation buttons are "not policy-blocked"
+# because "Invoke-AskMove only moves the panel - it does not send". It sends:
+# Invoke-AskMove calls Start-AskSend -Kind 'move', which types ARROW KEYS into
+# the selected conversation's live menu. Pressing that button here would drive a
+# picker in one of the operator's sessions.
+#
+# So the button is NOT pressed. What is proved instead is the three guards that
+# stand between the click and the send, with Start-AskSend replaced by a counter
+# that must never be reached - which is the assertion that matters, because a
+# guard that stopped working would show up as a send, not as a wrong answer.
+$origSend = ${function:Start-AskSend}
+$script:pressSends = 0
+function Start-AskSend { $script:pressSends++; return $null }
+$selWas = $ui.SessionList.SelectedItem
+$ansWas = $script:ansPs
+try {
+    $ui.SessionList.SelectedItem = $null
+    Invoke-AskMove 1
+    if ($script:pressSends -gt 0) { Fail 'Invoke-AskMove sent with NOTHING selected' }
+    else { Pass 'Invoke-AskMove sends nothing when no conversation is selected' }
+
+    $dead = @($ui.SessionList.Items | Where-Object {
+        $_.Kind -eq 'session' -and -not ($_.Row.A -and $_.Row.A.Pid) })
+    if (-not $dead.Count) {
+        Note 'COULD NOT BE CHECKED THIS RUN: every conversation on screen is running, so the not-running guard could not be reached. It is NOT a pass.'
+    } else {
+        $ui.SessionList.SelectedItem = $dead[0]
+        Invoke-AskMove 1
+        if ($script:pressSends -gt 0) { Fail 'Invoke-AskMove sent into a conversation that is not running' }
+        else { Pass 'Invoke-AskMove sends nothing into a conversation that is not running' }
+    }
+
+    $live = @($ui.SessionList.Items | Where-Object {
+        $_.Kind -eq 'session' -and $_.Row.A -and $_.Row.A.Pid })
+    if (-not $live.Count) {
+        Note 'COULD NOT BE CHECKED THIS RUN: no running conversation on screen, so the in-flight guard could not be reached. It is NOT a pass.'
+    } else {
+        # 🪤 A TRUTHY NON-NULL IS ALL THE GUARD READS, and using a real
+        # PowerShell here would start one. The guard is `if ($script:ansPs)`.
+        $script:ansPs = 'pretend a send is in flight'
+        $ui.SessionList.SelectedItem = $live[0]
+        Invoke-AskMove 1
+        if ($script:pressSends -gt 0) { Fail 'Invoke-AskMove started a second send while one was in flight' }
+        else { Pass 'Invoke-AskMove refuses while a send is already in flight' }
+    }
+} finally {
+    $script:ansPs = $ansWas
+    ${function:Start-AskSend} = $origSend
+    $ui.SessionList.SelectedItem = $selWas
+}
+if ($script:pressSends -ne 0) { Fail "the guards let $($script:pressSends) send(s) through" }
+else { Pass 'no send left the window at any point in this section' }
+
+# ---- RailList right-click: a heading is not a project ----------------------
+$script:railMenuDir = 'stale'
+$a = New-Object System.Windows.Input.MouseButtonEventArgs(
+    [System.Windows.Input.Mouse]::PrimaryDevice, 0, [System.Windows.Input.MouseButton]::Right)
+$a.RoutedEvent = [System.Windows.UIElement]::PreviewMouseRightButtonDownEvent
+$ui.RailList.RaiseEvent($a)
+# Raised on the list itself, so OriginalSource is the list and not a project row
+# - which is exactly the case the handler guards: no menu rather than a menu
+# whose one item would act on whatever was right-clicked last.
+if ("$($script:railMenuDir)" -eq 'stale') {
+    Fail 'right-clicking something that is not a project left the previous project armed on the menu'
+} else { Pass 'right-clicking a non-project clears the menu target instead of keeping the last one' }
+
+# ---- the sub-agent document: open it, and close it -------------------------
+$subRow = $null; $sub = $null
+foreach ($m in $script:model) {
+    $ss = @(Get-RowSubAgents $m)
+    foreach ($one in $ss) {
+        if ("$($one.Path)" -and (Test-Path -LiteralPath "$($one.Path)")) { $subRow = $m; $sub = $one; break }
+    }
+    if ($sub) { break }
+}
+if (-not $sub) {
+    Note 'COULD NOT BE CHECKED THIS RUN: no conversation on this machine has a sub-agent with a transcript on disk. It is NOT a pass.'
+} else {
+    try {
+        Show-AgentDoc -Sub $sub -ParentRow $subRow
+        if (-not $script:agentOpen) { Fail 'Show-AgentDoc did not mark a sub-agent as open' }
+        elseif (-not $ui.PaneDoc.Document) { Fail 'Show-AgentDoc opened a sub-agent and drew no document' }
+        else {
+            Pass "Show-AgentDoc opens a sub-agent's own transcript"
+            Close-AgentDoc
+            if ($script:agentOpen) { Fail 'Close-AgentDoc left the sub-agent open' }
+            else { Pass 'Close-AgentDoc returns to the conversation that owns it' }
+        }
+    } catch { Fail ("the sub-agent document threw: {0}" -f $_.Exception.Message) }
+}
+
 Write-Host ''
 if ($fails) { Write-Host "  $fails FAIL" -ForegroundColor Red; exit 1 }
 Write-Host '  every control above was pressed, not read' -ForegroundColor Green
