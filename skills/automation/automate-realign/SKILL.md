@@ -3,6 +3,22 @@ name: automate-realign
 description: The orchestrated variant of /realign - close out a report, summary or "I'm finished" claim without leaving anything on the field. Re-read your own CONVERSATION first, then the artefacts, account for every open item and deviation, decide the approach yourself, break what stands in the way instead of writing it off, then emit ONE structured block to ORCHESTRATOR instead of asking the user. Use this INSTEAD of /realign in any session reporting to an orchestrating lane - when a progress report or status update has just been given, when the session claims the work is done or that it has nothing outstanding, when something has been called blocked, too hard or not feasible, when something was skipped or never got done, or when told to realign, carry on, keep going, or not leave anything open.
 argument-hint: "(optional) an area to focus on, or a steer for what to do next"
 ---
+<!-- ORCH-REDESIGN-28 DESTINATION OVERRIDE (operator-selected 2026-09-06) -->
+## s0. WHERE THE BLOCK GOES NOW - read this before s4 and s6
+
+The coordinator is a short-lived dispatcher (ORCH-REDESIGN-30), not a standing session, so nothing below
+that says "send ORCHESTRATOR" or "STATE FILE" applies literally any more:
+
+1. Write the FULL block (s6) as an entry in YOUR JOURNAL, docs/refactor/lanes/<LANE>.md, tagged `report`:
+   `## <LANE>-<n> Â· <date> Â· report Â· <headline>` - continuing your existing id sequence.
+2. Every DECISIONS item that is reserved-class (root CLAUDE.md s3) becomes an OPERATOR row you write
+   yourself in docs/refactor/QUEUE.md, with options and a dated default. A non-reserved decision is yours:
+   number it as a `binds` entry (with the other owner's consent id if it crosses a lane).
+3. Update the journal header: NEXT, BLOCKED, last_landed. That IS the report; the dispatcher's digest
+   surfaces new `report` entries to the operator on its next run.
+4. Do NOT SendMessage ORCHESTRATOR. A message to a session that is not live is lost; the file is not.
+   If an ORCHESTRATOR session is live and a decision is urgent, a one-line pointer to the entry id is fine.
+<!-- END ORCH-REDESIGN-28 -->
 
 # automate-realign
 
@@ -147,7 +163,46 @@ common** — and what would change it.
 
 Say what you are doing in one line, then do it. **Do not narrate progress mid-run.**
 
-## §6. The block — emit it AND `SendMessage` it to ORCHESTRATOR
+## §6. The block — write it to your STATE FILE, and send ORCHESTRATOR five lines
+
+🔴 **THE BLOCK BELOW GOES INTO YOUR OWN STATE FILE. ORCHESTRATOR GETS `REPORT-5` AND A POINTER
+TO IT.** Added 2026-09-05 on an operator instruction, and this is a **split, not a reduction** —
+every line of the full block is still written, just not into someone else's context.
+
+📏 **THE MEASUREMENT THAT FORCED IT.** Six of these blocks arrived in one morning at ~700–1,200
+tokens each, into the ONE session that also has to make the rulings — and in the same week the
+coordinator was the **largest single commit stream** in a programme where **7.4 % of commits
+touched production code** and the countdown net was **+7, positive, with nine lanes running.**
+⚖️ **The blocks were excellent. That was the problem: nothing about their quality made them
+cheap to receive**, and the detail in them was **already in the state files**.
+
+🔑 **AND THE SPLIT IS WHERE EACH HALF ACTUALLY SURVIVES.** Your state file outlives your context;
+a message does not. Measured in one session, **four** notes had outlived their status — a resume
+point carrying a limit already closed, two dead shas, a board carrying finished work — and every
+one was caught by **re-deriving rather than re-reading.** ***The state file is the highest-leverage
+artefact a lane maintains, because it is the only thing that survives the lane.***
+
+```
+REPORT-5 | <LANE> | <UTC timestamp>
+HEADLINE   one line -- what changed since we last spoke
+DECISIONS  what ORCHESTRATOR must rule on, or the literal word NONE
+NEXT       the ONE item you are working RIGHT NOW
+BLOCKED    RESERVED:<what> | PHYSICAL:<what> | NONE
+DETAIL     <your state file>:<line>   <- the full block below, where it survives
+```
+
+🔒 **`BLOCKED` takes exactly two legitimate idle states and you must NAME which.** ⛔ ***"Nothing
+outstanding" is not one of them*** — a lane with an open row and no blocker has work by
+definition: its own findings, its dispositions, its close bar.
+⚠️ **Send prose instead of this and you will get back one line — *"reformat to REPORT-5"* — and
+nothing else will happen until you do.** That refusal is the contract's only enforcement, and it
+is deliberate: **a format is checkable, a request to be brief is not.**
+✅ **Send the FULL block inline only when ORCHESTRATOR explicitly asks for it** (a deep sweep, a
+handover, an incident). **Default is five lines and a pointer.**
+
+---
+
+### The full block — what you write to your state file
 
 🔒 **Omit any line that is empty EXCEPT `HEADLINE`, `DECISIONS` and `NEXT`** — those three are
 never omitted; write `(none)` and mean it. **Asserting emptiness out loud is the point.**

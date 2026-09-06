@@ -334,7 +334,7 @@ if ($DryRun) {
 if ($useWt) {
     # New Windows Terminal window; -d sets the starting dir; -NoExit keeps the pane
     # open so the Remote Control pairing URL/QR stays readable.
-    & $wtPath -w new -d "$resolved" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "$bootPath"
+    & $wtPath -w claude new-tab --title "$Name" -d "$resolved" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "$bootPath"
 } else {
     Write-Warning "spawn-claude-session: wt.exe not available - falling back to a plain PowerShell window. The session may fail to submit its opening prompt in this mode."
     # 🪤 -ArgumentList JOINS THE ARRAY WITH SPACES AND QUOTES NOTHING, so an unquoted

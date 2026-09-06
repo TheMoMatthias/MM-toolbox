@@ -1,437 +1,114 @@
 ---
 name: automate-orchestrator
-description: Become the orchestrator for a set of parallel Claude sessions - hold the board, push every lane onto its stated next item rather than polling it, decide everything except a small reserved set, put the reserved decisions to the operator as batched selectable options with a recommendation and its evidence, and record every answer where it binds. Use when running multiple concurrent sessions on one programme, when asked to orchestrate, coordinate or drive parallel lanes, when sessions keep going idle with work outstanding, when decisions are evaporating instead of reaching a register, or when starting a coordination session on any machine.
-argument-hint: "(optional) the programme, repo or board to orchestrate; and/or realign-every=<minutes> (default 20)"
+description: Re-establish and operate the journal-and-queue coordination framework for a programme of parallel Claude sessions — lanes as durable journals, sessions as one-tranche runs, a zero-token dispatcher that spawns, reaps, un-parks and delivers, an interactive pass that puts only the reserved decisions to the operator as selectable batches, and owners who number their own decisions. Use when starting or restoring coordination on any repo, when the previous orchestration session's context is gone, when sessions idle with work outstanding, when decisions evaporate instead of reaching a register, or when porting this workflow to another project.
+argument-hint: "(optional) install | operate | port <repo> — default: operate on the current repo"
 ---
 
-# automate-orchestrator
+# automate-orchestrator — the framework, in the order you need it
 
-> 🔴 **§A — ON RESUME, READ YOUR STATE FILE FIRST. BEFORE THE BOARD, BEFORE `ListAgents`, BEFORE
-> ANYTHING.** §7 tells you to KEEP one; this tells you to READ it, and the difference is the whole
-> failure. 🪤 **A resumed orchestrator that skips it re-derives the board perfectly and still loses
-> every lane's STATED NEXT ITEM — so it polls, reads `idle`, and reports a healthy board with lanes
-> silently parked.** ⚖️ **Measured: a `/compact` failed with a 500 mid-session and the entire role
-> existed only in conversation; the state file is why that cost nothing.**
-> ➤ **If you cannot find one, that is your first act: create it from §7's shape and commit it.**
->
-> 🔒 **§B — THE THIRTEEN RULES. THEY ARE PROJECT-AGNOSTIC AND THEY BELONG HERE, NOT IN A PROJECT'S
-> LEDGER.** Derived from ELEVEN measured self-corrections in one day of six parallel lanes. **They
-> target PROPAGATION, not error** — every one of those eleven was caught, most within minutes, most
-> by the lane closest to the artefact; what cost was a wrong figure reaching another lane's brief
-> and the operator. 🔑 **ONE has a mechanical check. The rest ask for a WORD or a VALUE in the
-> artefact, because an ACT is unobservable and a missing word is not.**
->
-> ```
->  (1) GRADE every figure you publish: measured-by-me / relayed / documented.
->      `relayed` is not forbidden; publishing it UNLABELLED is.
->  (2) NAME THE OWNING CONTEXT, and how you determined it, before instructing
->      anyone to touch a file.
->  (3) A message pushing someone onto work CITES THEIR LAST LANDED SHA -- a rule
->      about WHEN to look is unobservable; a required VALUE is not.
->  (4) RUN THE RELEVANT CHECK LOCALLY before pushing; better, get it into the
->      pre-push hook, which is the ONLY venue where a rule becomes a REFUSAL.
->  (5) A claim that PREDICTS a measurable consequence NAMES ITS VERIFIER.
->  (6) A record saying CORRECTED / RETRACTED / REFUTED NAMES THE SHA whose commit
->      message still asserts the superseded version.            <- the one CHECK
->  (7) A WRONG CAUSAL STORY IS MORE DANGEROUS THAN A WRONG FIGURE -- a figure gets
->      RE-DERIVED, a story gets CITED. Read the state cell before explaining why
->      work did not happen.
->  (8) Authorising an edit to a ratcheted corpus PRICES THE RATCHET in the same
->      breath, or states that it moves nothing.
->  (9) An edit to a register is verified by RE-DERIVING the quantity it should
->      have moved -- NEVER by the write succeeding.
-> (10) A register says what was DECLARED; only the CODE says what is APPLIED.
-> (11) RE-DERIVE A FIGURE BEFORE *REPEATING* IT, not merely before publishing it.
->      A self-quotation is the one citation nobody re-checks.
-> (12) If a ratchet edit does NOT move the number, YOUR MODEL OF THE CHECK IS
->      MORE LIKELY WRONG THAN THE CHECK IS.
-> (13) NEVER apply a check's ESCAPE HATCH on the strength of a reimplementation.
->      An escape is a permanent silent exemption; the bar is the check's OWN
->      output naming the row.
-> ```
->
-> 🔒 **AND THE STANDING CONDITION ON EVERY INSTRUMENT, EARNED FIVE TIMES IN ONE DAY: MEASURE ITS
-> POPULATION BEFORE BUILDING IT, AND REPORT THAT MEASUREMENT EVEN IF IT KILLS THE PROPOSAL.** 📏 Four
-> proposed checks were refused this way and one survived; the survivor's difference was its LOCUS,
-> not its subject. 🔑 **When a predicate reports far more than it should, look for a LOCUS before
-> tuning the pattern** — the property is often in the token's POSITION, not its shape.
-> 🪶 **What actually caught twelve errors in that day was never an instrument: it was someone
-> re-deriving their own published number, or refusing a coordinator's instruction.**
->
-> 🔴 **§C — WHERE THIS WORKFLOW LIVES, so it survives a compaction, a restart, or a move to another
-> project.** **PORTABLE half → THIS SKILL** (§A, §B, the charter, rule zero, the question bar, the
-> routing rules). **PROJECT half → the state file** (§7: bindings, reserved set, lanes, outstanding,
-> cadence). ⚖️ **Neither is sufficient alone: the skill without a state file loses every lane's
-> intent, and the state file without the skill loses the rules that make the intent trustworthy.**
+<!-- FRAMEWORK-V2 marker: rebuilt 2026-09-06 by ORCH-REDESIGN under R-524 (rulings R-525..R-534, entries ORCH-REDESIGN-1..-46).
+     The AlgoTrader repo is the reference implementation; every path below is relative to it. -->
 
+> **What replaced what, and why (measured, AlgoTrader 2026-08-25 → 09-06).** A standing coordinator session that
+> relayed messages between 19 long-lived lanes cost 3.6–4.4 BILLION input tokens per lane over 12 days at a median
+> context of ~500k per call, received 190–234 cross-session messages per lane, closed 57 of 64 rows in a day or
+> less each, and still let three lanes' pause state go wrong in a memory file within days. The design below cut a
+> lane's per-call context to ~225k (a 20-minute tranche costs ~24M tokens instead of ~300M per day), removed the
+> coordinator's relay entirely (0 inbound messages in the fresh sessions), and put every decision where its owner
+> writes it. The first hour of operation found the machine's own defects (a parked session never exits; a `LANE:`
+> block never resolved; duplicate deliveries; no push notification) — all fixed in `dispatch.py` and listed under
+> **Invariants** so a port does not re-learn them.
 
-> 🔴 **REALIGN CADENCE, ADDED 2026-09-03 ON MEASUREMENT — `/automate-realign` IS NO LONGER AD-HOC.**
-> 🔴 **THE REALIGN FREQUENCY IS A PARAMETER. IT DEFAULTS TO 20 MINUTES AND THE ORCHESTRATOR STATES
-> THE VALUE IN FORCE IN ITS REPORT.** ⚖️ **At the default, with a 10-minute check-in, EVERY OTHER
-> check-in is a realign round: the plain cycles read outputs and push lanes forward; the realign
-> rounds ALSO order the sweep from every open lane — three runs per hour.**
-> ➤ **NAME THE LANES AND THE INTERVAL IN YOUR REPORT so a skipped round is visible.**
-> 🔑 **Set it from the board's shape, not from habit: a programme with two lanes can afford tighter;
-> one with twelve cannot.** ⛔ **Whatever it is set to, it is stated — an unstated cadence is
-> indistinguishable from a forgotten one, which is the failure this parameter exists to remove.**
-> 🪤 **The 20-minute default is DELIBERATELY more expensive than the one-lane-per-check-in rotation
-> the evidence alone supported. It was an operator choice of detection over throughput on
-> 2026-09-03, and it is theirs to reverse.**
->
-> 🔴 **AND THE ORCHESTRATOR REALIGNS ON ITSELF, because it is the least-checked participant on the
-> board and nothing sweeps it.** **Every SIXTH check-in, re-read your own rulings since the last
-> self-sweep and ask ONE question of every figure they cite: did I MEASURE this, or did I RELAY
-> it?**
-> 📏 **Measured over one day: of twenty-three rulings, ELEVEN corrected an earlier one and NINE of
-> those corrected the orchestrator's own — and four carried a lane's figure published as the
-> coordinator's, reaching another lane's brief and the operator.**
-> ⚖️ **A lane realigning finds work it forgot; a coordinator realigning finds claims it never
-> verified — and those are the ones that PROPAGATE.**
+## 0. The model, one screen
 
-
-**You are the coordination lane. You observe, chase, decide within your bar, and report.**
-Lanes do the work; you keep the board honest and the operator's attention expensive.
-
-🔴 **The two failures this exists to prevent, both measured over a full day of parallel
-lanes:** a lane sitting idle with a stated next item nobody pushed it onto, and a decision
-that was made and then evaporated because it never reached a register.
-
-**Pair this with `/automate-realign`** — that skill is what a *lane* runs to produce a block
-you can act on. This one is what *you* run to act on it.
-
----
-
-## §0. Bind to the project first — one pass, then never again
-
-🔴 **This skill is project-agnostic and therefore useless until you bind it.** Before the
-first check-in, establish and write down:
-
-| you need | typical form | how to find it |
+| Thing | Is | Lives at |
 |---|---|---|
-| **the board** | a `status.py`-style derived report | the project's own tooling — never a hand-kept list |
-| **the register** | a JSON/YAML row per lane: state, owner, paused | grep the repo for the file the board reads |
-| **the ledger** | append-only decisions with ids | where prior rulings live |
-| **the findings log** | per-lane numbered findings | usually beside the ledger |
-| **the reserved set** | what only the operator may decide | ask them once; write it down |
-| **the gate** | what says the trunk is healthy | CI, a hook, a check script |
-
-🔒 **A figure about the programme comes from the board, never from your memory.** Measured:
-an orchestrator sized a critical operation at 1,916 commits from a remembered sha when the
-tool published 316 — a fivefold error, in a number put to the operator to decide on.
-
-⚖️ **If the project has no such artefacts, say so and build the smallest one that derives
-rather than declares.** 🪤 **A hand-kept list of live sessions is wrong within a day.**
-
-### Adapting to a repo that already has its own conventions
-
-🔑 **Adopt its vocabulary rather than importing yours.** If the repo numbers decisions `ADR-n`,
-your rulings are `ADR-n`; if its findings are `<AREA>-<n>`, so are yours. **A parallel
-numbering scheme is a second register, and two registers of one reality always diverge.**
-
-- **It has a ledger** → append there, in its format, with its id sequence. **Read the last id
-  from the file, never from your memory of it.**
-- **It has none** → make one file, append-only, one numbered entry per decision: `id · date ·
-  question · answer · who decided · what it binds`. That is the whole schema; do not grow it.
-- **Its register is hand-maintained** → say so once, and treat every row as a claim rather
-  than a reading. ⚖️ **You may still use it — you may not quote it as a measurement.**
-- **It has a gate** (CI, a hook, a check script) → its verdict outranks your judgement of the
-  trunk. **Never report the trunk healthy on your own reading while its gate is red.**
-
-⛔ **Do not restructure someone's conventions to fit this skill.** If a convention here has no
-home in the repo, the convention loses.
-
----
-
-## §1. RULE ZERO — push, do not poll
-
-🔴 **`idle` means TURN FINISHED. It does not mean "nothing outstanding."** Reading it as the
-latter is *absence read as data*, and it is the single most expensive habit available to you.
-
-🪤 **And the obvious fallbacks do not carry intent either.** A board shows *landings*, not
-*intentions*. State files mostly have no NEXT section — **measured: 4 of ~30.** 🔑 **A lane's
-stated next item lives in its LAST MESSAGE TO YOU** — which you read once, act on, and
-discard.
-
-**Before reporting anything, for EVERY open unpaused lane:**
-
-- **A.** Name its **stated next item** — from its last message to you, else its state file,
-  else its last landed commit subject.
-- **B.** Has one and is not visibly working it → **SEND IT.** Push on the recommended
-  decision; keep it aligned to its plan and objective. **Never park a lane that has a named
-  item.**
-- **C.** Has **no** named item → *that* is the thing to act on. Give it the next work on the
-  critical path, or **tell it to stay idle deliberately.** Never leave a lane silently idle.
-- **D.** 🔒 **Only report a lane as "nothing outstanding" if it SAID so.** Silence is not that.
-- **E.** 🔴 **And when it DOES say so, that is a claim under test, not a result.** ⛔ **Do not
-  accept it and do not argue with it — make it check.** Reply: **"run `/automate-realign` and
-  send me the block."** 🔑 **The lane cannot see what it is missing by recalling harder; the
-  sweep is what makes an empty board evidence instead of an impression.** 🪤 **Measured, the
-  claim is usually sincere and usually wrong** — what it omits is a promise made mid-message,
-  an unanswered question asked once, or a decision that only ever existed in conversation.
-
-✅ **Teach every lane the protocol**: when they finish and have nothing queued, they say
-**"nothing named"** explicitly. **That is a state you can act on; silence is one you will
-misread.**
-
-🪤 **Try a MESSAGE before a restart.** A lane that has produced nothing may be *blocked on an
-operator answer that never passed through you* — indistinguishable from hung. **Check its
-worktree is clean first; measured, every "frozen" lane woke on a message and none needed
-restarting.**
-
----
-
-## §2. The question bar — what reaches the operator
-
-🔒 **Bring the operator ONLY:** a **production write** · **capital** · a **scope widening** ·
-anything **reversing a prior operator ruling**. *(Bind the exact set in §0 — these four are
-the default.)*
-
-✅ **Everything else you decide**, and **report in ONE LINE WITH ITS REASONING so it can be
-reversed.** 🔑 **The reasoning is not decoration — it is the entire reversal mechanism.**
-
-📏 **Why the bar exists, measured:** an operator took the recommended option on **15 of 15**
-questions in one day. ⚖️ **From inside the asking lane, good calibration and a person clicking
-through are indistinguishable** — so it must be *asked*, not inferred. Under a raised bar
-those fifteen were about four.
-
-⚠️ **The cost, stated rather than hidden: you will decide things they would occasionally have
-decided differently, and they find out afterwards.** The one-line-with-reasoning rule is what
-makes that recoverable in a single message.
-
-### How to put a decision to the operator
-
-**Batched selectable options, up to 4 per call — the cap is per call, not per session.**
-
-- **Lead with your own recommendation, marked `(Recommended)`, and CITE ITS EVIDENCE** — a
-  `file:line`, a measurement, a prior ruling. 🔒 **Never offer a menu that omits what you
-  actually think.**
-- **Every option carries its CONSEQUENCE**, not just its name.
-- **One option genuinely challenges the current course.** Keep them wide enough that "Other"
-  is not the only true answer.
-- **Decisions others depend on come first.**
-- ⛔ **Do not manufacture a fork.** No real uncertainty means one line saying where you are
-  heading. **A forced choice invents a crossroads and steers worse than deciding alone.**
-
-🔴 **Then RECORD the answer where it binds** — the ledger, as a numbered entry, in the same
-working session. ⚖️ **An answer that reaches only a chat message is a decision that will be
-re-litigated or silently reversed.** 🪤 **Measured: an operator answered a selectable question,
-it was relayed onward as authority, nothing was written down, and it moved a bar between two
-lanes for hours before a lane refused it against its own register.**
-
-### The two rules that make the routing hold
-
-🔒 **① A LANE NEVER PUTS A QUESTION TO THE OPERATOR ITSELF.** Not by a selectable prompt, not
-by a notification, not by stopping and hoping. 🔑 **The reason is mechanical, not etiquette: a
-selectable prompt renders fixed options and returns a click — there is no path from that answer
-back to a durable record, and no way for the operator to forward the question onward.** So the
-answer exists only in one session's scrollback and dies with it. **Every lane question comes to
-you; you ask; you write it down.** ⚖️ **Enforce this on yourself too** — you may ask, but you
-have not finished asking until the answer is numbered.
-
-🔒 **② AN OPERATOR ANSWER RELAYED AS PROSE IS NOT AUTHORITY UNTIL IT IS NUMBERED.** ✅ **A lane
-may decline to act on unnumbered prose, and a lane that does is behaving correctly — do not
-override it, number the decision.** 🪤 **The failure is silent and leaves no artefact**: an
-answer restated as settled fact reads exactly like a ruling to everyone downstream, gains
-authority at each hop, and nothing compares it to the register. **If you find yourself writing
-*"the operator said…"* to a lane, you are one step short — write the entry, then cite it.**
-⚠️ **The operator answering a lane directly is not the failure.** The failure is the answer
-stopping there: route it to yourself, land it, then act.
-
----
-
-## §3. Measure before you rule
-
-🔒 **Measure any claim about an artefact OUTSIDE the reporting lane's subtree before ruling
-on it.**
-
-📏 **The pattern is precise, and it is what makes the rule cheap: lanes are reliable about
-their OWN work.** Measured across nine orchestrator errors in one day — **every single one was
-a claim reaching PAST the lane**: another module's call sites, a second migration's guard, a
-neighbouring plane, a deployed version read from memory. ⚖️ **Each would have cost one
-command.**
-
-🪤 **The three shapes that will catch you:**
-1. **A correct principle with a wrong location.** A matching timeline, a valid control and a
-   sound mechanism are **jointly insufficient** to locate a cause. **Verify the file you are
-   about to change serves the population you are repairing.**
-2. **A claim laundered through attribution.** A sentence gains authority at each hop —
-   *"X told me"* — until it lands in a ruling with a citation that was never a measurement.
-   **Name who measured it.**
-3. **Quoting a rule and then using the number it disqualifies.** Measured, in the same
-   message. **Stating a rule does not immunise you from breaking it.**
-
-🔴 **A ruling that reverses a prior ruling on the same artefact is where you measure FIRST,
-without exception.** The second account is not more reliable for being a correction.
-
----
-
-## §4. Rank by consequence, never by count
-
-🔴 **Count is the axis that is always available and almost never the one that ranks.**
-
-📏 **Measured, one thread, four inversions:** 512 alarms on a recoverable subject against **1**
-on an irrecoverable one · a 2,714-row cluster whose real content was **21** · a 5.68% failure
-rate that became 0.129% once the *distribution* was located · a "58 things stopped" headline
-that was 232 renames and 129 real.
-
-✅ **Rank by what is lost if it is wrong:** irrecoverable first · then live-and-growing · then
-bounded · then cosmetic. 🔑 **Ask what the number is a count OF** — every one of those four
-inversions came from that question.
-
----
-
-## §5. Lane hygiene
-
-🔒 **Never relay between lanes.** Lanes go to each other directly. You route *ownership*, not
-*messages* — a relayed fact arrives without its evidence and you become a lossy hop.
-
-🔒 **Respect subtree ownership.** A lane declining work outside its subtree is **the plan
-working, not a gap.** ⚖️ Measured twice in one day: a lane measured a disagreement it could
-not explain from its position and **correctly refused to explain it**, leaving it findable for
-the lane that could.
-
-⛔ **Never give an idle lane cleanup that does not pay.** **Deliberate idleness beats invented
-work**, and a lane that declines cleanup on its own gate is behaving correctly.
-
-🔴 **Stray sessions.** A session whose name has **no register row AND no worktree of its own
-AND a clean tree** is not a lane — **terminate it.** A stood-down duplicate of a real lane is
-the same. ⚠️ **Anything carrying a live row goes to the operator.**
-🪤 **Verify all three conjuncts and the clean tree before killing anything**, and 🔒 **do not
-apply this to sessions that are plainly separate deliberate workstreams** — the test is for
-strays *blocking lanes*, not for everything unregistered.
-
-🔒 **Verify every push by exit code AND `git merge-base --is-ancestor HEAD origin/main`.**
-⛔ **Never by grepping output through a pipe — a pipe returns the LAST command's status**, so
-`push | grep OK` reports grep's success and hides the rejection.
-
----
-
-## §6. Make findings compound
-
-🔴 **A finding names its CLASS and any PRIOR INSTANCES its author knows of.** One line:
-*"class: `<short name>` · prior: `<ids>`"* — or *"prior: none known"*, which is also an answer.
-
-📏 **Why: three separate classes reached their THIRD occurrence in a single day, and in every
-case nobody knew it was the third until someone happened to remember.** ⚖️ **Three occurrences
-of one class is a MISSING INVARIANT, not three incidents** — and that is the difference
-between three fixes and one.
-
-🔒 **A ruling that mandates a register change NAMES ITS EXECUTOR, and you verify the landing.**
-🪤 **Measured three times in one day: a ruling was made, no executor was named, and the ledger
-then said one thing while the register said another — with nothing comparing them.** **A
-ruling that changes a register and names no executor is a ruling that does not take effect,
-and it fails silently.**
-
-✅ **Grade every claim you carry:** `measured` · `documented` · `inferred`. 🔑 **`inferred` is
-the weakest and by far the most common**, and labelling it is what makes a later correction a
-correction rather than a contradiction.
-
-🪤 **A correction can be right in direction and wrong in unit — both halves need checking**,
-including *which rows an aggregate was taken over*.
-
----
-
-## §7. Mechanics — reaching a lane, and surviving your own compaction
-
-🔴 **You have no privileged channel. Everything below is ordinary tool use, and getting it
-wrong looks exactly like a quiet board.**
-
-**Discover peers with `ListAgents`, every cycle — never from a list you keep.** 🔑 **It is the
-only source that carries a lane's SESSION STATE** (`busy` · `idle` = turn finished · `waiting`
-= blocked on input). ⚖️ **No transcript, board or register carries that distinction**, and §1
-turns on it. 🪤 **A lane that vanishes from the listing has ended, not gone quiet** — check
-before you chase it, and check again before you conclude it is gone.
-
-**Reach a lane with `SendMessage`, addressed by its name.** 🔒 **A message is the cheapest
-instrument you have and the only one that distinguishes blocked from dead** — spend it before
-any restart, and before reporting a stall. 🪤 **Addressing is by name, so a lane renamed on
-resume is unreachable under the old one**; re-derive names from `ListAgents` rather than from
-your notes.
-
-🔒 **Tell every lane YOUR name, in your first message to it.** `/automate-realign` has lanes
-send their block to *the orchestrator* — a role, not an address — and a lane that has to guess
-the name sends it nowhere. **One clause: *"I am `<name>`; send blocks and decisions there."***
-
-⚖️ **A message costs the receiving lane a turn.** Batch what you have for a lane into one
-message rather than three, and 🔒 **never send one that only asks for status** — every message
-carries an instruction or an answer. **Polling for the sake of a report is how an orchestrator
-becomes overhead.**
-
-### Your own state file — write it before you need it
-
-🔴 **Your context will compact, and the role does not survive it in memory.** Everything that
-makes you the orchestrator — the bindings from §0, the reserved set, who owns what, which
-decisions are outstanding — is conversational unless you write it down.
-
-**Keep ONE file** (wherever the project keeps notes; if it has nowhere, beside the register).
-Update it at the END of every check-in, not when it feels stale:
-
-```
-BINDINGS      board / register / ledger / findings / gate — the §0 table, resolved to paths
-RESERVED      what only the operator may decide, in this project's words
-LANES         name · owns · state · its STATED NEXT ITEM · when you last pushed it
-OUTSTANDING   D<n> put to the operator and not yet answered — and what each blocks
-LANDED        the last ruling id you wrote, so the next one does not collide
-CADENCE       the interval, and when the last cycle ran
-```
-
-🔑 **`LANES.stated next item` is the load-bearing column**, because it is the one thing that
-exists nowhere else — the board shows landings, a state file rarely has a NEXT, and the lane's
-own intention lives in a message you read once. **Copy it out of the message when it arrives.**
-
-🪤 **A resumed orchestrator that skips this file re-derives the board correctly and still loses
-every stated next item** — so it polls, reads `idle`, and reports a healthy board with four
-lanes silently parked. **That is the failure this skill exists to prevent, arriving through the
-back door.**
-
----
-
-## §8. The check-in loop
-
-**Run on a fixed interval** (10 minutes is a reasonable default; the operator sets it). Each
-cycle, in this order:
-
-1. 🔴 **Rule Zero first** (§1) — every lane's stated next item, and push the ones not on one.
-2. **The board** — gate, the programme's headline figure, open and paused rows.
-3. **Session states from `ListAgents`** — `waiting` (blocked on input) vs `idle` (turn
-   finished) vs `busy`. **No transcript carries this; only that listing does.**
-4. **Any lane quiet past its own cadence** — read its FULL last message, not a truncated
-   summary. 🪤 **A status tool that truncates hides exactly the reports that list open items.**
-5. **Act on decisions routed to you.** Apply §2's bar; number every answer before you relay it.
-6. 🔒 **Update your state file (§7) — every cycle, before you report.** ⛔ **Not "when it
-   changes"**: the column that decays fastest is the one you only notice missing after a
-   compaction.
-
-🔒 **Attribute a red by MEASURING, not by the window's endpoints.** 🪤 Measured: a "first red"
-commit was innocent — the failure was static and 15 days old, and blaming the boundary sends
-someone to audit correct work.
-
-**REPORT: what changed, and WHICH LANE WAS PUSHED ONTO WHAT.** If nothing changed and every
-lane is on a named item, **say so in one line** — a check-in that finds nothing should cost
-one line, not a page.
-
----
-
-## §9. What good looks like — and what to protect
-
-✅ **These behaviours are the programme working. Never trade them for speed:**
-
-- **A lane refusing to bypass a gate**, even holding for hours rather than assert something
-  false. **A blocked lane that refused a shortcut is worth more than an unblocked one that
-  took it.**
-- **A lane correcting its own published finding, unprompted and against its own interest.**
-  🔑 **Measured: this happened six times in one day and caught more than every automated check
-  combined.**
-- **A lane refusing an authorised change because its premise did not hold.** ⚖️ **An
-  authorisation transfers PERMISSION, never CORRECTNESS — and the lane holding the tool is the
-  last place the premise can be checked.**
-- **A lane saying what it could NOT measure** as loudly as what it could.
-
-🪶 **When a lane does one of these, say so explicitly.** They are the behaviours that keep the
-board honest, and they are invisible unless named.
-
-🔴 **And apply all of it to yourself.** Measured: an orchestrator wrote a rule about
-unverified premises and then broke it twice within the hour; landed a ruling and destroyed it
-with an unexamined `git checkout -- .`; and reported a lane as idle while its own last message
-named its next task. 🔑 **You are the least-checked participant on the board — nobody
-re-derives your claims, so you must.**
+| **Lane** | a name + a durable **journal**; the header IS the register row (`owns`, `plan_row` strict key or `NONE`, `state` open/parked/closed, `NEXT` one line, `BLOCKED` token, `tranche`, `last_landed`, `session`, `migration_prefixes`, `inbox:` lines) | `docs/refactor/lanes/<LANE>.md` (template `lanes/_TEMPLATE.md`) |
+| **Entry** | `## <LANE>-<n> · <date> · <tag> · <title>` — tags `finding · binds · operator · close · report · fanout`; ≤800 chars; every figure graded inline `(measured)/(relayed: id)/(documented: path:line)/(inferred)`; ids CONTINUE the lane's frozen sequence, never restart | the journal, append-only, newest last |
+| **Session** | ONE tranche (≤3,000 statements / ≤50 files), then `report` entry + park. Hard stop at the second context compaction | spawned INTO `.claude/worktrees/<LANE>` (detached from `origin/main`) |
+| **QUEUE** | the ONE file for what needs the operator (**OPERATOR**: reserved classes only), work nobody owns (**ORPHANS**, with a default owner), and holds (**HOLDS**: a hold with no row does not exist). The asking lane writes its own row; an answered row is struck `~~…~~` + `ANSWER: … (<recording id>)` | `docs/refactor/QUEUE.md` |
+| **Decision** | a `binds` entry with `check: <script>` or `NO CHECK — <why>`, numbered by the OWNER under its own lane id; a cross-lane contract = two entries carrying a `to:` line; disagreement → OPERATOR row. The global ruling sequence is CLOSED | the owner's journal |
+| **Dispatcher, headless** | `dispatch.py --run` from a scheduled task every 10 min, zero tokens: REAP · UN-PARK · DELIVER · SPAWN · digest | `.github/scripts/dispatch.py`, `dispatch_tick.ps1`, task `AlgoTrader-Dispatch` |
+| **Dispatcher, interactive** | the `ORCHESTRATOR` session: digest → selectable batches to the operator with a push notification → record verbatim → strike → park. Spawned by the tick OUTSIDE the cap when an OPERATOR row it never asked is open | `lanes/ORCHESTRATOR.md` (the protocol is in its header comment); skill `orchestrator-pass` |
+| **Board** | derived, never maintained: `status.py --session-start`; the digest is `dispatch.py --digest` | `.github/scripts/status.py` |
+| **Rules** | root `CLAUDE.md` §1–§8 (no grills · lane/session/dispatcher · owners decide · QUEUE · landing · quality checklist · self-recut · standing constraints) | repo root, loaded into every session |
+
+**Reserved to the operator, always:** production writes · the money path / live trading · deploy or restart · data deletion or table drops · anything a `CLAUDE.md` 🔒 covers · a disputed decision. Everything else is the owner's to number. Code deletion is not reserved.
+
+## 1. Install (fresh repo, or after losing the previous orchestration session)
+
+Everything is a file in the repo; nothing lives only in a session. Do these in order and verify each by content.
+
+1. **Root `CLAUDE.md`** — copy AlgoTrader's §1–§8 block (the "SPEC-EXECUTION programme · session rules" file) and adapt names. It overrides any per-prompt grill gate: a lane on a plan row never runs an alignment round; `AskUserQuestion` is never a programme decision.
+2. **`docs/refactor/lanes/_TEMPLATE.md`** — copy verbatim. The header field order matters: `dispatch.py` and `status.py` read it.
+3. **`docs/refactor/QUEUE.md`** — the three sections with their row forms (copy the header paragraphs from AlgoTrader's; strike nothing, delete nothing, ever).
+4. **`docs/refactor/lanes/ORCHESTRATOR.md`** — copy; its header comment IS the interactive protocol. `NEXT: nothing outstanding …` is deliberate.
+5. **`.github/scripts/dispatch.py`** — copy. Parameters at the top: `LANES`, `QUEUE`, `STATUS`, `SPAWN` (the `spawn-claude-session` skill's `spawn.ps1`), `MAIN_TREE`, `WORKTREES`, `CAP_FULL/CAP_HALVED`, `PRIORITY` (operator-pinned first spawns), `NON_LANES` (the interactive half), `REAP_IDLE_MIN`, `REAP_OPEN_IDLE_MIN`, `WORKFLOW` (the CI yaml for red routing). Run `--selftest` (17 named arms) and `--dry-run` before the first real tick.
+   *Contract it needs from the board:* `status.py --json` must return `live_sessions` (`lane`, `pid`, `idle_min` from transcript mtime, `started`, `repo`) and `gate` (`verdict`, `run_id`, `first_red_sha`). A repo without `status.py` gets a 40-line stand-in: process table (`Get-CimInstance Win32_Process`, `-n <lane>` in the command line) + transcript mtime under `~/.claude/projects/<repo-slug>/`.
+6. **`.github/scripts/dispatch_tick.ps1`** — copy (pure ASCII; it pins a `DISPATCH` worktree to `origin/main` each tick, runs the MAIN tree's interpreter, byte-redirects through `cmd.exe`, forces `PYTHONUTF8=1`).
+7. **The scheduled task** — through the operator-patch lane if the machine has one; else `Register-ScheduledTask` with `-LogonType Interactive`, trigger `-Once -RepetitionInterval (New-TimeSpan -Minutes 10)`, action `powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <DISPATCH worktree>\.github\scripts\dispatch_tick.ps1`. Verify `LastTaskResult = 0` and a log at `.claude/scratch/dispatch.log` in the MAIN tree.
+8. **`automate-realign` destination override** — its output goes to the lane's journal as a `report` entry plus QUEUE rows, never as a message to a session (AlgoTrader's SKILL.md carries the override block; copy it).
+9. **Migrate existing lanes** — one journal per lane from whatever state file it had: header + pointers to open findings by id; ids CONTINUE; `plan_row` a strict key or `NONE`; a one-line pointer at the top of the old file, then stop editing it. A new lane also opens a minimal register row where the repo keeps one (`enforcement.json` in AlgoTrader).
+10. **Relaunch** — stop every long-lived session after verifying its journal landed on `origin/main` by content and its pid identity (`stop_lane.ps1` shape: `git cat-file -p $(git ls-remote origin refs/heads/main | cut -f1):<journal>`, then `Win32_Process` command line must carry `-n <lane>`). Then let the tick spawn.
+
+## 2. Operate — what runs by itself, and the two things a human does
+
+**The tick (every 2 min a FILL — reap parked sessions, refill free slots from the process table; every 10 min the full pass below; zero tokens):**
+- **REAP**, inside a strict domain: ① any session whose lane carries a **park marker** (`<main>/.claude/scratch/parked/<LANE>`, the lane's own last act) newer than the session — ended at that tick, busy or idle; otherwise ② only a session **the tick itself spawned** (it records pid and time in `dispatch_spawned.json`) and **never one a human typed into** after its first two minutes (transcript metadata only), when its journal reads parked, was committed by the lane after the session started, and it idled ≥8 min; ③ a tick-spawned OPEN lane idle ≥2 h. Identity-checked `Stop-Process`. Without reaping the cap fills with idle processes within one hour (measured: 4 of 4 slots, zero lanes working); without the domain the reaper stopped the operator's own session (measured, 2026-09-06 19:34).
+- **UN-PARK** by the `BLOCKED` prefix: `QUEUE:<id>` struck · `HOLD:<id>` struck · `LANE:<id>` landed as an entry heading.
+- **DELIVER** `inbox:` lines, once per (lane, key): a new journal entry's template deviations (`[LINT:<id>]`, form only) · answered OPERATOR rows (an `operator` entry citing the row also counts as delivered) · any entry whose body opens `to: LANE` whatever its tag · ORPHANS rows naming a default owner · a red main to the last lane on the failing script's path (`[CI-RED:<first red sha>]`, one line per lane per window) · a `close` with no same-day `report`. Committed `[skip ci]` with `Slice: ORCHESTRATOR`.
+- **SPAWN** the ORCHESTRATOR whenever none is live (outside the cap, always live); then open lanes with a NEXT, `BLOCKED: NONE`, no live session — red-holders first, then `PRIORITY`, then the most starved — under the cap (8, halved while CI has <1 green run in 24 h). A failed spawn holds no slot. A clean lane worktree is pinned to `origin/main` first.
+- **A lane's last act at park** is touching the park marker and `Start-ScheduledTask AlgoTrader-Dispatch`, so the freed slot refills at once.
+
+**The ORCHESTRATOR stays live and watches** (`dispatch.py --watch` under a `Monitor`, one line every 60 s, tokens only on change): new OPERATOR rows → it asks with a push notification; a live lane with unstruck inbox lines → it messages that lane the ids; a failed spawn → `dispatch.py --spawn <lane>`. The operator texts it at any time: `status`, `push <LANE>`, `ask me`, `park`.
+
+**The operator does two things:** answers the ORCHESTRATOR's selectable batches (from the phone; a push notification announces each), and acts on the reserved-class items in person. Nothing else reaches them.
+
+**A lane session does one thing:** its NEXT, as one tranche, under the `lane-tranche` skill.
+
+## 2b. Power cycles — the machine is not on 24/7, and nothing here needs it to be
+
+Durable state is the repo (journals, QUEUE) plus five scratch files (spawn records, seen entries, park markers, the
+status stamp, the sweep/pause/halt flags). A session is one tranche, so a power-off is "every session dies
+mid-tranche" and a power-on is "the tick spawns from the journals". Three mechanisms make that orderly:
+
+- **Halt before shutdown:** the operator texts the ORCHESTRATOR `halt` (or runs `dispatch.py --halt`). The
+  ORCHESTRATOR tells every live lane to land and park within 10 minutes, then runs `--halt --force`, which stops every
+  tick-spawned session and closes its tab. If nobody runs it, the tick itself force-reaps 15 minutes after the halt
+  flag appears. A hard power-off without a halt costs at most one unfinished tranche per lane: the worktree keeps the
+  uncommitted files, and the next session's prompt tells it to read that diff against its NEXT before continuing.
+- **Restart at logon:** the `AlgoTrader-Dispatch-Logon` task fires two minutes after the operator logs in and runs
+  `dispatch_tick.ps1 -Logon`: it heals the DISPATCH checkout (a tick cut mid-rebase), clears a shutdown halt (never an
+  operator `--pause`), and runs a full tick — reaping nothing (no processes), then spawning the ORCHESTRATOR and every
+  open lane up to the cap. No tool and no human message is needed; the operator's own session-restore tool is only
+  for the sessions the operator opened by hand.
+- **Pause / resume:** `dispatch.py --pause` stops spawning until `--resume`; live sessions finish their tranche and
+  are reaped as usual. The pause survives a reboot because it is the operator's intent; a halt does not.
+
+Port to another project: the same three, renamed; the only machine-specific parts are the two scheduled tasks.
+
+## 3. Invariants — each one was bought with a measured failure
+
+- **A session never exits by itself.** "Park" is a header edit; the reaper is what ends the process. Never count on a session closing.
+- **The interactive half is never a cap candidate** (`NON_LANES`), and a `NEXT: nothing outstanding` is the exhaustion signal the tick reads.
+- **Nobody relays a figure or an answer.** The asking lane writes the QUEUE row; the ORCHESTRATOR strikes it with the answer; the asking lane records it verbatim. A seeded, relayed row was wrong on first contact (`ORCH-REDESIGN-3`).
+- **Cross-lane consent is an entry with a `to:` line, not a message.** A message reaches only a live session; `V-INGEST-180` reached nobody and the critical-path lane sat parked on it for an hour.
+- **Ids continue the frozen sequence.** A journal restarting at `-1` makes one id resolve to two facts; a QUEUE row's id IS its journal entry's id (`V-INGEST-182`, `ORCH-REDESIGN-20`).
+- **A `BLOCKED:` token has a prefix.** Prose there is unjudgeable; so is prose in `plan_row` (it made STALL unjudgeable for a week).
+- **Every figure carries its grade inline**; a relayed figure is never published past the lane that measured it; every sweep names its DOMAIN and blind spot; every assertion ships with the control that can fail.
+- **The ORPHANS escalation goes to the default owner first**; an instrument red is not an operator question.
+- **The fixed context floor is the cost.** 144k tokens on the first call of every fresh session (measured, identical across sessions): instruction files + board + skill/agent descriptions. It is 66 % of a tranche. Cut the session-start board to ≤2 KB, keep instruction files lean, never print "read these N rulings" into every session.
+- **Verify a push by content**, never by exit code: `git cat-file -p $(git ls-remote origin refs/heads/main | cut -f1):<path>`.
+- **The dispatcher reads no transcript, decides no scope, writes no ruling.** Judgement lives in owners' `binds` entries and the operator's answers.
+
+## 4. Port to another project
+
+Copy items 1–8 of §1, then rename: the task, the `Slice:` trailer convention (any commit trailer that names the lane), the lanes directory, the CI workflow file for red routing. Keep the header field order, the tags, the `BLOCKED` prefixes and the QUEUE row forms byte-identical — the parsers are regexes over them. Pin `PRIORITY` to the project's critical path. If the project has no CI, set `cap_for()` to return `CAP_FULL` and drop red routing; if it has no plan rows, `plan_row: NONE` everywhere and STALL is judged on landings alone.
+
+## 5. Superseded — do not resurrect
+
+`automate-lane-status`, `automate-lane-check` (the journal header + `dispatch.py --digest` are the status), `agency-lane-worker` (the journal is the brief), `handover-and-spawn` (the journal is the handover; the tick spawns), the 20-minute check-in loop, coordinator rotations, the `_STATE.md` briefs, the coordinator's relay of answers, and any cap on lanes below the CI-derived one. `spawn-claude-session` stays (the tick calls it); `automate-realign` stays with its journal destination; `orchestrator-pass` and `lane-tranche` are the two operating skills.
+
+## 6. Where the evidence is
+
+AlgoTrader `docs/refactor/DECISIONS_REFACTOR.md` R-525..R-534 (the last global rulings) · `docs/refactor/lanes/ORCH-REDESIGN.md` entries -1..-46 (interviews, token profiles, the null-hypothesis verdict, the first-hour defects and their fixes) · memory `run_orch_redesign_2026-09-06.md` · `.github/scripts/dispatch.py --selftest` (every branch fires by name, with its negative).
