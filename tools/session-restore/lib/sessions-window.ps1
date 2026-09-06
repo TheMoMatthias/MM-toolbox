@@ -4467,6 +4467,35 @@ function Build-ReadDocument {
     # grid, so prose is the default and mono is the exception - the way round
     # a reading surface wants.
     $doc.FontFamily  = $script:ProseFace
+    # 🔴 WHAT IS STILL RUNNING, SO `hidden` CAN HIDE HISTORY WITHOUT HIDING THAT.
+    # With Steps on hidden every run block is dropped, and a background shell's
+    # output lives ONLY inside an opened run block - so the setting was removing
+    # the one route to a running shell rather than reducing noise. Reported as
+    # "when I click on the respective background running agent or task, I cannot
+    # see its output", in the same breath as the nested-row defect, because on
+    # his machine both roads were shut.
+    #
+    # The operator's ruling, asked directly: a finished tool call is history and
+    # stays hidden; one that is still happening keeps its line.
+    #
+    # 🪤 READ, NEVER PARSED, ON THIS PATH. Get-SRLiveTasks is the authority and
+    # it parses up to 24 MB - "the cost of this is the whole design", says its
+    # own note - so calling it while building a document would put that on the
+    # click. $script:shellList is the same answer, already computed by
+    # Update-ShellPanel on the follow tick.
+    #
+    # 🪤 AND IT MUST BE THIS CONVERSATION'S LIST. $script:shellFor names whose
+    # tasks those are; if it does not match, the set is EMPTY and hidden behaves
+    # exactly as it did before. An unknown answer hides nothing extra and
+    # exempts nothing - it must not guess in either direction.
+    $script:docLiveShells = $null
+    if ("$($script:shellFor)" -and "$($script:shellFor)" -eq "$($script:docSessionId)") {
+        $script:docLiveShells = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($lt in $script:shellList) {
+            $sid = "$($lt.Shell)"
+            if ($sid) { $null = $script:docLiveShells.Add($sid) }
+        }
+    }
     # TRANSPARENT, NOT Ink. The document was painting the GROUND colour - the
     # near-black the window shows *around* its cards - inside an output pane
     # that is painted Panel and has a 12px corner radius. The result was a
@@ -4842,7 +4871,20 @@ function Add-ReadTurn { param($Doc, $Turn)
                 $doc.Blocks.Add((New-RailBlock -Child $fp -Kind 'thinking' -Top 9 -Bottom 5))
             }
             'run' {
-                if ($script:toolView -eq 'hidden') { $script:docHidden += @($t.Calls).Count; break }
+                # 🔑 HIDDEN HIDES HISTORY, NOT WHAT IS STILL HAPPENING. A run
+                # whose shell is still open keeps its one-line fold, because its
+                # output is only reachable through that fold. Everything
+                # finished still goes away and is still counted.
+                if ($script:toolView -eq 'hidden') {
+                    $runLive = $false
+                    if ($script:docLiveShells -and $script:docLiveShells.Count) {
+                        foreach ($c1 in $t.Calls) {
+                            $sh = "$($c1.Shell)"
+                            if ($sh -and $script:docLiveShells.Contains($sh)) { $runLive = $true; break }
+                        }
+                    }
+                    if (-not $runLive) { $script:docHidden += @($t.Calls).Count; break }
+                }
 
                 # 🔴 EVERY CALL, NOT THE FIRST EIGHT. The old renderer stopped
                 # at 8 and printed "and N more" - a run of twelve tool calls
@@ -6777,10 +6819,33 @@ function Complete-DocParse {
     $script:docPs = $null; $script:docRs = $null; $script:docHandle = $null
     if (-not $res) { return $false }
     # The selection may have moved while the parse was out; a transcript belongs
-    # to the conversation it was read from.
-    $it = $ui.SessionList.SelectedItem
-    if (-not $it -or $it.Kind -ne 'session') { return $false }
-    $now = ('{0}|{1}' -f "$($it.Row.S.jsonl)".ToLower(), $script:tailBytes)
+    # to the conversation it was read from. That hazard is real and this still
+    # guards it - what changed is WHAT IT COMPARES.
+    #
+    # 🔴 THE KEY IS THE ONE Start-DocParse KEYED ON, NOT A SECOND DERIVATION OF
+    # IT. This rebuilt the key out of the SELECTION - "$($it.Row.S.jsonl)" -
+    # while Start-DocParse had keyed it on the path Update-Document actually
+    # chose. For a conversation those two are the same string, so the
+    # duplication was invisible; for a SUB-AGENT row they are the PARENT and the
+    # AGENT, and the comparison could never match. A $it.Kind test above it
+    # refused first anyway, so a click on a nested row threw its own finished
+    # parse away twice over - reported as "when I click on the respective
+    # background running agent or task, I cannot see its output", with the
+    # header naming the agent over the parent's document.
+    #
+    # 🔑 $script:docPath IS the document that is wanted, and it is already
+    # treated that way: Update-Document writes it on every selection before it
+    # starts anything, Show-AgentDoc writes it on a drill-in, and
+    # Build-ReadDocument keys the append-or-rebuild decision on it. One place
+    # decides which file a selection means; this only asks whether the parse in
+    # hand is still for it. The tail size stays in the key, so 'load earlier'
+    # still supersedes the read it is widening rather than racing it.
+    #
+    # 🪤 AND IT IS WHAT KEEPS A DRILL-IN SAFE, with no test of its own.
+    # Show-AgentDoc parses inline and leaves the PARENT selected, so a parse
+    # still in flight for the parent used to be free to land on top of the agent
+    # just opened. docPath has already moved to the agent by then, so it cannot.
+    $now = ('{0}|{1}' -f "$($script:docPath)".ToLower(), $script:tailBytes)
     if ($now -ne $script:docFor) { return $false }
     Set-ReadDocument -Blocks $res.Blocks -Truncated $script:docTrunc -PreTurns $res.Turns
     return $true
@@ -7746,6 +7811,7 @@ $ui.SessionList.Add_PreviewMouseLeftButtonDown({
 # already on screen and spend a second full Show-Selected doing nothing, 140 ms
 # after every single click in the list.
 $script:showPending = $false
+$script:showLast = $null
 $script:showTimer = New-Object System.Windows.Threading.DispatcherTimer
 # 🔴 90 ms, AND THE NUMBER IS THE KEY-REPEAT RATE, NOT A FEELING. Windows
 # repeats a held key about every 32 ms, so anything comfortably above that
@@ -7761,6 +7827,7 @@ $script:showTimer.Add_Tick({
     $script:showTimer.Stop()
     if ($script:showPending) {
         $script:showPending = $false
+        $script:showLast = [DateTime]::UtcNow
         try { Show-Selected } catch { Write-SRLog ('  [skip] the settled draw failed: ' + $_.Exception.Message) }
     }
 })
@@ -7776,13 +7843,15 @@ $script:showDebounce = $true
 
 function Request-ShowSelected {
     if (-not $script:showDebounce) { Show-Selected; return }
-    if ($script:showTimer.IsEnabled) {
+    $nowSel = [DateTime]::UtcNow
+    if ($script:showLast -and ($nowSel - $script:showLast).TotalMilliseconds -lt $script:showTimer.Interval.TotalMilliseconds) {
         $script:showPending = $true
         $script:showTimer.Stop()
         $script:showTimer.Start()
         return
     }
     $script:showPending = $false
+    $script:showLast = $nowSel
     Show-Selected
     $script:showTimer.Start()
 }
