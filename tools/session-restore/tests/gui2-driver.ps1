@@ -4521,15 +4521,47 @@ else {
                 # at 66px), so an offender can only come from the rail branch.
                 $via = 'prose'
                 if ($blk -is [System.Windows.Documents.Paragraph]) {
+                    # 🔴 ASK WHERE THE WORDS ARE BUILT TO START, NOT WHERE A RUN
+                    # RENDERED. This walked $blk.Inlines to the first Run and took its
+                    # GetCharacterRect - and on a list item the first Run is the MARKER,
+                    # so when the rect came back for the run AFTER it the check reported
+                    # 108,7px and called the pane misaligned. 84 + 24,7 is exactly the
+                    # marker width: it was measuring where the words after the marker
+                    # begin and comparing that against where a line should begin.
+                    #
+                    # Dumped every paragraph of the same fixture off the object model:
+                    # 157 prose at margin 22 indent 0, 14 list items at 64,7/-24,7, and
+                    # 9 whose -22 indent is the gutter mark hanging into its own column.
+                    # Three classes, all correct, zero drift - against twelve reported
+                    # offenders. The measurement was the defect.
+                    #
+                    # 🪤 AND THE MARK IS WHY IT IS NOT SIMPLY Margin + TextIndent. On a
+                    # marked paragraph that sum is where the MARK sits, a column left of
+                    # the words, which is the reading I got wrong once already. When an
+                    # InlineUIContainer leads, the words start at Margin; otherwise the
+                    # negative indent is the hang and the line starts at Margin+Indent.
+                    $lead = $null
+                    try { $lead = @($blk.Inlines)[0] } catch { }
+                    $marked = ($lead -is [System.Windows.Documents.InlineUIContainer])
+                    $words = 0.0
+                    try {
+                        $words = $(if ($marked) { [double]$blk.Margin.Left }
+                                   else { [double]$blk.Margin.Left + [double]$blk.TextIndent })
+                    } catch { continue }
+                    # The page padding is what makes this comparable with the rail
+                    # branch below, which reports a real transform against the pane.
+                    $pad0 = 0.0
+                    try { $pad0 = [double]$doc.PagePadding.Left } catch { }
+                    $bx = $words + $pad0
                     foreach ($inl in $blk.Inlines) {
-                        if ($inl -is [System.Windows.Documents.Run] -and "$($inl.Text)".Trim().Length -gt 3) {
-                            try {
-                                $r = $inl.ContentStart.GetCharacterRect([System.Windows.Documents.LogicalDirection]::Forward)
-                                if ($r.X -gt 0) { $bx = [double]$r.X; $sample = "$($inl.Text)".Trim() }
-                            } catch { }
+                        if ($inl -is [System.Windows.Documents.Run] -and "$($inl.Text)".Trim()) {
+                            $sample = "$($inl.Text)"
                             break
                         }
                     }
+                    # A paragraph holding no words is a spacer and says nothing about
+                    # the column.
+                    if (-not "$sample".Trim()) { continue }
                 } elseif ($blk -is [System.Windows.Documents.BlockUIContainer]) {
                     $via = 'rail'
                     $g = $blk.Child

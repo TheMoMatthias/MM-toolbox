@@ -54,43 +54,47 @@ if (-not $doc) { Write-Host '  no document'; exit 1 }
 
 Write-Host ''
 # 🔑 THE OBJECT MODEL ANSWERS THIS AND LAYOUT DOES NOT. GetCharacterRect needs a
-# real arrange pass and returns Infinity without one - measured twice, even
-# after Measure/Arrange/UpdateLayout on the window. But where a paragraph's
-# FIRST LINE starts is Margin.Left + TextIndent, which is on the object before
-# anything is drawn. Same quantity, no layout, no infinities.
+# real arrange pass and returns Infinity without one, even after Measure/Arrange
+# on the window. Where a paragraph's first line starts is Margin.Left +
+# TextIndent, which is on the object before anything is drawn.
+#
+# 🔴 AND THE QUESTION NOW IS A CONTRADICTION, NOT A POSITION. The suite reports
+# blocks carrying margin 64,7 and indent -24,7 - the list shape exactly, 22
+# gutter + 18 bump + 24,7 hang - whose FIRST RUN CARRIES NO MARKER. Add-ReadProse
+# bakes the marker into the body text before it emits anything, so those two
+# cannot both be true. This prints every inline of every paragraph that is not
+# on the modal position, which settles it without another round of inference.
 $combos = @{}
-$total = 0
 foreach ($blk in $doc.Blocks) {
     if ($blk -isnot [System.Windows.Documents.Paragraph]) { continue }
-    $ml = [double]$blk.Margin.Left
-    $ti = [double]$blk.TextIndent
-    $first = [Math]::Round($ml + $ti, 1)
-    $sample = ''
-    foreach ($inl in $blk.Inlines) {
-        if ($inl -is [System.Windows.Documents.Run]) { $sample = "$($inl.Text)".Trim(); break }
-    }
-    if (-not $sample) { continue }
-    $total++
-    $k = '{0}|{1}|{2}' -f $first, $ml, $ti
-    if ($combos.ContainsKey($k)) {
-        $combos[$k].N++
-        if ($combos[$k].Samples.Count -lt 3) { $null = $combos[$k].Samples.Add($sample) }
-    } else {
-        $sl = New-Object System.Collections.Generic.List[string]
-        $null = $sl.Add($sample)
-        $combos[$k] = [PSCustomObject]@{ First = $first; ML = $ml; TI = $ti; N = 1; Samples = $sl }
+    $k = '{0}|{1}' -f [Math]::Round([double]$blk.Margin.Left,1), [Math]::Round([double]$blk.TextIndent,1)
+    if ($combos.ContainsKey($k)) { $combos[$k]++ } else { $combos[$k] = 1 }
+}
+$modal = ($combos.GetEnumerator() | Sort-Object -Property Value -Descending | Select-Object -First 1).Key
+Write-Host ("  positions: {0}   modal: {1}" -f (($combos.GetEnumerator() | ForEach-Object { '{0}x{1}' -f $_.Value, $_.Key }) -join '  '), $modal) -ForegroundColor Gray
+Write-Host ''
+
+$shown = 0
+foreach ($blk in $doc.Blocks) {
+    if ($blk -isnot [System.Windows.Documents.Paragraph]) { continue }
+    $ml = [Math]::Round([double]$blk.Margin.Left,1); $ti = [Math]::Round([double]$blk.TextIndent,1)
+    $k = '{0}|{1}' -f $ml, $ti
+    if ($k -eq $modal) { continue }
+    $inls = @($blk.Inlines)
+    if (-not $inls.Count) { continue }
+    if ($shown -ge 6) { break }
+    $shown++
+    Write-Host ("  --- margin {0} indent {1}  ({2} inline(s)) ---" -f $ml, $ti, $inls.Count) -ForegroundColor Yellow
+    $q = 0
+    foreach ($ii in $inls) {
+        $q++
+        $tt = ''
+        if ($ii -is [System.Windows.Documents.Run]) { $tt = "$($ii.Text)" }
+        # 🪤 THE MARKER IS A SPACE-PADDED PREFIX, so a trimmed print would hide
+        # exactly the thing being looked for. Delimited, untrimmed.
+        if ($tt.Length -gt 40) { $tt = $tt.Substring(0,40) + '...' }
+        Write-Host ("      {0}: {1,-22} <{2}>" -f $q, $ii.GetType().Name, $tt)
     }
 }
-Write-Host ('  {0} paragraph(s) with text, in {1} distinct position(s)' -f $total, $combos.Count) -ForegroundColor Gray
-Write-Host ''
-Write-Host ('  {0,9} {1,9} {2,9} {3,6}  {4}' -f 'firstline','Margin.L','TextInd','count','sample') -ForegroundColor Gray
-Write-Host ('  ' + ('-'*74)) -ForegroundColor DarkGray
-foreach ($c in ($combos.Values | Sort-Object -Property N -Descending)) {
-    $sm = ($c.Samples -join ' / ')
-    if ($sm.Length -gt 34) { $sm = $sm.Substring(0,34) + '..' }
-    Write-Host ('  {0,9:N1} {1,9:N1} {2,9:N1} {3,6}  {4}' -f $c.First, $c.ML, $c.TI, $c.N, $sm)
-}
-Write-Host ''
-Write-Host '  The most common firstline IS the column. Anything else is either a' -ForegroundColor DarkGray
-Write-Host '  list item (TextInd negative, Margin larger by the hang) or drift.' -ForegroundColor DarkGray
+if (-not $shown) { Write-Host '  every paragraph is on the modal position in this parse' -ForegroundColor Green }
 exit 0
