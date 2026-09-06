@@ -2231,6 +2231,33 @@ function Build-Sessions {
             # conversation until it passed 200k.
             $rowTok = 0; $rowWin = 0
             if ($scr -and [int]$scr.CtxWindow -gt 0) { $rowTok = [int]$scr.CtxTokens; $rowWin = [int]$scr.CtxWindow }
+            else {
+                # 🔑 AN IDLE CONVERSATION GETS A BAR TOO, OUT OF TWO REAL FIGURES.
+                # Reported: no visual indication of how much context is used, and
+                # showing it only above half a window was one half of that - this
+                # is the other. A session that is not running prints no status bar,
+                # so the sweep has nothing current to file and the row went blank.
+                #
+                # Both halves here are measured, neither is inferred: the WINDOW is
+                # the one this conversation itself printed while it was last live
+                # (see $script:ctxWindowTrue), and the COUNT is the transcript's own
+                # last usage figure, which is real - it is only the window that
+                # Get-SRSessionVitals guesses, and that guess is not used.
+                #
+                # 🪤 IT IS A LAST KNOWN WINDOW, NOT A LAST KNOWN BAR. Pairing a
+                # remembered window with a remembered COUNT would freeze the gauge
+                # at whatever it read when the session stopped; pairing it with the
+                # live transcript count keeps the bar moving with the conversation,
+                # which is the thing being asked about.
+                $wTrue = $script:ctxWindowTrue["$($r.Id)"]
+                if ($wTrue -and [int]$wTrue -gt 0) {
+                    $vCached = Get-SRVitalsCached $r
+                    if ($vCached -and [int]$vCached.Tokens -gt 0) {
+                        $rowTok = [int]$vCached.Tokens
+                        $rowWin = [int]$wTrue
+                    }
+                }
+            }
             $rowFrac = $(if ($rowWin -gt 0) { [double]$rowTok / [double]$rowWin } else { 0.0 })
 
             # 🔴 WHAT IS QUEUED BEHIND IT. Read off the transcript's own
@@ -10010,6 +10037,23 @@ $script:quietAt = $null
 # the line does not always name at all - and the transcript CAN see those - so
 # silence there means "ask the transcript" instead.
 $script:rowScreen = @{}
+# 🔑 THE WINDOW A SESSION PRINTED, KEPT AFTER IT STOPS PRINTING IT.
+#
+# A context gauge needs a token count and a window. The count is real off the
+# transcript; the WINDOW is not - Get-SRSessionVitals guesses it from the count
+# (_common.ps1:7054, 200k unless the model says 1m or the count is already over
+# 200k), which drew 122k/1,0M as 61% instead of 12%. That is why an idle row was
+# given no bar at all: a wrong gauge is worse than none.
+#
+# But the sweep reads the TRUE window off the status bar every time a session is
+# live, and a conversation does not change its context window when it stops
+# running. Remembering it turns "no bar for anything idle" into "a bar for
+# anything that has been seen running since this window opened".
+#
+# 🪝 WHAT THIS IS NOT ALLOWED TO BECOME is a default. Nothing writes a guess
+# here - only a figure the session itself printed - so a conversation never seen
+# running still shows no bar, which is the honest answer for it.
+$script:ctxWindowTrue = @{}
 # Seconds a filed count is still worth drawing. Comfortably longer than the
 # sweep's own cadence, so an entry only ages out when the sweeps have actually
 # stopped landing - a count that old describes a session that has since done
@@ -10035,6 +10079,8 @@ function Set-RowScreenSig {
         Effort = "$Effort"; TurnSecs = $TurnSecs; TurnDone = $TurnDone
         CtxTokens = $CtxTokens; CtxWindow = $CtxWindow
     }
+    # Only ever a figure the session printed. See $script:ctxWindowTrue.
+    if ($CtxWindow -gt 0) { $script:ctxWindowTrue[$Id] = [int]$CtxWindow }
     return $changed
 }
 

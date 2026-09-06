@@ -39,6 +39,16 @@
 # The last one is the number the operator is describing when they say a session
 # "doesn't immediately show the content". Everything before it is bookkeeping.
 #
+# 🔴 EVERY NUMBER IN THIS FILE IS SOFTWARE-RASTERISED AND IS NOT WALL CLOCK.
+# Added 2026-09-06, after tests/render-driver.ps1 measured the same gestures on a
+# window that is actually SHOWN. This file said a conversation switch settles in
+# 775-900 ms; with a real frame it is 30-141 ms. A whole day was spent chasing
+# the switch on the strength of the figure above, and the gesture was never the
+# problem - the typing was. Read the columns here as a SIGNAL THAT MOVES when the
+# render walk gets more expensive, which is what they are good for and why they
+# stay. Do not quote one as what the operator waits, and do not compare one
+# against a number from a shown window: they are different quantities.
+#
 # 🪤 WHAT "PIXELS" IS AND IS NOT. This window is never shown - same splice as
 # every other GUI suite, nothing on screen, nothing focusable, no key can reach
 # a live session - so there is no HwndTarget and no composition thread. The
