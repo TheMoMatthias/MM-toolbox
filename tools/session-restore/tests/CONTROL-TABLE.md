@@ -318,13 +318,40 @@ Every verdict above therefore comes from one of two places: an assertion that al
 exists in `tests\gui2-driver.ps1`, or the handler source read end to end. Where neither
 was enough, the row says UNPROVEN and names what would settle it.
 
-**The largest remaining coverage gap** is the group of pane-local toggles that have zero
-gui2 mentions and no assertion anywhere: `RailSort`, `ListSort`, `RailOnlyLive`,
-`RailClear`, `ShellFold`, `PaneZoom` (by name), `CastCancel`, `SetCancel`. Each is a
-short, branch-light handler, which is why they read as correct — but `ShellFold` was in
-exactly that group and turned out to be BROKEN, so "short and readable" is not evidence.
-Proving them needs the same treatment the covered ones got: invoke the delegate from the
-replica and assert the state it is supposed to move.
+**That gap is now closed** — `tests\press-driver.ps1`, 2026-09-06. Every control in it is
+pressed with a real routed event on the real element (`RaiseEvent` with a
+`MouseButtonEventArgs` built on `Mouse.PrimaryDevice`, which exists without a window), not
+by copying the handler body into the test. A copy asserts that the author can transcribe
+PowerShell; a raised event asserts that the control the operator clicks moves the state it
+claims to.
+
+`RailSort`, `ListSort`, `RailOnlyLive`, `RailShelved`, `RailClear`, `PaneZoom`,
+`SetCancel`, `CastCancel` — **all eight work**, twelve assertions, including that both
+sort cycles WRAP (the audit noted `IndexOf` returns `-1` for an unknown key and
+`(-1+1) % n` = 0, so a broken wrap self-heals instead of throwing) and that `PaneZoom`
+returns through every one of its six steps.
+
+Two things that came out of pressing rather than reading:
+
+**`Rescan` is POLICY-BLOCKED, not unproven, and this table said the wrong thing.** Its
+handler calls `Save-RegistryOrAsk` when `$script:dirty` — it can write the operator's live
+registry, which is the class of action that cost 210 conversations in this repo's history.
+It is not pressed and must not be.
+
+**`PaneZoom` writes the operator's live `session-restore.config.json`** through
+`Save-SRConfigLater`. The button is pressed; the write is stubbed for the duration and the
+zoom restored afterwards. Pressing a control to prove it works must not change his
+settings — and the test also asserts the save was *requested*, so stubbing it does not
+quietly delete the coverage.
+
+**What remains genuinely unreachable** is not a matter of effort. Seven rows need input
+that cannot exist on an unshown window: both splitter drags, both title-bar drags, the
+reading-pane scroll wheel, the stock scrollbar parts, and `SpBrowse` (a modal OS dialog).
+There is no `PresentationSource`, so the event cannot be constructed at all. A further ten
+rows have **no handler to press** — `SetName`, `SetModel`, `SetEffort`, `SetRemote`,
+`SetHidden`, `SetAllow`/`SetDeny`, `SpName`, `SpModel`/`SpEffort`, `SpRemote`,
+`QueueList` — they are declarations read at Apply or Start, and the reading is what the
+suite already covers.
 
 ---
 
@@ -332,13 +359,21 @@ replica and assert the state it is supposed to move.
 
 | verdict | count |
 |---|---|
-| WORKS | 62 |
-| UNPROVEN | 27 |
-| UNPRESSABLE-BY-POLICY | 19 |
-| BROKEN | 1 (`ShellFold`) |
-| INERT | 1 (`ShellList` row) |
+| WORKS | 68 |
+| UNPROVEN | 22 |
+| UNPRESSABLE-BY-POLICY | 20 |
+| BROKEN | 0 |
+| INERT | 0 |
 | split verdict (Shift+Enter WORKS / Enter policy-blocked) | 2 |
 | **total rows** | **112** |
+
+Moved since the first audit: `ShellFold` BROKEN → fixed → WORKS; `ShellList` INERT →
+given a handler → WORKS; `RailSort`, `ListSort`, `RailOnlyLive`, `RailClear` UNPROVEN →
+pressed → WORKS; `Rescan` UNPROVEN → **UNPRESSABLE-BY-POLICY**, because reading it more
+carefully showed it can write the registry.
+
+Of the 22 still unproven, **17 cannot be reached at all** — seven need a shown window,
+ten have no handler. The honest remaining figure is **five**.
 
 Plus §17, which lists the surfaces that look like controls and carry no handler by design
 — recorded so a later sweep does not re-open them as findings.
