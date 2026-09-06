@@ -6107,6 +6107,247 @@ if (-not $landed) { Fail 'Complete-AnswerLanded is gone' }
 elseif ($landed -notmatch 'Test-ScreenMenu') { Fail 'the answer landing redraws the card from a screen parse without the menu check' }
 else { Pass 'the answer landing checks it too' }
 
+# ===========================================================================
+# THE FOUR DEFECTS OF 2026-09-06, EACH WITH A TEST THAT WOULD HAVE CAUGHT IT.
+#
+# 🔴 EVERY ONE OF THESE WAS REPORTED BY THE OPERATOR, NOT BY THIS SUITE, and he
+# asked for exactly this: "can add that also to the functionality test as well".
+# Two of them were untestable where they lived - an inline expression inside a
+# PreviewKeyDown handler, and eleven lines in the middle of Build-Sessions - so
+# the decisions moved into Test-SRTypingTarget and Test-SRQueueFresh to make
+# these assertions possible. A fix with no test is a fix that comes back.
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the answer box you are typing in is not typed over ---'
+
+$freeQ = Get-AskShot 'round-free-empty.txt'
+if (-not $freeQ) {
+    Note 'COULD NOT BE CHECKED THIS RUN: round-free-empty.txt did not parse, so the free-text box cannot be driven. It is NOT a pass.'
+} else {
+    $selWas = $script:selId
+    $mine = 'yes - the second option, but keep the old file until Friday'
+    # Arm: draw the question, then put text in the box the way a person does.
+    # 🪤 SETTING .Text IS WHAT THE OPERATOR DOES TOO - it raises TextChanged, and
+    # $askFreeWriting is false here, so the guard sees typing. That is the
+    # distinction the fix turns on and this is the only place it is asserted.
+    function Set-AskTyped {
+        Show-Ask $freeQ
+        $ui.AskFree.Text = $mine
+    }
+    Set-AskTyped
+    if (-not $script:askFreeDirty) {
+        Fail 'typing into the answer box does not mark it as yours, so nothing protects it'
+    } else { Pass 'typing into the answer box marks it as yours' }
+
+    # 🔴 THE REPORTED DEFECT. Show-Ask runs on every tick of the live probe, the
+    # ask probe and the follow lane; it used to write the terminal row - usually
+    # empty - straight over whatever was half-typed.
+    Show-Ask $freeQ
+    if ("$($ui.AskFree.Text)" -ne $mine) {
+        Fail "a redraw of the SAME question emptied the box - it now holds '$($ui.AskFree.Text)'"
+    } else { Pass 'a redraw of the same question leaves what you were typing alone' }
+
+    # The prefill must still work when the box is NOT yours: that is the
+    # behaviour the guard could plausibly have killed.
+    $script:askFreeDirty = $false
+    $script:askFreeKey = $null
+    $committed = Get-AskShot 'round-free-committed.txt'
+    if ($committed) {
+        Show-Ask $committed
+        if ("$($ui.AskFree.Text)" -ne 'my own words here') {
+            Fail "the guard broke the prefill - an untouched box shows '$($ui.AskFree.Text)'"
+        } else { Pass 'and an untouched box still prefills with what that question already holds' }
+    }
+
+    # 🔴 THE HAZARD, NOT THE ANNOYANCE. Two conversations running the same prompt
+    # ask a byte-identical question. Before the key carried the conversation,
+    # typing meant for A survived a switch to B - and the next Enter would have
+    # sent it into a different live console.
+    $script:askFreeDirty = $false
+    $script:askFreeKey = $null
+    $script:selId = 'conversation-A'
+    Set-AskTyped
+    $script:selId = 'conversation-B'
+    Show-Ask $freeQ
+    if ("$($ui.AskFree.Text)" -eq $mine) {
+        Fail 'typing meant for one conversation survived a switch to another - the next Enter would send it to the wrong session'
+    } else { Pass 'switching conversation clears the box, so typing cannot be sent to the wrong session' }
+    $script:selId = $selWas
+    $script:askFreeDirty = $false
+    $script:askFreeKey = $null
+    Show-Ask $null
+}
+
+Write-Host ''
+Write-Host '--- a notification the harness wrote is not something you said ---'
+
+# 🔴 REPORTED WITH A SCREENSHOT: a <task-notification> - task-id, output-file,
+# "exit code 0" - drawn as YOU SAID, on his own ground, with his marker.
+# 🪤 THE PREDICATE, NOT New-SRUserBlock - AND THE REASON IS A REAL FRAGILITY.
+# New-Block is declared INSIDE another function in _common.ps1, so
+# New-SRUserBlock only resolves it when called from within that parent's scope
+# and throws "The term 'New-Block' is not recognized" anywhere else. The first
+# version of this test called New-SRUserBlock directly and every case came back
+# as a throw - eight red lines that proved nothing about the classifier. So the
+# DECISION is asserted where it lives, at the top level, and the WIRING is
+# asserted separately below the same way this suite already checks wiring.
+$machineCases = @(
+    @{ N = 'a background-task notification'; Want = $true;  T = "<task-notification>`n<task-id>b29xcsmi8</task-id>`n<summary>Background command completed (exit code 0)</summary>`n</task-notification>" }
+    @{ N = 'a bare system-reminder';         Want = $true;  T = "<system-reminder>`nambient context`n</system-reminder>" }
+    @{ N = 'a cross-session idle notice';    Want = $true;  T = '[Cross-session idle notice] worker went idle' }
+    @{ N = 'words you typed';                Want = $false; T = 'today is a new day and I would like you to continue' }
+    @{ N = 'your words plus a reminder';     Want = $false; T = "please continue with the pane work`n<system-reminder>ambient</system-reminder>" }
+    @{ N = 'a slash command you invoked';    Want = $false; T = "<local-command-caveat>Caveat: blah</local-command-caveat>`n<command-name>/compact</command-name>" }
+    @{ N = 'your words containing [0]';      Want = $false; T = 'use the [0] element, not the first one' }
+    @{ N = 'your words containing x < 3';    Want = $false; T = 'if x < 3 then stop and tell me' }
+)
+foreach ($mc in $machineCases) {
+    $got = $null
+    try { $got = [bool](Test-SRMachineUserRecord $mc.T) }
+    catch { Fail "Test-SRMachineUserRecord threw on $($mc.N): $($_.Exception.Message)"; continue }
+    if ($got -ne $mc.Want) {
+        # 🪤 A FALSE POSITIVE IS THE WORSE DIRECTION and the message says so: a
+        # turn of his filed as machinery DISAPPEARS with Steps set to hidden.
+        if ($mc.Want) {
+            Fail "$($mc.N) is not recognised as machinery - it would be printed in his voice, on his ground"
+        } else {
+            Fail "$($mc.N) is treated as machinery - something he typed would VANISH under Steps: hidden"
+        }
+    } else { Pass "$($mc.N): machine-authored = $($mc.Want)" }
+}
+# And the classifier is actually consulted, rather than sitting there correct
+# and unused - the same wiring check this suite makes on the ask paths.
+$ubSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\_common.ps1'))
+$ubBody = Get-SRBodyOf $ubSrc 'function New-SRUserBlock'
+if (-not $ubBody) {
+    Fail 'New-SRUserBlock is gone - nothing decides whose voice a user record is in'
+} elseif ($ubBody -notmatch 'Test-SRMachineUserRecord') {
+    Fail 'New-SRUserBlock no longer asks whether the record was written by a machine'
+} else {
+    Pass 'and New-SRUserBlock asks it on every user record'
+}
+
+Write-Host ''
+Write-Host '--- bare-letter shortcuts stand down wherever you can type ---'
+
+# 🔴 REPORTED AS TYPING `hello` INTO THE BROADCAST BOX AND GETTING `heo`. The
+# guard named two boxes; the window has nine, and PreviewKeyDown TUNNELS, so it
+# runs before the focused box ever sees the key. Each swallowed `l` also doubled
+# the transcript tail budget and rebuilt the reading pane.
+#
+# 🪤 THE SYNTHETIC CONTROLS ARE THE REAL TEST. A per-box check against $ui is a
+# tautology once the predicate is type-based; what has to stay red is somebody
+# reintroducing a LIST OF NAMES, and a TextBox that was never on any list is
+# what catches that.
+$typingCases = @(
+    @{ N = 'a TextBox that is on no list';  El = (New-Object System.Windows.Controls.TextBox);     Want = $true }
+    @{ N = 'a RichTextBox';                 El = (New-Object System.Windows.Controls.RichTextBox); Want = $true }
+    @{ N = 'a PasswordBox';                 El = (New-Object System.Windows.Controls.PasswordBox); Want = $true }
+    @{ N = 'a Button';                      El = (New-Object System.Windows.Controls.Button);      Want = $false }
+    @{ N = 'a ListBox';                     El = (New-Object System.Windows.Controls.ListBox);     Want = $false }
+    @{ N = 'nothing focused at all';        El = $null;                                            Want = $false }
+)
+foreach ($tc in $typingCases) {
+    $got = $false
+    try { $got = [bool](Test-SRTypingTarget $tc.El) } catch { Fail "Test-SRTypingTarget threw on $($tc.N): $($_.Exception.Message)"; continue }
+    if ($got -ne $tc.Want) {
+        if ($tc.Want) { Fail "$($tc.N) is not recognised as somewhere you type - bare letters would be eaten out of it" }
+        else { Fail "$($tc.N) is treated as somewhere you type - every keyboard shortcut in the window would stop working" }
+    } else { Pass "$($tc.N): typing target = $($tc.Want)" }
+}
+# And every text box this window actually has, named, so the count is on record.
+$boxNames = @('Search','SendBox','RailSearch','ListSearch','CastText','SetName','SetAllow','SetDeny','AskFree')
+$boxSeen = 0
+$boxMissed = @()
+foreach ($bn in $boxNames) {
+    $el = $ui[$bn]
+    if (-not $el) { continue }
+    $boxSeen++
+    if (-not (Test-SRTypingTarget $el)) { $boxMissed += $bn }
+}
+if ($boxSeen -lt 5) {
+    Note ("COULD NOT BE CHECKED THIS RUN: only {0} of the {1} named boxes were found in `$ui. It is NOT a pass." -f $boxSeen, $boxNames.Count)
+} elseif ($boxMissed.Count) {
+    Fail ("these boxes are not protected from the shortcuts: {0}" -f ($boxMissed -join ', '))
+} else {
+    Pass ("all {0} of this window's text boxes stand the shortcuts down" -f $boxSeen)
+}
+
+Write-Host ''
+Write-Host '--- the queue mark ages the message, not the transcript file ---'
+
+# 🔴 THE PER-ROW COPY AND THE FUNCTION MUST AGREE ON EVERY ROW. Build-Sessions
+# inlines this test because 71% of its cost was the invocation; the panel above
+# the composer calls the function. Two copies of one rule is how a window ends
+# up telling you two different things about the same queue, so the suite holds
+# them together rather than trusting them to stay in step.
+$agreeChecked = 0
+$agreeBad = @()
+# 🪤 NOT @($script:model). It is a List[object], and wrapping one in @() throws
+# "Argument types do not match" in PowerShell 5.1 - a script-level
+# ArgumentException with no inner line number, which took down this suite and,
+# three hours earlier and undiagnosed, the perf suite as well. A List is
+# already enumerable; foreach wants it bare.
+foreach ($mr in $script:model) {
+    $rec = $mr.Q
+    if (-not $rec -or [int]$rec.Count -le 0) { continue }
+    $agreeChecked++
+    $wantFresh = [bool](Test-SRQueueFresh -Rec $rec -Now (Get-Date) `
+                            -MaxHours $SR_QueueStaleHours -MachineMins $SR_QueueMachineStaleMins)
+    $row = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and "$($_.Id)" -eq "$($mr.Id)" })
+    if (-not $row.Count) { continue }
+    $drawn = ("$($row[0].QVis)" -eq 'Visible')
+    if ($drawn -ne $wantFresh) { $agreeBad += "$($mr.Id) drawn=$drawn function=$wantFresh" }
+}
+if ($agreeChecked -eq 0) {
+    Note 'COULD NOT BE CHECKED THIS RUN: no conversation on this machine has anything queued, so the two copies of the freshness rule were not compared. It is NOT a pass.'
+} elseif ($agreeBad.Count) {
+    Fail ("the row mark and Test-SRQueueFresh disagree on {0} of {1} queued row(s): {2}" -f $agreeBad.Count, $agreeChecked, ($agreeBad -join '; '))
+} else {
+    Pass ("the inlined row mark and Test-SRQueueFresh agree on all {0} queued row(s)" -f $agreeChecked)
+}
+
+
+# 🔴 THE FIRST VERSION OF THIS GATE READ THE TRANSCRIPT'S LastWriteTime, so it
+# could only fire on a session that had STOPPED writing - never on the live ones
+# that show a phantom mark. Reported with a screenshot an hour after it shipped.
+$qNow = Get-Date
+# 🪤 ITEMS CARRY WHOSE THEY ARE, and the window depends on it: machine traffic
+# is eaten by the session on its next turn, so it is stale in MINUTES; one of
+# his can legitimately wait an hour while a session works.
+function New-QRec { param($Items)
+    $list = @()
+    foreach ($it in @($Items)) { $list += [PSCustomObject]@{ At = $it[0]; Mine = $it[1] } }
+    return [PSCustomObject]@{ Items = $list; LastWrite = $qNow }
+}
+$MINE = $true
+$MACH = $false
+$queueCases = @(
+    @{ N = 'one of yours, hours old';                  Rec = (New-QRec @(,@($qNow.AddHours(-5),   $MINE))); Want = $false }
+    @{ N = 'one of yours, stale, session still writing';Rec = (New-QRec @(,@($qNow.AddHours(-5),  $MINE))); Want = $false }
+    @{ N = 'one of yours, three minutes ago';           Rec = (New-QRec @(,@($qNow.AddMinutes(-3),$MINE))); Want = $true }
+    @{ N = 'one of yours, one old and one new';         Rec = (New-QRec @(@($qNow.AddHours(-5), $MINE), @($qNow.AddMinutes(-3), $MINE))); Want = $true }
+    @{ N = 'an item carrying no date at all';           Rec = (New-QRec @(,@($null,             $MINE))); Want = $true }
+    @{ N = 'a record with no items to date';            Rec = (New-QRec @());                              Want = $true }
+    @{ N = 'no record at all';                          Rec = $null;                                       Want = $true }
+    # 🔴 THE SCREENSHOT: "1 QUEUED, NONE OF THEM YOURS / a background task
+    # reported back", eight minutes after the notification had been consumed.
+    @{ N = 'a machine notification, eight minutes old'; Rec = (New-QRec @(,@($qNow.AddMinutes(-8), $MACH))); Want = $false }
+    @{ N = 'a machine notification, thirty seconds old';Rec = (New-QRec @(,@($qNow.AddSeconds(-30),$MACH))); Want = $true }
+    # ...and the same age is still YOURS, which is the whole point of splitting them.
+    @{ N = 'one of yours, eight minutes old';           Rec = (New-QRec @(,@($qNow.AddMinutes(-8), $MINE))); Want = $true }
+)
+foreach ($qc in $queueCases) {
+    $got = $true
+    try { $got = [bool](Test-SRQueueFresh -Rec $qc.Rec -Now $qNow -MaxHours 1.0 -MachineMins 2.0) }
+    catch { Fail "Test-SRQueueFresh threw on $($qc.N): $($_.Exception.Message)"; continue }
+    if ($got -ne $qc.Want) {
+        if ($qc.Want) { Fail "$($qc.N) was called stale - a mark only ever HIDES, so it must never fire on the absence of evidence" }
+        else { Fail "$($qc.N) was called fresh - that is the phantom mark he screenshotted" }
+    } else { Pass "$($qc.N): still worth a mark = $($qc.Want)" }
+}
+
+
 Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
 Write-Host 'the shipped window holds' -ForegroundColor Green
