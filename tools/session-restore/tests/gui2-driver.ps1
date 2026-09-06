@@ -4554,7 +4554,25 @@ else {
                 if ($null -eq $bx) { continue }
                 $b = [int][Math]::Round($bx)
                 if ($cols.ContainsKey($b)) { $cols[$b] = $cols[$b] + 1 } else { $cols[$b] = 1 }
-                $null = $seen.Add([PSCustomObject]@{ X = $bx; S = "$sample".Trim(); Via = $via })
+                # 🔑 WHAT IT WAS BUILT WITH, BESIDE WHERE IT LANDED. An off-column
+                # report that gives only the rendered x cannot say whether the block
+                # was told to sit there or drifted - and those need opposite fixes.
+                # Margin.Left + TextIndent is where the line box starts; for a marked
+                # paragraph that is where the MARK sits and the words follow it, which
+                # is exactly the reading I got wrong once already today.
+                $mL = -1.0; $tI = 0.0
+                try { $mL = [double]$blk.Margin.Left; $tI = [double]$blk.TextIndent } catch { }
+                # 🪝 AND WHAT ELSE IS ON THE LINE. A marked paragraph opens with a
+                # gutter-mark InlineUIContainer, not a Run, so the first Run is not at
+                # the line start - which is how a correct hanging indent can look like
+                # a misplaced one. The count and the first inline type say which.
+                $nInl = 0; $firstT = ""
+                try {
+                    $nInl = @($blk.Inlines).Count
+                    $fi = @($blk.Inlines)[0]
+                    if ($fi) { $firstT = $fi.GetType().Name }
+                } catch { }
+                $null = $seen.Add([PSCustomObject]@{ X = $bx; S = "$sample".Trim(); Via = $via; ML = $mL; TI = $tI; N = $nInl; F = $firstT })
             }
             if ($seen.Count -lt 4) {
                 Note ("only {0} measurable block(s) in this tail - the column sweep needs more" -f $seen.Count)
@@ -4578,7 +4596,7 @@ else {
                         if ($shown -ge 6) { break }
                         $txt = $s.S
                         if ($txt.Length -gt 46) { $txt = $txt.Substring(0, 46) + '...' }
-                        Note ("    {0,6:N1}px  [{1}]  {2}" -f $s.X, $s.Via, $txt)
+                        Note ("    {0,6:N1}px  [{1}]  margin {2,6:N1} indent {3,6:N1}  {4} inline(s), first {5}  {6}" -f $s.X, $s.Via, $s.ML, $s.TI, $s.N, $s.F, $txt)
                         $shown++
                     }
                 } else {
