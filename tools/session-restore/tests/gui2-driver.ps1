@@ -2097,6 +2097,47 @@ Show-Ask $null
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- a question reaches the panel without waiting for something else ---'
+# ===========================================================================
+# 🔴 REPORTED: a question takes fifteen to twenty seconds to appear, and
+# sometimes reads 'its question could not be read from the screen' and never
+# loads. The vitals sweep already knew within 2,5 s that a session had put a
+# menu up - it moves the row into NEEDS YOU on exactly that evidence - and told
+# the PANEL nothing. The panel waited for something unrelated to set askWanted:
+# another selection, or the context retry. Fifteen seconds is how long it takes
+# for something else to come along.
+#
+# 🪝 THE DECISION IS DRIVEN, NOT THE SWEEP. Making a real session raise a real
+# menu is not something a harness may do - it would mean typing into one of the
+# operator's conversations. What CAN be proved is the rule that decides whether
+# to go and read, and every way it is allowed to refuse.
+$askNow = Get-Date
+foreach ($c in @(
+    @{ N = 'the conversation on screen, panel empty';        Id='s1'; Sel='s1'; Q=$false; B=$false; L=$null;                    Want=$true  },
+    @{ N = 'a different conversation asking';                Id='s2'; Sel='s1'; Q=$false; B=$false; L=$null;                    Want=$false },
+    @{ N = 'the panel already holds its question';           Id='s1'; Sel='s1'; Q=$true;  B=$false; L=$null;                    Want=$false },
+    @{ N = 'a read already in flight';                       Id='s1'; Sel='s1'; Q=$false; B=$true;  L=$null;                    Want=$false },
+    @{ N = 'read two seconds ago and still empty';           Id='s1'; Sel='s1'; Q=$false; B=$false; L=$askNow.AddSeconds(-2);   Want=$false },
+    @{ N = 'read six seconds ago and still empty';           Id='s1'; Sel='s1'; Q=$false; B=$false; L=$askNow.AddSeconds(-6);   Want=$true  },
+    @{ N = 'nothing selected';                               Id='';   Sel='';   Q=$false; B=$false; L=$null;                    Want=$false }
+)) {
+    $got = Test-SRAskKick -Id $c.Id -SelId $c.Sel -HasQ $c.Q -Busy $c.B -Last $c.L -Now $askNow
+    if ([bool]$got -ne [bool]$c.Want) {
+        Fail ("{0}: goes and reads = {1}, expected {2}" -f $c.N, $got, $c.Want)
+    } else { Pass ("{0}: goes and reads = {1}" -f $c.N, $got) }
+}
+# 🔑 AND THE PROBE TAKES THE WARM RUNSPACE NOW. Opening one is 8,5 ms and the
+# job's first act is dot-sourcing 426 KB at 13,3 - paid on the read the operator
+# is waiting on, while a spare sat open for exactly this.
+$askSrc = (Get-Command Start-AskProbe).Definition
+if ($askSrc -match 'runspacefactory') {
+    Fail 'Start-AskProbe still opens its own runspace instead of taking the warm spare'
+} elseif ($askSrc -notmatch 'Get-SRRunspace') {
+    Fail 'Start-AskProbe does not take the warm runspace'
+} else { Pass 'the ask probe takes the warm runspace rather than opening one' }
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the question stays on screen while the choices scroll ---'
 # ===========================================================================
 # 🔴 REPORTED: "the question text is cut off and I cannot fully read the
@@ -4678,6 +4719,60 @@ else {
             if ("$furniture".Trim().Length -lt 40) {
                 Fail 'the only text in the document is the pane''s own truncation notice'
             } else { Pass 'and that text is the conversation, not just the header the pane draws' }
+
+        # ===================================================================
+        # 🔴 'LOAD EARLIER' HAS TO ACTUALLY LOAD EARLIER.
+        #
+        # Reported: pressing it gives two or three more messages once and then
+        # nothing, however far back you go. It doubles $script:tailBytes - and
+        # every caller of Get-SRTranscriptBlocks passed a HARDCODED MaxRecords
+        # of 220 beside it, so the reader widened the byte window, admitted far
+        # more records, and then kept only the last 220. The same conversation,
+        # read more expensively.
+        #
+        # 🪝 THIS ASSERTS GROWTH AND THEN PROVES THE CAP WAS THE CAUSE. Growth
+        # alone would pass on any change that happened to read more; the control
+        # below pins MaxRecords back at 220 and requires that the SAME widening
+        # then buys nothing. Without it this is a test that cannot say why.
+        # ===================================================================
+        # The same conversation every other assertion in this block used.
+        $leJ = "$($docRow.Row.S.jsonl)"
+        $leTail = $script:tailBytes
+        try {
+            $script:tailBytes = $script:TailBase
+            $g1 = Get-SRTranscriptBlocks -JsonlPath $leJ -MaxRecords (Get-SRTailRecords) -MaxTailBytes $script:tailBytes
+            $b1 = @($g1); $c1 = 0; foreach ($b in $b1) { $c1 += "$($b.Body)".Length }
+
+            $script:tailBytes = $script:TailBase * 8
+            $g2 = Get-SRTranscriptBlocks -JsonlPath $leJ -MaxRecords (Get-SRTailRecords) -MaxTailBytes $script:tailBytes
+            $b2 = @($g2); $c2 = 0; foreach ($b in $b2) { $c2 += "$($b.Body)".Length }
+
+            # The pinned-cap control, at the SAME widened byte budget.
+            $g3 = Get-SRTranscriptBlocks -JsonlPath $leJ -MaxRecords 220 -MaxTailBytes $script:tailBytes
+            $b3 = @($g3); $c3 = 0; foreach ($b in $b3) { $c3 += "$($b.Body)".Length }
+
+            if ($c1 -le 0) {
+                Note 'COULD NOT BE CHECKED THIS RUN: the fixture read no body text at the base budget, so widening could not be compared. It is NOT a pass.'
+            } elseif ($b1.Count -ge 220 -eq $false -and $c2 -le $c1) {
+                # Under 220 records at the base budget means the cap was never
+                # what limited it here - widening should still add, but if it
+                # does not, this fixture simply has no more history.
+                Note ("COULD NOT BE CHECKED THIS RUN: the base read took {0} record(s), under the 220 cap, so this conversation has no more history to load. It is NOT a pass." -f $b1.Count)
+            } elseif ($c2 -le $c1) {
+                Fail ("eight times the budget returned no more conversation: {0} blocks/{1} chars against {2} blocks/{3} chars" -f $b2.Count, $c2, $b1.Count, $c1)
+            } else {
+                Pass ("load earlier loads earlier: {0} chars in {1} blocks becomes {2} in {3}" -f $c1, $b1.Count, $c2, $b2.Count)
+                if ($c3 -ge $c2) {
+                    Note ("the pinned-220 control read {0} chars too, so the record cap was NOT what limited this fixture - the growth above is real but proves nothing about the cap." -f $c3)
+                } else {
+                    Pass ("and the record cap was the cause: pinned at 220 the same budget returns {0} chars instead of {1}" -f $c3, $c2)
+                }
+            }
+        } catch {
+            Fail ("the load-earlier check threw: {0}" -f $_.Exception.Message)
+        } finally {
+            $script:tailBytes = $leTail
+        }
 
             # ===============================================================
             # 🔴 GROWTH IS AN APPEND, AND IT MUST NOT DRIFT FROM A REBUILD.

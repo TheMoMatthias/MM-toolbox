@@ -3080,6 +3080,32 @@ $FW_Normal = [System.Windows.FontWeights]::Normal
 $script:TailBase = 98304
 $script:tailBytes = $script:TailBase
 
+# 🔴 HOW MANY RECORDS THE READER MAY KEEP, SCALED TO WHAT WAS ASKED FOR.
+#
+# 'load earlier' doubles $script:tailBytes, and both callers of
+# Get-SRTranscriptBlocks passed a HARDCODED MaxRecords of 220 beside it. So the
+# reader widened the byte window, admitted far more records, and then threw away
+# everything but the last 220 - handing back the same conversation it had just
+# shown. Reported exactly that way: load earlier gives two or three more
+# messages once and then nothing, however far back you go.
+#
+# It bites hardest on the conversations with the MOST history, because those are
+# the orchestration-heavy ones where most records are sidecar - 220 records of
+# attachment, bridge-session and cost-state carry a handful of real turns.
+#
+# 🪝 THE CAP IS NOT REMOVED, it is tied to the budget it belongs to. It exists
+# so a pathological file cannot build an unbounded document, and dropping it
+# would trade a pane that shows too little for one that hangs. Doubling the
+# bytes doubles the records, which is what the gesture already promises.
+function Get-SRTailRecords {
+    $mult = 1.0
+    if ($script:TailBase -gt 0) { $mult = [double]$script:tailBytes / [double]$script:TailBase }
+    if ($mult -lt 1.0) { $mult = 1.0 }
+    $n = [int][Math]::Round(220 * $mult)
+    if ($n -gt 20000) { $n = 20000 }
+    return $n
+}
+
 
 # HOW WIDE A PIECE OF PROSE ACTUALLY DRAWS, in the pane's own face and size.
 #
@@ -7056,7 +7082,7 @@ function Show-AgentDoc { param($Sub, $ParentRow)
     try { $trunc = ((Get-Item -LiteralPath $Sub.Path).Length -gt $script:tailBytes) } catch { }
     # 🪤 Assign, then wrap - the comma guard.
     try {
-        $got = Get-SRTranscriptBlocks -JsonlPath $Sub.Path -MaxRecords 220 -MaxTailBytes $script:tailBytes
+        $got = Get-SRTranscriptBlocks -JsonlPath $Sub.Path -MaxRecords (Get-SRTailRecords) -MaxTailBytes $script:tailBytes
         $blocks = @($got)
     } catch { }
     Set-ReadDocument -Blocks $blocks -Truncated $trunc
@@ -7129,7 +7155,7 @@ function Update-Document { param([switch]$Wait)
         $blocks = @()
         $trunc = $false
         try { $trunc = ((Get-Item -LiteralPath $j).Length -gt $script:tailBytes) } catch { }
-        try { $blocks = Get-SRTranscriptBlocks -JsonlPath $j -MaxRecords 220 -MaxTailBytes $script:tailBytes } catch { }
+        try { $blocks = Get-SRTranscriptBlocks -JsonlPath $j -MaxRecords (Get-SRTailRecords) -MaxTailBytes $script:tailBytes } catch { }
         Set-ReadDocument -Blocks $blocks -Truncated $trunc
         return
     }
@@ -7168,7 +7194,7 @@ $script:DocJob = {
         #
         # Assigning first gives the array itself, and @() on a variable holding
         # an array is the identity. The two forms are not interchangeable.
-        $got = Get-SRTranscriptBlocks -JsonlPath $SRDoc.Path -MaxRecords 220 -MaxTailBytes $SRDoc.Tail
+        $got = Get-SRTranscriptBlocks -JsonlPath $SRDoc.Path -MaxRecords $SRDoc.Recs -MaxTailBytes $SRDoc.Tail
         $out.Blocks = @($got)
         # 🔑 FOLD THE BLOCKS INTO TURNS OUT HERE TOO, not back on the dispatcher.
         # Get-ReadTurns was 16.3 ms on the UI THREAD on every conversation
@@ -7212,6 +7238,11 @@ function Start-DocParse { param([string]$Path)
         if (-not $rs) { throw 'no runspace' }
         $rs.SessionStateProxy.SetVariable('SRDoc', @{
             Path = $Path; Tail = $script:tailBytes
+            # 🪝 THE RECORD CAP GOES ACROSS TOO. This is the path the window
+            # actually takes, and leaving 220 hardcoded on the far side of the
+            # runspace is what made 'load earlier' widen the bytes and return the
+            # same conversation. See Get-SRTailRecords.
+            Recs = (Get-SRTailRecords)
             # See the note in DocJob: the fold-into-turns pass goes with it.
             TurnsFn = ${function:Get-ReadTurns}.ToString()
         })
@@ -7232,7 +7263,7 @@ function Start-DocParse { param([string]$Path)
         Write-SRLog ('  [skip] parsing off-thread failed, reading inline: ' + $_.Exception.Message)
         $script:docPs = $null; $script:docRs = $null
         $blocks = @()
-        try { $blocks = Get-SRTranscriptBlocks -JsonlPath $Path -MaxRecords 220 -MaxTailBytes $script:tailBytes } catch { }
+        try { $blocks = Get-SRTranscriptBlocks -JsonlPath $Path -MaxRecords (Get-SRTailRecords) -MaxTailBytes $script:tailBytes } catch { }
         Set-ReadDocument -Blocks $blocks -Truncated $script:docTrunc
     }
 }
@@ -10037,6 +10068,32 @@ $script:quietAt = $null
 # the line does not always name at all - and the transcript CAN see those - so
 # silence there means "ask the transcript" instead.
 $script:rowScreen = @{}
+# When the sweep last asked the panel to go and read a question. See its use.
+$script:askKickAt = $null
+
+# 🔑 THE DECISION, LIFTED OUT SO IT CAN BE ASSERTED. ShellFold was a short,
+# branch-light handler that read as obviously correct and was BROKEN - its
+# reset keyed on a condition the feature was not about. This one has four
+# conditions and decides whether to spawn a reader against a live session, so
+# it does not get to live as an inline expression nothing can drive.
+function Test-SRAskKick {
+    param([string]$Id, [string]$SelId, [bool]$HasQ, [bool]$Busy, $Last, [datetime]$Now)
+    # Only the conversation actually on screen. Reading a menu for a row the
+    # operator is not looking at files one conversation question against
+    # another - the defect Show-Ask own comment was written for.
+    if (-not $Id -or $Id -ne $SelId) { return $false }
+    # A panel already holding a question wants nothing. A waiting session is
+    # asking on EVERY sweep, and the probe spawns its own reader, so without
+    # this there is a child process behind every sweep while the menu stands.
+    if ($HasQ) { return $false }
+    if ($Busy) { return $false }
+    # 🪝 AND A FLOOR, for the question this window cannot PARSE - a numbered
+    # list that is not a menu, a screen the reader refuses. That case is asking
+    # forever and never fills the panel, so without a floor it re-reads once a
+    # sweep for as long as the conversation sits there.
+    if (-not $Last) { return $true }
+    return ((($Now) - $Last).TotalSeconds -ge 5)
+}
 # 🔑 THE WINDOW A SESSION PRINTED, KEPT AFTER IT STOPS PRINTING IT.
 #
 # A context gauge needs a token count and a window. The count is real off the
@@ -10326,6 +10383,29 @@ function Complete-VitalsSweep {
             # WORKING row may be moved into needing you, whatever the screen
             # shows for a row that is done, idle or quiet.
             if (Test-QuietVerdict -Row $live -Asking $true) { $changed = $true }
+            # 🔑 AND ASK WHAT THE QUESTION IS, IF IT IS THE ONE ON SCREEN.
+            #
+            # This sweep already knew, within its 2,5 s cadence, that a session
+            # had put a menu up - it moved the row into NEEDS YOU on exactly that
+            # evidence. What it never did was tell the PANEL, so the row lit up
+            # and the question panel went on showing nothing until something
+            # unrelated happened to set askWanted: another selection, or the
+            # context retry. Reported as a question taking fifteen to twenty
+            # seconds to appear, which is how long it takes for something else
+            # to come along.
+            #
+            # The lane picks this up within 30 ms, so the wait becomes the sweep
+            # cadence plus one screen read.
+            #
+            # 🪝 GATED ON lastAsk, OR A WAITING SESSION IS RE-READ FOREVER. A
+            # conversation sitting on a menu is asking on EVERY sweep, and the
+            # ask probe spawns its own reader - so kicking one unconditionally
+            # would put a child process behind every sweep for as long as the
+            # question stands. Only a panel that has no question wants one.
+            if (Test-SRAskKick -Id "$($row.Id)" -SelId "$($script:selId)" -HasQ ([bool]$script:lastAsk) `
+                                -Busy ([bool]$script:askPs) -Last $script:askKickAt -Now (Get-Date)) {
+                $script:askKickAt = Get-Date; $script:askWanted = $true
+            }
         } elseif (Set-AskSeen -Id "$($row.Id)" -Asking $false) {
             # Measured absence, which is the half that never used to happen:
             # the row can now leave NEEDS YOU because the menu is gone, not
@@ -11928,11 +12008,12 @@ function Start-AskProbe { param($R)
     $whyProbe = Get-AskBlocker $R
     if ($whyProbe) { $script:askFor = ''; Show-AskWhy -R $R -Why $whyProbe; return }
     try {
-        $rs = [runspacefactory]::CreateRunspace()
-        $rs.ApartmentState = 'MTA'
-        $rs.ThreadOptions = 'ReuseThread'
-        $rs.Open()
-        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        # 🔑 THE WARM ONE. Opening a runspace is 8,5 ms and the job's first act
+        # is dot-sourcing 426 KB of library at 13,3 - paid on the read the
+        # operator is waiting on, while a spare sits open for exactly this.
+        # Start-DocParse has taken the spare for months; this path never did.
+        $rs = Get-SRRunspace
+        if (-not $rs) { throw 'no runspace' }
         $rs.SessionStateProxy.SetVariable('SRAsk', @{ Pid = [int]$R.A.Pid })
         $ps = [powershell]::Create()
         $ps.Runspace = $rs
@@ -11943,8 +12024,12 @@ function Start-AskProbe { param($R)
         $script:askFor = "$($R.Id)"
         $script:askStartedAt = Get-Date
     } catch {
+        # 🔴 THE OPEN RUNSPACE GOES WITH IT. What Get-SRRunspace hands back is
+        # already open, so a throw after that point leaks a thread - the same
+        # note Start-DocParse's catch carries.
+        try { if ($rs) { $rs.Close(); $rs.Dispose() } } catch { }
         Write-SRLog ('  [skip] the ask probe would not start: ' + $_.Exception.Message)
-        $script:askPs = $null; $script:askFor = ''
+        $script:askPs = $null; $script:askRs = $null; $script:askFor = ''
     }
 }
 
