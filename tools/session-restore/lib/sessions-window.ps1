@@ -2943,6 +2943,123 @@ $script:TailBase = 98304
 $script:tailBytes = $script:TailBase
 
 
+# HOW WIDE A PIECE OF PROSE ACTUALLY DRAWS, in the pane's own face and size.
+#
+# 🪤 CACHED ON (size, text) BECAUSE THE CALLERS REPEAT THEMSELVES. A document is
+# one bullet glyph, one space and a handful of small integers, over and over -
+# so after the first few list items every lookup is a hashtable hit and no
+# FormattedText is constructed at all. Uncached it is 20-60 us a call, which is
+# already one to two orders of magnitude under a hosted element, but a rebuild
+# runs this per list item and there is no reason to pay it twice.
+#
+# 🪤 FormattedText.Width DROPS TRAILING WHITESPACE, so a bare ' ' would measure
+# zero and the padding arithmetic would divide by it. The space is measured
+# between two sentinels and the sentinels subtracted - and the caller guards the
+# zero case anyway, because a measurement that silently returns 0 must not be
+# able to produce a hang of infinity.
+$script:SR_WidthCache = @{}
+function Measure-SRProseWidth {
+    param([string]$Text, [double]$Size = 0)
+    if ($Size -le 0) { $Size = $script:PaneSize }
+    if ($null -eq $Text) { return 0.0 }
+    $key = '{0}|{1}' -f $Size, $Text
+    $hit = $script:SR_WidthCache[$key]
+    if ($null -ne $hit) { return [double]$hit }
+    $w = 0.0
+    try {
+        $tf = New-Object System.Windows.Media.Typeface(
+            $script:ProseFace, [System.Windows.FontStyles]::Normal, $FW_Normal,
+            [System.Windows.FontStretches]::Normal)
+        $mk = {
+            param([string]$s)
+            $ft = New-Object System.Windows.Media.FormattedText(
+                $s, [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Windows.FlowDirection]::LeftToRight, $tf, $Size,
+                [System.Windows.Media.Brushes]::Black, 1.0)
+            return [double]$ft.Width
+        }
+        # 🔴 THE SENTINEL IS FOR ANY TRAILING SPACE, NOT JUST AN ALL-SPACE
+        # STRING. The first version guarded only `Trim().Length -eq 0`, so
+        # measuring a PADDED marker - '• ' plus six spaces, the exact thing this
+        # exists to size - silently returned the width of the bullet alone.
+        # It reported five list markers landing on five different columns when
+        # the padding arithmetic was in fact correct: the measurement was wrong,
+        # not the thing measured.
+        if ("$Text".Length -eq 0 -or "$Text" -ne "$Text".TrimEnd()) {
+            $w = (& $mk ('|' + $Text + '|')) - (& $mk '||')
+        } else {
+            $w = & $mk $Text
+        }
+    } catch {
+        # 🪤 A FALLBACK THAT IS HONEST ABOUT BEING ONE. The em-advance estimate is
+        # what this replaced, so falling back to it restores the previous
+        # behaviour rather than producing a nonsense number.
+        $w = $Size * $script:PaneAdvanceEm * [Math]::Max(1, "$Text".Length)
+    }
+    if ($w -lt 0) { $w = 0.0 }
+    $script:SR_WidthCache[$key] = $w
+    return $w
+}
+
+# ===========================================================================
+# INLINE MARKUP, AND WHY IT RECURSES
+#
+# 🔴 THE OLD PATTERN LEAKED ASTERISKS ONTO THE SCREEN. `\*\*([^*]+)\*\*` refuses
+# ANY asterisk inside a bold span, so a bold run containing emphasis failed to
+# match and the whole thing was emitted as literal text - and single-asterisk
+# italic had no branch at all. Five on one screenful of his own prose. Reported
+# as "the text output sometimes looks very different to how it is displayed in
+# the terminal", where the same construction renders as italic.
+#
+# 🪤 AND FIXING THE PATTERN ALONE TRADED ONE LEAK FOR ANOTHER. With a lazy
+# `\*\*(.+?)\*\*` the span matches - and then the old emitter added its contents
+# as ONE plain Run, so a `code span` inside bold arrived as literal backticks.
+# Measured on a real line of his: `**Then the tick prompt opened with *"keep
+# this tick CHEAP."* A `git grep` is 3 seconds.**` came out no better than
+# before. The emitter has to re-enter itself on what it just matched, which is
+# the whole reason this is a function and not a loop body.
+#
+# 🪤 THE ITALIC BRANCH REQUIRES A NON-SPACE FIRST CHARACTER so `2 * 3` and a
+# trailing bare `*` are not eaten. Depth is bounded because a runaway nest would
+# otherwise be unbounded recursion inside a document build; three is past
+# anything real, and past it the text is emitted rather than dropped.
+$script:SR_RxInline = [regex]::new('^(.*?)(`([^`]+)`|\*\*(.+?)\*\*|\*([^*\s][^*]*)\*)(.*)$')
+
+function Add-SRInlineRuns {
+    param($Para, [string]$Text, $Brush, [double]$Size = 0,
+          [string]$Weight = 'Normal', [switch]$Italic, [int]$Depth = 0)
+    $rest = $Text
+    while ($rest) {
+        $m = $script:SR_RxInline.Match($rest)
+        if (-not $m.Success) { break }
+        $before  = $m.Groups[1].Value
+        $codeTxt = $m.Groups[3].Value
+        $boldTxt = $m.Groups[4].Value
+        $italTxt = $m.Groups[5].Value
+        $rest    = $m.Groups[6].Value
+        if ($before) { $Para.Inlines.Add((New-ReadRun -Text $before -Brush $Brush -Size $Size -Weight $Weight -Italic:$Italic)) }
+        # Inline code was $size - 1.5, i.e. 10.5 against 12 prose - the smallest
+        # thing in the document and the one most often a path you actually need
+        # to read. Same size as everything else; the hue is what says it is code.
+        if ($codeTxt) {
+            $Para.Inlines.Add((New-ReadRun -Text $codeTxt -Brush $Pal.TextMax -Size $Size -Mono))
+        } elseif ($boldTxt) {
+            if ($Depth -lt 3) {
+                Add-SRInlineRuns -Para $Para -Text $boldTxt -Brush $Pal.TextMax -Size $Size -Weight 'SemiBold' -Italic:$Italic -Depth ($Depth + 1)
+            } else {
+                $Para.Inlines.Add((New-ReadRun -Text $boldTxt -Brush $Pal.TextMax -Size $Size -Weight 'SemiBold' -Italic:$Italic))
+            }
+        } elseif ($italTxt) {
+            if ($Depth -lt 3) {
+                Add-SRInlineRuns -Para $Para -Text $italTxt -Brush $Brush -Size $Size -Weight $Weight -Italic -Depth ($Depth + 1)
+            } else {
+                $Para.Inlines.Add((New-ReadRun -Text $italTxt -Brush $Brush -Size $Size -Weight $Weight -Italic))
+            }
+        }
+    }
+    if ($rest) { $Para.Inlines.Add((New-ReadRun -Text $rest -Brush $Brush -Size $Size -Weight $Weight -Italic:$Italic)) }
+}
+
 function New-ReadRun {
     # 🔑 -Mono IS LOAD-BEARING AGAIN. It was left as a no-op when the whole pane
     # went monospaced, with a note that the machine-text distinction was "still
@@ -3100,32 +3217,48 @@ function Add-ReadProse {
             # x - so this is the same pixels for one fewer UIElement per line.
             $p.TextIndent = 0
         }
-        $body = $ln; $size = $Size; $weight = 'Normal'; $bump = 0; $markN = 0
+        $body = $ln; $size = $Size; $weight = 'Normal'; $bump = 0; $markTxt = ''; $markRest = ''
         # 🪤 A HEADING IS WEIGHT NOW, NOT SIZE. `$Size + 2` was one of the twelve
         # sizes that made this pane ragged, and it is the easiest one to justify
         # and still wrong: one size means one size. SemiBold carries it.
         if ($body -match '^\s*#{1,6}\s+(.*)$') { $body = $Matches[1]; $weight = 'SemiBold' }
-        # 🔴 $markN IS HOW MANY CHARACTERS THE MARKER OCCUPIES, and it exists so
-        # a wrapped line can hang from the WORDS. Measured across 8 transcripts:
-        # every list item put its second line at x=84, under the bullet, while
-        # prose correctly wrapped to x=66 - so the one block type that is meant
-        # to be a column was the one with a ragged left edge. Reported as "the
-        # text also sometimes looks misaligned and not unified. It is not left
+        # 🔴 THE MARKER IS KEPT SEPARATE FROM THE WORDS so its rendered width can
+        # be measured. A wrapped list line used to sit at x=84, under the bullet,
+        # while prose correctly wrapped to x=66 - the one block type meant to be
+        # a column was the one with a ragged left edge. Reported as "the text
+        # also sometimes looks misaligned and not unified. It is not left
         # bounded."
-        elseif ($body -match '^\s*[-*]\s+(.*)$') { $body = [string][char]0x2022 + '   ' + $Matches[1]; $bump = 18; $markN = 4 }
-        elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $body = $Matches[1] + '.   ' + $Matches[2]; $bump = 18; $markN = $Matches[1].Length + 4 }
+        elseif ($body -match '^\s*[-*]\s+(.*)$') { $markTxt = [string][char]0x2022; $markRest = $Matches[1]; $bump = 18 }
+        elseif ($body -match '^\s*(\d+)\.\s+(.*)$') { $markTxt = $Matches[1] + '.'; $markRest = $Matches[2]; $bump = 18 }
         # 🪤 THE GUTTER STAYS IN THE MARGIN. A bullet re-sets the whole Margin,
         # so leaving the original arithmetic here would have dropped the gutter
         # offset on exactly the lines that are indented anyway - every bullet in
         # every reply sliding one column left of the prose above it.
         if ($bump) {
             # 🪤 THE HANG IS ARITHMETIC, NOT A HOSTED BOX. A fixed-width element
-            # per bullet would guarantee the column exactly, and measures
-            # 0,85 ms EACH - the reason the gutter mark was removed from every
-            # continuation line. The marker's width is the advance of the face
-            # times the characters in it, which is a pixel or two out on a
-            # proportional face and invisible against a 22px gutter.
-            $hang = [Math]::Round($size * $script:PaneAdvanceEm * $markN, 1)
+            # per bullet would guarantee the column exactly and measures 0,85 ms
+            # EACH - the reason the gutter mark was removed from every
+            # continuation line. At 5,6% of blocks that is ~24 ms on a 500-block
+            # rebuild, which is real.
+            #
+            # 🔴 BUT A CHARACTER COUNT IS NOT A WIDTH ON A PROPORTIONAL FACE, and
+            # the first version of this fix used one. Measured: bullets hung at
+            # 107px and one-digit numbered items at 113px, so the wrapped lines
+            # were fixed and the MARKERS then disagreed with each other - a `10.`
+            # item would have opened a third column. One ragged edge traded for
+            # another.
+            #
+            # The marker is padded to a CONSTANT RENDERED WIDTH instead: measure
+            # it, add however many spaces close the gap, and hang from that fixed
+            # figure. Worst-case residual is under half a space, ~1,3px, inside
+            # the tolerance the alignment assertion allows.
+            $hang = [Math]::Round($size * 1.9, 1)
+            $mw = Measure-SRProseWidth -Text $markTxt -Size $size
+            $sw = Measure-SRProseWidth -Text ' ' -Size $size
+            $pad = 1
+            if ($sw -gt 0) { $pad = [int][Math]::Round(($hang - $mw) / $sw) }
+            if ($pad -lt 1) { $pad = 1 }
+            $body = $markTxt + (' ' * $pad) + $markRest
             $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW + $bump - $padX + $hang), $groundPad, 0, $groundPad
             $p.TextIndent = -$hang
         }
@@ -3139,18 +3272,18 @@ function Add-ReadProse {
         # Comparing against where this paragraph actually started cannot drift
         # with whatever does or does not precede the body.
         $inl0 = $p.Inlines.Count
-        $rest = $body
-        while ($rest -match '^(.*?)(`([^`]+)`|\*\*([^*]+)\*\*)(.*)$') {
-            $before = $Matches[1]; $codeTxt = $Matches[3]; $boldTxt = $Matches[4]; $rest = $Matches[5]
-            if ($before)  { $p.Inlines.Add((New-ReadRun -Text $before -Brush $Brush -Size $size -Weight $weight)) }
-            # Inline code was $size - 1.5, i.e. 10.5 against 12 prose - the
-            # smallest thing in the document and the one most often a path you
-            # actually need to read. Same size as everything else; the hue is
-            # what says it is code.
-            if ($codeTxt) { $p.Inlines.Add((New-ReadRun -Text $codeTxt -Brush $Pal.TextMax -Size $size -Mono)) }
-            elseif ($boldTxt) { $p.Inlines.Add((New-ReadRun -Text $boldTxt -Brush $Pal.TextMax -Size $size -Weight 'SemiBold')) }
+        # 🪤 THE CHEAP TEST FIRST, AND IT IS WHAT MAKES THE RECURSION AFFORDABLE.
+        # A line with no ` and no * cannot carry any inline mark, and an empty
+        # PowerShell function call costs 0,068 ms - which over the ~1.000 lines
+        # of a large document is 68 ms of nothing. Two ordinal IndexOf calls
+        # answer it for the majority of lines without entering the emitter or
+        # running a regex at all.
+        if ($body.IndexOf('*', [System.StringComparison]::Ordinal) -lt 0 -and
+            $body.IndexOf('`', [System.StringComparison]::Ordinal) -lt 0) {
+            if ($body) { $p.Inlines.Add((New-ReadRun -Text $body -Brush $Brush -Size $size -Weight $weight)) }
+        } else {
+            Add-SRInlineRuns -Para $p -Text $body -Brush $Brush -Size $size -Weight $weight
         }
-        if ($rest) { $p.Inlines.Add((New-ReadRun -Text $rest -Brush $Brush -Size $size -Weight $weight)) }
         # An empty source line is a paragraph break, and it is set SMALL: at the
         # full body size a blank line between two paragraphs is a whole line of
         # nothing and the reply looks double-spaced.
@@ -3420,12 +3553,26 @@ $script:MonoSize = $script:Type.Pane
 # two mojibake characters - the trap that made the group headers read
 # "93 A- 9 armed". One code, sixteen rows, and it stays a code.
 $SR_MarkDot = 0x25CF
+# 🔑 ⎿ IS THE ONE EXCEPTION TO THE ONE-DOT RULE, AND IT IS NOT AN EXCEPTION TO
+# WHAT THE RULE MEANT. The ruling was "do not use any different shapes or styles
+# just different colours" - and it was about telling KINDS apart, which the dot
+# and a hue do. U+23BF does not name a kind: it names a RELATIONSHIP, "this line
+# belongs to the one above it". The terminal spends its four prefix characters
+# the same way - ● for a kind, ⎿ for subordination, › for a speaker class, * for
+# a transient state - so on the point the ruling is actually about, the terminal
+# already agrees with it.
+#
+# 🪤 A RESULT IS THE MOST COMMON THING ON SCREEN, which is why this is the one
+# worth spending a glyph on. Carrying subordination in a 22px indent alone makes
+# you re-derive "belongs to that call" from position, on every result you read.
+# The line stays here: relationships may have a shape, kinds may not.
+$SR_MarkSub = 0x23BF
 $SR_Marks = @{
     said     = @{ G = $SR_MarkDot; H = 'TextMid' }  # claude speaking
     you      = @{ G = $SR_MarkDot; H = 'Out'     }  # you said
     thinking = @{ G = $SR_MarkDot; H = 'Tool'    }  # thinking
     run      = @{ G = $SR_MarkDot; H = 'Tool'    }  # a tool call
-    result   = @{ G = $SR_MarkDot; H = 'Tool'    }  # its result
+    result   = @{ G = $SR_MarkSub; H = 'Tool'    }  # its result - see $SR_MarkSub
     system   = @{ G = $SR_MarkDot; H = 'Tool'    }  # a notice
     hook     = @{ G = $SR_MarkDot; H = 'Tool'    }  # a hook fired
     file     = @{ G = $SR_MarkDot; H = 'Tool'    }  # files re-read

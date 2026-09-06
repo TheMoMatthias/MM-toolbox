@@ -2349,6 +2349,108 @@ else { Pass 'the primitive sends exactly one Esc, and only into a process it has
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- emphasis reaches the screen as emphasis, not as asterisks ---'
+# ===========================================================================
+# 🔴 FIVE LITERAL ASTERISK RUNS ON ONE SCREENFUL of his own prose. The old
+# pattern refused any asterisk inside a bold span and had no italic branch, so
+# `**bold with *emphasis* inside**` failed to match and the whole line was
+# emitted as text.
+#
+# 🪤 AND THE OBVIOUS FIX TRADED ONE LEAK FOR ANOTHER, which is why case 6 is
+# here. Tightening the regex alone made the bold span match and then emitted its
+# CONTENTS as one plain Run - so a code span inside bold arrived as literal
+# backticks. That case was measured on a real line before either half landed;
+# it is the reason the emitter recurses.
+function Get-SRRunText { param($Para)
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($r in $Para.Inlines) { if ($r -is [System.Windows.Documents.Run]) { $null = $sb.Append($r.Text) } }
+    return $sb.ToString()
+}
+function New-SRProbePara { param([string]$Text)
+    $pp = New-Object System.Windows.Documents.Paragraph
+    Add-SRInlineRuns -Para $pp -Text $Text -Brush $Pal.TextHigh -Size 13
+    return $pp
+}
+# text in, text expected out (marks consumed), and how many runs must be styled
+foreach ($ec in @(
+    @('plain prose with no marks at all',              'nothing to see here',            'nothing to see here',      0),
+    @('a bold span',                                   '**bold** after',                 'bold after',               1),
+    @('an italic span',                                'an *emphasised* word',           'an emphasised word',       1),
+    @('bold and italic in one line',                   '**bold** and *ital* here',       'bold and ital here',       2),
+    @('multiplication is not emphasis',                'the product 2 * 3 is six',       'the product 2 * 3 is six', 0),
+    @('a line ending in a bare asterisk',              'a footnote marker *',            'a footnote marker *',      0),
+    @('an unclosed emphasis',                          'this *never closes',             'this *never closes',       0)
+)) {
+    $ep = New-SRProbePara $ec[1]
+    $eGot = Get-SRRunText $ep
+    $eStyled = @(@($ep.Inlines) | Where-Object {
+        $_ -is [System.Windows.Documents.Run] -and
+        ($_.FontWeight -eq $FW_Semi -or $_.FontStyle -eq [System.Windows.FontStyles]::Italic)
+    }).Count
+    if ($eGot -ne $ec[2]) {
+        Fail ("{0}: rendered '{1}', expected '{2}'" -f $ec[0], $eGot, $ec[2])
+    } elseif ($eStyled -ne $ec[3]) {
+        Fail ("{0}: {1} styled run(s), expected {2} - the marks were consumed but nothing was emphasised" -f $ec[0], $eStyled, $ec[3])
+    } else { Pass ("{0} -> '{1}'" -f $ec[0], $eGot) }
+}
+# 🔴 THE LINE THAT DECIDED THE DESIGN. Bold containing italic containing a code
+# span, taken from his own transcript. Every mark must be consumed AND the code
+# span must survive as mono - the half a non-recursive emitter gets wrong.
+$eNest = New-SRProbePara '**Then it opened with *"keep this CHEAP."* A `git grep` is 3 seconds.**'
+$eNestTxt = Get-SRRunText $eNest
+if ($eNestTxt -match '[*`]') {
+    Fail ("bold wrapping italic and code still leaks marks: '{0}'" -f $eNestTxt)
+} else {
+    $eMono = @(@($eNest.Inlines) | Where-Object {
+        $_ -is [System.Windows.Documents.Run] -and "$($_.Text)" -eq 'git grep'
+    })
+    if ($eMono.Count -ne 1) {
+        Fail 'the code span inside bold was lost - the emitter is not recursing'
+    } elseif ("$($eMono[0].FontFamily)" -ne "$($script:PaneFace)") {
+        Fail ("the code span survived but not in the machine face: '{0}'" -f $eMono[0].FontFamily)
+    } else { Pass 'bold wrapping italic wrapping code: every mark consumed, the code span still mono' }
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- a bullet and a numbered item start their words in one column ---'
+# ===========================================================================
+# 🔴 THE FIRST VERSION OF THE HANGING INDENT USED A CHARACTER COUNT, and Manrope
+# is proportional - so it fixed the wrapped lines and left the MARKERS
+# disagreeing: bullets at 107px, one-digit numbers at 113px, and a two-digit
+# number would have opened a third column. One ragged edge traded for another.
+$wSp = Measure-SRProseWidth -Text ' ' -Size 13
+if ($wSp -le 0) {
+    Fail 'a space measures zero - FormattedText drops trailing whitespace and the sentinel is gone'
+} else {
+    Pass ("a space measures {0:N2}px, so the padding arithmetic has a divisor" -f $wSp)
+    # Every marker the pane can emit, padded the way Add-ReadProse pads it.
+    $wHang = [Math]::Round(13 * 1.9, 1)
+    $wCols = @()
+    # 🪤 UP TO TWO DIGITS, WHICH IS WHAT A REPLY ACTUALLY CONTAINS. '100.' is
+    # 24,2px on its own - wider than the whole 24,7px column - so it is clamped
+    # to a single space and hangs 2,7px proud by design. Widening the column for
+    # a hundred-item list would push every bullet in every reply right to buy
+    # nothing, so the pathological case degrades instead of setting the ruler.
+    foreach ($mk in @([string][char]0x2022, '1.', '9.', '12.', '99.')) {
+        $wM = Measure-SRProseWidth -Text $mk -Size 13
+        $wPad = [int][Math]::Round(($wHang - $wM) / $wSp)
+        if ($wPad -lt 1) { $wPad = 1 }
+        $wCols += ,@($mk, (Measure-SRProseWidth -Text ($mk + (' ' * $wPad)) -Size 13))
+    }
+    $wMin = ($wCols | ForEach-Object { $_[1] } | Measure-Object -Minimum).Minimum
+    $wMax = ($wCols | ForEach-Object { $_[1] } | Measure-Object -Maximum).Maximum
+    $wSpread = $wMax - $wMin
+    if ($wSpread -gt 1.5) {
+        Fail ("the markers land on {0} columns - {1:N1}px apart: {2}" -f $wCols.Count, $wSpread,
+              (($wCols | ForEach-Object { '{0}={1:N1}' -f $_[0], $_[1] }) -join ' '))
+    } else {
+        Pass ("every list marker pads to one column within {0:N1}px ({1:N1}px wide)" -f $wSpread, $wMax)
+    }
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- hide the shells panel and it comes back when one starts ---'
 # ===========================================================================
 # 🔴 THE BUTTON MADE A PROMISE THE CODE DID NOT KEEP. ShellFold's tooltip says
