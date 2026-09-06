@@ -2097,6 +2097,53 @@ Show-Ask $null
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the question stays on screen while the choices scroll ---'
+# ===========================================================================
+# 🔴 REPORTED: "the question text is cut off and I cannot fully read the
+# question". The card was one ScrollViewer holding eyebrow, question, every
+# option, the answer box, footer and note under a single height cap - so a
+# round with a few options scrolled the question off the top.
+#
+# 🪝 ASSERTING THE CAP GOT BIGGER WOULD BE THE WRONG TEST, and it is the
+# obvious one. The cap is deliberate: the card sits in its own grid row and
+# every pixel it takes comes off the transcript. What had to change is which
+# parts are allowed to scroll away, so that is what this asks - by walking the
+# visual ancestry, not by measuring a number that any layout change can move.
+function Test-SRUnderAskScroll { param($El)
+    $n = $El
+    for ($d = 0; $d -lt 12 -and $n; $d++) {
+        if ([object]::ReferenceEquals($n, $ui.AskScroll)) { return $true }
+        try { $n = [System.Windows.Media.VisualTreeHelper]::GetParent($n) } catch { return $false }
+    }
+    return $false
+}
+if (-not $ui.AskCard) { Fail 'the question card is gone - AskCard is not in the window' }
+else {
+    $window.Measure((New-Object System.Windows.Size 1600, 1000))
+    $window.Arrange((New-Object System.Windows.Rect 0, 0, 1600, 1000))
+    $window.UpdateLayout()
+    # The two that must never scroll away: what is being asked, and where the
+    # answer is typed. A question you cannot read and a box you cannot find are
+    # the same failure.
+    if (Test-SRUnderAskScroll $ui.AskText) { Fail 'the question text is inside the scroller - it can scroll off the top again' }
+    else { Pass 'the question text is pinned, not inside the scroller' }
+    if (Test-SRUnderAskScroll $ui.AskFree) { Fail 'the answer box is inside the scroller - it can scroll out of reach' }
+    else { Pass 'the answer box is pinned, not inside the scroller' }
+    # And the part that SHOULD scroll still does, or nothing was gained: the
+    # options would simply overflow the card instead.
+    if (Test-SRUnderAskScroll $ui.AskOptions) { Pass 'the choices are the part that scrolls' }
+    else { Fail 'the choices are not inside the scroller - a long round will overflow the card' }
+    # 🔑 THE CAP STILL COVERS THE WHOLE CARD. Set-AskCap moved from the
+    # scroller to the Grid; if it had been left on the scroller the two pinned
+    # rows would push the card past the third of the window it promises.
+    Set-AskCap
+    $capH = 0.0
+    try { $capH = [double]$ui.AskCard.MaxHeight } catch { }
+    if ($capH -ge 220 -and $capH -le 620) { Pass ('the cap is on the card itself: {0:N0}px' -f $capH) }
+    else { Fail ('the card cap is {0} - Set-AskCap is not reaching it' -f $capH) }
+}
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the question card following the screen at 400 ms ---'
 # ===========================================================================
 # 🔴 THE CARD USED TO BE FED ONLY BY THE FIFTEEN-SECOND PROBE, which is the

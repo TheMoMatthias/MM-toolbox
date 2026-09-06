@@ -2175,8 +2175,33 @@
                  Reported as: the question card takes up a lot of space, and we
                  still need to read the conversation while it is up. 380 stays
                  here as the value before the first layout. See Set-AskCap. -->
-            <ScrollViewer x:Name="AskScroll" MaxHeight="380" VerticalScrollBarVisibility="Auto">
-              <StackPanel>
+            <!-- 🔴 THE QUESTION IS PINNED; ONLY THE CHOICES SCROLL.
+                 Reported: "the question text is cut off and I cannot fully read
+                 the question". The whole card was ONE ScrollViewer - eyebrow,
+                 question, every option, the answer box, footer and note - under
+                 a single height cap. So the moment a round had a few options the
+                 question scrolled off the top, and the one thing you cannot
+                 answer a question without is the question.
+
+                 🪝 THE CAP IS NOT THE BUG AND MUST NOT BE RAISED AWAY. It
+                 exists because the card sits in its own grid row and every pixel
+                 it takes comes off the transcript - see Set-AskCap, a third of
+                 the window with a 220 floor. Raising it would trade a question
+                 you cannot read for a conversation you cannot read. The budget
+                 stays; what changes is WHO SPENDS IT. Question and answer box
+                 are Auto rows and always drawn; the choices between them take
+                 what is left and scroll inside it.
+
+                 Set-AskCap now caps this Grid rather than the inner scroller,
+                 so the third-of-the-window promise still covers the whole card
+                 and not just the part that scrolls. -->
+            <Grid x:Name="AskCard" MaxHeight="380">
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
+              <StackPanel Grid.Row="0">
                 <!-- ================== THE ROUND ==================
                      🔑 A BATCHED QUESTION IS A ROUND, AND THE TERMINAL DRAWS IT
                      AS A TAB BAR. Captured off a real one 2026-08-30:
@@ -2203,56 +2228,61 @@
                            Foreground="{StaticResource HueAsk}"/>
                 <TextBlock x:Name="AskText" Style="{StaticResource Body}" Text="" TextWrapping="Wrap"
                            FontSize="{DynamicResource SzStrong}" FontWeight="SemiBold" Foreground="{StaticResource TextMax}"/>
-                <ItemsControl x:Name="AskOptions" Margin="0,14,0,0"/>
+              </StackPanel>
+              <ScrollViewer x:Name="AskScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                  <ItemsControl x:Name="AskOptions" Margin="0,14,0,0"/>
 
+                  <!-- The Submit tab is a review of the whole round: every question
+                  with the answer it currently holds. It is the one screen that
+                  shows how everything has been answered. -->
+                  <ItemsControl x:Name="AskReview" Margin="0,4,0,0" Visibility="Collapsed"/>
+                </StackPanel>
+              </ScrollViewer>
+              <StackPanel Grid.Row="2">
                 <!-- ================== IN YOUR OWN WORDS ==================
-                     🔴 THE TERMINAL'S "Type something" ROW IS AN INLINE EDITOR,
-                     and pressing ENTER on it while it is EMPTY DECLINES THE
-                     WHOLE ROUND - measured twice, both times by accident. It was
-                     being drawn here as an ordinary numbered option, so the
-                     window was one click away from throwing a question the
-                     operator was in the middle of answering.
+                🔴 THE TERMINAL'S "Type something" ROW IS AN INLINE EDITOR,
+                and pressing ENTER on it while it is EMPTY DECLINES THE
+                WHOLE ROUND - measured twice, both times by accident. It was
+                being drawn here as an ordinary numbered option, so the
+                window was one click away from throwing a question the
+                operator was in the middle of answering.
 
-                     It gets a real text box instead: type, then Send. Nothing is
-                     committed until there is something to commit, which is the
-                     one order that cannot decline the round by mistake.
-                     ======================================================= -->
+                It gets a real text box instead: type, then Send. Nothing is
+                committed until there is something to commit, which is the
+                one order that cannot decline the round by mistake.
+                ======================================================= -->
                 <Border x:Name="AskFreeBox" AllowDrop="True" Visibility="Collapsed" Margin="0,4,0,0"
-                        Background="{StaticResource PanelHi}" CornerRadius="8"
-                        BorderBrush="{StaticResource Hairline}" BorderThickness="1"
-                        Padding="12,10,12,11">
-                  <StackPanel>
-                    <TextBlock x:Name="AskFreeLabel" Style="{StaticResource Caption}" Text="IN YOUR OWN WORDS"
-                               Margin="0,0,0,7"/>
-                    <Grid>
-                      <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                      </Grid.ColumnDefinitions>
-                      <TextBox x:Name="AskFree" AllowDrop="True" Grid.Column="0" Style="{StaticResource Composer}"
-                               Tag="Answer in your own words - Shift+Enter for a new line" Margin="0,0,8,0"
-                               AutomationProperties.Name="answer this question in your own words"/>
-                      <Button x:Name="AskFreeSend" Grid.Column="1" Content="Send"
-                              VerticalAlignment="Bottom"
-                              Style="{StaticResource BtnSlim}"
-                              ToolTip="Type your answer into this question in the terminal and commit it"/>
-                    </Grid>
-                  </StackPanel>
+                Background="{StaticResource PanelHi}" CornerRadius="8"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                Padding="12,10,12,11">
+                <StackPanel>
+                <TextBlock x:Name="AskFreeLabel" Style="{StaticResource Caption}" Text="IN YOUR OWN WORDS"
+                Margin="0,0,0,7"/>
+                <Grid>
+                <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="AskFree" AllowDrop="True" Grid.Column="0" Style="{StaticResource Composer}"
+                Tag="Answer in your own words - Shift+Enter for a new line" Margin="0,0,8,0"
+                AutomationProperties.Name="answer this question in your own words"/>
+                <Button x:Name="AskFreeSend" Grid.Column="1" Content="Send"
+                VerticalAlignment="Bottom"
+                Style="{StaticResource BtnSlim}"
+                ToolTip="Type your answer into this question in the terminal and commit it"/>
+                </Grid>
+                </StackPanel>
                 </Border>
 
-                <!-- The Submit tab is a review of the whole round: every question
-                     with the answer it currently holds. It is the one screen that
-                     shows how everything has been answered. -->
-                <ItemsControl x:Name="AskReview" Margin="0,4,0,0" Visibility="Collapsed"/>
-
                 <!-- The note that qualifies the WHOLE question. Below the
-                     buttons, because that is where it was written. -->
+                buttons, because that is where it was written. -->
                 <TextBlock x:Name="AskFooter" Style="{StaticResource Dim}" Text="" TextWrapping="Wrap"
-                           Margin="0,4,0,0" Visibility="Collapsed"/>
+                Margin="0,4,0,0" Visibility="Collapsed"/>
                 <TextBlock x:Name="AskNote" Style="{StaticResource Meta}" Text="" TextWrapping="Wrap"
-                           Margin="0,9,0,0" Visibility="Collapsed"/>
+                Margin="0,9,0,0" Visibility="Collapsed"/>
               </StackPanel>
-            </ScrollViewer>
+            </Grid>
           </Border>
 
           <!-- 18px of padding wider than the box on every side, and a drop that

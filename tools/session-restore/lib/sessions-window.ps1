@@ -170,7 +170,7 @@ foreach ($n in @(
     'CastBox','CastWho','CastList','CastText','CastCancel','CastSend','CastCompact',
     'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
     'LivePane','LiveMark','LiveHead','LiveText',
-    'RailFold','ListFold','RailStrip','RailOpen','ListOpen','ListStrip','StripList','StripCount','AskScroll',
+    'RailFold','ListFold','RailStrip','RailOpen','ListOpen','ListStrip','StripList','StripCount','AskScroll','AskCard',
     'SendDock','SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
     'QueueBox','QueueHead','QueueList',
     'ManageSurface','ManageCaption','ManageList','ManageCount',
@@ -492,7 +492,11 @@ function Set-Breakpoint { Update-Columns; Set-AskCap }
 # on a window that short the operator has bigger problems than the ratio.
 $SR_AskMaxFrac = 0.34
 function Set-AskCap {
-    if (-not $ui.AskScroll) { return }
+    # 🔑 THE CARD, NOT THE SCROLLER. AskScroll used to BE the card; it is
+    # now only the choices between a pinned question and a pinned answer box.
+    # Capping it there would cap the middle and let the two pinned rows push
+    # the card past a third of the window - the exact thing this guards.
+    if (-not $ui.AskCard) { return }
     $h = 0.0
     try { $h = [double]$window.ActualHeight } catch { }
     if ($h -le 0) { try { $h = [double]$window.Height } catch { } }
@@ -500,7 +504,7 @@ function Set-AskCap {
     $cap = [Math]::Round($h * $SR_AskMaxFrac, 0)
     if ($cap -lt 220) { $cap = 220.0 }
     if ($cap -gt 620) { $cap = 620.0 }
-    try { $ui.AskScroll.MaxHeight = $cap } catch { }
+    try { $ui.AskCard.MaxHeight = $cap } catch { }
 }
 
 # THE FLUSH LANE FOR Save-SRConfigLater (_common.ps1).
@@ -2268,13 +2272,23 @@ function Build-Sessions {
                 Age  = $(if ($r.At -gt 0) { Get-AgeLabel ($nowTicks - $r.At) } else { '' })
                 Said = $saidText
                 BarOpacity = $(if ($b.Key -eq 'quiet') { 0.25 } else { 0.85 })
-                # 🔴 TWO MARKS, AND ONLY WHEN THEY MEAN SOMETHING. This list was
-                # asked to get LESS dense, so a signal that is present on every
-                # row is a signal that has cost density and bought nothing: the
-                # context bar appears once a conversation is past half its
-                # window, and the sub-agent dot only while one is actually out.
-                # A quiet row looks exactly as it did before.
-                CtxVis = $(if ($rowFrac -gt 0.5) { $V_Show } else { $V_Hide })
+                # 🔴 THE BAR DRAWS WHENEVER THE CONTEXT IS KNOWN, AND THIS
+                # REVERSES THE DENSITY RULE THAT STOOD HERE. That rule hid the
+                # bar below half a window, on the grounds that a signal present
+                # on every row costs density and buys nothing. The operator
+                # reported the exact opposite - no visual indication of how
+                # much context is used, on the surface whose job is to show it.
+                # A gauge you can only see once it is half full does not tell
+                # you how full it is. It tells you it is half full.
+                #
+                # 🪝 KNOWN IS NOT THE SAME AS ZERO, which is why this asks
+                # $rowWin and not $rowFrac. A session whose screen has not been
+                # read yet has rowWin 0 and rowFrac 0.0 - byte for byte the
+                # same as a session that genuinely has an empty window. Drawing
+                # the 2px minimum bar for the first would be inventing a
+                # reading and showing it in the same green as a real one.
+                # No window, no bar - and the sub-agent dot is unchanged.
+                CtxVis = $(if ($rowWin -gt 0) { $V_Show } else { $V_Hide })
                 CtxWidth = [Math]::Max(2.0, 34.0 * [Math]::Min(1.0, $rowFrac))
                 # Green, amber, red - on the token count, not on the fraction.
                 # See Get-CtxBrush: 85% of a 200k window and 85% of a 1M window
