@@ -892,8 +892,28 @@ Write-Host '--- the gestures nothing was measuring ---'
 # handler nobody measured is exactly where the two worst stalls in this tool
 # were found.
 $railPickWas2 = $script:railPick
-$null = Bench 'pick a project in the rail' {
-    $script:railPick = "$(@($script:dirs)[0].path)"
+# 🔴 THIS MEASURED THE CHEAP HALF OF A TOGGLE, WITHOUT LAYING IT OUT. The body
+# set railPick to the SAME project on every iteration, so after the first one it
+# rebuilt an already-narrowed list over and over - and it used Bench rather than
+# BenchList, so the container generation and measure/arrange that the operator
+# waits for were outside the timed region entirely. It read 40 ms. The control
+# audit drove the real handler and measured 498 ms, and 1.469 SECONDS to the
+# drawn frame.
+#
+# 🔑 THE EXPENSIVE DIRECTION IS THE ONE BACK. RailList SelectionChanged TOGGLES:
+# clicking a picked project sets railPick to $null, which rebuilds every
+# conversation on the machine rather than one project's worth. A bench that only
+# ever narrows can never see that, which is why the suite reported a comfortable
+# number for a gesture the operator can watch stall.
+$rpTarget2 = "$(@($script:dirs)[0].path)"
+$script:railPick = $null
+$null = BenchList 'pick a project in the rail (narrow to one)' {
+    $script:railPick = $rpTarget2
+    Build-Rail; Build-Sessions
+} 'GESTURE'
+$script:railPick = $rpTarget2
+$null = BenchList 'clear the project filter (rebuild every conversation)' {
+    $script:railPick = $null
     Build-Rail; Build-Sessions
 } 'GESTURE'
 $script:railPick = $railPickWas2
@@ -1002,7 +1022,7 @@ $COVERAGE = @{
     'ModeWork'         = 'Set-Surface work'
     'ModeManage'       = 'Set-Surface manage'
     'SessionList'      = 'select a conversation'
-    'RailList'         = 'pick a project in the rail'
+    'RailList'         = 'pick a project in the rail (narrow to one) / clear the project filter'
     'PaneSettings'     = 'open the settings panel'
     'SetCancel'        = 'close the settings panel'
     'SetPerm'          = 'permission note'
