@@ -5952,8 +5952,24 @@ function Get-SRLiveTasks { param([string]$JsonlPath, [int]$MaxTailBytes = 251658
 # Two shapes, both first-party: an inbound one wraps the user record in
 # <cross-session-message> (or <teammate-message> from an agent team) and names
 # the sender in an attribute; an outbound one is a SendMessage tool_use.
-$script:SR_RxMsgIn   = [regex]::new('^\s*<(cross-session-message|teammate-message)\b([^>]*)>')
-$script:SR_RxMsgEnd  = [regex]::new('</(cross-session-message|teammate-message)>\s*$')
+# 🔴 IT WAS ANCHORED TO THE FIRST CHARACTER, AND THE HARNESS STOPPED PUTTING IT
+# THERE. The record now arrives as "Another Claude session sent a message:" and
+# then the envelope on the next line, so `^\s*<` missed and every teammate
+# message fell through to `you` - printed in the operator's own voice, on his
+# ground, with his marker. The second report of that shape in one day; the first
+# was <task-notification>.
+#
+# 🪤 THE PREAMBLE MAY NOT CONTAIN A `<`, and that is what keeps this honest. A
+# bounded run of tag-free prose is a harness preamble; anything else is somebody
+# writing about a teammate message rather than receiving one, and it stays his.
+$script:SR_RxMsgIn   = [regex]::new('(?s)\A(?<pre>[^<]{0,200}?)<(?<tag>cross-session-message|teammate-message)\b(?<attrs>[^>]*)>')
+# 🔴 FROM THE CLOSING TAG TO THE END, NOT THE CLOSING TAG AT THE END. This was
+# anchored with $, and the harness appends its own advisory prose AFTER the
+# envelope closes - so nothing matched, the tag and the advice stayed in the
+# body, and what should have been a JSON payload was no longer parseable. The
+# unwrap below then silently declined and the operator got JSON source on
+# screen. Scaffolding after the message is not the message.
+$script:SR_RxMsgEnd  = [regex]::new('(?s)</(cross-session-message|teammate-message)>.*\z')
 $script:SR_RxMsgFrom = [regex]::new('from-name="([^"]*)"')
 $script:SR_RxMsgMate = [regex]::new('teammate_id="([^"]*)"')
 
@@ -5997,7 +6013,7 @@ function New-SRUserBlock { param([string]$Text)
         if (Test-SRMachineUserRecord $Text) { return (New-Block 'system' '' $Text '') }
         return (New-Block 'you' '' $Text '')
     }
-    $attrs = $m.Groups[2].Value
+    $attrs = $m.Groups['attrs'].Value
     $who = ''
     $f = $script:SR_RxMsgFrom.Match($attrs)
     if ($f.Success) { $who = $f.Groups[1].Value }
@@ -6010,8 +6026,32 @@ function New-SRUserBlock { param([string]$Text)
     # that where a name goes is how the envelope ended up on screen in the first
     # place. If nobody is named, say so in words.
     if (-not $who) { $who = 'another session' }
-    $body = $script:SR_RxMsgIn.Replace($Text, '', 1)
+    # Everything after the opening tag, then the closing tag off the end.
+    $body = $Text.Substring($m.Index + $m.Length)
     $body = $script:SR_RxMsgEnd.Replace($body, '')
+    $body = $body.Trim()
+    # 🔴 AND IT IS NOT JSON SOURCE. The envelope's payload is an object -
+    # {"type":"idle_notification","from":"...","result":"..."} - and printing it
+    # raw put `\n\n---\n\n##` on screen as literal characters, three lines of
+    # routing metadata before the first word, and every quote escaped. Reported
+    # as "the output rendered when a teammate is replying is also shown very
+    # oddly", with a screenshot of exactly that.
+    #
+    # 🪤 THE FIELD, IF THERE IS ONE - NEVER A GUESS AT THE SHAPE. Only a body
+    # that actually parses is unwrapped, only a known payload field is taken,
+    # and anything else is left EXACTLY as it arrived. A message this cannot
+    # read is still readable; a message it mangles is not.
+    if ($body.Length -gt 1 -and $body[0] -eq '{') {
+        $obj = $null
+        try { $obj = $body | ConvertFrom-Json } catch { $obj = $null }
+        if ($obj) {
+            foreach ($fld in @('result', 'message', 'content', 'summary')) {
+                $v = $null
+                try { $v = $obj.$fld } catch { }
+                if ($v -is [string] -and "$v".Trim()) { $body = "$v".Trim(); break }
+            }
+        }
+    }
     return (New-Block 'msgin' $who $body.Trim() '')
 }
 
