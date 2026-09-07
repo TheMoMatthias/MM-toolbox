@@ -921,7 +921,13 @@ function Set-TickOn { param($Row)
     # 🔴 ARM THE PROJECT TOO, or the tick is a lie. Get-TickedPlan skips a whole
     # directory that is not enabled, so ticking a conversation inside a disabled
     # project would show a filled box and then launch nothing at all.
-    if ($now -and $Row.D -and -not $Row.D.missing -and -not [bool]$Row.D.enabled) { $Row.D.enabled = $true }
+    # 🔑 AND IT SAYS SO NOW, because the operator can switch a project off on
+    # purpose since Invoke-SRProjectRestore shipped. Re-arming silently was
+    # harmless while nothing could turn a project off; now it would undo a
+    # deliberate decision without a word on screen. The rule itself is unchanged
+    # - a tick that cannot launch is still worse than no tick.
+    $reArmed = ($now -and $Row.D -and -not $Row.D.missing -and -not [bool]$Row.D.enabled)
+    if ($reArmed) { $Row.D.enabled = $true }
     $script:dirty = $true
 
     # Build-Manager replaces ItemsSource, which drops the selection. Put the
@@ -930,8 +936,15 @@ function Set-TickOn { param($Row)
     Build-Manager
     if ($keep -ge 0 -and $keep -lt $ui.ManageList.Items.Count) { $ui.ManageList.SelectedIndex = $keep }
 
-    Set-Status ("'{0}' {1} at your next logon - press Save to keep that" -f `
-        (Get-Title $s $Row.D).Text, $(if ($now) { 'WILL reopen' } else { 'will NOT reopen' }))
+    # Only when it actually happened, so the rail is not rebuilt on the hot path
+    # every tick takes - this is the rare case, not the common one.
+    $note = ''
+    if ($reArmed) {
+        Build-Rail
+        $note = " - and '" + (Get-ProjectLabel "$($Row.D.path)") + "' was switched off for logon, so this switched it back on"
+    }
+    Set-Status (("'{0}' {1} at your next logon - press Save to keep that" -f `
+        (Get-Title $s $Row.D).Text, $(if ($now) { 'WILL reopen' } else { 'will NOT reopen' })) + $note)
 }
 
 function Toggle-Tick {
@@ -1904,6 +1917,12 @@ function New-RailTile { param([string]$Path, $Kids, [bool]$Picked, $Blank, [stri
     foreach ($k in $Kids) { if ([bool]$k.S.enabled) { $tickedN++ } }
     $autoOff = $false
     try { $autoOff = [bool](Test-SRProjectAutoTickOff ([PSCustomObject]@{ path = $Path })) } catch { }
+    # 🪝 OFF THE FIRST KID'S OWN DIRECTORY OBJECT, not a synthetic one. The
+    # auto-tick state above is a CONFIG lookup keyed on the path, so a stand-in
+    # with a path is all it needs; this one is a REGISTRY field that lives on the
+    # directory itself, and a stand-in would report every project as on.
+    $restoreOff = $false
+    try { if ($Kids -and $Kids.Count) { $restoreOff = [bool](Test-SRProjectRestoreOff $Kids[0].D) } } catch { }
     return [PSCustomObject]@{
         Kind   = 'project'
         BandVis = $V_Hide; RowVis = $V_Show
@@ -1927,17 +1946,34 @@ function New-RailTile { param([string]$Path, $Kids, [bool]$Picked, $Blank, [stri
         AccentOpacity = $(if ($needs) { 1.0 } elseif ($working) { 0.85 } else { 0.35 })
         NeedsVis = $(if ($needs) { $V_Show } else { $V_Hide })
         # ---- the two controls on the tile's second line --------------------
-        # 🪝 COUNTED HERE, NOT ASKED FOR ON THE CLICK. The untick control has to
-        # say how many it would act on, and it has to disappear when the answer
-        # is none - a control that does nothing is worse than one that is absent,
-        # because it reads as broken rather than as inapplicable.
-        UntickText = ('untick {0}' -f $tickedN)
-        UntickVis  = $(if ($tickedN -gt 0) { $V_Show } else { $V_Hide })
-        UntickTip  = ('Untick all {0} ticked conversation(s) in this project so none of them reopen at your next logon. They are pinned too, so the hourly roll will not arm them again.' -f $tickedN)
+        # 🔑 BOTH ARE STATE, NOT ACTIONS, AND THAT IS THE CHANGE. The left one
+        # used to be `untick N` - a one-shot that cleared the ticks and then had
+        # nothing left to say. It is now the project's own logon switch, which is
+        # a fact about the project that is worth reading at a glance, and it is
+        # always drawn: a switch that vanished when a project had nothing ticked
+        # would hide the very state that explains why nothing came back.
+        RestoreText = $(if ($restoreOff) { 'logon off' } else { 'logon on' })
+        # 🔑 THE EXCEPTION CARRIES THE COLOUR, NOT THE NORMAL STATE. Thirty-five
+        # tiles all saying something in green teaches the eye to skip the word;
+        # the one project that will not come back tomorrow is the thing worth
+        # catching. Amber rather than red - it is a decision the operator made,
+        # not a fault. The count is one hover away, in the tooltip, because the
+        # rail is scanned rather than read.
+        RestoreFg   = [System.Windows.Media.Brush]$(if ($restoreOff) { $window.FindResource('HueWarn') } else { $window.FindResource('TextLow') })
+        RestoreTip  = $(if ($restoreOff) {
+            ('This project reopens NOTHING at your next logon. Its {0} ticked conversation(s) are kept exactly as they are - click to switch it back on and they come back.' -f $tickedN)
+        } else {
+            ('{0} ticked conversation(s) here reopen at your next logon. Click to switch this project off without losing a single tick.' -f $tickedN)
+        })
         # The state is the word itself, dim when off - the same way every other
         # label in this window says off, and readable without colour.
         AutoText = $(if ($autoOff) { 'auto off' } else { 'auto on' })
-        AutoFg   = [System.Windows.Media.Brush]$(if ($autoOff) { $window.FindResource('TextLow') } else { $window.FindResource('HueOk') })
+        # 🪤 THE COLOURS ARE THE OTHER WAY ROUND FROM WHAT THIS SHIPPED WITH, so
+        # that the two controls on this line agree about which state is worth
+        # noticing. Green-when-on painted every tile green and left the switched
+        # -off project - the one that behaves differently from all the others -
+        # as the dimmest thing on the row.
+        AutoFg   = [System.Windows.Media.Brush]$(if ($autoOff) { $window.FindResource('HueWarn') } else { $window.FindResource('TextLow') })
         AutoTip  = $(if ($autoOff) {
             'New sessions started in this project are NOT auto-ticked. Click to let them be armed again.'
         } else {
@@ -8438,7 +8474,7 @@ function Get-SRRailBtn { param($Node)
     $n = $Node
     for ($d = 0; $d -lt 6 -and $n; $d++) {
         if ($n -is [System.Windows.FrameworkElement] -and $n.Name) {
-            if ($n.Name -eq 'RailUntickBtn' -or $n.Name -eq 'RailAutoBtn') { return $n.Name }
+            if ($n.Name -eq 'RailRestoreBtn' -or $n.Name -eq 'RailAutoBtn') { return $n.Name }
         }
         try { $n = [System.Windows.Media.VisualTreeHelper]::GetParent($n) } catch { break }
     }
@@ -8454,7 +8490,7 @@ $ui.RailList.Add_PreviewMouseLeftButtonDown({
         $kid = @($script:model | Where-Object { "$($_.D.path)" -eq "$($it.Path)" })
         if (-not $kid.Count) { return }
         $d = $kid[0].D
-        if ($btn -eq 'RailUntickBtn') { Invoke-SRProjectUntick -Dir $d -Label "$($it.Label)" }
+        if ($btn -eq 'RailRestoreBtn') { Invoke-SRProjectRestore -Dir $d -Label "$($it.Label)" }
         else { Invoke-SRProjectAutoTick -Dir $d -Label "$($it.Label)" }
         return
     }
@@ -8846,6 +8882,57 @@ function Get-SRPathLeaf { param([string]$P)
     return $t.Substring($ix + 1)
 }
 
+# ---------------------------------------------------------------------------
+# DOES THIS PROJECT REOPEN AT LOGON AT ALL?
+#
+# 🔑 THE FIELD ALREADY EXISTED AND WAS ALREADY OBEYED. What was missing was any
+# way to turn it OFF. `directories[].enabled` is consulted by Get-SRSelected
+# before it looks at a single conversation, and the hourly auto-tick roll skips
+# a disabled project outright rather than writing ticks into it that can never
+# fire (both in _common.ps1). Set-TickOn was the only writer in this window and
+# it only ever set it TRUE. So this is a switch over working machinery, not a
+# new mechanism - which is also why it needs no migration and no new key.
+#
+# 🪤 SWITCHING IT OFF LEAVES EVERY TICK ALONE. The way back has to be one click:
+# each tick still says what the operator wanted, it simply does not fire while
+# the project is off. Clearing them - which is what the bulk untick this
+# replaced did - made the way back a manual re-tick of every row, and there was
+# nothing on any row to say why they had all gone.
+function Test-SRProjectRestoreOff { param($Dir)
+    if (-not $Dir) { return $false }
+    # 🪤 ABSENT MUST MEAN ON. The restore reads a missing `enabled` as false, but
+    # every directory the scan writes carries the field - so absent here means a
+    # shape this window did not make, and the honest answer about a project we
+    # cannot read is ON. Reporting OFF would draw a switched-off project the
+    # operator never switched off.
+    $prop = $null
+    try { $prop = $Dir.PSObject.Properties['enabled'] } catch { }
+    if ($null -eq $prop) { return $false }
+    return (-not [bool]$prop.Value)
+}
+
+function Get-RailRestoreVerb { param($Dir)
+    if (Test-SRProjectRestoreOff $Dir) { return 'Reopen at logon: OFF' }
+    return 'Reopen at logon: ON'
+}
+
+# Modelled on Set-ProjectShelved, down to the rollback: this writes the REGISTRY,
+# so a refused save has to put the field back or the window would show a state
+# the file does not have - and that file is the one that decides the morning.
+function Set-SRProjectRestore { param($Dir, [bool]$On)
+    if (-not $Dir) { return $false }
+    $was = -not (Test-SRProjectRestoreOff $Dir)
+    if ($was -eq $On) { return $true }
+    Set-Field $Dir 'enabled' $On
+    $script:dirty = $true
+    if (-not (Save-RegistryOrAsk $(if ($On) { 'switching that project back on' } else { 'switching that project off for logon' }))) {
+        Set-Field $Dir 'enabled' $was
+        Build-Rail
+        return $false
+    }
+    return $true
+}
+
 function Test-SRProjectAutoTickOff { param($Dir)
     if (-not $Dir) { return $false }
     # 🪝 Split-Path IS A CMDLET AND THIS IS CALLED PER TILE PER REBUILD. Pure
@@ -8911,31 +8998,34 @@ function Set-SRProjectAutoTick { param($Dir, [bool]$On)
 # the rebuild are four things to keep in step, and the audit that produced this
 # window found a defect of exactly that shape - a rule copied into a second
 # place and then fixed in one of them.
-function Invoke-SRProjectUntick { param($Dir, [string]$Label)
+function Invoke-SRProjectRestore { param($Dir, [string]$Label)
     if (-not $Dir) { return }
-    $kids = @($script:model | Where-Object { "$($_.D.path)" -eq "$($Dir.path)" })
-    $on = @($kids | Where-Object { [bool]$_.S.enabled })
-    if (-not $on.Count) { Set-Status ("'{0}' has nothing ticked" -f $Label); return }
-    # It changes what comes back tomorrow morning, so it says so first - the same
-    # reasoning the shelve item carries, and the same reason: the effect happens
-    # while nobody is watching.
-    if (-not (Confirm-Action 'Untick this project' (
-        ("{0} conversation(s) in '{1}' will NOT reopen at your next logon." -f $on.Count, $Label) +
-        [Environment]::NewLine + [Environment]::NewLine +
-        'Nothing is deleted and each one stays where it is in the list - you can tick any of them again. They are also PINNED, so the hourly auto-tick roll will not quietly arm them again.') -Verb 'Untick them')) {
-        Set-Status 'nothing unticked'; return
+    $wasOff = Test-SRProjectRestoreOff $Dir
+    if (-not $wasOff) {
+        # It changes what comes back tomorrow morning, so it says so first - the
+        # same reasoning the shelve item carries, and the same reason: the effect
+        # happens while nobody is watching.
+        $kids = @($script:model | Where-Object { "$($_.D.path)" -eq "$($Dir.path)" })
+        $on = @($kids | Where-Object { [bool]$_.S.enabled })
+        if (-not (Confirm-Action 'Stop reopening this project' (
+            ("{0} ticked conversation(s) in '{1}' will stay ticked and simply not reopen at your next logon." -f $on.Count, $Label) +
+            [Environment]::NewLine + [Environment]::NewLine +
+            'Nothing is unticked and nothing is deleted - switch it back on and exactly these come back. While it is off, the hourly auto-tick roll leaves the project alone entirely.' +
+            [Environment]::NewLine + [Environment]::NewLine +
+            'Ticking any conversation in here by hand switches it back on, because a tick that cannot launch is worse than no tick.') -Verb 'Switch it off')) {
+            Set-Status 'nothing changed'; return
+        }
     }
-    foreach ($r in $on) {
-        Set-Field $r.S 'enabled' $false
-        # PINNED, or the roll re-arms them within the hour. See Set-TickOn.
-        Set-Field $r.S 'pinned' $true
-        $null = $script:mgrItems.Remove("$($r.Id)")
-    }
-    $script:dirty = $true
-    $script:mgrDirty = $true
+    if (-not (Set-SRProjectRestore -Dir $Dir -On $wasOff)) { return }
+    # The tile says the new state and the rows read the project, so both are
+    # redrawn - this is the one of the two that changes what a WHOLE PROJECT does.
     Build-Rail; Build-Sessions
     if ($script:surface -eq 'manage') { Build-Manager }
-    Set-Status ("{0} conversation(s) in '{1}' will not reopen - press Save to keep that" -f $on.Count, $Label) 'ok'
+    Set-Status $(if ($wasOff) {
+        "'{0}' will reopen its ticked conversations at your next logon again - saved" -f $Label
+    } else {
+        "'{0}' will not reopen anything at your next logon - its ticks are kept - saved" -f $Label
+    }) 'ok'
 }
 
 function Invoke-SRProjectAutoTick { param($Dir, [string]$Label)
@@ -8995,14 +9085,14 @@ function New-RailMenu {
     })
     $null = $m.Items.Add($i)
 
-    # ---- untick everything in this project --------------------------------
+    # ---- whether this project comes back at logon at all -------------------
     $u = New-Object System.Windows.Controls.MenuItem
     $u.Style = [System.Windows.Style]$window.FindResource([System.Windows.Controls.MenuItem])
-    $u.Header = 'Untick every conversation here'
+    $u.Header = 'Reopen at logon: ON'
     $u.Add_Click({
         $d = $script:railMenuDir
         $script:railMenuDir = $null
-        Invoke-SRProjectUntick -Dir $d -Label $script:railMenuLabel
+        Invoke-SRProjectRestore -Dir $d -Label $script:railMenuLabel
     })
     $null = $m.Items.Add($u)
 
@@ -9039,11 +9129,7 @@ $ui.RailList.Add_PreviewMouseRightButtonDown({
     # Both of the others read their state too, for the reason Get-RailShelveVerb
     # gives: an item that names the opposite of what it does is one the operator
     # presses believing it does the other thing.
-    $rmKids = @($script:model | Where-Object { "$($_.D.path)" -eq "$($it.Path)" -and [bool]$_.S.enabled })
-    $ui.RailList.ContextMenu.Items[1].Header = $(if ($rmKids.Count) {
-        'Untick all {0} conversation(s) here' -f $rmKids.Count
-    } else { 'Nothing ticked here' })
-    $ui.RailList.ContextMenu.Items[1].IsEnabled = [bool]$rmKids.Count
+    $ui.RailList.ContextMenu.Items[1].Header = Get-RailRestoreVerb $script:railMenuDir
     $ui.RailList.ContextMenu.Items[2].Header = Get-RailAutoTickVerb $script:railMenuDir
 })
 
@@ -10094,13 +10180,212 @@ function Hide-Config {
 
 function Test-SRCfgComment { param([string]$Name)
     # The file's own explanation of itself: _README and the '//' keys are arrays
-    # of prose, not settings. Shown, never editable - an edit box over them
-    # invites turning the documentation into a broken value.
+    # of prose, not settings. Every setting now carries its own line of help
+    # beside it, so these are counted at the foot of the panel instead of being
+    # pasted into the middle of it - and never given an edit box, which would
+    # invite turning the documentation into a broken value.
     if (-not $Name) { return $true }
-    return ($Name.StartsWith('_') -or $Name.StartsWith('/'))
+    # 🪤 ORDINAL, NOT THE DEFAULT. A culture-sensitive StartsWith answers True
+    # for pairs that share no characters at all - measured in this window with
+    # ("· x").StartsWith("⏵") - and the comparison that decides whether a key
+    # gets an edit box is not one to leave to the current culture.
+    return ($Name.StartsWith('_', [System.StringComparison]::Ordinal) -or
+            $Name.StartsWith('/', [System.StringComparison]::Ordinal))
 }
 
-function Get-SRCfgKind { param($Value)
+# ===========================================================================
+# WHAT EVERY SETTING IS, IN PLAIN LANGUAGE
+#
+# 🔴 THE PANEL USED TO DRAW THE FILE: key name, edit box, next key name. That is
+# a JSON editor with a mouse, and the operator's report of it was that it did
+# not work - which is the right word for a screen that shows you
+# `autoTickPerWorktree` and a box. A settings screen has to say what a setting
+# DECIDES, group it with the ones it belongs beside, and offer the values it can
+# actually take rather than a free-text box over a fixed set of three.
+#
+# 🪤 A KEY THIS TABLE DOES NOT KNOW IS STILL SHOWN, under its own name in the
+# last group. Quietly omitting the keys it has no copy for would be the same
+# defect as a writer that drops what it does not understand - and this file is
+# hand-edited, and read by two other tools.
+#
+# 🔑 Min/Max ARE THE READER'S OWN LIMITS, repeated here on purpose. Get-SRConfigRead
+# clamps or falls back on anything outside them and writes a line in the log
+# nobody reads at the time. Refusing the value at the point it is typed is the
+# same rule enforced where the operator can still see what they typed.
+$script:SR_CfgGroups = @(
+    'What comes back at your next logon',
+    'What the lists show',
+    'The reading pane',
+    'How it looks',
+    'Where it looks for conversations',
+    'Other settings in this file'
+)
+$script:SR_CfgOtherGroup = 'Other settings in this file'
+
+$script:SR_CfgMeta = @{
+    # ---- what comes back at your next logon -------------------------------
+    'maxSessions' = @{
+        Group = 'What comes back at your next logon'; Order = 1
+        Label = 'Most conversations to reopen at once'
+        Help  = 'A logon restore stops at this many. Anything ticked beyond it stays ticked and simply waits for the next time.'
+        Min = 1; Max = 1000
+    }
+    'launchGapMs' = @{
+        Group = 'What comes back at your next logon'; Order = 2
+        Label = 'Pause between opening one tab and the next'
+        Help  = 'Milliseconds. The gap stops Windows Terminal racing itself, and the failure it prevents is a tab that opens and dies. 250 is the tuned value; 0 means no pause at all.'
+        Min = 0; Max = 2000
+    }
+    'includeWorktrees' = @{
+        Group = 'What comes back at your next logon'; Order = 3
+        Label = 'Reopen conversations from git worktrees'
+        Help  = 'Off also silences worktree conversations already recorded, so nothing you switched off comes back the next morning.'
+    }
+    'recencyDays' = @{
+        Group = 'What comes back at your next logon'; Order = 4
+        Label = 'Days a project counts as recently worked in'
+        Help  = 'A project first seen inside this window arrives ticked. Older ones are recorded but left alone.'
+        Min = 1; Max = 3650
+    }
+    'autoTickPerDirectory' = @{
+        Group = 'What comes back at your next logon'; Order = 5
+        Label = 'Most conversations auto-ticked per project'
+        Help  = 'The hourly roll arms at most this many newly seen conversations in one project, newest first - so a repo with sixteen live conversations does not open sixteen tabs.'
+        Min = 1; Max = 1000
+    }
+    'autoTickPerWorktree' = @{
+        Group = 'What comes back at your next logon'; Order = 6
+        Label = 'Most conversations auto-ticked per worktree'
+        Help  = 'The same cap again, applied to each worktree separately, because a worktree is its own lane of work.'
+        Min = 1; Max = 1000
+    }
+    'sessionWindowDays' = @{
+        Group = 'What comes back at your next logon'; Order = 7
+        Label = 'Days a conversation counts as recently active'
+        Help  = 'A newly seen conversation is auto-ticked only if it was active inside this window - and then only up to the caps above.'
+        Min = 1; Max = 3650
+    }
+    'autoTickLaneBudgets' = @{
+        Group = 'What comes back at your next logon'; Order = 8
+        Label = 'Per-project auto-tick budgets'
+        Help  = 'Set these from the "auto on / auto off" control on a project tile rather than by hand. 0 means never auto-tick that lane; the longest matching pattern wins.'
+    }
+
+    # ---- what the lists show ----------------------------------------------
+    'listDays' = @{
+        Group = 'What the lists show'; Order = 1
+        Label = 'Days of conversations in the list'
+        Help  = 'Nothing older is hidden silently: what falls outside is counted on a row at the end, and a search still reaches past it.'
+        Min = 1; Max = 3650
+    }
+    'registryWindowDays' = @{
+        Group = 'What the lists show'; Order = 2
+        Label = 'Days a conversation stays tracked at all'
+        Help  = 'This bounds what is recorded, not just what is shown. Past it, a conversation drops out of the registry entirely.'
+        Min = 1; Max = 3650
+    }
+    'shelveSuggestDays' = @{
+        Group = 'What the lists show'; Order = 3
+        Label = 'Quiet days before a project is suggested for shelving'
+        Help  = 'A sentence on the tile and nothing more - nothing is ever shelved on its own.'
+        Min = 1; Max = 3650
+    }
+    'railBandsShut' = @{
+        Group = 'What the lists show'; Order = 4
+        Label = 'Age bands folded shut in the projects rail'
+        Help  = 'Which headings start closed. The rail folds these as you click them too; this is only where it starts.'
+        Flags = @(
+            @{ V = 'today'; L = 'today' },
+            @{ V = 'week';  L = 'this week' },
+            @{ V = 'month'; L = 'this month' },
+            @{ V = 'older'; L = 'older' }
+        )
+    }
+    'foldProjects' = @{
+        Group = 'What the lists show'; Order = 5
+        Label = 'Start with the projects column collapsed'
+        Help  = 'The window writes this back for you whenever you collapse or open that column.'
+    }
+    'foldSessions' = @{
+        Group = 'What the lists show'; Order = 6
+        Label = 'Start with the conversations column collapsed'
+        Help  = 'The window writes this back for you whenever you collapse or open that column.'
+    }
+
+    # ---- the reading pane --------------------------------------------------
+    'transcriptTools' = @{
+        Group = 'The reading pane'; Order = 1
+        Label = 'How much of the machinery the transcript shows'
+        Help  = 'Measured across six transcripts, tool traffic outnumbers prose five to one - that ratio is the wall of text.'
+        Options = @(
+            @{ V = 'folded'; L = 'folded - the names and the count, not the contents' },
+            @{ V = 'full';   L = 'full - every tool call in the transcript' },
+            @{ V = 'hidden'; L = 'hidden - prose only' }
+        )
+    }
+    'readingWidth' = @{
+        Group = 'The reading pane'; Order = 2
+        Label = 'How wide a line of text runs'
+        Help  = 'Measured keeps a line short enough to read comfortably; full uses the whole pane.'
+        Options = @(
+            @{ V = 'full';     L = 'full - use the whole pane' },
+            @{ V = 'measured'; L = 'measured - hold a comfortable line length' }
+        )
+    }
+
+    # ---- how it looks ------------------------------------------------------
+    'zoom' = @{
+        Group = 'How it looks'; Order = 1
+        Label = 'Size of everything on the surface, as a percentage'
+        Help  = 'One number for the whole window. Below 70 the smallest step stops resolving; above 200 a maximised window fits less than a phone.'
+        Min = 70; Max = 200
+    }
+    'textRendering' = @{
+        Group = 'How it looks'; Order = 2
+        Label = 'How text is rasterised'
+        Help  = 'ClearType is sharper on an ordinary monitor; grayscale is what the type was drawn for and is even at any size.'
+        Options = @(
+            @{ V = 'grayscale'; L = 'grayscale - even at any size' },
+            @{ V = 'cleartype'; L = 'cleartype - sharper on an ordinary monitor' }
+        )
+    }
+
+    # ---- where it looks ----------------------------------------------------
+    'excludePatterns' = @{
+        Group = 'Where it looks for conversations'; Order = 1
+        Label = 'Folders never scanned for conversations'
+        Help  = 'Wildcard paths. A conversation under one of these is never recorded at all, so this erases history rather than hiding it - unlike shelving a project.'
+    }
+
+    # ---- other -------------------------------------------------------------
+    'oauthTokenUrl' = @{
+        Group = 'Other settings in this file'; Order = 1
+        Label = 'Sign-in token endpoint'
+        Help  = 'Only set this if the built-in endpoint is wrong for this machine. Empty means use the built-in one.'
+    }
+    'panelScanMaxAgeSeconds' = @{
+        Group = 'Other settings in this file'; Order = 2
+        Label = 'Panel scan freshness (no longer read)'
+        Help  = 'Nothing in this tool reads this any more - it belonged to an opening scan that has since been removed. It is left in the file so an older copy still finds what it expects.'
+        Min = 0; Max = 86400
+    }
+}
+
+function Get-SRCfgMeta { param([string]$Name)
+    if (-not $Name) { return $null }
+    $m = $null
+    try { $m = $script:SR_CfgMeta["$Name"] } catch { }
+    return $m
+}
+
+function Get-SRCfgKind { param($Value, $Meta)
+    # 🔑 THE TABLE WINS OVER THE VALUE'S TYPE. transcriptTools is a string and a
+    # string is a text box - but it takes one of three words, and a text box over
+    # a fixed set is how 'grayscal' gets into a config file.
+    if ($Meta) {
+        if ($Meta.Options) { return 'choice' }
+        if ($Meta.Flags) { return 'flags' }
+    }
     if ($null -eq $Value) { return 'text' }
     if ($Value -is [bool]) { return 'bool' }
     if ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) { return 'number' }
@@ -10125,59 +10410,205 @@ function Show-Config {
     $ui.CfgWhere.Text = "$SR_ConfigPath"
     $ui.CfgNote.Text = ''
 
+    # Bucketed first, drawn second - a group heading may not be written until
+    # something is known to sit under it, or the panel grows empty headings for
+    # every group this particular config file happens not to use.
+    $buckets = @{}
+    foreach ($g in $script:SR_CfgGroups) { $buckets[$g] = New-Object System.Collections.Generic.List[object] }
+    $notes = 0
     foreach ($pr in @($live.PSObject.Properties)) {
         $name = "$($pr.Name)"
-        $val  = $pr.Value
-
-        $lab = New-Object System.Windows.Controls.TextBlock
-        $lab.Text = $name
-        $lab.Style = [System.Windows.Style]$window.FindResource('Meta')
-        $lab.Margin = New-Object System.Windows.Thickness 0, 10, 0, 3
-        $null = $ui.CfgList.Children.Add($lab)
-
-        if (Test-SRCfgComment $name) {
-            $help = New-Object System.Windows.Controls.TextBlock
-            $help.Text = (@($val) -join ' ')
-            $help.Style = [System.Windows.Style]$window.FindResource('Dim')
-            $help.TextWrapping = 'Wrap'
-            $help.Margin = New-Object System.Windows.Thickness 0, 0, 0, 2
-            $null = $ui.CfgList.Children.Add($help)
-            continue
+        if (Test-SRCfgComment $name) { $notes++; continue }
+        $meta = Get-SRCfgMeta $name
+        $g = $script:SR_CfgOtherGroup
+        $ord = 999
+        if ($meta) {
+            $g = "$($meta.Group)"
+            try { $ord = [int]$meta.Order } catch { $ord = 999 }
+            if (-not $buckets.ContainsKey($g)) { $g = $script:SR_CfgOtherGroup }
         }
+        $null = $buckets[$g].Add([PSCustomObject]@{
+            Name = $name; Value = $pr.Value; Meta = $meta; Order = $ord
+        })
+    }
 
-        $kind = Get-SRCfgKind $val
-        if ($kind -eq 'bool') {
-            $cb = New-Object System.Windows.Controls.CheckBox
-            $cb.IsChecked = [bool]$val
-            $cb.Content = $(if ([bool]$val) { 'on' } else { 'off' })
-            $cb.Add_Checked({ param($s, $e) $s.Content = 'on' })
-            $cb.Add_Unchecked({ param($s, $e) $s.Content = 'off' })
-            $null = $ui.CfgList.Children.Add($cb)
-            $null = $script:cfgRows.Add([PSCustomObject]@{ Name = $name; Kind = $kind; Ctl = $cb; Was = [bool]$val })
-            continue
+    $firstGroup = $true
+    foreach ($g in $script:SR_CfgGroups) {
+        $rows = $buckets[$g]
+        if (-not $rows.Count) { continue }
+        $head = New-Object System.Windows.Controls.TextBlock
+        $head.Text = "$g".ToUpper()
+        $head.Style = [System.Windows.Style]$window.FindResource('Caption')
+        $head.TextWrapping = 'Wrap'
+        $head.Margin = New-Object System.Windows.Thickness 0, $(if ($firstGroup) { 2 } else { 26 }), 0, 2
+        $firstGroup = $false
+        $null = $ui.CfgList.Children.Add($head)
+        # 🪝 A PIPELINE IS FINE HERE and nowhere near Build-Rail: this runs once,
+        # on a click, over about twenty rows. Sorting by name inside the order
+        # keeps two keys that share an Order in a stable place rather than in
+        # whatever sequence the file happened to list them.
+        foreach ($r in ($rows | Sort-Object Order, Name)) {
+            Add-SRCfgRow -Name $r.Name -Value $r.Value -Meta $r.Meta
         }
+    }
 
-        $tb = New-Object System.Windows.Controls.TextBox
-        $tb.Style = [System.Windows.Style]$window.FindResource('Search')
-        if ($kind -eq 'json') {
-            $tb.Text = ($val | ConvertTo-Json -Depth 8 -Compress)
-            $tb.TextWrapping = 'Wrap'
-            $tb.AcceptsReturn = $true
-            $tb.MaxHeight = 90
-        } else {
-            $tb.Text = "$val"
-        }
-        $null = $ui.CfgList.Children.Add($tb)
-        $null = $script:cfgRows.Add([PSCustomObject]@{ Name = $name; Kind = $kind; Ctl = $tb; Was = "$($tb.Text)" })
+    # 🔑 SAID OUT LOUD RATHER THAN LEFT OUT. The file's own notes are not
+    # settings and have no place among the controls, but a panel that silently
+    # showed fewer keys than the file holds would be the thing the operator
+    # cannot check. So it says how many, and where they still are.
+    if ($notes -gt 0) {
+        $nt = New-Object System.Windows.Controls.TextBlock
+        $nt.Text = ('{0} documentation key(s) in this file are not shown here - they are notes rather than settings, and every setting above carries its own.' -f $notes)
+        $nt.Style = [System.Windows.Style]$window.FindResource('Dim')
+        $nt.TextWrapping = 'Wrap'
+        $nt.Margin = New-Object System.Windows.Thickness 0, 26, 0, 2
+        $null = $ui.CfgList.Children.Add($nt)
     }
 
     $ui.CfgBox.Visibility = $V_Show
+}
+
+# ONE ROW: what it is called, what it decides, and the control that changes it.
+#
+# 🔴 EVERY CONTROL HERE CARRIES THE WINDOW'S OWN STYLE, and the previous version
+# carried none. A bare WPF CheckBox on this panel is the default light-chrome
+# control with its label in the system colour - on a dark card that is a tick box
+# nobody can read, next to a word that is nearly invisible. The theme has had a
+# `Check` style the whole time; not applying it is most of why this screen was
+# reported as not working.
+function Add-SRCfgRow { param([string]$Name, $Value, $Meta)
+    $lab = New-Object System.Windows.Controls.TextBlock
+    $lab.Text = $(if ($Meta) { "$($Meta.Label)" } else { $Name })
+    $lab.Style = [System.Windows.Style]$window.FindResource('Body')
+    $lab.TextWrapping = 'Wrap'
+    # The raw key, for anyone reading the file beside this panel. On the tooltip
+    # rather than the row: it is the answer to a question you only ask sometimes.
+    $lab.ToolTip = $Name
+    $lab.Margin = New-Object System.Windows.Thickness 0, 14, 0, 2
+    $null = $ui.CfgList.Children.Add($lab)
+
+    if ($Meta -and "$($Meta.Help)") {
+        $help = New-Object System.Windows.Controls.TextBlock
+        $help.Text = "$($Meta.Help)"
+        $help.Style = [System.Windows.Style]$window.FindResource('Dim')
+        $help.TextWrapping = 'Wrap'
+        $help.Margin = New-Object System.Windows.Thickness 0, 0, 0, 7
+        $null = $ui.CfgList.Children.Add($help)
+    }
+
+    $kind = Get-SRCfgKind $Value $Meta
+
+    if ($kind -eq 'bool') {
+        $cb = New-Object System.Windows.Controls.CheckBox
+        $cb.Style = [System.Windows.Style]$window.FindResource('Check')
+        $cb.IsChecked = [bool]$Value
+        $cb.Content = $(if ([bool]$Value) { 'on' } else { 'off' })
+        $cb.Add_Checked({ param($s, $e) $s.Content = 'on' })
+        $cb.Add_Unchecked({ param($s, $e) $s.Content = 'off' })
+        $null = $ui.CfgList.Children.Add($cb)
+        $null = $script:cfgRows.Add([PSCustomObject]@{ Name = $Name; Kind = $kind; Ctl = $cb; Was = [bool]$Value; Meta = $Meta })
+        return
+    }
+
+    if ($kind -eq 'choice') {
+        $combo = New-Object System.Windows.Controls.ComboBox
+        $combo.Style = [System.Windows.Style]$window.FindResource('Drop')
+        $combo.HorizontalAlignment = 'Left'
+        $combo.MinWidth = 340
+        $now = "$Value"
+        $seen = $false
+        foreach ($o in @($Meta.Options)) {
+            $ci = New-Object System.Windows.Controls.ComboBoxItem
+            $ci.Style = [System.Windows.Style]$window.FindResource('DropItem')
+            $ci.Content = "$($o.L)"
+            $ci.Tag = "$($o.V)"
+            $null = $combo.Items.Add($ci)
+            if ("$($o.V)" -eq $now) { $seen = $true }
+        }
+        # 🪤 A VALUE THE LIST DOES NOT HOLD STILL GETS AN ENTRY. Without this the
+        # dropdown opens with nothing selected, and the one config where that
+        # happens - a typo, or a key from a newer version - is the one config
+        # where the operator most needs to see what is actually in the file. It
+        # is named as unrecognised so choosing something else is the obvious move.
+        if (-not $seen) {
+            $ci = New-Object System.Windows.Controls.ComboBoxItem
+            $ci.Style = [System.Windows.Style]$window.FindResource('DropItem')
+            $ci.Content = ("{0} - not a value this tool knows" -f $(if ($now) { $now } else { '(empty)' }))
+            $ci.Tag = $now
+            $null = $combo.Items.Add($ci)
+        }
+        Set-DropValue $combo $now
+        $null = $ui.CfgList.Children.Add($combo)
+        $null = $script:cfgRows.Add([PSCustomObject]@{ Name = $Name; Kind = $kind; Ctl = $combo; Was = $now; Meta = $Meta })
+        return
+    }
+
+    if ($kind -eq 'flags') {
+        $wrap = New-Object System.Windows.Controls.WrapPanel
+        $wrap.Orientation = 'Horizontal'
+        $have = @{}
+        foreach ($p in ("$Value" -split ',')) {
+            $t = "$p".Trim()
+            if ($t) { $have[$t] = $true }
+        }
+        foreach ($o in @($Meta.Flags)) {
+            $cb = New-Object System.Windows.Controls.CheckBox
+            $cb.Style = [System.Windows.Style]$window.FindResource('Check')
+            $cb.Content = "$($o.L)"
+            $cb.Tag = "$($o.V)"
+            $cb.IsChecked = [bool]$have["$($o.V)"]
+            $cb.Margin = New-Object System.Windows.Thickness 0, 0, 16, 0
+            $null = $wrap.Children.Add($cb)
+        }
+        $null = $ui.CfgList.Children.Add($wrap)
+        # 🪤 `Was` IS READ BACK OFF THE BOXES, NOT COPIED FROM THE FILE. The file
+        # may list these in any order; the boxes always join them in one. Storing
+        # the file's spelling would report a change on a panel nobody touched, and
+        # write it.
+        $null = $script:cfgRows.Add([PSCustomObject]@{
+            Name = $Name; Kind = $kind; Ctl = $wrap; Was = (Get-SRCfgFlagText $wrap); Meta = $Meta
+        })
+        return
+    }
+
+    $tb = New-Object System.Windows.Controls.TextBox
+    $tb.Style = [System.Windows.Style]$window.FindResource('Search')
+    if ($kind -eq 'json') {
+        $tb.Text = ($Value | ConvertTo-Json -Depth 8 -Compress)
+        $tb.TextWrapping = 'Wrap'
+        $tb.AcceptsReturn = $true
+        $tb.MaxHeight = 90
+    } else {
+        $tb.Text = "$Value"
+        if ($kind -eq 'number') { $tb.HorizontalAlignment = 'Left'; $tb.MinWidth = 120 }
+    }
+    $null = $ui.CfgList.Children.Add($tb)
+    $null = $script:cfgRows.Add([PSCustomObject]@{ Name = $Name; Kind = $kind; Ctl = $tb; Was = "$($tb.Text)"; Meta = $Meta })
+}
+
+# The one place the checked boxes become the string the file holds, so reading a
+# row and comparing it to what was there cannot disagree about the spelling.
+function Get-SRCfgFlagText { param($Wrap)
+    $sel = New-Object System.Collections.Generic.List[string]
+    if (-not $Wrap) { return '' }
+    foreach ($c in $Wrap.Children) {
+        if ([bool]$c.IsChecked) { $null = $sel.Add("$($c.Tag)") }
+    }
+    return ($sel -join ',')
 }
 
 # Reads the panel and returns what would be written, WITHOUT writing it. Split
 # out because it is the whole of the risk and none of the side effect: the suite
 # drives this and asserts the shape, which is not something a test may learn by
 # writing the operator's live file to see what happens.
+# What to CALL a row when something is wrong with it. The operator was shown a
+# plain-language label; naming the raw key back at them would be a message about
+# a control they cannot see.
+function Get-SRCfgRowLabel { param($Row)
+    if ($Row -and $Row.Meta -and "$($Row.Meta.Label)") { return "$($Row.Meta.Label)" }
+    return "$($Row.Name)"
+}
+
 function Get-SRCfgChanges {
     $out = @{}
     $bad = New-Object System.Collections.Generic.List[string]
@@ -10192,18 +10623,46 @@ function Get-SRCfgChanges {
             if ($now -ne [bool]$r.Was) { $out[$r.Name] = $now }
             continue
         }
+        # A dropdown and a row of boxes are read before anything asks for .Text,
+        # which neither of them has in the sense the rest of this loop means.
+        if ($r.Kind -eq 'choice') {
+            $sel = ''
+            try { $sel = "$($r.Ctl.SelectedItem.Tag)" } catch { }
+            # 🪤 NOTHING SELECTED MEANS ABSTAIN, NOT EMPTY. The only way to get
+            # here is a panel built against a value this tool does not recognise,
+            # which is exactly the config where writing an empty string over the
+            # setting would turn a typo into a deletion.
+            if (-not $sel) { continue }
+            if ($sel -ne "$($r.Was)") { $out[$r.Name] = $sel }
+            continue
+        }
+        if ($r.Kind -eq 'flags') {
+            $sel = Get-SRCfgFlagText $r.Ctl
+            if ($sel -ne "$($r.Was)") { $out[$r.Name] = $sel }
+            continue
+        }
         $txt = "$($r.Ctl.Text)"
         if ($txt -eq "$($r.Was)") { continue }
         if ($r.Kind -eq 'number') {
             $n = 0
-            if (-not [int]::TryParse($txt, [ref]$n)) { $null = $bad.Add($r.Name + ' is not a whole number'); continue }
+            if (-not [int]::TryParse($txt, [ref]$n)) { $null = $bad.Add((Get-SRCfgRowLabel $r) + ' is not a whole number'); continue }
+            # 🔑 THE READER'S OWN LIMITS, ENFORCED WHERE THEY CAN STILL BE SEEN.
+            # Get-SRConfigRead clamps or falls back on anything outside these and
+            # says so only in the log - so a 0 typed here would be saved, read
+            # back as the default, and look like the panel had ignored it.
+            if ($r.Meta -and $null -ne $r.Meta.Min -and $n -lt [int]$r.Meta.Min) {
+                $null = $bad.Add(('{0} has to be {1} or more' -f (Get-SRCfgRowLabel $r), [int]$r.Meta.Min)); continue
+            }
+            if ($r.Meta -and $null -ne $r.Meta.Max -and $n -gt [int]$r.Meta.Max) {
+                $null = $bad.Add(('{0} cannot be more than {1}' -f (Get-SRCfgRowLabel $r), [int]$r.Meta.Max)); continue
+            }
             $out[$r.Name] = $n
             continue
         }
         if ($r.Kind -eq 'json') {
             $parsed = $null
             try { $parsed = $txt | ConvertFrom-Json } catch {
-                $null = $bad.Add($r.Name + ' is not valid JSON'); continue
+                $null = $bad.Add((Get-SRCfgRowLabel $r) + ' is not valid JSON'); continue
             }
             $out[$r.Name] = $parsed
             continue
@@ -12061,6 +12520,16 @@ $window.Add_PreviewKeyDown({
     $fe = [System.Windows.Input.Keyboard]::FocusedElement
     $typing = (Test-SRTypingTarget $fe) -or
               $ui.Search.IsKeyboardFocusWithin -or $ui.SendBox.IsKeyboardFocusWithin
+    # 🔑 AHEAD OF THE TYPING GUARD, because the settings panel is mostly text
+    # boxes. Behind it, an Escape pressed in one of them would fall through to
+    # the search-box rule, empty a box somewhere behind the panel, and leave the
+    # panel open - which is the opposite of what Escape means on a dialog.
+    if ($e.Key -eq 'Escape' -and $ui.CfgBox.Visibility -eq $V_Show) {
+        Hide-Config
+        Set-Status 'nothing changed'
+        $e.Handled = $true
+        return
+    }
     if ($typing) {
         # The one shortcut a text field does want: Escape empties a search box
         # if it has anything in it, and otherwise leaves the box.

@@ -2191,7 +2191,36 @@ try {
         # explanation into a broken value.
         $cfgCmt = @($script:cfgRows | Where-Object { Test-SRCfgComment $_.Name })
         if ($cfgCmt.Count) { Fail ('{0} comment key(s) were given an editor' -f $cfgCmt.Count) }
-        else { Pass 'the comment keys are shown but not editable' }
+        else { Pass 'the comment keys are never given an editor' }
+
+        # 🔴 AND THE PANEL SAYS IT LEFT THEM OUT. The assertion above passes
+        # just as happily when the panel drops those keys without a word, which
+        # is the failure that matters here: a settings screen showing fewer keys
+        # than the file holds is the one thing the operator cannot check.
+        $cfgLiveCmt = 0
+        try {
+            foreach ($p in @((Get-SRConfigRead).PSObject.Properties)) {
+                if (Test-SRCfgComment "$($p.Name)") { $cfgLiveCmt++ }
+            }
+        } catch { }
+        if (-not $cfgLiveCmt) { Note 'COULD NOT BE CHECKED THIS RUN: this config carries no documentation key. It is NOT a pass.' }
+        else {
+            $cfgFoot = $false
+            foreach ($chd in $ui.CfgList.Children) {
+                if ("$($chd.Text)" -like '*documentation key(s)*') { $cfgFoot = $true }
+            }
+            if (-not $cfgFoot) { Fail ('the panel leaves out {0} documentation key(s) without saying so' -f $cfgLiveCmt) }
+            else { Pass ('the {0} documentation key(s) are named at the foot rather than silently omitted' -f $cfgLiveCmt) }
+        }
+
+        # ---- every setting is named in plain language --------------------
+        # 🔴 THE DEFECT THIS SECTION EXISTS FOR. The panel used to draw the raw
+        # key and an edit box - `autoTickPerWorktree`, then a box - which the
+        # operator reported as not working, and which is the right word for it.
+        $cfgNoLab = @($script:cfgRows | Where-Object { -not $_.Meta })
+        if ($cfgNoLab.Count) {
+            Note ('{0} setting(s) have no plain-language entry and draw under their raw key: {1}' -f $cfgNoLab.Count, (($cfgNoLab | ForEach-Object { $_.Name }) -join ', '))
+        } else { Pass 'every setting in this config has a plain-language name and a line of help' }
 
         # ---- a number stays a number -----------------------------------
         # 🔴 A TextBox HANDS BACK A STRING FOR EVERYTHING. Writing them raw turns
@@ -2201,18 +2230,40 @@ try {
         if (-not $cfgNum.Count) { Note 'COULD NOT BE CHECKED THIS RUN: the config has no numeric key. It is NOT a pass.' }
         else {
             $one = $cfgNum[0]
-            $one.Ctl.Text = '41'
+            # 🪤 NOT A LITERAL 41 ANY MORE. Every numeric setting now carries the
+            # reader's own Min/Max and the panel refuses anything outside it - so
+            # a fixed value passes or fails on which key happens to sort first,
+            # which is a test measuring the sort order. Pick one this row takes.
+            $lo = 1; $hi = 100000
+            if ($one.Meta -and $null -ne $one.Meta.Min) { $lo = [int]$one.Meta.Min }
+            if ($one.Meta -and $null -ne $one.Meta.Max) { $hi = [int]$one.Meta.Max }
+            $good = [Math]::Min($hi, [Math]::Max($lo, 41))
+            if ("$good" -eq "$($one.Was)") { $good = [Math]::Min($hi, [Math]::Max($lo, 42)) }
+            $one.Ctl.Text = "$good"
             $ch = Get-SRCfgChanges
             if ($ch.Bad.Count) { Fail ('a valid number was refused: {0}' -f ($ch.Bad -join '; ')) }
             elseif (-not $ch.Values.ContainsKey($one.Name)) { Fail 'a changed number produced no change' }
             elseif ($ch.Values[$one.Name] -isnot [int]) { Fail ('{0} came back as {1}, not an int' -f $one.Name, $ch.Values[$one.Name].GetType().Name) }
-            else { Pass ('a changed number is written as an int, not a string ({0}=41)' -f $one.Name) }
+            else { Pass ('a changed number is written as an int, not a string ({0}={1})' -f $one.Name, $good) }
 
             # ---- and a bad one stops the whole write ---------------------
             $one.Ctl.Text = 'not a number'
             $bad = Get-SRCfgChanges
             if (-not $bad.Bad.Count) { Fail 'a non-numeric value was accepted into a numeric setting' }
             else { Pass 'a non-numeric value is refused with a reason' }
+
+            # ---- and so does one outside the range the READER enforces ----
+            # 🔑 Get-SRConfigRead clamps or falls back on anything outside these
+            # and says so only in a log nobody reads at the time. A zoom of 41
+            # typed here would be saved, read back as 70, and look as though the
+            # panel had ignored what was typed.
+            if ($one.Meta -and $null -ne $one.Meta.Min) {
+                $one.Ctl.Text = "$([int]$one.Meta.Min - 1)"
+                $lowBad = Get-SRCfgChanges
+                if (-not $lowBad.Bad.Count) { Fail ('a value below the floor for {0} was accepted' -f $one.Name) }
+                else { Pass 'a number below the floor the reader enforces is refused where it can still be seen' }
+            } else { Note 'COULD NOT BE CHECKED THIS RUN: the first numeric row carries no floor. It is NOT a pass.' }
+            $one.Ctl.Text = 'not a number'
             $script:cfgWrote = $null
             Invoke-ConfigApply
             if ($null -ne $script:cfgWrote) { Fail 'a bad value still wrote to the config - a half-applied settings file is worse than a refused one' }
@@ -2239,10 +2290,75 @@ try {
             $j.Ctl.Text = "$($j.Was)"
         }
 
+        # ---- a fixed set of words is a dropdown, and it writes the VALUE --
+        # 🔴 A TEXT BOX OVER THREE ALLOWED WORDS IS HOW 'grayscal' GETS INTO A
+        # CONFIG FILE. The reader falls back and logs it; the operator sees a
+        # setting that will not stick and no reason why.
+        $cfgSel = @($script:cfgRows | Where-Object { $_.Kind -eq 'choice' })
+        if (-not $cfgSel.Count) { Fail 'no setting is offered as a dropdown, though three of them take one of a fixed set of words' }
+        else {
+            Pass ('{0} setting(s) with a fixed set of values are offered as dropdowns' -f $cfgSel.Count)
+            $sel = $cfgSel[0]
+            $other = $null
+            foreach ($it in @($sel.Ctl.Items)) { if ("$($it.Tag)" -ne "$($sel.Was)") { $other = $it; break } }
+            if (-not $other) { Note 'COULD NOT BE CHECKED THIS RUN: the first dropdown offers only one value. It is NOT a pass.' }
+            else {
+                $sel.Ctl.SelectedItem = $other
+                $sc = Get-SRCfgChanges
+                if (-not $sc.Values.ContainsKey($sel.Name)) { Fail 'choosing another value in a dropdown produced no change' }
+                else {
+                    # 🪤 NOT COMPARED TO $other.Tag, AND THAT IS THE WHOLE POINT.
+                    # The Tag is what the panel itself put there, so a row built
+                    # with the LABEL in its Tag passes a comparison against its
+                    # own Tag - which is exactly the defect this exists to catch,
+                    # and it passed a mutation that introduced it. The label reads
+                    # 'folded - the names and the count'; the file takes 'folded',
+                    # and the roll parses the file. So it is compared to the set
+                    # of values the table says this setting can hold.
+                    $selWrote = "$($sc.Values[$sel.Name])"
+                    $selAllowed = @()
+                    foreach ($selOpt in @($sel.Meta.Options)) { $selAllowed += "$($selOpt.V)" }
+                    if ($selAllowed -notcontains $selWrote) {
+                        Fail ('the dropdown wrote "{0}", which is not one of the values {1} can take ({2})' -f $selWrote, $sel.Name, ($selAllowed -join ', '))
+                    } elseif ($selWrote -ne "$($other.Tag)") {
+                        Fail ('the dropdown wrote "{0}" rather than the value behind the entry that was chosen' -f $selWrote)
+                    } else { Pass ('a dropdown writes the value and not the label it shows ({0}={1})' -f $sel.Name, $selWrote) }
+                }
+                Set-DropValue $sel.Ctl "$($sel.Was)"
+            }
+        }
+
+        # ---- the rail bands are tick boxes, and the set round-trips ------
+        $cfgFlag = @($script:cfgRows | Where-Object { $_.Kind -eq 'flags' })
+        if (-not $cfgFlag.Count) { Note 'COULD NOT BE CHECKED THIS RUN: this config has no railBandsShut key. It is NOT a pass.' }
+        else {
+            $fl = $cfgFlag[0]
+            $fbox = $fl.Ctl.Children[0]
+            $fWas = [bool]$fbox.IsChecked
+            $fbox.IsChecked = (-not $fWas)
+            $fc = Get-SRCfgChanges
+            if (-not $fc.Values.ContainsKey($fl.Name)) { Fail 'ticking a band produced no change' }
+            else {
+                $ftxt = "$($fc.Values[$fl.Name])"
+                $fHas = $false
+                foreach ($piece in ($ftxt -split ',')) { if ("$piece".Trim() -eq "$($fbox.Tag)") { $fHas = $true } }
+                if ($fHas -ne (-not $fWas)) { Fail ('the bands came back as "{0}", which does not match the boxes' -f $ftxt) }
+                else { Pass ('the age bands are written as the comma list the file holds ("{0}")' -f $ftxt) }
+            }
+            # 🪤 AND PUTTING IT BACK REPORTS NOTHING. The file may list these in
+            # any order and the boxes always join them in one, so a panel that
+            # compared the file's spelling would report a change on a row nobody
+            # touched - and write it.
+            $fbox.IsChecked = $fWas
+            $fz = Get-SRCfgChanges
+            if ($fz.Values.ContainsKey($fl.Name)) { Fail 'putting a band back still reports a change - the panel is comparing spellings, not sets' }
+            else { Pass 'putting a band back reports no change' }
+        }
+
         # ---- only the changed key reaches the writer -------------------
         if ($cfgNum.Count) {
             $one = $cfgNum[0]
-            $one.Ctl.Text = '41'
+            $one.Ctl.Text = "$good"
             $script:cfgWrote = $null
             Invoke-ConfigApply
             if ($null -eq $script:cfgWrote) { Fail 'a valid change wrote nothing' }
@@ -2260,10 +2376,11 @@ try {
 
 # ===========================================================================
 Write-Host ''
-Write-Host '--- a project can be unticked, and told not to arm new sessions ---'
+Write-Host '--- a project can be told not to arm new sessions ---'
 # ===========================================================================
-# Asked for as: fully untick entire projects so they are exempt, and toggle per
-# project whether sessions launched inside it are auto-ticked at all.
+# Asked for as: toggle per project whether sessions launched inside it are
+# auto-ticked at all - so AlgoTrader can stop arming new lanes on its own while
+# every other project carries on.
 #
 # TRAP: THE WRITE IS STUBBED AND THE OBJECT IT WOULD WRITE IS ASSERTED. This
 # path calls Save-SRConfigValue against the operator's LIVE
@@ -2332,13 +2449,119 @@ try {
 
     $atMenu = $ui.RailList.ContextMenu
     if (-not $atMenu -or $atMenu.Items.Count -lt 3) {
-        Fail ('the rail menu has {0} item(s), so untick and auto-tick are not both on it' -f $(if ($atMenu) { $atMenu.Items.Count } else { 0 }))
+        Fail ('the rail menu has {0} item(s), so shelve, reopen-at-logon and auto-tick are not all on it' -f $(if ($atMenu) { $atMenu.Items.Count } else { 0 }))
     } else { Pass ('the rail menu carries all {0} items' -f $atMenu.Items.Count) }
 } catch {
     Fail ("the project auto-tick check threw: {0}" -f $_.Exception.Message)
 } finally {
     ${function:Save-SRConfigValue} = $atOrigSave
     $script:cfg = $atCfgWas
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- a project can be told not to reopen at logon, without losing a tick ---'
+# ===========================================================================
+# Asked for as: right-click a project and switch the logon relaunch on or off,
+# so only certain projects come back.
+#
+# 🔑 THE FIELD WAS ALREADY THERE AND ALREADY OBEYED. Get-SRSelected skips a
+# directory whose `enabled` is false before it looks at a single conversation,
+# and the hourly roll skips it too. What was missing was any way to turn it off:
+# Set-TickOn was the only writer in the window and it only ever set it TRUE.
+#
+# TRAP: THE REGISTRY WRITE IS STUBBED. This path calls Save-RegistryOrAsk
+# against the LIVE sessions-registry.json, which is the file that decides what
+# reopens - a registry-overwrite bug in this repo's history cost 210
+# conversations. What is worth asserting is the FIELD and the rollback.
+$prOrigSave = ${function:Save-RegistryOrAsk}
+$script:prSaved = 0
+function Save-RegistryOrAsk { param([string]$Why) $script:prSaved++; return $true }
+try {
+    $prDir = [PSCustomObject]@{ path = 'C:/work/AlgoTrader'; enabled = $true; sessions = @() }
+    if (Test-SRProjectRestoreOff $prDir) { Fail 'an enabled project reads as switched off' }
+    else { Pass 'an enabled project reads as reopening at logon' }
+    if ((Get-RailRestoreVerb $prDir) -notlike '*ON') { Fail 'the menu item does not say ON when it is on' }
+    else { Pass 'the menu item reads ON when the project reopens' }
+
+    # 🔴 NO `enabled` FIELD AT ALL MUST READ AS ON. The restore treats a missing
+    # field as false, so the tempting implementation is `-not $Dir.enabled` -
+    # which draws every directory written before this field existed as switched
+    # off, on a control the operator never touched.
+    $prBare = [PSCustomObject]@{ path = 'C:/work/Bare' }
+    if (Test-SRProjectRestoreOff $prBare) { Fail 'a project with no enabled field reads as switched off, though nobody switched it off' }
+    else { Pass 'a project with no enabled field reads as ON' }
+
+    # ---- switching it off ------------------------------------------------
+    $prTicked = [PSCustomObject]@{
+        path = 'C:/work/Ticked'; enabled = $true
+        sessions = @([PSCustomObject]@{ sessionId = 'a'; enabled = $true; pinned = $false })
+    }
+    $script:prSaved = 0
+    $prOk = Set-SRProjectRestore -Dir $prTicked -On $false
+    if (-not $prOk) { Fail 'switching a project off returned false' }
+    elseif (-not $script:prSaved) { Fail 'switching a project off never reached the registry writer' }
+    elseif ([bool]$prTicked.enabled) { Fail 'switching it off left enabled = true' }
+    else { Pass 'switching a project off writes enabled = false through the registry writer' }
+
+    # 🔴 AND IT LEAVES EVERY TICK ALONE. That is the whole difference from the
+    # bulk untick this replaced: the way back has to be one click, and a tick
+    # still says what the operator wanted whether or not it can fire today.
+    if (-not [bool]$prTicked.sessions[0].enabled) { Fail 'switching the project off unticked a conversation' }
+    elseif ([bool]$prTicked.sessions[0].pinned) { Fail 'switching the project off pinned a conversation' }
+    else { Pass 'switching a project off leaves every tick and pin exactly as it was' }
+
+    if (-not (Test-SRProjectRestoreOff $prTicked)) { Fail 'after switching off it does not read as off' }
+    else { Pass 'after switching off it reads as off' }
+    if ((Get-RailRestoreVerb $prTicked) -notlike '*OFF') { Fail 'the menu item does not say OFF when it is off' }
+    else { Pass 'the menu item reads OFF when the project is off' }
+
+    # ---- and switching it back on ----------------------------------------
+    $script:prSaved = 0
+    $null = Set-SRProjectRestore -Dir $prTicked -On $true
+    if (-not [bool]$prTicked.enabled) { Fail 'switching it back on did not set enabled = true' }
+    else { Pass 'switching it back on restores exactly the ticks that were kept' }
+
+    # ---- a refused save must not leave the window lying ------------------
+    function Save-RegistryOrAsk { param([string]$Why) return $false }
+    $prRefuse = [PSCustomObject]@{ path = 'C:/work/Other'; enabled = $true; sessions = @() }
+    $null = Set-SRProjectRestore -Dir $prRefuse -On $false
+    if (-not [bool]$prRefuse.enabled) {
+        Fail 'a refused save left the project switched off in the window while the file still says it is on'
+    } else { Pass 'a refused save puts the field back' }
+
+    # ---- and the tile says which it is -----------------------------------
+    # 🪤 OFF THE FIRST KID'S OWN DIRECTORY OBJECT. The auto-tick state beside it
+    # is a CONFIG lookup keyed on a path, so a stand-in with a path is enough;
+    # this one is a REGISTRY field on the directory, and a stand-in would draw
+    # every project as on.
+    $prKids = New-Object System.Collections.Generic.List[object]
+    $null = $prKids.Add([PSCustomObject]@{
+        Id = 'x'
+        D = [PSCustomObject]@{ path = 'C:/work/Off'; enabled = $false }
+        S = [PSCustomObject]@{ sessionId = 'x'; enabled = $true }
+    })
+    $prTile = New-RailTile -Path 'C:/work/Off' -Kids $prKids -Picked $false -Blank $null
+    if ("$($prTile.RestoreText)" -ne 'logon off') { Fail ("a switched-off project's tile reads '{0}'" -f $prTile.RestoreText) }
+    else { Pass 'a switched-off project says so on its tile' }
+    if ("$($prTile.RestoreTip)" -notlike '*kept*') { Fail 'the tile does not say the ticks are kept' }
+    else { Pass 'the tile says the ticks are kept while it is off' }
+
+    # 🪤 AND THE OTHER STATE, or an inverted condition draws every project as
+    # off and the assertion above passes on all 35 of them.
+    $prOnKids = New-Object System.Collections.Generic.List[object]
+    $null = $prOnKids.Add([PSCustomObject]@{
+        Id = 'y'
+        D = [PSCustomObject]@{ path = 'C:/work/On'; enabled = $true }
+        S = [PSCustomObject]@{ sessionId = 'y'; enabled = $true }
+    })
+    $prTileOn = New-RailTile -Path 'C:/work/On' -Kids $prOnKids -Picked $false -Blank $null
+    if ("$($prTileOn.RestoreText)" -ne 'logon on') { Fail ("a project that does reopen reads '{0}' on its tile" -f $prTileOn.RestoreText) }
+    else { Pass 'a project that does reopen says so too, so the two states cannot be swapped' }
+} catch {
+    Fail ("the project reopen-at-logon check threw: {0}" -f $_.Exception.Message)
+} finally {
+    ${function:Save-RegistryOrAsk} = $prOrigSave
 }
 
 # ===========================================================================
