@@ -8704,6 +8704,81 @@ function Get-RailShelveVerb { param($Dir)
     return 'Shelve this project'
 }
 
+# ===========================================================================
+# TWO THINGS A PROJECT CAN BE TOLD, BOTH FROM THE RAIL'S OWN MENU.
+#
+# Asked for as: fully untick entire projects so they are exempt, and toggle per
+# project whether sessions launched inside it are auto-ticked at all. Those are
+# NOT the same switch and must not be one item:
+#
+#   Untick everything here  - acts on the conversations that exist NOW. It is
+#                             the answer to 'this project should not come back
+#                             tomorrow'.
+#   Auto-tick new sessions  - acts on conversations that do not exist yet. It is
+#                             the answer to 'stop arming things I did not ask
+#                             for'.
+#
+# Doing only the first leaves the roll re-arming the project within the hour;
+# doing only the second leaves today's ticks standing. The operator asked for
+# both in one sentence, and they are separate items because pressing one and
+# getting the other is the failure this window keeps having to fix.
+#
+# KEY: THE UNTICK PINS, AND THAT IS WHAT MAKES IT SURVIVE THE ROLL. Set-TickOn
+# already pins on every touch, with the note 'or the hourly auto-tick roll takes
+# it away again'. The same applies with the tick going the other way: an
+# unpinned false is a suggestion the roll is free to overrule.
+function Test-SRProjectAutoTickOff { param($Dir)
+    if (-not $Dir) { return $false }
+    $key = (Split-Path "$($Dir.path)" -Leaf) + '/*'
+    $prop = $null
+    try { $prop = $script:cfg.PSObject.Properties['autoTickLaneBudgets'] } catch { }
+    if ($null -eq $prop -or $null -eq $prop.Value) { return $false }
+    $one = $prop.Value.PSObject.Properties[$key]
+    if ($null -eq $one) { return $false }
+    $n = -1
+    try { $n = [int]$one.Value } catch { return $false }
+    return ($n -eq 0)
+}
+
+function Get-RailAutoTickVerb { param($Dir)
+    if (Test-SRProjectAutoTickOff $Dir) { return 'Auto-tick new sessions here: OFF' }
+    return 'Auto-tick new sessions here: ON'
+}
+
+# TRAP: READ, CHANGE ONE KEY, WRITE BACK. autoTickLaneBudgets is a whole object
+# and other lanes live in it - AlgoTrader/main and AlgoTrader/ORCH-REDESIGN are
+# set to 3 beside AlgoTrader/* at 0. Writing a fresh object with only this
+# project's key would silently delete every other lane's budget, and the damage
+# would not show until the next logon rolled them.
+#
+# KEY: TURNING IT BACK ON REMOVES THE KEY rather than writing a number. There is
+# a generic per-directory cap underneath (see Get-SRLaneBudget: null means the
+# generic cap applies), so writing any specific value here would pin this
+# project to whatever that value happened to be on the day it was switched.
+function Set-SRProjectAutoTick { param($Dir, [bool]$On)
+    if (-not $Dir) { return $false }
+    $key = (Split-Path "$($Dir.path)" -Leaf) + '/*'
+    $obj = New-Object PSObject
+    try {
+        $prop = $script:cfg.PSObject.Properties['autoTickLaneBudgets']
+        if ($prop -and $prop.Value) {
+            foreach ($kv in @($prop.Value.PSObject.Properties)) {
+                if ($kv.Name -eq $key) { continue }
+                Add-Member -InputObject $obj -NotePropertyName $kv.Name -NotePropertyValue $kv.Value -Force
+            }
+        }
+    } catch { }
+    if (-not $On) { Add-Member -InputObject $obj -NotePropertyName $key -NotePropertyValue 0 -Force }
+    try {
+        Save-SRConfigValue -Name 'autoTickLaneBudgets' -Value $obj
+    } catch {
+        Set-Status ('could not write that setting - ' + $_.Exception.Message) 'bad'
+        return $false
+    }
+    # The in-memory config the rest of the window reads, kept in step with disk.
+    try { Add-Member -InputObject $script:cfg -NotePropertyName 'autoTickLaneBudgets' -NotePropertyValue $obj -Force } catch { }
+    return $true
+}
 function New-RailMenu {
     $m = New-Object System.Windows.Controls.ContextMenu
     $m.Style = [System.Windows.Style]$window.FindResource([System.Windows.Controls.ContextMenu])
@@ -8745,6 +8820,62 @@ function New-RailMenu {
         }
     })
     $null = $m.Items.Add($i)
+
+    # ---- untick everything in this project --------------------------------
+    $u = New-Object System.Windows.Controls.MenuItem
+    $u.Style = [System.Windows.Style]$window.FindResource([System.Windows.Controls.MenuItem])
+    $u.Header = 'Untick every conversation here'
+    $u.Add_Click({
+        $d = $script:railMenuDir
+        $script:railMenuDir = $null
+        if (-not $d) { return }
+        $lbl = $script:railMenuLabel
+        $kids = @($script:model | Where-Object { "$($_.D.path)" -eq "$($d.path)" })
+        $on = @($kids | Where-Object { [bool]$_.S.enabled })
+        if (-not $on.Count) { Set-Status ("'{0}' has nothing ticked" -f $lbl); return }
+        # It changes what comes back tomorrow morning, so it says so first - the
+        # same reasoning the shelve item carries, and the same reason: the effect
+        # happens while nobody is watching.
+        if (-not (Confirm-Action 'Untick this project' (
+            "{0} conversation(s) in '{1}' will NOT reopen at your next logon." + [Environment]::NewLine + [Environment]::NewLine +
+            "Nothing is deleted, and each one stays exactly where it is in the list - you can tick any of them again. They are also PINNED, so the hourly auto-tick roll will not quietly arm them again." -f $on.Count, $lbl) -Verb 'Untick them')) {
+            Set-Status 'nothing unticked'; return
+        }
+        foreach ($r in $on) {
+            Set-Field $r.S 'enabled' $false
+            # PINNED, or the roll re-arms them within the hour. See Set-TickOn.
+            Set-Field $r.S 'pinned' $true
+            $null = $script:mgrItems.Remove("$($r.Id)")
+        }
+        $script:dirty = $true
+        $script:mgrDirty = $true
+        Build-Rail; Build-Sessions
+        if ($script:surface -eq 'manage') { Build-Manager }
+        Set-Status ("{0} conversation(s) in '{1}' will not reopen - press Save to keep that" -f $on.Count, $lbl) 'ok'
+    })
+    $null = $m.Items.Add($u)
+
+    # ---- and whether new ones get armed at all ----------------------------
+    $a = New-Object System.Windows.Controls.MenuItem
+    $a.Style = [System.Windows.Style]$window.FindResource([System.Windows.Controls.MenuItem])
+    $a.Header = 'Auto-tick new sessions here: ON'
+    $a.Add_Click({
+        $d = $script:railMenuDir
+        $script:railMenuDir = $null
+        if (-not $d) { return }
+        $lbl = $script:railMenuLabel
+        $wasOff = Test-SRProjectAutoTickOff $d
+        if (-not (Set-SRProjectAutoTick -Dir $d -On $wasOff)) { return }
+        # This one writes the CONFIG, not the registry, so there is no Save to
+        # press and saying so matters - the shelve and untick items above both
+        # end by asking for one.
+        Set-Status $(if ($wasOff) {
+            "new sessions in '{0}' will be auto-ticked again" -f $lbl
+        } else {
+            "new sessions in '{0}' will no longer be auto-ticked - saved" -f $lbl
+        }) 'ok'
+    })
+    $null = $m.Items.Add($a)
     return $m
 }
 
@@ -8765,6 +8896,15 @@ $ui.RailList.Add_PreviewMouseRightButtonDown({
     $script:railMenuDir = $kid[0].D
     $script:railMenuLabel = "$($it.Label)"
     $ui.RailList.ContextMenu.Items[0].Header = Get-RailShelveVerb $script:railMenuDir
+    # Both of the others read their state too, for the reason Get-RailShelveVerb
+    # gives: an item that names the opposite of what it does is one the operator
+    # presses believing it does the other thing.
+    $rmKids = @($script:model | Where-Object { "$($_.D.path)" -eq "$($it.Path)" -and [bool]$_.S.enabled })
+    $ui.RailList.ContextMenu.Items[1].Header = $(if ($rmKids.Count) {
+        'Untick all {0} conversation(s) here' -f $rmKids.Count
+    } else { 'Nothing ticked here' })
+    $ui.RailList.ContextMenu.Items[1].IsEnabled = [bool]$rmKids.Count
+    $ui.RailList.ContextMenu.Items[2].Header = Get-RailAutoTickVerb $script:railMenuDir
 })
 
 $ui.SaveBtn.Add_Click({

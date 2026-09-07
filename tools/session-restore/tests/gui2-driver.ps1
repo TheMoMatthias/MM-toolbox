@@ -2097,6 +2097,89 @@ Show-Ask $null
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- a project can be unticked, and told not to arm new sessions ---'
+# ===========================================================================
+# Asked for as: fully untick entire projects so they are exempt, and toggle per
+# project whether sessions launched inside it are auto-ticked at all.
+#
+# TRAP: THE WRITE IS STUBBED AND THE OBJECT IT WOULD WRITE IS ASSERTED. This
+# path calls Save-SRConfigValue against the operator's LIVE
+# session-restore.config.json. Driving it for real would rewrite his settings to
+# prove that it can, and what is actually worth proving is the SHAPE handed to
+# the writer - specifically that other lanes survive it.
+$atOrigSave = ${function:Save-SRConfigValue}
+$script:atWrote = $null
+function Save-SRConfigValue { param([Parameter(Mandatory)][string]$Name, $Value)
+    $script:atWrote = [PSCustomObject]@{ Name = $Name; Value = $Value }
+}
+$atCfgWas = $script:cfg
+try {
+    $atDir = [PSCustomObject]@{ path = 'C:/work/AlgoTrader' }
+    $budgets = New-Object PSObject
+    Add-Member -InputObject $budgets -NotePropertyName 'AlgoTrader/main' -NotePropertyValue 3 -Force
+    Add-Member -InputObject $budgets -NotePropertyName 'Other/*' -NotePropertyValue 7 -Force
+    $script:cfg = New-Object PSObject
+    Add-Member -InputObject $script:cfg -NotePropertyName 'autoTickLaneBudgets' -NotePropertyValue $budgets -Force
+
+    if (Test-SRProjectAutoTickOff $atDir) { Fail 'a project with no key of its own reads as auto-tick OFF' }
+    else { Pass 'a project with no key of its own is auto-ticked' }
+    if ((Get-RailAutoTickVerb $atDir) -notlike '*ON') { Fail 'the menu item does not say ON when it is on' }
+    else { Pass 'the menu item reads ON when it is on' }
+
+    $null = Set-SRProjectAutoTick -Dir $atDir -On $false
+    if (-not $script:atWrote) { Fail 'turning auto-tick off wrote nothing' }
+    elseif ($script:atWrote.Name -ne 'autoTickLaneBudgets') { Fail ("it wrote '{0}', not autoTickLaneBudgets" -f $script:atWrote.Name) }
+    else {
+        # TRAP: NOT $w. PowerShell variable names are case-INSENSITIVE and a
+        # helper near the top of this file measures with 'New-Object
+        # System.Windows.Size $W, $H' - so a script-scope $w here is the SAME
+        # variable, and the whole suite died on 'cannot convert ... for Size'
+        # two thousand lines away from anything this section touches.
+        $atW = $script:atWrote.Value
+        $mine = $atW.PSObject.Properties['AlgoTrader/*']
+        if (-not $mine -or [int]$mine.Value -ne 0) { Fail 'turning it off did not write AlgoTrader/* = 0' }
+        else { Pass 'turning it off writes AlgoTrader/* = 0' }
+        # KEY: THE OTHER LANES SURVIVE. Writing a fresh object holding only this
+        # project would delete every other lane's budget, and nothing would show
+        # it until the next logon rolled them.
+        $keptA = $atW.PSObject.Properties['AlgoTrader/main']
+        $keptB = $atW.PSObject.Properties['Other/*']
+        if (-not $keptA -or [int]$keptA.Value -ne 3 -or -not $keptB -or [int]$keptB.Value -ne 7) {
+            Fail 'it dropped another lane budget - AlgoTrader/main and Other/* must survive'
+        } else { Pass 'the other lanes survive the write (AlgoTrader/main=3, Other/*=7)' }
+    }
+    if (-not (Test-SRProjectAutoTickOff $atDir)) { Fail 'after turning it off it does not read as off' }
+    else { Pass 'after turning it off it reads as off' }
+    if ((Get-RailAutoTickVerb $atDir) -notlike '*OFF') { Fail 'the menu item does not say OFF when it is off' }
+    else { Pass 'the menu item reads OFF when it is off' }
+
+    # KEY: BACK ON REMOVES THE KEY rather than writing a number, so the generic
+    # per-directory cap applies again instead of this project being pinned to
+    # whatever value happened to be current on the day it was switched.
+    $script:atWrote = $null
+    $null = Set-SRProjectAutoTick -Dir $atDir -On $true
+    if (-not $script:atWrote) { Fail 'turning auto-tick back on wrote nothing' }
+    else {
+        $atW2 = $script:atWrote.Value
+        if ($atW2.PSObject.Properties['AlgoTrader/*']) { Fail 'turning it back on left the key behind instead of removing it' }
+        else { Pass 'turning it back on removes the key, so the generic cap applies again' }
+        if (-not $atW2.PSObject.Properties['AlgoTrader/main']) { Fail 'turning it back on dropped another lane budget' }
+        else { Pass 'the other lanes survive that write too' }
+    }
+
+    $atMenu = $ui.RailList.ContextMenu
+    if (-not $atMenu -or $atMenu.Items.Count -lt 3) {
+        Fail ('the rail menu has {0} item(s), so untick and auto-tick are not both on it' -f $(if ($atMenu) { $atMenu.Items.Count } else { 0 }))
+    } else { Pass ('the rail menu carries all {0} items' -f $atMenu.Items.Count) }
+} catch {
+    Fail ("the project auto-tick check threw: {0}" -f $_.Exception.Message)
+} finally {
+    ${function:Save-SRConfigValue} = $atOrigSave
+    $script:cfg = $atCfgWas
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- a question reaches the panel without waiting for something else ---'
 # ===========================================================================
 # 🔴 REPORTED: a question takes fifteen to twenty seconds to appear, and
