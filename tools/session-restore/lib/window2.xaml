@@ -1474,7 +1474,14 @@
                relaunching everything by hand. One button does both. -->
           <Button x:Name="SignIn" Content="Sign in" Style="{StaticResource Btn}" Margin="0,0,8,0"
                   ToolTip="Open a terminal to sign in, then relaunch the ticked conversations onto the new login"/>
-          <Button x:Name="Rescan" Content="Rescan" Style="{StaticResource Btn}"/>
+          <Button x:Name="Rescan" Content="Rescan" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
+          <!-- 🔴 THE FILE THAT DECIDES WHAT COMES BACK AT LOGON, EDITABLE HERE
+               INSTEAD OF IN NOTEPAD. Every setting this window has was reachable
+               only by hand-editing session-restore.config.json, which is the one
+               file where a typo is not noticed until the next morning when the
+               wrong things reopen - or nothing does. -->
+          <Button x:Name="CfgBtn" Content="Settings" Style="{StaticResource Btn}"
+                  ToolTip="Edit session-restore's own configuration"/>
         </StackPanel>
 
         <!-- The window buttons. Close goes red on hover the way every Windows
@@ -1962,6 +1969,55 @@
                placed there would stretch the HEADER to 470px rather than float
                over the transcript. Row 1 is the star row: nothing put in it can
                change the layout of anything else. -->
+          <!-- ================== THE CONFIGURATION ITSELF ==================
+               Every key in session-restore.config.json, typed and editable.
+
+               🔴 IT WRITES ONLY WHAT YOU CHANGED. Rewriting the whole file from
+               the panel would mean every key this window does not understand -
+               a setting added by a later version, a hand-written comment - is
+               silently dropped by the act of opening a panel and pressing
+               Apply. Changed keys only, through Save-SRConfigValue, which is
+               the same writer every other setting in this window goes through.
+
+               🪤 THE COMMENT KEYS ARE SHOWN AND NOT EDITABLE. _README and the
+               '//' keys are the file's own explanation of itself, they are
+               arrays of prose rather than settings, and an edit box over them
+               invites turning the documentation into a broken value. They draw
+               as the help text they are.
+               ============================================================= -->
+          <Border x:Name="CfgBox" Grid.Row="1" Visibility="Collapsed" Panel.ZIndex="21"
+                  VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,10,0,0"
+                  Width="600" MaxHeight="660" Background="{StaticResource PanelHi}" CornerRadius="10"
+                  BorderBrush="{StaticResource Hairline}" BorderThickness="1" Padding="18,16,18,14">
+            <Border.Effect>
+              <DropShadowEffect BlurRadius="26" ShadowDepth="5" Opacity="0.55" Color="#000000"/>
+            </Border.Effect>
+            <Grid>
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
+              <StackPanel Grid.Row="0">
+                <TextBlock Text="SETTINGS" Style="{StaticResource Caption}"/>
+                <TextBlock x:Name="CfgWhere" Style="{StaticResource Meta}" TextWrapping="Wrap"
+                           Margin="0,4,0,12"/>
+              </StackPanel>
+              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="CfgList"/>
+              </ScrollViewer>
+              <Grid Grid.Row="2" Margin="0,12,0,0">
+                <TextBlock x:Name="CfgNote" Style="{StaticResource Meta}" TextWrapping="Wrap"
+                           VerticalAlignment="Center" HorizontalAlignment="Left" MaxWidth="330"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                  <Button x:Name="CfgCancel" Content="Cancel" Style="{StaticResource Btn}"
+                          Margin="0,0,8,0"/>
+                  <Button x:Name="CfgApply" Content="Apply" Style="{StaticResource BtnPrimary}"/>
+                </StackPanel>
+              </Grid>
+            </Grid>
+          </Border>
+
           <Border x:Name="SettingsBox" Grid.Row="1" Visibility="Collapsed" Panel.ZIndex="20"
                   VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,10,18,0"
                   Width="430" Background="{StaticResource PanelHi}" CornerRadius="10"

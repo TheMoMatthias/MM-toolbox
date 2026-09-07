@@ -166,6 +166,7 @@ foreach ($n in @(
     'OutputPane','PaneName','PaneState','PaneStateDot','PaneStop','PaneGoTo','PaneRelaunch','PaneSettings',
     'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
+    'CfgBtn','CfgBox','CfgList','CfgWhere','CfgNote','CfgCancel','CfgApply',
     'SetToolsFold','SetAllow','SetDeny',
     'CastBox','CastWho','CastList','CastText','CastCancel','CastSend','CastCompact',
     'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
@@ -10023,6 +10024,183 @@ function Show-Settings {
 
 function Hide-Settings { $ui.SettingsBox.Visibility = $V_Hide; $script:setFor = $null }
 
+# ===========================================================================
+# THE CONFIGURATION, EDITABLE WITHOUT NOTEPAD.
+#
+# Every setting this window has was reachable only by hand-editing
+# session-restore.config.json - the one file where a typo is not noticed until
+# the next morning, when the wrong conversations reopen or none of them do.
+#
+# 🔴 IT WRITES ONLY WHAT CHANGED. Rewriting the file from the panel would drop
+# every key this build does not know about - a setting from a later version, a
+# comment somebody added - by the mere act of opening the panel and pressing
+# Apply. The changed set goes through Set-SRConfigOnDisk in ONE write, which
+# merges into the file on disk rather than replacing it.
+#
+# 🪤 AND THE VALUES ARE TYPED BACK. A TextBox hands back a string for
+# everything, so writing them raw would turn 14 into "14" and true into "True".
+# The file is read by other tools and by the roll; a number that became a string
+# is a setting that silently stops applying. Each row remembers what KIND it
+# started as and converts back to it, refusing rather than guessing.
+$script:cfgRows = $null
+
+function Hide-Config {
+    $ui.CfgBox.Visibility = $V_Hide
+    $script:cfgRows = $null
+}
+
+function Test-SRCfgComment { param([string]$Name)
+    # The file's own explanation of itself: _README and the '//' keys are arrays
+    # of prose, not settings. Shown, never editable - an edit box over them
+    # invites turning the documentation into a broken value.
+    if (-not $Name) { return $true }
+    return ($Name.StartsWith('_') -or $Name.StartsWith('/'))
+}
+
+function Get-SRCfgKind { param($Value)
+    if ($null -eq $Value) { return 'text' }
+    if ($Value -is [bool]) { return 'bool' }
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) { return 'number' }
+    if ($Value -is [string]) { return 'text' }
+    # Arrays and objects are edited as the JSON they are. Anything richer would
+    # be a second editor per shape, and the file has two such keys.
+    return 'json'
+}
+
+function Show-Config {
+    # 🔴 READ FROM DISK, NOT FROM $script:cfg. The in-memory copy has been
+    # through this window's own defaulting - Get-SRConfig fills in what is
+    # missing - so editing it would present invented values as if the operator
+    # had set them, and Apply would then write them in for real.
+    $live = $null
+    try { $live = Get-SRConfigRead } catch {
+        Set-Status ('could not read the config: ' + $_.Exception.Message) 'bad'
+        return
+    }
+    $ui.CfgList.Children.Clear()
+    $script:cfgRows = New-Object System.Collections.Generic.List[object]
+    $ui.CfgWhere.Text = "$SR_ConfigPath"
+    $ui.CfgNote.Text = ''
+
+    foreach ($pr in @($live.PSObject.Properties)) {
+        $name = "$($pr.Name)"
+        $val  = $pr.Value
+
+        $lab = New-Object System.Windows.Controls.TextBlock
+        $lab.Text = $name
+        $lab.Style = [System.Windows.Style]$window.FindResource('Meta')
+        $lab.Margin = New-Object System.Windows.Thickness 0, 10, 0, 3
+        $null = $ui.CfgList.Children.Add($lab)
+
+        if (Test-SRCfgComment $name) {
+            $help = New-Object System.Windows.Controls.TextBlock
+            $help.Text = (@($val) -join ' ')
+            $help.Style = [System.Windows.Style]$window.FindResource('Dim')
+            $help.TextWrapping = 'Wrap'
+            $help.Margin = New-Object System.Windows.Thickness 0, 0, 0, 2
+            $null = $ui.CfgList.Children.Add($help)
+            continue
+        }
+
+        $kind = Get-SRCfgKind $val
+        if ($kind -eq 'bool') {
+            $cb = New-Object System.Windows.Controls.CheckBox
+            $cb.IsChecked = [bool]$val
+            $cb.Content = $(if ([bool]$val) { 'on' } else { 'off' })
+            $cb.Add_Checked({ param($s, $e) $s.Content = 'on' })
+            $cb.Add_Unchecked({ param($s, $e) $s.Content = 'off' })
+            $null = $ui.CfgList.Children.Add($cb)
+            $null = $script:cfgRows.Add([PSCustomObject]@{ Name = $name; Kind = $kind; Ctl = $cb; Was = [bool]$val })
+            continue
+        }
+
+        $tb = New-Object System.Windows.Controls.TextBox
+        $tb.Style = [System.Windows.Style]$window.FindResource('Search')
+        if ($kind -eq 'json') {
+            $tb.Text = ($val | ConvertTo-Json -Depth 8 -Compress)
+            $tb.TextWrapping = 'Wrap'
+            $tb.AcceptsReturn = $true
+            $tb.MaxHeight = 90
+        } else {
+            $tb.Text = "$val"
+        }
+        $null = $ui.CfgList.Children.Add($tb)
+        $null = $script:cfgRows.Add([PSCustomObject]@{ Name = $name; Kind = $kind; Ctl = $tb; Was = "$($tb.Text)" })
+    }
+
+    $ui.CfgBox.Visibility = $V_Show
+}
+
+# Reads the panel and returns what would be written, WITHOUT writing it. Split
+# out because it is the whole of the risk and none of the side effect: the suite
+# drives this and asserts the shape, which is not something a test may learn by
+# writing the operator's live file to see what happens.
+function Get-SRCfgChanges {
+    $out = @{}
+    $bad = New-Object System.Collections.Generic.List[string]
+    # 🪤 NOT @($script:cfgRows). It is a List[object], and @() over one throws
+    # "Argument types do not match" in PS 5.1 with no line number - the fourth
+    # time in this session, and the first in code I had just written. A List
+    # enumerates perfectly well on its own.
+    if (-not $script:cfgRows) { return [PSCustomObject]@{ Values = $out; Bad = @() } }
+    foreach ($r in $script:cfgRows) {
+        if ($r.Kind -eq 'bool') {
+            $now = [bool]$r.Ctl.IsChecked
+            if ($now -ne [bool]$r.Was) { $out[$r.Name] = $now }
+            continue
+        }
+        $txt = "$($r.Ctl.Text)"
+        if ($txt -eq "$($r.Was)") { continue }
+        if ($r.Kind -eq 'number') {
+            $n = 0
+            if (-not [int]::TryParse($txt, [ref]$n)) { $null = $bad.Add($r.Name + ' is not a whole number'); continue }
+            $out[$r.Name] = $n
+            continue
+        }
+        if ($r.Kind -eq 'json') {
+            $parsed = $null
+            try { $parsed = $txt | ConvertFrom-Json } catch {
+                $null = $bad.Add($r.Name + ' is not valid JSON'); continue
+            }
+            $out[$r.Name] = $parsed
+            continue
+        }
+        $out[$r.Name] = $txt
+    }
+    return [PSCustomObject]@{ Values = $out; Bad = $bad.ToArray() }
+}
+
+function Invoke-ConfigApply {
+    if (-not $script:cfgRows) { return }
+    $res = Get-SRCfgChanges
+    # 🪤 NOTHING IS WRITTEN IF ANY ROW IS BAD. Writing the good ones and
+    # reporting the rest leaves the file half-applied, and the operator with no
+    # way to tell which half - on the file that decides what reopens.
+    if ($res.Bad.Count) {
+        $ui.CfgNote.Text = ($res.Bad -join '; ')
+        Set-Status 'nothing saved - fix the values marked below' 'bad'
+        return
+    }
+    if (-not $res.Values.Count) {
+        Hide-Config
+        Set-Status 'nothing changed'
+        return
+    }
+    try {
+        Set-SRConfigOnDisk -Values $res.Values
+    } catch {
+        $ui.CfgNote.Text = $_.Exception.Message
+        Set-Status ('could not save the config: ' + $_.Exception.Message) 'bad'
+        return
+    }
+    # The window reads its own copy for everything else, so it has to catch up
+    # or the panel and the tool disagree until the next launch.
+    try { $script:cfg = Get-SRConfig } catch { }
+    Hide-Config
+    Build-Rail; Build-Sessions
+    Set-Status (('{0} setting(s) saved' -f $res.Values.Count) + ' - some take effect at the next rescan or logon') 'ok'
+}
+
 function Set-DropValue { param($Combo, [string]$Value)
     foreach ($it in @($Combo.Items)) {
         if ("$($it.Tag)" -eq "$Value") { $Combo.SelectedItem = $it; return }
@@ -11148,6 +11326,16 @@ $ui.PaneWorktree.Add_Click({
     Show-Spawn -PresetDir $d -PresetWorktree
 })
 $ui.SetCancel.Add_Click({ Hide-Settings; Set-Status 'nothing changed' })
+
+# 🪤 A SECOND PRESS CLOSES IT. Every other panel in this window toggles - see
+# Broadcast - and a Settings button that only ever opens leaves the operator
+# hunting for Cancel to undo a press they made by accident.
+$ui.CfgBtn.Add_Click({
+    if ($ui.CfgBox.Visibility -eq $V_Show) { Hide-Config; return }
+    Show-Config
+})
+$ui.CfgCancel.Add_Click({ Hide-Config; Set-Status 'nothing changed' })
+$ui.CfgApply.Add_Click({ Invoke-ConfigApply })
 
 $ui.SetApply.Add_Click({
     $r = $null

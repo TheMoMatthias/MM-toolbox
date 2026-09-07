@@ -2097,6 +2097,97 @@ Show-Ask $null
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the settings panel edits the config without retyping the file ---'
+# ===========================================================================
+# 🔴 THIS PANEL WRITES session-restore.config.json, THE FILE THAT DECIDES WHAT
+# REOPENS AT LOGON. So the writer is stubbed for every assertion below and what
+# is asserted is the SET OF CHANGES the panel would hand it. A test that learned
+# what this does by writing the operator's live settings and reading them back
+# would be the single most expensive test in the repo.
+$cfgOrigWrite = ${function:Set-SRConfigOnDisk}
+$script:cfgWrote = $null
+function Set-SRConfigOnDisk { param([Parameter(Mandatory)][hashtable]$Values)
+    $script:cfgWrote = $Values
+}
+try {
+    Show-Config
+    if (-not $script:cfgRows -or -not $script:cfgRows.Count) { Fail 'the settings panel built no rows' }
+    else {
+        Pass ('the settings panel built {0} editable row(s)' -f $script:cfgRows.Count)
+        # 🪤 THE FILE'S OWN DOCUMENTATION IS NOT A SETTING. _README and the '//'
+        # keys are arrays of prose; an edit box over them invites turning the
+        # explanation into a broken value.
+        $cfgCmt = @($script:cfgRows | Where-Object { Test-SRCfgComment $_.Name })
+        if ($cfgCmt.Count) { Fail ('{0} comment key(s) were given an editor' -f $cfgCmt.Count) }
+        else { Pass 'the comment keys are shown but not editable' }
+
+        # ---- a number stays a number -----------------------------------
+        # 🔴 A TextBox HANDS BACK A STRING FOR EVERYTHING. Writing them raw turns
+        # 14 into "14", and a number that became a string is a setting that
+        # silently stops applying - read by the roll, not by this window.
+        $cfgNum = @($script:cfgRows | Where-Object { $_.Kind -eq 'number' })
+        if (-not $cfgNum.Count) { Note 'COULD NOT BE CHECKED THIS RUN: the config has no numeric key. It is NOT a pass.' }
+        else {
+            $one = $cfgNum[0]
+            $one.Ctl.Text = '41'
+            $ch = Get-SRCfgChanges
+            if ($ch.Bad.Count) { Fail ('a valid number was refused: {0}' -f ($ch.Bad -join '; ')) }
+            elseif (-not $ch.Values.ContainsKey($one.Name)) { Fail 'a changed number produced no change' }
+            elseif ($ch.Values[$one.Name] -isnot [int]) { Fail ('{0} came back as {1}, not an int' -f $one.Name, $ch.Values[$one.Name].GetType().Name) }
+            else { Pass ('a changed number is written as an int, not a string ({0}=41)' -f $one.Name) }
+
+            # ---- and a bad one stops the whole write ---------------------
+            $one.Ctl.Text = 'not a number'
+            $bad = Get-SRCfgChanges
+            if (-not $bad.Bad.Count) { Fail 'a non-numeric value was accepted into a numeric setting' }
+            else { Pass 'a non-numeric value is refused with a reason' }
+            $script:cfgWrote = $null
+            Invoke-ConfigApply
+            if ($null -ne $script:cfgWrote) { Fail 'a bad value still wrote to the config - a half-applied settings file is worse than a refused one' }
+            else { Pass 'nothing is written while any value is bad' }
+            $one.Ctl.Text = "$($one.Was)"
+        }
+
+        # ---- unchanged means unwritten ---------------------------------
+        # 🔴 THE PANEL MUST NOT REWRITE KEYS IT ONLY DISPLAYED. Rewriting the
+        # file wholesale drops every key this build does not know about.
+        $none = Get-SRCfgChanges
+        if ($none.Values.Count) { Fail ('opening the panel and changing nothing still writes {0} key(s)' -f $none.Values.Count) }
+        else { Pass 'opening the panel and changing nothing writes nothing' }
+
+        # ---- json keys round-trip --------------------------------------
+        $cfgJson = @($script:cfgRows | Where-Object { $_.Kind -eq 'json' })
+        if (-not $cfgJson.Count) { Note 'COULD NOT BE CHECKED THIS RUN: the config has no object or array key. It is NOT a pass.' }
+        else {
+            $j = $cfgJson[0]
+            $j.Ctl.Text = '{ not json'
+            $jb = Get-SRCfgChanges
+            if (-not $jb.Bad.Count) { Fail 'invalid JSON was accepted' }
+            else { Pass 'invalid JSON is refused with a reason' }
+            $j.Ctl.Text = "$($j.Was)"
+        }
+
+        # ---- only the changed key reaches the writer -------------------
+        if ($cfgNum.Count) {
+            $one = $cfgNum[0]
+            $one.Ctl.Text = '41'
+            $script:cfgWrote = $null
+            Invoke-ConfigApply
+            if ($null -eq $script:cfgWrote) { Fail 'a valid change wrote nothing' }
+            elseif ($script:cfgWrote.Count -ne 1) { Fail ('one change wrote {0} key(s) - it must write only what moved' -f $script:cfgWrote.Count) }
+            elseif (-not $script:cfgWrote.ContainsKey($one.Name)) { Fail 'the write did not carry the key that changed' }
+            else { Pass ('one change writes exactly one key ({0})' -f $one.Name) }
+        }
+    }
+} catch {
+    Fail ("the settings panel check threw: {0}" -f $_.Exception.Message)
+} finally {
+    ${function:Set-SRConfigOnDisk} = $cfgOrigWrite
+    Hide-Config
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- a project can be unticked, and told not to arm new sessions ---'
 # ===========================================================================
 # Asked for as: fully untick entire projects so they are exempt, and toggle per
