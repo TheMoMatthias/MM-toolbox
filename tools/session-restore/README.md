@@ -424,6 +424,8 @@ worktree, among conversations active within `sessionWindowDays` (3). Anything th
 drops below is unticked. Go back to an old slice and it re-ticks itself; move on and
 it falls out.
 
+`autoTickLaneBudgets` overrides those two ceilings per lane: an object of `-like` patterns over `<project>/<lane>` (`main` for the repo's own tree, else the worktree name) to a budget, longest match wins. A repo whose lanes are spawned by its own dispatcher from journals sets `"AlgoTrader/*": 0` and keeps its operator lanes at 3 — at logon the roll used to resume three OLD transcripts per lane (20 tabs, measured 2026-09-07) that the dispatcher reaped minutes later. Pinned conversations are untouched.
+
 Per lane, not per project — otherwise one busy lane crowds out every other, and
 "one worktree per lane" stops working.
 

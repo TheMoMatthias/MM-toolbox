@@ -257,6 +257,28 @@ function Get-SRConfig {
     return $cfg
 }
 
+function Get-SRLaneBudget {
+    # The auto-tick budget for ONE lane group, from autoTickLaneBudgets: an object whose
+    # keys are -like patterns over "<project leaf>/<lane>" ('main' for the repo's own
+    # tree, else the worktree name) and whose values are 0..1000. The LONGEST matching
+    # pattern wins, so "AlgoTrader/*": 0 with "AlgoTrader/ORCH-REDESIGN": 3 keeps the
+    # operator's own lane rolling while every dispatcher lane stays untouched. $null
+    # when nothing matches (the generic per-directory / per-worktree cap applies).
+    param($Config, [string]$LaneKey)
+    if ($null -eq $Config) { return $null }
+    $prop = $Config.PSObject.Properties['autoTickLaneBudgets']
+    if ($null -eq $prop -or $null -eq $prop.Value) { return $null }
+    $best = $null; $bestLen = -1
+    foreach ($p in @($prop.Value.PSObject.Properties)) {
+        if (-not ($LaneKey -like $p.Name)) { continue }
+        $n = $null
+        try { $n = [int]$p.Value } catch { continue }
+        if ($n -lt 0 -or $n -gt 1000) { continue }
+        if ($p.Name.Length -gt $bestLen) { $best = $n; $bestLen = $p.Name.Length }
+    }
+    return $best
+}
+
 function Get-SRConfigRead {
     if (-not (Test-Path -LiteralPath $SR_ConfigPath)) { throw "config not found: $SR_ConfigPath" }
     # 🪤 SAY WHAT TO DO ABOUT IT. Get-SRRegistry has caught its own parse
@@ -1777,11 +1799,19 @@ function Update-SRRegistryCore {
 
         foreach ($lg in $laneGroups) {
             $cap      = if ($lg.Name -eq 'main') { $autoTick } else { $autoTickWt }
+            $laneName = if ($lg.Name -eq 'main') { 'main' } else { $lg.Name.Substring(3) }
+            # PER-LANE OVERRIDE (autoTickLaneBudgets, 2026-09-07). A repo whose lanes are
+            # spawned by its own dispatcher from journals must not have the roll resume
+            # their OLD transcripts at logon: measured 07:36, 20 AlgoTrader lane tabs
+            # opened (three per lane), the dispatcher reaped them three minutes later.
+            # The most specific matching pattern wins; a budget of 0 means the roll
+            # never ticks in that lane. PINNED conversations are untouched as always.
+            $laneBudget = Get-SRLaneBudget -Config $Config -LaneKey ((Split-Path $dir.path -Leaf) + '/' + $laneName)
+            if ($null -ne $laneBudget) { $cap = $laneBudget }
             $members  = @($lg.Group)   # already newest-first, Group-Object keeps order
             $pinnedOn = @($members | Where-Object { $_.pinned -and $_.enabled }).Count
             $budget   = [Math]::Max(0, $cap - $pinnedOn)
             $taken    = 0
-            $laneName = if ($lg.Name -eq 'main') { 'main' } else { $lg.Name.Substring(3) }
 
             foreach ($s in $members) {
                 if ($s.pinned) { continue }
