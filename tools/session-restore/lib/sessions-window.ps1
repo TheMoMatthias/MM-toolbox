@@ -1891,6 +1891,18 @@ function New-RailTile { param([string]$Path, $Kids, [bool]$Picked, $Blank, [stri
     # write is behind the right-click and its confirm sheet.
     $state = ($bits -join $dot)
     if ($Suggest) { $state = $state + $dot + 'could be shelved' }
+    # ---- what the two tile controls need to know -------------------------
+    # 🪝 COUNTED OFF $Kids, WHICH IS A List[object]. Where-Object over one is
+    # fine; @() around the RESULT is not, and this file has been bitten by that
+    # twice today. Assign, then read .Count off the assignment.
+    # 🪝 A foreach, NOT Where-Object, AND IT IS NOT STYLE. This runs once per
+    # project on every Build-Rail, and a pipeline over ~262 conversations put
+    # Move-RowToWorking at 301 ms against a 250 ms bar the suite enforces - the
+    # gesture that shows a reply as working. Same answer, no pipeline.
+    $tickedN = 0
+    foreach ($k in $Kids) { if ([bool]$k.S.enabled) { $tickedN++ } }
+    $autoOff = $false
+    try { $autoOff = [bool](Test-SRProjectAutoTickOff ([PSCustomObject]@{ path = $Path })) } catch { }
     return [PSCustomObject]@{
         Kind   = 'project'
         BandVis = $V_Hide; RowVis = $V_Show
@@ -1913,6 +1925,23 @@ function New-RailTile { param([string]$Path, $Kids, [bool]$Picked, $Blank, [stri
         # what catches the eye rather than every project shouting at once.
         AccentOpacity = $(if ($needs) { 1.0 } elseif ($working) { 0.85 } else { 0.35 })
         NeedsVis = $(if ($needs) { $V_Show } else { $V_Hide })
+        # ---- the two controls on the tile's second line --------------------
+        # 🪝 COUNTED HERE, NOT ASKED FOR ON THE CLICK. The untick control has to
+        # say how many it would act on, and it has to disappear when the answer
+        # is none - a control that does nothing is worse than one that is absent,
+        # because it reads as broken rather than as inapplicable.
+        UntickText = ('untick {0}' -f $tickedN)
+        UntickVis  = $(if ($tickedN -gt 0) { $V_Show } else { $V_Hide })
+        UntickTip  = ('Untick all {0} ticked conversation(s) in this project so none of them reopen at your next logon. They are pinned too, so the hourly roll will not arm them again.' -f $tickedN)
+        # The state is the word itself, dim when off - the same way every other
+        # label in this window says off, and readable without colour.
+        AutoText = $(if ($autoOff) { 'auto off' } else { 'auto on' })
+        AutoFg   = [System.Windows.Media.Brush]$(if ($autoOff) { $window.FindResource('TextLow') } else { $window.FindResource('HueOk') })
+        AutoTip  = $(if ($autoOff) {
+            'New sessions started in this project are NOT auto-ticked. Click to let them be armed again.'
+        } else {
+            'New sessions started in this project ARE auto-ticked at the hourly roll. Click to stop that.'
+        })
         PickBg = [System.Windows.Media.Brush]$(if ($Picked) { $window.FindResource('SelBg') } else { $Blank })
         PickEdge = [System.Windows.Media.Brush]$(if ($Picked) { $window.FindResource('EdgeLit') } else { $Blank })
         Fg     = [System.Windows.Media.Brush]$(if ($Picked) { $window.FindResource('TextMax') } else { $window.FindResource('TextHigh') })
@@ -8351,9 +8380,40 @@ $ui.SessionList.Add_SelectionChanged({
 # ListBoxItem marks the button-down HANDLED when it selects, so a heading click
 # would never reach a normal Click handler. Handling it here also stops the
 # selection, which is what keeps a heading from becoming a project filter.
+# 🔑 THE TILE'S OWN TWO CONTROLS ARE ROUTED HERE, and they have to be. This
+# is a PREVIEW handler on the ListBox, so it tunnels from the top and runs
+# BEFORE the click ever reaches the TextBlock that was pressed - a handler hung
+# on the label itself would never see it. Same reason Test-SRTypingTarget checks
+# for TickBox by name rather than trusting the element to speak for itself.
+#
+# 🪝 AND MARKING IT HANDLED IS WHAT STOPS THE TILE SELECTING. Picking a
+# project is done by Add_SelectionChanged, so an unhandled press would run the
+# control AND filter the sessions column to that project - two things from one
+# click, one of which nobody asked for.
+function Get-SRRailBtn { param($Node)
+    $n = $Node
+    for ($d = 0; $d -lt 6 -and $n; $d++) {
+        if ($n -is [System.Windows.FrameworkElement] -and $n.Name) {
+            if ($n.Name -eq 'RailUntickBtn' -or $n.Name -eq 'RailAutoBtn') { return $n.Name }
+        }
+        try { $n = [System.Windows.Media.VisualTreeHelper]::GetParent($n) } catch { break }
+    }
+    return ''
+}
+
 $ui.RailList.Add_PreviewMouseLeftButtonDown({
     param($s, $e)
     $it = Get-ClickedRow $e.OriginalSource
+    $btn = Get-SRRailBtn $e.OriginalSource
+    if ($btn -and $it -and "$($it.Kind)" -eq 'project') {
+        $e.Handled = $true
+        $kid = @($script:model | Where-Object { "$($_.D.path)" -eq "$($it.Path)" })
+        if (-not $kid.Count) { return }
+        $d = $kid[0].D
+        if ($btn -eq 'RailUntickBtn') { Invoke-SRProjectUntick -Dir $d -Label "$($it.Label)" }
+        else { Invoke-SRProjectAutoTick -Dir $d -Label "$($it.Label)" }
+        return
+    }
     if (-not $it -or "$($it.Kind)" -ne 'band') { return }
     Toggle-RailBand "$($it.BandKey)"
     Set-Status $(if ($script:railBandShut["$($it.BandKey)"]) {
@@ -8727,9 +8787,27 @@ function Get-RailShelveVerb { param($Dir)
 # already pins on every touch, with the note 'or the hourly auto-tick roll takes
 # it away again'. The same applies with the tick going the other way: an
 # unpinned false is a suggestion the roll is free to overrule.
+# 🪤 THE SEPARATORS ARE CHAR CODES, NOT LITERALS. A backslash in a string literal
+# did not survive the patch script that wrote this file - three times in one
+# session - and the mangled form `TrimEnd('', '/')` is a VALID PowerShell
+# expression that throws only at runtime, on a machine, in a test. 92 and 47 are
+# the two separators and they cannot be eaten by anything.
+$script:SR_PathSeps = [char[]]@([char]92, [char]47)
+
+function Get-SRPathLeaf { param([string]$P)
+    $t = "$P".TrimEnd($script:SR_PathSeps)
+    if (-not $t) { return '' }
+    $ix = $t.LastIndexOfAny($script:SR_PathSeps)
+    if ($ix -lt 0) { return $t }
+    return $t.Substring($ix + 1)
+}
+
 function Test-SRProjectAutoTickOff { param($Dir)
     if (-not $Dir) { return $false }
-    $key = (Split-Path "$($Dir.path)" -Leaf) + '/*'
+    # 🪝 Split-Path IS A CMDLET AND THIS IS CALLED PER TILE PER REBUILD. Pure
+    # string work instead; the leaf of a path is not worth a cmdlet invocation
+    # thirty times a repaint.
+    $key = (Get-SRPathLeaf "$($Dir.path)") + '/*'
     $prop = $null
     try { $prop = $script:cfg.PSObject.Properties['autoTickLaneBudgets'] } catch { }
     if ($null -eq $prop -or $null -eq $prop.Value) { return $false }
@@ -8757,7 +8835,10 @@ function Get-RailAutoTickVerb { param($Dir)
 # project to whatever that value happened to be on the day it was switched.
 function Set-SRProjectAutoTick { param($Dir, [bool]$On)
     if (-not $Dir) { return $false }
-    $key = (Split-Path "$($Dir.path)" -Leaf) + '/*'
+    # 🪝 Split-Path IS A CMDLET AND THIS IS CALLED PER TILE PER REBUILD. Pure
+    # string work instead; the leaf of a path is not worth a cmdlet invocation
+    # thirty times a repaint.
+    $key = (Get-SRPathLeaf "$($Dir.path)") + '/*'
     $obj = New-Object PSObject
     try {
         $prop = $script:cfg.PSObject.Properties['autoTickLaneBudgets']
@@ -8778,6 +8859,55 @@ function Set-SRProjectAutoTick { param($Dir, [bool]$On)
     # The in-memory config the rest of the window reads, kept in step with disk.
     try { Add-Member -InputObject $script:cfg -NotePropertyName 'autoTickLaneBudgets' -NotePropertyValue $obj -Force } catch { }
     return $true
+}
+# 🔑 ONE IMPLEMENTATION, TWO ENTRY POINTS. Both of these are reachable from
+# the rail's right-click menu AND from a control on the tile itself, and the
+# quickest way to ship that is two copies of the body that agree today. They
+# would not agree for long: the confirm wording, the pin, the Save reminder and
+# the rebuild are four things to keep in step, and the audit that produced this
+# window found a defect of exactly that shape - a rule copied into a second
+# place and then fixed in one of them.
+function Invoke-SRProjectUntick { param($Dir, [string]$Label)
+    if (-not $Dir) { return }
+    $kids = @($script:model | Where-Object { "$($_.D.path)" -eq "$($Dir.path)" })
+    $on = @($kids | Where-Object { [bool]$_.S.enabled })
+    if (-not $on.Count) { Set-Status ("'{0}' has nothing ticked" -f $Label); return }
+    # It changes what comes back tomorrow morning, so it says so first - the same
+    # reasoning the shelve item carries, and the same reason: the effect happens
+    # while nobody is watching.
+    if (-not (Confirm-Action 'Untick this project' (
+        ("{0} conversation(s) in '{1}' will NOT reopen at your next logon." -f $on.Count, $Label) +
+        [Environment]::NewLine + [Environment]::NewLine +
+        'Nothing is deleted and each one stays where it is in the list - you can tick any of them again. They are also PINNED, so the hourly auto-tick roll will not quietly arm them again.') -Verb 'Untick them')) {
+        Set-Status 'nothing unticked'; return
+    }
+    foreach ($r in $on) {
+        Set-Field $r.S 'enabled' $false
+        # PINNED, or the roll re-arms them within the hour. See Set-TickOn.
+        Set-Field $r.S 'pinned' $true
+        $null = $script:mgrItems.Remove("$($r.Id)")
+    }
+    $script:dirty = $true
+    $script:mgrDirty = $true
+    Build-Rail; Build-Sessions
+    if ($script:surface -eq 'manage') { Build-Manager }
+    Set-Status ("{0} conversation(s) in '{1}' will not reopen - press Save to keep that" -f $on.Count, $Label) 'ok'
+}
+
+function Invoke-SRProjectAutoTick { param($Dir, [string]$Label)
+    if (-not $Dir) { return }
+    $wasOff = Test-SRProjectAutoTickOff $Dir
+    if (-not (Set-SRProjectAutoTick -Dir $Dir -On $wasOff)) { return }
+    # The tile says the new state, so it has to be redrawn - this is the one of
+    # the two that changes what a tile READS rather than what a row does.
+    Build-Rail
+    # This writes the CONFIG, not the registry, so there is no Save to press and
+    # saying so matters - the shelve and untick paths both end by asking for one.
+    Set-Status $(if ($wasOff) {
+        "new sessions in '{0}' will be auto-ticked again - saved" -f $Label
+    } else {
+        "new sessions in '{0}' will no longer be auto-ticked - saved" -f $Label
+    }) 'ok'
 }
 function New-RailMenu {
     $m = New-Object System.Windows.Controls.ContextMenu
@@ -8828,30 +8958,7 @@ function New-RailMenu {
     $u.Add_Click({
         $d = $script:railMenuDir
         $script:railMenuDir = $null
-        if (-not $d) { return }
-        $lbl = $script:railMenuLabel
-        $kids = @($script:model | Where-Object { "$($_.D.path)" -eq "$($d.path)" })
-        $on = @($kids | Where-Object { [bool]$_.S.enabled })
-        if (-not $on.Count) { Set-Status ("'{0}' has nothing ticked" -f $lbl); return }
-        # It changes what comes back tomorrow morning, so it says so first - the
-        # same reasoning the shelve item carries, and the same reason: the effect
-        # happens while nobody is watching.
-        if (-not (Confirm-Action 'Untick this project' (
-            "{0} conversation(s) in '{1}' will NOT reopen at your next logon." + [Environment]::NewLine + [Environment]::NewLine +
-            "Nothing is deleted, and each one stays exactly where it is in the list - you can tick any of them again. They are also PINNED, so the hourly auto-tick roll will not quietly arm them again." -f $on.Count, $lbl) -Verb 'Untick them')) {
-            Set-Status 'nothing unticked'; return
-        }
-        foreach ($r in $on) {
-            Set-Field $r.S 'enabled' $false
-            # PINNED, or the roll re-arms them within the hour. See Set-TickOn.
-            Set-Field $r.S 'pinned' $true
-            $null = $script:mgrItems.Remove("$($r.Id)")
-        }
-        $script:dirty = $true
-        $script:mgrDirty = $true
-        Build-Rail; Build-Sessions
-        if ($script:surface -eq 'manage') { Build-Manager }
-        Set-Status ("{0} conversation(s) in '{1}' will not reopen - press Save to keep that" -f $on.Count, $lbl) 'ok'
+        Invoke-SRProjectUntick -Dir $d -Label $script:railMenuLabel
     })
     $null = $m.Items.Add($u)
 
@@ -8862,18 +8969,7 @@ function New-RailMenu {
     $a.Add_Click({
         $d = $script:railMenuDir
         $script:railMenuDir = $null
-        if (-not $d) { return }
-        $lbl = $script:railMenuLabel
-        $wasOff = Test-SRProjectAutoTickOff $d
-        if (-not (Set-SRProjectAutoTick -Dir $d -On $wasOff)) { return }
-        # This one writes the CONFIG, not the registry, so there is no Save to
-        # press and saying so matters - the shelve and untick items above both
-        # end by asking for one.
-        Set-Status $(if ($wasOff) {
-            "new sessions in '{0}' will be auto-ticked again" -f $lbl
-        } else {
-            "new sessions in '{0}' will no longer be auto-ticked - saved" -f $lbl
-        }) 'ok'
+        Invoke-SRProjectAutoTick -Dir $d -Label $script:railMenuLabel
     })
     $null = $m.Items.Add($a)
     return $m

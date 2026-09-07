@@ -1244,10 +1244,38 @@
           <!-- What is happening inside. Given its own leading and a real gap
                from the name: at 2px the two lines read as one wrapped title
                rather than as a name and its state. -->
-          <TextBlock Grid.Column="1" Grid.ColumnSpan="2" Grid.Row="1"
+          <TextBlock Grid.Column="1" Grid.Row="1"
                      Text="{Binding State}" Style="{StaticResource Meta}"
                      Margin="0,4,0,0" LineHeight="15" LineStackingStrategy="BlockLineHeight"
                      TextTrimming="CharacterEllipsis"/>
+          <!-- ============== THE TWO PROJECT CONTROLS ==============
+               🔴 THESE COST DENSITY AND THAT WAS A DELIBERATE TRADE, made by
+               the operator after it was put to him the other way. The rail was
+               tuned to say less per tile - the context bar on a session row is
+               hidden below half a window for exactly this reason - and two
+               controls on every project undo some of that. They are placed on
+               the SECOND line beside the state text rather than beside the
+               name, so the thing you scan for is still the project.
+
+               🪝 THEY ARE NOT BUTTONS. A real Button brings its own chrome,
+               focus ring and hit box into a tile 24px tall; every other
+               pressable label in this window - RailSort, ListSort, RailClear -
+               is a hand-cursor TextBlock, and matching them is what keeps the
+               rail from looking like a form. The click is routed in the rail is
+               PreviewMouseLeftButtonDown, which tunnels, so it lands before the
+               tile can select itself. ============================== -->
+          <StackPanel Grid.Column="2" Grid.Row="1" Orientation="Horizontal"
+                      VerticalAlignment="Center" Margin="10,4,0,0">
+            <TextBlock x:Name="RailUntickBtn" Text="{Binding UntickText}"
+                       Style="{StaticResource Meta}" Cursor="Hand"
+                       Visibility="{Binding UntickVis}"
+                       Foreground="{StaticResource TextMid}"
+                       ToolTip="{Binding UntickTip}"/>
+            <TextBlock x:Name="RailAutoBtn" Text="{Binding AutoText}"
+                       Style="{StaticResource Meta}" Cursor="Hand"
+                       Margin="10,0,0,0" Foreground="{Binding AutoFg}"
+                       ToolTip="{Binding AutoTip}"/>
+          </StackPanel>
         </Grid>
       </Border>
       </Grid>
