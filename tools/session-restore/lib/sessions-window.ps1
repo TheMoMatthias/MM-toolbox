@@ -2849,18 +2849,38 @@ function Install-SRPaneFace {
             Write-SRLog ('  [skip] IBM Plex Mono exposes only {0} face - a synthesised bold is worse than Cascadia' -f $faces.Count)
             return $false
         }
-        # 🔴 A BARE EMBEDDED FAMILY HAS NO FALLBACK, and assigning one here threw
-        # away the chain window2.xaml declares. $fam stays the thing that gets
-        # VALIDATED above - it is what carries the typefaces - and what gets
-        # INSTALLED is a composite built on the same base uri, so a codepoint
-        # IBM Plex Mono lacks still reaches a face somebody chose rather than
-        # one WPF picked.
+        # 🔴 THE COMPOSITE CANNOT BE INSTALLED, AND TRYING TO KILLED THE WINDOW.
+        #
+        # This built a multi-name family on the fonts base uri -
+        # '#IBM Plex Mono, Cascadia Mono, Consolas, ...' - so a codepoint Plex
+        # lacks would reach a face somebody chose rather than one WPF picked.
+        # It CONSTRUCTS. It cannot be ASSIGNED: putting it into the resource the
+        # XAML already binds throws
+        #
+        #   '#IBM Plex Mono, Cascadia Mono, ...' is not a valid value for
+        #   property 'FontFamily'
+        #
+        # and it threw on every launch - six times in the operator's log before
+        # anyone noticed, because the catch below reported it as a skip and the
+        # window carried on. Measured with each step run alone
+        # (tests\fontstep-driver.ps1): construct BARE ok, construct './#' ok,
+        # ASSIGN either one to Resources['FontPane'] THROWS, assign the single
+        # validated family ok.
+        #
+        # 🪤 AND THE REAL DAMAGE WAS THE ORDER, NOT THE FAMILY. FontPane was
+        # assigned BEFORE the line that threw, so a value WPF had just refused
+        # was left in the dictionary the pane renders from - and the same message
+        # came back out of ShowDialog, uncaught, as a dialog saying the tool
+        # would not start. A handled failure that leaves half its work behind is
+        # worse than an unhandled one: the log said 'the pane keeps Cascadia
+        # Mono' while the window was already broken.
+        #
+        # So what gets installed is $fam, the family that was VALIDATED above -
+        # its typefaces were counted, and its Source is './#IBM Plex Mono'. The
+        # declared fallback chain is lost and that is the honest trade: it was
+        # never in force, since the composite has never once been installed.
+        # WPF's own font fallback covers a missing codepoint.
         $famFB = $fam
-        try {
-            $famFB = New-Object System.Windows.Media.FontFamily $base, `
-                '#IBM Plex Mono, Cascadia Mono, Consolas, Courier New, Segoe UI Emoji, Segoe UI Symbol'
-        } catch { Write-SRLog ('  [skip] composite pane face failed, using the bare family: ' + $_.Exception.Message) }
-        $window.Resources['FontPane'] = $famFB
         # 🔴 THE CHROME NO LONGER TAKES IT, AND THAT REVERSES A DATED DECISION.
         #
         # 2026-09-03 put "one face across the entire window, not just the
@@ -2879,8 +2899,31 @@ function Install-SRPaneFace {
         # 🔑 FontMono STAYS. It is the key for text that genuinely wants the
         # grid, so pointing it at the shipped mono face is the whole point of
         # shipping one. The three TEXT keys keep Manrope, loaded just above.
-        foreach ($k in @('FontMono')) {
-            $window.Resources[$k] = $famFB
+        # 🔴 EVERY ASSIGNMENT PUTS ITSELF BACK IF IT FAILS. This is the rule the
+        # crash above was made of: a font that WPF refuses must leave the window
+        # exactly as it found it, on the face window2.xaml declares. Reading the
+        # value back is not ceremony - assignment is where the refusal happens,
+        # and it is the only place that can be checked.
+        $touched = New-Object System.Collections.Generic.List[object]
+        $okAll = $true
+        foreach ($k in @('FontPane', 'FontMono')) {
+            $had = $null
+            try { $had = $window.Resources[$k] } catch { }
+            $null = $touched.Add([PSCustomObject]@{ Key = $k; Was = $had })
+            try {
+                $window.Resources[$k] = $famFB
+                if (-not [object]::ReferenceEquals($window.Resources[$k], $famFB)) { throw 'the resource did not take the value' }
+            } catch {
+                Write-SRLog ('  [skip] the pane face was refused for {0} ({1}) - putting the declared face back' -f $k, $_.Exception.Message)
+                $okAll = $false
+                break
+            }
+        }
+        if (-not $okAll) {
+            foreach ($t in $touched) {
+                try { if ($null -ne $t.Was) { $window.Resources[$t.Key] = $t.Was } } catch { }
+            }
+            return $false
         }
         Write-SRLog ('  [ok]   IBM Plex Mono loaded from lib\fonts ({0} faces) - pane and chrome' -f $faces.Count)
         return $true

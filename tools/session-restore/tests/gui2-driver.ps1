@@ -2097,6 +2097,78 @@ Show-Ask $null
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- the faces the window installed can actually be used ---'
+# ===========================================================================
+# 🔴 THE TOOL WOULD NOT START, AND EVERY SUITE HERE WAS GREEN.
+#
+#   Exception calling "ShowDialog" with "0" argument(s): "'#IBM Plex Mono,
+#   Cascadia Mono, Consolas, Courier New, Segoe UI Emoji, Segoe UI Symbol' is
+#   not a valid value for property 'FontFamily'."
+#
+# Install-SRPaneFace built a multi-name family on the fonts base uri. It
+# CONSTRUCTS and it cannot be ASSIGNED - and the old code assigned FontPane
+# BEFORE the line that threw, so a value WPF had just refused stayed in the
+# dictionary the pane renders from. Its own catch reported a skip and the
+# window carried on, broken, until ShowDialog met the same value uncaught.
+#
+# 🪤 AND NOTHING HERE COULD SEE IT, WHICH IS THE FINDING WORTH KEEPING. Every
+# harness in this repo splices the script at `$null = $window.ShowDialog()` and
+# keeps what comes before, so the one line that failed is the one line none of
+# them run. This closes that headlessly: assignment is where WPF refuses a
+# family, so assigning each installed face back into the dictionary exercises
+# exactly the operation that threw, without showing a window.
+# 🔑 THE CONTROL FIRST, because this check passed the day the tool would not
+# start and I have to know it can still say no. Mutating the window back to the
+# broken composite does NOT turn this red any more - the rollback added with the
+# fix puts the declared face back, so the window survives a refused font, which
+# is the whole point of it. That leaves the detector itself unproven, so it is
+# exercised directly: build the family WPF refuses and confirm the dictionary
+# refuses it. If this ever passes silently, every ok below is worthless.
+$fcBase = $null
+try { $fcBase = [Uri]('file:///' + (Join-Path $here 'fonts').Replace('\', '/').TrimEnd('/') + '/') } catch { }
+if (-not $fcBase) { Note 'COULD NOT BE CHECKED THIS RUN: no fonts directory to build the control family from. It is NOT a pass.' }
+else {
+    $fcBad = $null
+    try {
+        $fcBad = New-Object System.Windows.Media.FontFamily $fcBase, `
+            '#IBM Plex Mono, Cascadia Mono, Consolas, Courier New, Segoe UI Emoji, Segoe UI Symbol'
+    } catch { }
+    if (-not $fcBad) { Note 'COULD NOT BE CHECKED THIS RUN: the refused family would not even construct here. It is NOT a pass.' }
+    else {
+        $fcHad = $window.Resources['FontPane']
+        $fcThrew = $false
+        try { $window.Resources['FontPane'] = $fcBad } catch { $fcThrew = $true }
+        # Put it back whatever happened - this test must not be the thing that
+        # leaves a refused family in the window it is checking.
+        try { if ($null -ne $fcHad) { $window.Resources['FontPane'] = $fcHad } } catch { }
+        if ($fcThrew) { Pass 'the check can still fail: the composite family is refused by the dictionary' }
+        else { Fail 'the composite family was ACCEPTED - this check can no longer detect the font crash it exists for' }
+    }
+}
+
+foreach ($fk in @('FontPane', 'FontText', 'FontMono', 'FontDisplay', 'FontSmall')) {
+    $fv = $null
+    try { $fv = $window.FindResource($fk) } catch { }
+    if (-not $fv) { Fail ("the window has no {0} resource at all" -f $fk); continue }
+    if ($fv -isnot [System.Windows.Media.FontFamily]) {
+        Fail ("{0} is a {1}, not a FontFamily" -f $fk, $fv.GetType().Name); continue
+    }
+    try {
+        $window.Resources[$fk] = $fv
+        Pass ("{0} can be installed: {1}" -f $fk, $fv.Source)
+    } catch {
+        Fail ("{0} holds a family WPF refuses - this is the crash, before it reaches ShowDialog: {1}" -f $fk, $_.Exception.Message)
+    }
+    # 🔑 AND IT HAS TO DRAW SOMETHING. A family can be assignable and still have
+    # no faces behind it, which is how an embedded font that failed to load
+    # looks from the outside - identical, until the pane is empty.
+    $nTf = 0
+    try { $nTf = @($fv.GetTypefaces()).Count } catch { }
+    if ($nTf -lt 1) { Fail ("{0} has no typefaces - nothing drawn in it will render" -f $fk) }
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- the settings panel edits the config without retyping the file ---'
 # ===========================================================================
 # 🔴 THIS PANEL WRITES session-restore.config.json, THE FILE THAT DECIDES WHAT
