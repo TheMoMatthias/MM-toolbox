@@ -2638,6 +2638,183 @@ try {
 
 # ===========================================================================
 Write-Host ''
+Write-Host '--- reading a conversation: all of it, what you typed, and what it made ---'
+# ===========================================================================
+
+# ---- one press loads the whole conversation ----------------------------
+# 🔴 'load earlier' USED TO DOUBLE THE BUDGET. From 96 KB that is four to six
+# presses to reach the start of a long conversation, which is what the operator
+# reported: clicking it three or four times for a little history and never
+# reaching the rest.
+$tailBytesWas = $script:tailBytes
+$tailAllWas   = $script:tailAll
+$docPathWas   = $script:docPath
+try {
+    $script:tailBytes = $script:TailBase
+    $script:tailAll = $false
+    if ((Get-SRTailRecords) -ne 220) {
+        Fail ('the default record cap is {0}, not the 220 the cheap click depends on' -f (Get-SRTailRecords))
+    } else { Pass 'the default window is unchanged - the click made all day stays cheap' }
+
+    # A real file, so the budget it computes is a real number rather than a
+    # constant that happens to be large.
+    $script:docPath = Join-Path $SR_Root 'lib\_common.ps1'
+    $tailLen = 0
+    try { $tailLen = [int64](Get-Item -LiteralPath $script:docPath).Length } catch { }
+    if ($tailLen -le 0) { Note 'COULD NOT BE CHECKED THIS RUN: no file to size the budget against. It is NOT a pass.' }
+    else {
+        $tailGot = Expand-SRTailToAll
+        if ($tailGot -le $tailLen) {
+            Fail ('one press asked for {0} bytes of a {1} byte file - it is still a slice' -f $tailGot, $tailLen)
+        } else {
+            Pass ('one press asks for the whole file ({0} KB of a {1} KB transcript)' -f [int]($tailGot / 1KB), [int]($tailLen / 1KB))
+        }
+        # 🔴 AND THE RECORD CAP GOES WITH IT. This is the half that was missed
+        # last time: the byte window widened, and MaxRecords stayed at 220, so
+        # the reader admitted more and then threw all but the last 220 away. A
+        # small-but-chatty transcript gives a multiplier below one, which clamps
+        # straight back to 220 - so scaling the cap off the bytes is not enough.
+        if (-not $script:tailAll) { Fail 'load-all did not raise the flag the record cap reads' }
+        elseif ((Get-SRTailRecords) -ne 20000) {
+            Fail ('with the budget lifted the record cap is still {0}' -f (Get-SRTailRecords))
+        } else { Pass 'and the record cap is lifted with it, not left at 220' }
+    }
+} catch {
+    Fail ("the load-all check threw: {0}" -f $_.Exception.Message)
+} finally {
+    $script:tailBytes = $tailBytesWas
+    $script:tailAll   = $tailAllWas
+    $script:docPath   = $docPathWas
+}
+
+# ---- a slash command is its name, not the skill it expands to ----------
+# 🔴 Claude Code FILES THE EXPANSION AS A USER RECORD, so invoking a skill of
+# two hundred lines put two hundred lines on screen under the operator's own
+# marker. His words: "it looks like I am pasting the entire content, which is a
+# little bit misleading."
+$cmdRec = @(
+    '<command-message>wrap-up</command-message>'
+    '<command-name>/wrap-up</command-name>'
+    '<command-args>since yesterday</command-args>'
+    'You are producing an evidence-backed account of where a session stands.'
+    'Reconstruct the requests from the transcript rather than from recollection.'
+    '...and two hundred more lines of skill instructions...'
+) -join "`n"
+$cmdTxt = Get-SRSlashCommandText $cmdRec
+if ($cmdTxt -ne '/wrap-up since yesterday') {
+    Fail ("a slash command read as '{0}'" -f $cmdTxt)
+} else { Pass 'a slash command is read as its name and arguments' }
+if ($cmdTxt -match 'evidence-backed|recollection') {
+    Fail 'the skill body survived into what is drawn as the operator''s message'
+} else { Pass 'and none of the skill body comes with it' }
+
+# 🪤 THE CHEAP GATE HAS TO SAY NO. This runs once per record per repaint, and a
+# gate that answered yes on ordinary prose would put every message through two
+# regexes for nothing.
+if ((Get-SRSlashCommandText 'just something I typed, with no envelope at all') -ne '') {
+    Fail 'ordinary prose was read as a slash command'
+} else { Pass 'ordinary prose is not read as a command, and pays no regex for it' }
+
+# End to end, through the block builder the pane actually renders. New-Block is
+# nested inside Get-SRTranscriptBlocks and closes over the record time, so it is
+# supplied here rather than reaching into that scope.
+function New-Block { param([string]$Kind, [string]$Head, [string]$Body, [string]$Meta)
+    return [PSCustomObject]@{ Kind = $Kind; Head = $Head; Body = $Body; Meta = $Meta; When = $null }
+}
+$cmdBlk = New-SRUserBlock $cmdRec
+if ("$($cmdBlk.Kind)" -ne 'you') { Fail ("a command block is drawn as '{0}', not as you" -f $cmdBlk.Kind) }
+elseif ("$($cmdBlk.Body)" -ne '/wrap-up since yesterday') {
+    $cmdShown = "$($cmdBlk.Body)"
+    if ($cmdShown.Length -gt 90) { $cmdShown = $cmdShown.Substring(0, 90) + '...' }
+    Fail ("the block body is '{0}'" -f $cmdShown)
+} else { Pass 'the block the pane draws carries the command and nothing else' }
+
+# ---- links: what the session made, and where it went -------------------
+$lnkPathsWas = $script:docLinkPaths
+$lnkRxWas    = $script:docLinkRx
+try {
+    Set-SRDocLinks @([PSCustomObject]@{ Kind = 'run'; Calls = @(
+        [PSCustomObject]@{ Name = 'Write'; Arg = 'C:\work\out\report.md' },
+        [PSCustomObject]@{ Name = 'Read';  Arg = 'C:\work\src\thing.ps1' }
+    )})
+    if (-not $script:docLinkPaths.ContainsKey('c:\work\out\report.md')) {
+        Fail 'a file a tool WROTE was not collected, so nothing about it can be a link'
+    } else { Pass 'a file a tool wrote is collected as a link target' }
+    # 🔴 A READ IS NOT A CREATE. Linking everything a session ever looked at puts
+    # a link on half the document and teaches the eye to ignore all of them.
+    if ($script:docLinkPaths.ContainsKey('c:\work\src\thing.ps1')) {
+        Fail 'a file that was only READ was collected - every path in the pane would be a link'
+    } else { Pass 'a file that was only read is not' }
+
+    $lp = New-Object System.Windows.Documents.Paragraph
+    Add-SRLinkedText -Para $lp -Text 'see https://claude.ai/code/x and C:\work\out\report.md now' -Brush $Pal.TextMid
+    $lnkRuns = @($lp.Inlines | Where-Object { "$($_.Tag)" })
+    if ($lnkRuns.Count -ne 2) {
+        Fail ('a line with a URL and a written file produced {0} link(s), expected 2' -f $lnkRuns.Count)
+    } else { Pass 'a URL and a file the session wrote both become links in prose' }
+    $lnkAll = ''
+    foreach ($inl in $lp.Inlines) { $lnkAll += "$($inl.Text)" }
+    if ($lnkAll -ne 'see https://claude.ai/code/x and C:\work\out\report.md now') {
+        Fail ("splitting the line changed it to '{0}'" -f $lnkAll)
+    } else { Pass 'and the words around them are unchanged - nothing is dropped by the split' }
+
+    # 🔴 THE SAFETY ASSERTION. Start-Process hands anything with a scheme to
+    # whatever is registered for it, and a transcript is text this window did not
+    # write. Stubbed, because the point is proving what it REFUSES to launch.
+    $spOrig = ${function:Start-Process}
+    $script:spSaw = New-Object System.Collections.Generic.List[string]
+    function Start-Process { param([Parameter(Position = 0)]$FilePath, $ArgumentList)
+        $null = $script:spSaw.Add("$FilePath")
+    }
+    try {
+        Open-SRLinkTarget 'javascript:alert(1)'
+        Open-SRLinkTarget 'file:///C:/Windows/System32/cmd.exe'
+        if ($script:spSaw.Count) {
+            Fail ("a non-web scheme was launched: {0}" -f ($script:spSaw -join ', '))
+        } else { Pass 'a link that is not http or https is never launched' }
+        $script:spSaw.Clear()
+        Open-SRLinkTarget 'https://claude.ai/code/x'
+        if ($script:spSaw.Count -ne 1 -or "$($script:spSaw[0])" -ne 'https://claude.ai/code/x') {
+            Fail ('an https link produced {0} launch(es)' -f $script:spSaw.Count)
+        } else { Pass 'an https link opens, and opens exactly what it says' }
+        # 🪤 A FILE IS SHOWN IN ITS FOLDER, NEVER OPENED. explorer /select cannot
+        # execute what it points at; the Windows default for a .ps1 can.
+        $script:spSaw.Clear()
+        Open-SRLinkTarget (Join-Path $SR_Root 'lib\_common.ps1')
+        if ($script:spSaw.Count -ne 1) { Fail 'a real file produced no launch at all' }
+        elseif ("$($script:spSaw[0])" -ne 'explorer.exe') {
+            Fail ("a file was handed to '{0}' rather than to explorer" -f $script:spSaw[0])
+        } else { Pass 'a file is shown in its folder rather than run' }
+    } finally {
+        ${function:Start-Process} = $spOrig
+    }
+
+    # ---- the wheel actually moves twice as far -------------------------
+    # 🔴 A HANDLER THAT QUIETLY WENT BACK TO 1x LOOKS IDENTICAL FROM OUTSIDE, and
+    # "scrolling feels the same" is not something a test can see. The step is its
+    # own function so the factor can be held to.
+    $whFactorWas = $script:PaneWheelFactor
+    try {
+        $script:PaneWheelFactor = 1.0
+        $whOne = Get-SRWheelStep 120
+        $script:PaneWheelFactor = 2.0
+        $whTwo = Get-SRWheelStep 120
+        if ($whOne -le 0) { Fail 'one wheel notch moves nothing' }
+        elseif ([Math]::Abs($whTwo - ($whOne * 2.0)) -gt 0.01) {
+            Fail ('the factor does not double the step: {0} against {1}' -f $whTwo, $whOne)
+        } else { Pass ('one notch moves {0}px, twice what WPF would give it' -f [int]$whTwo) }
+        if ((Get-SRWheelStep -120) -ge 0) { Fail 'scrolling down and up move the same way' }
+        else { Pass 'and the direction follows the wheel' }
+    } finally { $script:PaneWheelFactor = $whFactorWas }
+} catch {
+    Fail ("the link and scroll checks threw: {0}" -f $_.Exception.Message)
+} finally {
+    $script:docLinkPaths = $lnkPathsWas
+    $script:docLinkRx    = $lnkRxWas
+}
+
+# ===========================================================================
+Write-Host ''
 Write-Host '--- a question reaches the panel without waiting for something else ---'
 # ===========================================================================
 # 🔴 REPORTED: a question takes fifteen to twenty seconds to appear, and
@@ -6737,24 +6914,57 @@ Note ('pane {0:N0}px -> text column {1:N0}px (~{2:N0} chars), {3:N0}px unused on
 # width, and at 100 it stopped growing at ~780px - most of a laptop pane and
 # half of a wide monitor. Measured at two real widths rather than reasoned
 # about, because the arithmetic looks like a fixed column and is not.
-$Wwas = $W
-$W = 2600.0
-Lay
-$docW = New-Object System.Windows.Documents.FlowDocument
-Set-ReadMeasure -Doc $docW
-$paneWide = [double]$ui.PaneDoc.ActualWidth
-$colWide  = $paneWide - $docW.PagePadding.Left - $docW.PagePadding.Right
-$W = $Wwas
-Lay
-$ceil = ($script:ReadMeasureChars * $script:PaneSize * $script:PaneAdvanceEm) + $script:GutterW
-Note ('at a {0:N0}px window: pane {1:N0}px -> column {2:N0}px (~{3:N0} chars), ceiling {4:N0}px' -f `
-      2600.0, $paneWide, $colWide, ($colWide / ($script:PaneSize * $script:PaneAdvanceEm)), $ceil)
-if ($colWide -le $colW + 1) {
-    Fail ('the text column did not grow when the pane widened: {0:N0}px at a {1:N0}px pane, {2:N0}px at a {3:N0}px one' -f $colW, $ui.PaneDoc.ActualWidth, $colWide, $paneWide)
-} elseif ($colWide -gt $ceil + 3) {
-    Fail ('the column grew past its ceiling: {0:N0}px against {1:N0}px - long lines are what the cap exists to prevent' -f $colWide, $ceil)
-} else {
-    Pass ('the text column grows with the pane and stops at its ceiling ({0:N0}px -> {1:N0}px, cap {2:N0}px)' -f $colW, $colWide, $ceil)
+# 🔴 BOTH MODES, EXPLICITLY. This used to measure at whatever readingWidth
+# happened to be live and assert the CEILING - so it was really asserting the
+# default, and it went red the moment the default changed to `full` at the
+# operator's request ("the text is not scaling with the window size on the
+# right"). The cap is not wrong; it is a preference, and the thing worth holding
+# is that each mode does what it says. Measured in both, at the same two widths.
+$Wwas  = $W
+$rwWas = $script:readWidth
+try {
+    $script:readWidth = 'measured'
+    $W = 1200.0
+    Lay
+    $docN = New-Object System.Windows.Documents.FlowDocument
+    Set-ReadMeasure -Doc $docN
+    $colNarrow = [double]$ui.PaneDoc.ActualWidth - $docN.PagePadding.Left - $docN.PagePadding.Right
+
+    $W = 2600.0
+    Lay
+    $docW = New-Object System.Windows.Documents.FlowDocument
+    Set-ReadMeasure -Doc $docW
+    $paneWide = [double]$ui.PaneDoc.ActualWidth
+    $colWide  = $paneWide - $docW.PagePadding.Left - $docW.PagePadding.Right
+    $ceil = ($script:ReadMeasureChars * $script:PaneSize * $script:PaneAdvanceEm) + $script:GutterW
+    Note ('at a {0:N0}px window: pane {1:N0}px -> column {2:N0}px (~{3:N0} chars), ceiling {4:N0}px' -f `
+          2600.0, $paneWide, $colWide, ($colWide / ($script:PaneSize * $script:PaneAdvanceEm)), $ceil)
+    if ($colWide -le $colNarrow + 1) {
+        Fail ('measured: the column did not grow with the pane at all - {0:N0}px then {1:N0}px' -f $colNarrow, $colWide)
+    } elseif ($colWide -gt $ceil + 3) {
+        Fail ('measured: the column grew past its ceiling, {0:N0}px against {1:N0}px - long lines are what the cap exists to prevent' -f $colWide, $ceil)
+    } else {
+        Pass ('measured: the column grows with the pane and stops at its ceiling ({0:N0}px -> {1:N0}px, cap {2:N0}px)' -f $colNarrow, $colWide, $ceil)
+    }
+
+    # 🔑 AND `full` HAS TO ACTUALLY USE THE PANE, which is the whole of what was
+    # asked for. Same width, same document, one setting apart.
+    $script:readWidth = 'full'
+    Lay
+    $docF = New-Object System.Windows.Documents.FlowDocument
+    Set-ReadMeasure -Doc $docF
+    $colFull = [double]$ui.PaneDoc.ActualWidth - $docF.PagePadding.Left - $docF.PagePadding.Right
+    if ($colFull -le $colWide + 1) {
+        Fail ('full: the column is {0:N0}px, no wider than measured gives ({1:N0}px) - the setting does nothing' -f $colFull, $colWide)
+    } elseif ($colFull -gt $paneWide + 1) {
+        Fail ('full: the column is {0:N0}px against a {1:N0}px pane - it overflows rather than fills' -f $colFull, $paneWide)
+    } else {
+        Pass ('full: the column uses the pane it is given ({0:N0}px of {1:N0}px, against measured''s {2:N0}px)' -f $colFull, $paneWide, $colWide)
+    }
+} finally {
+    $script:readWidth = $rwWas
+    $W = $Wwas
+    Lay
 }
 
 # ===========================================================================

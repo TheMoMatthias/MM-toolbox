@@ -2680,6 +2680,7 @@ $Pal = @{
     Ask        = $window.FindResource('HueAsk')
     Warn       = $window.FindResource('HueWarn')
     Ok         = $window.FindResource('HueOk')
+    Link       = $window.FindResource('HueLink')
 }
 
 # ===========================================================================
@@ -3172,7 +3173,7 @@ $FW_Normal = [System.Windows.FontWeights]::Normal
 # demand for the rare time you want more. Paying 130 ms on every selection so
 # that the rare case needs no click is the wrong way round.
 $script:TailBase = 98304
-$script:tailBytes = $script:TailBase
+$script:tailBytes = $script:TailBase; $script:tailAll = $false
 
 # 🔴 HOW MANY RECORDS THE READER MAY KEEP, SCALED TO WHAT WAS ASKED FOR.
 #
@@ -3192,12 +3193,49 @@ $script:tailBytes = $script:TailBase
 # would trade a pane that shows too little for one that hangs. Doubling the
 # bytes doubles the records, which is what the gesture already promises.
 function Get-SRTailRecords {
+    # 🔴 "ALL" HAS TO LIFT THE RECORD CAP TOO, and scaling it off the bytes is
+    # not enough to do that. A 40 KB conversation of three hundred short records
+    # gives a multiplier BELOW one, which clamps to 220 - so 'load all' on a
+    # small-but-chatty transcript would still cut it, and the cut would look
+    # exactly like the defect this whole control exists to fix.
+    if ($script:tailAll) { return 20000 }
     $mult = 1.0
     if ($script:TailBase -gt 0) { $mult = [double]$script:tailBytes / [double]$script:TailBase }
     if ($mult -lt 1.0) { $mult = 1.0 }
     $n = [int][Math]::Round(220 * $mult)
     if ($n -gt 20000) { $n = 20000 }
     return $n
+}
+
+# ---------------------------------------------------------------------------
+# THE WHOLE CONVERSATION, IN ONE PRESS.
+#
+# 🔴 'load earlier' USED TO DOUBLE THE BUDGET, and doubling from 96 KB is four
+# to six presses to reach the start of a long conversation - reported as having
+# to click it three or four times for a little history and never reaching the
+# rest. Doubling is the right shape for a cost you are trying to avoid paying;
+# it is the wrong shape for a button whose entire purpose is "show me the rest".
+#
+# 🪤 THE BUDGET IS SET FROM THE FILE'S OWN LENGTH, not to a large constant. Every
+# truncation test in this window is `file.Length -gt $script:tailBytes`, so a
+# budget a byte past the end is what makes the pane stop offering to load more -
+# and the labels that print the budget in KB keep printing a number that means
+# something.
+#
+# The click stays cheap for everyone who never presses this: the DEFAULT window
+# is unchanged at 96 KB, which is the gesture made all day. This is the rare one.
+$script:tailAll = $false
+function Expand-SRTailToAll {
+    $n = 0
+    try { $n = [int64](Get-Item -LiteralPath $script:docPath).Length } catch { $n = 0 }
+    # No path, or a file that has gone: ask for more than any transcript on this
+    # machine rather than refusing, so the press still does something.
+    if ($n -le 0) { $n = 64MB }
+    $want = [double]$n + 1024.0
+    if ($want -gt 2147483000.0) { $want = 2147483000.0 }
+    $script:tailBytes = [int]$want
+    $script:tailAll = $true
+    return $script:tailBytes
 }
 
 
@@ -3295,12 +3333,16 @@ function Add-SRInlineRuns {
         $boldTxt = $m.Groups[4].Value
         $italTxt = $m.Groups[5].Value
         $rest    = $m.Groups[6].Value
-        if ($before) { $Para.Inlines.Add((New-ReadRun -Text $before -Brush $Brush -Size $Size -Weight $Weight -Italic:$Italic)) }
+        if ($before) { Add-SRLinkedText -Para $Para -Text $before -Brush $Brush -Size $Size -Weight $Weight -Italic:$Italic }
         # Inline code was $size - 1.5, i.e. 10.5 against 12 prose - the smallest
         # thing in the document and the one most often a path you actually need
         # to read. Same size as everything else; the hue is what says it is code.
         if ($codeTxt) {
-            $Para.Inlines.Add((New-ReadRun -Text $codeTxt -Brush $Pal.TextMax -Size $Size -Mono))
+            # 🔑 INLINE CODE IS WHERE THE PATHS ARE. A backticked span in a reply
+            # is a file name far more often than it is anything else, which is
+            # why this same block already carries a note about it being "the one
+            # most often a path you actually need to read".
+            Add-SRLinkedText -Para $Para -Text $codeTxt -Brush $Pal.TextMax -Size $Size -Mono
         } elseif ($boldTxt) {
             if ($Depth -lt 3) {
                 Add-SRInlineRuns -Para $Para -Text $boldTxt -Brush $Pal.TextMax -Size $Size -Weight 'SemiBold' -Italic:$Italic -Depth ($Depth + 1)
@@ -3315,7 +3357,161 @@ function Add-SRInlineRuns {
             }
         }
     }
-    if ($rest) { $Para.Inlines.Add((New-ReadRun -Text $rest -Brush $Brush -Size $Size -Weight $Weight -Italic:$Italic)) }
+    if ($rest) { Add-SRLinkedText -Para $Para -Text $rest -Brush $Brush -Size $Size -Weight $Weight -Italic:$Italic }
+}
+
+# ===========================================================================
+# LINKS: WHAT WAS MADE, AND WHERE IT WENT
+# ===========================================================================
+# 🔴 A CONVERSATION NAMES THINGS THAT EXIST OUTSIDE IT - an artifact URL, a file
+# it just wrote - and none of them were pressable. Asked for as: highlight them
+# so it is directly observable that this is a link, and Ctrl+click to open it,
+# the same as the terminal does.
+#
+# 🪤 Ctrl+CLICK, NEVER A PLAIN ONE. A plain click in a reading pane starts a text
+# SELECTION, and taking that gesture away to open a browser would break copying
+# a path out of a transcript - which is the thing these very links are made of.
+# The terminal's own rule, and the operator asked for it by name.
+#
+# 🪤 A FILE IS SHOWN IN ITS FOLDER, NEVER LAUNCHED. `explorer /select` cannot
+# execute what it points at; the Windows default for a .ps1 can. The operator
+# chose that deliberately when it was put to him - the convenient option opens a
+# script by running it.
+$script:SR_RxUrl = [regex]::new('https?://[^\s<>"''\)\]}]+')
+# The tools that CREATE or CHANGE a file. A Read is not one of them: linking
+# everything a session ever looked at would put a link on half the document and
+# teach the eye to ignore all of them.
+$script:SR_FileTools = @('write', 'edit', 'multiedit', 'notebookedit', 'artifact')
+$script:docLinkPaths = @{}
+$script:docLinkRx = $null
+
+# Harvested from the tool records, not from path-shaped text, so a link points
+# at something a tool actually wrote rather than at an example in a sentence.
+function Set-SRDocLinks { param($Turns)
+    $script:docLinkPaths = @{}
+    $script:docLinkRx = $null
+    $n = 0
+    foreach ($t in @($Turns)) {
+        if ("$($t.Kind)" -ne 'run') { continue }
+        foreach ($c in @($t.Calls)) {
+            if ($n -ge 400) { break }
+            $nm = "$($c.Name)".Trim().ToLower()
+            if ($script:SR_FileTools -notcontains $nm) { continue }
+            $p = "$($c.Arg)".Trim().Trim([char]34)
+            # A one-word argument that is not a path, and an argument that is a
+            # whole sentence, are both wrong here - the first links nothing, the
+            # second would never match anything in prose anyway.
+            if ($p.Length -lt 3 -or $p.Length -gt 400) { continue }
+            # 🪤 NO Test-Path HERE. This runs while the document is being built,
+            # on the gesture made all day, and four hundred stat calls is 40 ms
+            # of it. Whether the file is still there is decided when the link is
+            # PRESSED, which is also when the answer is worth having.
+            $k = $p.ToLower()
+            if (-not $script:docLinkPaths.ContainsKey($k)) { $script:docLinkPaths[$k] = $p; $n++ }
+        }
+    }
+}
+
+# Built once per document and only if something asks. Longest first, so a path
+# never matches as the prefix of a longer one that is also in the set.
+function Get-SRDocLinkRx {
+    if ($script:docLinkRx) { return $script:docLinkRx }
+    if (-not $script:docLinkPaths.Count) { return $null }
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($p in ($script:docLinkPaths.Values | Sort-Object { - $_.Length })) {
+        $null = $parts.Add([regex]::Escape($p))
+    }
+    try {
+        $script:docLinkRx = [regex]::new(($parts -join '|'), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    } catch { $script:docLinkRx = $null }
+    return $script:docLinkRx
+}
+
+function Open-SRLinkTarget { param([string]$Target)
+    $t = "$Target".Trim()
+    if (-not $t) { return }
+    # 🔴 http AND https ONLY. Start-Process hands anything with a scheme to
+    # whatever is registered for it, and a transcript is text this window did not
+    # write - so the set of schemes it may launch is the two that mean "a web
+    # page" and nothing else.
+    if ($t -match '^(?i)https?://') {
+        try { Start-Process $t } catch { Set-Status ('could not open that link - ' + $_.Exception.Message) 'bad' }
+        return
+    }
+    if (-not (Test-Path -LiteralPath $t)) {
+        Set-Status 'that file is not there any more' 'warn'
+        return
+    }
+    $full = $t
+    try { $full = (Resolve-Path -LiteralPath $t).Path } catch { }
+    try {
+        Start-Process 'explorer.exe' -ArgumentList ('/select,"{0}"' -f $full)
+        Set-Status ('showed {0} in its folder' -f (Get-SRPathLeaf $full)) 'ok'
+    } catch { Set-Status ('could not show that file - ' + $_.Exception.Message) 'bad' }
+}
+
+function New-SRLinkRun {
+    param([string]$Text, [string]$Target, [double]$Size = 0, [switch]$Mono)
+    $r = New-ReadRun -Text $Text -Brush $Pal.Link -Size $Size -Mono:$Mono
+    $r.TextDecorations = [System.Windows.TextDecorations]::Underline
+    $r.Cursor = 'Hand'
+    $r.Tag = $Target
+    $r.ToolTip = ('Ctrl+click to open:  ' + $Target)
+    $r.Add_PreviewMouseLeftButtonDown({
+        param($s, $e)
+        if (([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -eq 0) { return }
+        Open-SRLinkTarget "$($s.Tag)"
+        $e.Handled = $true
+    })
+    return $r
+}
+
+# One run of prose, split into ordinary text and the things in it that can be
+# opened. Called from Add-SRInlineRuns in place of a bare New-ReadRun.
+function Add-SRLinkedText {
+    param($Para, [string]$Text, $Brush, [double]$Size = 0,
+          [string]$Weight = 'Normal', [switch]$Italic, [switch]$Mono)
+    if (-not $Text) { return }
+    # 🪝 TWO CHEAP GATES BEFORE ANY REGEX. This is called for every piece of
+    # prose in the document on every build, and the overwhelming majority of them
+    # contain neither a URL nor a path this session wrote.
+    $hasUrl = ($Text.IndexOf('http', [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+    $rx = $null
+    if ($script:docLinkPaths.Count) { $rx = Get-SRDocLinkRx }
+    if (-not $hasUrl -and -not $rx) {
+        $Para.Inlines.Add((New-ReadRun -Text $Text -Brush $Brush -Size $Size -Weight $Weight -Italic:$Italic -Mono:$Mono))
+        return
+    }
+    # Every match from both patterns, in the order they appear, non-overlapping.
+    $hits = New-Object System.Collections.Generic.List[object]
+    if ($hasUrl) {
+        foreach ($m in $script:SR_RxUrl.Matches($Text)) {
+            $null = $hits.Add([PSCustomObject]@{ At = $m.Index; Len = $m.Length; Text = $m.Value })
+        }
+    }
+    if ($rx) {
+        foreach ($m in $rx.Matches($Text)) {
+            $null = $hits.Add([PSCustomObject]@{ At = $m.Index; Len = $m.Length; Text = $m.Value })
+        }
+    }
+    if (-not $hits.Count) {
+        $Para.Inlines.Add((New-ReadRun -Text $Text -Brush $Brush -Size $Size -Weight $Weight -Italic:$Italic -Mono:$Mono))
+        return
+    }
+    $pos = 0
+    foreach ($h in ($hits | Sort-Object At)) {
+        # A path inside a URL, or two patterns over the same characters: the
+        # first one wins and the second is skipped rather than drawn twice.
+        if ($h.At -lt $pos) { continue }
+        if ($h.At -gt $pos) {
+            $Para.Inlines.Add((New-ReadRun -Text $Text.Substring($pos, $h.At - $pos) -Brush $Brush -Size $Size -Weight $Weight -Italic:$Italic -Mono:$Mono))
+        }
+        $Para.Inlines.Add((New-SRLinkRun -Text $h.Text -Target $h.Text -Size $Size -Mono:$Mono))
+        $pos = $h.At + $h.Len
+    }
+    if ($pos -lt $Text.Length) {
+        $Para.Inlines.Add((New-ReadRun -Text $Text.Substring($pos) -Brush $Brush -Size $Size -Weight $Weight -Italic:$Italic -Mono:$Mono))
+    }
 }
 
 function New-ReadRun {
@@ -4692,8 +4888,20 @@ function Add-RunDetail { param($Panel, $Calls)
         $null = $hd.Inlines.Add((New-ReadRun -Text "$($c.Name)".ToUpper() -Brush $hue))
         $argHead = Get-SRHeadLine ("$($c.Arg)".Trim()) 120
         if ($argHead) {
-            $null = $hd.Inlines.Add((New-ReadRun -Text ('   ' + $argHead) -Brush $Pal.TextLow `
-                                                 -Size $script:MonoSize -Mono))
+            # 🔴 THE FILE A CALL WROTE IS THE LINK THE OPERATOR ACTUALLY WANTS.
+            # This line already names it; it was simply grey text. When the call
+            # is one that CREATES or CHANGES a file, the name becomes the way to
+            # it - which is the whole of "artifacts or any files created are also
+            # highlighted, so it's directly observable".
+            $argKey = "$($c.Arg)".Trim().Trim([char]34).ToLower()
+            if ($script:docLinkPaths.ContainsKey($argKey)) {
+                $null = $hd.Inlines.Add((New-ReadRun -Text '   ' -Brush $Pal.TextLow -Size $script:MonoSize -Mono))
+                $null = $hd.Inlines.Add((New-SRLinkRun -Text $argHead -Target $script:docLinkPaths[$argKey] `
+                                                       -Size $script:MonoSize -Mono))
+            } else {
+                $null = $hd.Inlines.Add((New-ReadRun -Text ('   ' + $argHead) -Brush $Pal.TextLow `
+                                                     -Size $script:MonoSize -Mono))
+            }
             # 🪤 A STRING, NOT A ToolTip OBJECT. WPF builds the ToolTip
             # control on demand at hover time, so assigning a string here is a
             # property set and not a hosted element - which is the whole
@@ -4981,8 +5189,19 @@ function Add-ReadLabel {
 $script:toolView = 'folded'
 # MEASURED BY DEFAULT. An uncapped line on a maximised pane is ~120 characters,
 # and tracking back to the start of the next one is exactly what makes long
-# replies tiring to read. `readingWidth: full` in the config restores the fill.
-$script:readWidth = 'measured'
+# replies tiring to read.
+#
+# 🔴 THE DEFAULT IS `full` NOW, AT THE OPERATOR'S REQUEST. Reported as text that
+# does not scale with the window: the pane grows, the words do not, and on a
+# wide monitor a measured column leaves most of the pane empty. The measured
+# reasoning above is not wrong - it is a preference, and it was the wrong one to
+# make the default for someone running this maximised.
+#
+# 🪤 A CONFIG THAT NAMES THE VALUE STILL WINS, which is why changing this line
+# does not by itself reach anyone who has already got `readingWidth` in their
+# file - it has to be flipped in the Settings panel, and it is the operator's
+# file so nothing here may write it.
+$script:readWidth = 'full'
 try {
     $cfg0 = Get-SRConfig
     $tv = "$($cfg0.transcriptTools)".Trim().ToLower()
@@ -5129,7 +5348,7 @@ function Build-ReadDocument {
         $bd = New-Object System.Windows.Controls.Border
         $bd.Background = [System.Windows.Media.Brushes]::Transparent
         $bd.Cursor = 'Hand'
-        $bd.ToolTip = 'Load an earlier slice of this conversation (or press L)'
+        $bd.ToolTip = 'Load the whole conversation (or press L)'
         # 🔴 THIS ROW CARRIED TWO MARKERS AND WORE THE COST OF BOTH. New-RailBlock
         # already draws this block's dot in the gutter at x=44; the caret below it
         # was a SECOND marker, living inside the text column, and its glyph plus a
@@ -5144,7 +5363,9 @@ function Build-ReadDocument {
         # relocate. It also spent a shape the operator had already ruled out:
         # one dot, colour only, no competing glyphs.
         $lb = New-Object System.Windows.Controls.TextBlock
-        $lb.Text = ('load earlier   showing the last {0} KB of a longer conversation' -f [int]($script:tailBytes / 1KB))
+        # It says what it will do AND what you are looking at now. "load earlier"
+        # described a slice, which is what it used to fetch; it fetches the lot.
+        $lb.Text = ('load the whole conversation   showing the last {0} KB of a longer one' -f [int]($script:tailBytes / 1KB))
         $lb.Foreground = $Pal.TextDim
         $lb.FontSize = $script:PaneSize
         $lb.FontFamily = $script:ProseFace
@@ -5153,9 +5374,9 @@ function Build-ReadDocument {
         # 🔴 AND SO WAS 'load earlier' - see New-FoldHeader for the capture.
         $bd.Add_PreviewMouseLeftButtonDown({
             param($s, $e)
-            $script:tailBytes = $script:tailBytes * 2
+            $null = Expand-SRTailToAll
             Update-Document
-            Set-Status ('loaded the last {0} KB' -f [int]($script:tailBytes / 1KB))
+            Set-Status 'loaded the whole conversation'
             $e.Handled = $true
         })
         $doc.Blocks.Add((New-RailBlock -Child $bd -Kind 'system' -Top 0 -Bottom 8))
@@ -5180,6 +5401,11 @@ function Build-ReadDocument {
     # Folding blocks into turns is not free, and Set-ReadDocument has already
     # done it to decide whether this build was needed at all. Reuse it.
     if ($Turns) { $script:docTurns = @($Turns) } else { $script:docTurns = @(Get-ReadTurns $Blocks) }
+    # 🔑 BEFORE THE LOOP, NOT DURING IT. A file written in the third turn is
+    # named in prose in the fifth AND sometimes in the first - so harvesting as
+    # the document is drawn would link the later mentions and miss the earlier
+    # ones, which reads as a link that works only sometimes.
+    Set-SRDocLinks $script:docTurns
     foreach ($t in $script:docTurns) {
         $before = $doc.Blocks.Count
         Add-ReadTurn -Doc $doc -Turn $t
@@ -7574,6 +7800,60 @@ function Test-AtBottom {
     return (($sv.ScrollableHeight - $sv.VerticalOffset) -le 24)
 }
 
+# ---------------------------------------------------------------------------
+# THE WHEEL, AT TWICE WHAT WPF GIVES IT.
+#
+# 🔴 A NOTCH IS THREE LINES BY DEFAULT and a line in this pane is around 20px,
+# so a full turn of the wheel moves a fraction of what the hand expects on a
+# transcript measured in thousands of lines. Reported as scrolling that is a
+# little too slow. Two, not three: past 2x a single notch overshoots the
+# paragraph you were reading, which is a different complaint and a worse one.
+#
+# 🪤 THE STEP IS THE PANE'S OWN TYPE SIZE, not a pixel constant - so it stays
+# right when the zoom setting moves, which a constant would not.
+$script:PaneWheelFactor = 2.0
+$ui.PaneDoc.Add_PreviewMouseWheel({
+    param($s, $e)
+    $sv = Get-PaneScroller
+    if (-not $sv -or $sv.ScrollableHeight -le 0) { return }
+    # 🪤 A NESTED FOLD KEEPS THE WHEEL WHILE IT HAS SOMEWHERE TO GO. This is a
+    # PREVIEW handler, so it fires BEFORE the fold's own one - and taking the
+    # wheel unconditionally here would stop every command's output scrolling,
+    # which is the defect that handler was written to fix, reintroduced from
+    # above. Same rule, applied from the other end.
+    $n = $e.OriginalSource
+    for ($d = 0; $d -lt 12 -and $n; $d++) {
+        if ($n -is [System.Windows.Controls.ScrollViewer]) {
+            if ([object]::ReferenceEquals($n, $sv)) { break }
+            if ($n.ScrollableHeight -gt 0) {
+                $atTop = ($n.VerticalOffset -le 0)
+                $atBot = ($n.VerticalOffset -ge $n.ScrollableHeight)
+                if (-not (($e.Delta -gt 0 -and $atTop) -or ($e.Delta -lt 0 -and $atBot))) { return }
+            }
+            break
+        }
+        # A Run or a Paragraph is a ContentElement and not in the visual tree at
+        # all: GetParent throws, which means the wheel is over prose and the pane
+        # is the thing to scroll.
+        try { $n = [System.Windows.Media.VisualTreeHelper]::GetParent($n) } catch { break }
+    }
+    $sv.ScrollToVerticalOffset($sv.VerticalOffset - (Get-SRWheelStep $e.Delta))
+    $e.Handled = $true
+})
+
+# How far one wheel event moves the pane. Its own function so the suite can hold
+# it to the factor: a handler that quietly went back to 1x would look identical
+# from outside, and "scrolling feels the same" is not something a test can see.
+function Get-SRWheelStep { param([double]$Delta)
+    $lines = 3
+    try { $lines = [int][System.Windows.SystemParameters]::WheelScrollLines } catch { }
+    # -1 means "a page" on Windows, and anything wild is a machine misreporting.
+    if ($lines -lt 1 -or $lines -gt 12) { $lines = 3 }
+    $lineH = 20.0
+    try { if ($script:PaneSize -gt 0) { $lineH = [double]$script:PaneSize * 1.55 } } catch { }
+    return (($Delta / 120.0) * $lines * $lineH * $script:PaneWheelFactor)
+}
+
 function Move-ToBottom {
     $sv = Get-PaneScroller
     if (-not $sv) {
@@ -8076,7 +8356,7 @@ function Show-Selected { param([switch]$Force)
         Show-Ask $null
         if ($same -and -not $Force) { return }
         if (-not $same) {
-            $script:tailBytes = $script:TailBase
+            $script:tailBytes = $script:TailBase; $script:tailAll = $false
             $script:docToBottom = $true
         }
         Update-Document
@@ -8128,7 +8408,7 @@ function Show-Selected { param([switch]$Force)
     # content moved", not "this is a new conversation", and resetting here undid
     # 'load earlier' on every forced refresh - the exact defect the $same guard
     # above was added to fix, reintroduced one line below it.
-    if (-not $same) { $script:tailBytes = $script:TailBase }
+    if (-not $same) { $script:tailBytes = $script:TailBase; $script:tailAll = $false }
     # A DIFFERENT conversation always opens at its newest line. The parse is
     # off-thread now, so the document does not exist on the next line - the
     # intent is carried and honoured by whoever builds it.
@@ -12643,11 +12923,13 @@ $window.Add_PreviewKeyDown({
         }
     }
     if ($e.Key -eq 'L') {
-        # LOAD EARLIER. The pane starts at a tail budget because a 2.5 MB
-        # conversation is a multi-second freeze; this doubles it on demand.
-        $script:tailBytes = $script:tailBytes * 2
+        # LOAD THE WHOLE CONVERSATION. The pane starts at a tail budget because a
+        # 2.5 MB conversation is a multi-second freeze; this takes the budget off
+        # on demand. The key and the control do the same thing through the same
+        # function - they used to carry two copies of the doubling.
+        $null = Expand-SRTailToAll
         Update-Document
-        Set-Status ('loaded the last {0} KB' -f [int]($script:tailBytes / 1KB))
+        Set-Status 'loaded the whole conversation'
         $e.Handled = $true; return
     }
 })

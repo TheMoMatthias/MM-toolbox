@@ -206,6 +206,12 @@
     <SolidColorBrush x:Key="HueBad"   Color="#E2687E"/>   <!-- a call that failed -->
     <SolidColorBrush x:Key="HueAsk"   Color="#5EC8B7"/>   <!-- a question waiting on you -->
     <SolidColorBrush x:Key="HueWarn"  Color="#D9B45F"/>
+    <!-- A LINK, AND ITS OWN HUE. Every other colour in this pane already means
+         something - HueIn is claude speaking, HueAsk is a question waiting,
+         HueOk is a state that is fine - so a link drawn in one of those would be
+         a second meaning on a colour that already had one. This is the only blue
+         that says "pressable" and nothing else. -->
+    <SolidColorBrush x:Key="HueLink"  Color="#7FA6E8"/>
     <!-- A context window with room left. Its own green rather than the teal
          HueAsk, which already means "a question is waiting on you" - a bar that
          borrowed it would have said that on every healthy session. -->

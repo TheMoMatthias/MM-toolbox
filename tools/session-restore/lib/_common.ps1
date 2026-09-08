@@ -6063,7 +6063,49 @@ function Test-SRMachineUserRecord { param([string]$Text)
     return (-not "$s".Trim())
 }
 
+# ---------------------------------------------------------------------------
+# A SLASH COMMAND IS A NAME, NOT ITS INSTRUCTIONS.
+#
+# 🔴 Claude Code EXPANDS a slash command into the whole prompt body and files it
+# as a user record. So invoking a skill of two hundred lines put two hundred
+# lines on screen in the operator's own voice, under his marker. His words: "it
+# looks like I am pasting the entire content, which is a little bit misleading."
+#
+# 🪤 THE NAME AND THE ARGUMENTS, AND NOTHING ELSE OUT OF THAT RECORD. The
+# expansion is not a longer version of what he typed - it is a different text,
+# written by the skill - so there is nothing in it to trim down to. What he
+# typed is exactly `<command-name>` plus `<command-args>`, and that is the whole
+# of what he said.
+$script:SR_RxCmdName = [regex]::new('(?s)<command-name>\s*(.*?)\s*</command-name>')
+$script:SR_RxCmdArgs = [regex]::new('(?s)<command-args>\s*(.*?)\s*</command-args>')
+
+function Get-SRSlashCommandText { param([string]$Text)
+    if (-not $Text) { return '' }
+    # Cheap gate before two regexes: the overwhelming majority of records carry
+    # no command envelope at all, and this runs once per record per repaint.
+    if ($Text.IndexOf('<command-name>', [System.StringComparison]::Ordinal) -lt 0) { return '' }
+    $n = $script:SR_RxCmdName.Match($Text)
+    if (-not $n.Success) { return '' }
+    $name = "$($n.Groups[1].Value)".Trim()
+    if (-not $name) { return '' }
+    # Some records carry the slash, some do not. One shape on screen either way.
+    if (-not $name.StartsWith('/', [System.StringComparison]::Ordinal)) { $name = '/' + $name }
+    # 🪤 NOT $args. That is a PowerShell AUTOMATIC VARIABLE, and writing to it
+    # inside a function is legal, silent, and exactly the class of collision that
+    # turned Get-ProjectLabel's cache into a String earlier in this same file's
+    # history.
+    $cmdArgs = ''
+    $a = $script:SR_RxCmdArgs.Match($Text)
+    if ($a.Success) { $cmdArgs = "$($a.Groups[1].Value)".Trim() }
+    if ($cmdArgs) { return ($name + ' ' + $cmdArgs) }
+    return $name
+}
+
 function New-SRUserBlock { param([string]$Text)
+    # Before anything else: a record carrying a command envelope IS that command,
+    # whatever else was pasted in beside it.
+    $slash = Get-SRSlashCommandText $Text
+    if ($slash) { return (New-Block 'you' '' $slash '') }
     $m = $script:SR_RxMsgIn.Match($Text)
     if (-not $m.Success) {
         # Not from another session. Is it from a person at all?
