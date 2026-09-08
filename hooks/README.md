@@ -1,48 +1,76 @@
 # hooks
 
-UserPromptSubmit / Stop hooks for the Claude Code harness. Each hook is fail-open (any error -> exit 0; never blocks the session).
+Hooks for the Claude Code harness. Each is fail-open (any error -> exit 0; never blocks a session).
+
+**`install.ps1` now registers these in `~/.claude/settings.json` for you.** It used not to, and
+that gap is the reason this README was rewritten — see *Wiring* below.
 
 | Hook | Type | Purpose |
 |---|---|---|
-| `grill-gate.ps1` | UserPromptSubmit | Fires on **every** prompt, unconditionally. Injects a short, content-blind reminder to apply the mandatory grill gate (`CLAUDE.md` -> "Mandatory grill gate") -- it never reads the prompt to decide anything, it only guarantees the check gets considered every turn instead of relying on the model remembering under mid-session momentum. The actual scope judgment (trivial / light-touch / non-trivial / major / top-tier) stays entirely with the model each time. Only names `/grill-with-docs` or `/grill-me` if they're actually installed on the machine. |
-| `verify-loop.ps1` | Stop (`asyncRewake`) | Self-healing verify loop. Inert unless armed. Arm by writing `<repo>/.claude/verify-loop.active` (JSON: `{verify_command, attempt:0, max_attempts:5, deadline:<epoch+1800>, status:"active"}`). While armed, every Stop re-runs the verify command and re-wakes the model until it passes; capped at 5 attempts AND 30 minutes. On GREEN it walks the model through a safe commit-and-push (never `git add -A`, Critical-tier gate). Disarm = delete the sentinel. See global `CLAUDE.md` -> "Self-healing verify loop" for the full contract. |
+| `grill-gate.ps1` | UserPromptSubmit | Fires on **every** prompt, unconditionally, and never reads the prompt to decide anything. Injects a short reminder whose default is **PROCEED**: state your scope read in one line and start working. It names the narrow set of cases that justify a question (irreversible/outward-facing, a required named approval, or a genuinely consequential ambiguity nothing on hand settles) and explicitly forbids the old "proceed / light-touch / full grill" menu. |
 
-## `grill-gate.ps1` history — two very different designs
+## Retired — `hooks/retired/`, kept for the record, **do not register**
 
-**v1 (removed):** pattern-matched prompt text for refactor-class keywords (structural / systemic / risk / tooling-sync buckets) and only fired when something matched. It kept mis-firing — e.g. on "critically evaluate X" whenever X happened to contain a trigger word like "integrate" — because keyword regex fundamentally cannot distinguish a task from a question or a discussion. That's a *content-classification* problem, and a pre-flight hook that never actually reads the request in context is the wrong tool for it.
+| Hook | Retired | Why |
+|---|---|---|
+| `objective-loop.ps1` | 2026-09-08, one day old | A Stop hook that refused to let a session end while its objective list held open items. It **worked** — on its first live run it caught a `%TEMP%` leak, a false claim made to the operator, and a design defect in itself, all past a confident stopping point. It was still removed, on operator instruction, because **it could only ever read a list the model itself wrote**, so it could not distinguish "work remains" from "there is nothing left to do", and applied the same pressure to continue either way. It also, in one session, overrode the operator's own instruction to stop — which is disqualifying on its own. Replaced by judgement (global `CLAUDE.md` -> "Continuing without being told") and by the `continue-work` skill, which makes autonomy something the operator switches ON rather than something a hook imposes forever. |
+| `verify-loop.ps1` | 2026-09-08 | Self-healing verify loop; armed by a `<repo>/.claude/verify-loop.active` sentinel, re-ran a verify command until it passed. **It was never registered in `settings.json` on any machine and therefore never ran once**, while the global `CLAUDE.md` described it as installed for weeks. Superseded in intent by the above, and by CI. Its real lesson is the *Wiring* section below. |
 
-**v2 (current):** stopped trying to classify content at all. It fires on every single prompt with the same short, generic reminder regardless of what the prompt says, and leaves the actual "is this trivial / light-touch / non-trivial / major / top-tier" judgment to the model, every time, informed by whatever the model can see of the request. This trades "hook decides" for "hook guarantees the model decides" — it can no longer misclassify anything because it doesn't classify anything; the only thing it does is make sure the check isn't silently skipped once a long session's execute-mode momentum makes it easy to plow through a new non-trivial ask without re-triggering alignment.
+🧠 **The lesson both retirements share, and it is worth more than either hook: a mechanism that
+coerces the MODEL must never be able to coerce the PERSON, and a mechanism nobody verified is
+indistinguishable from one that works.**
 
-Note that the batched, selectable `AskUserQuestion` format this whole thing exists to protect lives in `grill-with-docs`'s own `SKILL.md`, not the hook, in either version — the hook only ever controlled *whether the check gets surfaced*, never *how the questions get asked once it is*.
+## `grill-gate.ps1` history — three designs, two failures
+
+**v1 (removed):** pattern-matched prompt text for refactor-class keywords and only fired on a
+match. It kept mis-firing — e.g. on "critically evaluate X" whenever X contained a trigger word
+— because keyword regex fundamentally cannot distinguish a task from a question from a
+discussion. That is a *content-classification* problem, and a pre-flight hook that never reads
+the request in context is the wrong tool for it.
+
+**v2 (removed):** stopped classifying content entirely and fired on every prompt with the same
+generic reminder, leaving the judgement to the model. Correct as far as it went — but it told
+the model to **ask** a selectable "proceed / light-touch / full grill" question every time.
+Measured outcome: the operator chose `proceed` every single time it was shown. A question whose
+answer is known in advance costs a full round trip and buys nothing, and it trained sessions to
+treat stopping-to-ask as the normal shape of work.
+
+**v3 (current):** keeps the unconditional fire — momentum really does bury a scope check — and
+**inverts the default to PROCEED**. The model states its read in one line and starts. A question
+is reserved for cases where being wrong is expensive and unrecoverable. Deep alignment stays
+available, but opt-**in** by the operator (`/grill-with-docs`), not opt-out by the model.
 
 ## Wiring
 
-Each hook is registered in `~/.claude/settings.json` (which is NOT in this repo — it's machine-local). **Recommended registration** — pass the path as an `args` entry rather than embedding it in a shell string, so no shell ever gets a chance to parse/mangle it:
+🪤 **LINKING A HOOK IS NOT INSTALLING IT, AND THE DIFFERENCE IS INVISIBLE FROM THE FILESYSTEM.**
+This README used to say settings.json "must be re-typed per machine with that machine's actual
+username". The measured consequence: `verify-loop.ps1` sat hardlinked into `~/.claude/hooks/`
+for weeks while `settings.json` registered **no `Stop` hook at all**, so it never ran — and the
+global `CLAUDE.md` described it as installed the entire time. Nobody re-derived it, because a
+linked-but-unregistered hook and a working one look identical.
+
+**So `install.ps1` now does both** (section 2b): it links the file *and* registers it, merging
+into whatever `settings.json` already exists, backing the file up first, validating the result
+before writing, and verifying by marker afterwards. Re-running is a true no-op. Pass
+`-NoHookRegistration` to skip it if you maintain the hooks block by hand.
+
+Scope is deliberately narrow — **hook entries only**. Permissions, `autoMode`, model, statusLine
+and everything else in `settings.json` stay yours, per machine.
+
+The shape it writes:
 
 ```json
 {
   "hooks": {
     "UserPromptSubmit": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",
             "command": "powershell.exe",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\<you>\\.claude\\hooks\\grill-gate.ps1"]
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "powershell.exe",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\<you>\\.claude\\hooks\\verify-loop.ps1"],
-            "asyncRewake": true
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\<you>\\.claude\\hooks\\grill-gate.ps1"],
+            "timeout": 5,
+            "statusMessage": "grill-gate"
           }
         ]
       }
@@ -51,22 +79,28 @@ Each hook is registered in `~/.claude/settings.json` (which is NOT in this repo 
 }
 ```
 
-The Stop hook is inert (exit 0) unless a project has `<repo>/.claude/verify-loop.active` — so registering it globally is safe. `grill-gate.ps1` always produces output (unless neither `grill-with-docs` nor `grill-me` is installed on the machine) — that's intentional, see above.
-
-After `install.ps1` symlinks `~/.claude/hooks` to this repo, settings.json keeps working — paths don't change, so `args` never goes stale (it must, however, be re-typed per machine with that machine's actual username).
-
 ### Why `args`, not a `%VAR%` / `$env:VAR` shell string
 
-This wiring broke twice, in two different ways, on two different real machines, both trying to reference the home directory inside a single `command` string:
+This wiring broke twice, in two different ways, on two different real machines, both trying to
+reference the home directory inside a single `command` string:
 
-1. `%USERPROFILE%` (cmd/batch syntax) failed with `The argument '%USERPROFILE%\.claude\hooks\grill-gate.ps1' to the -File parameter does not exist` — whatever invoked the command didn't expand cmd-style `%VAR%` syntax, so PowerShell received it as a literal path containing percent signs.
-2. `$env:USERPROFILE` (PowerShell syntax) — which fixed machine 1 — then failed on machine 2 with `Processing -File ':USERPROFILE\.claude\hooks\grill-gate.ps1' failed`. That mangled path is the signature of a **POSIX shell** (bash/sh), not PowerShell, parsing the string first: `$env` reads as an unset shell variable (-> empty), leaving the literal `:USERPROFILE...` behind.
+1. `%USERPROFILE%` (cmd/batch syntax) failed with `The argument '%USERPROFILE%\.claude\hooks\grill-gate.ps1' to the -File parameter does not exist` — whatever invoked the command didn't expand cmd-style `%VAR%`, so PowerShell received a literal path containing percent signs.
+2. `$env:USERPROFILE` (PowerShell syntax) — which fixed machine 1 — then failed on machine 2 with `Processing -File ':USERPROFILE\.claude\hooks\grill-gate.ps1' failed`. That mangled path is the signature of a **POSIX shell** parsing the string first: `$env` reads as an unset shell variable (-> empty), leaving the literal `:USERPROFILE...`.
 
-The conclusion still applies to any hook wired this way: **which shell actually parses a hook's `command` string is not guaranteed to be the same across machines/installs**, so no single `%VAR%` or `$env:VAR` syntax is safe to standardize on. The `args` array sidesteps the whole question — each entry is passed as a literal argv token, so nothing tokenizes or expands the path string regardless of what (if anything) sits between Claude Code and the `powershell.exe` process. The only cost is that the absolute path must be **hardcoded per machine** (swap `<you>` for the real username) rather than resolved from an env var — acceptable because `settings.json` is already machine-local and never synced by this repo.
+**Which shell actually parses a hook's `command` string is not guaranteed across machines**, so
+no single `%VAR%` or `$env:VAR` syntax is safe to standardise on. The `args` array sidesteps the
+question entirely — each entry is one literal argv token. The cost is an absolute path, which is
+why `install.ps1` resolves it from `-ClaudeHome` at install time rather than hardcoding one.
+
+🪤 **Also why the registration splices TEXT rather than round-tripping JSON:** PowerShell 5.1's
+`ConvertTo-Json` escapes `'`, `<`, `>` and `&` as `\uXXXX`, which would mangle the English prose
+in your `autoMode` strings on every install. So it **parses to decide** and **splices to apply**,
+validating before it writes.
 
 ## Notes
 
-- **ASCII-only.** PowerShell .ps1 files in this repo MUST be ASCII (no curly quotes, no `→`, no `≥` — the hook stream chokes on UTF-16 BOMs and the heredocs become unparseable). Use `>=` and `->` instead.
-- **Fail-open.** Every hook starts with `$ErrorActionPreference = 'Stop'` and an outer try/catch that exits 0 on any error. A broken hook should never block a prompt.
-- **No interactive prompts.** Hooks run non-interactively. Use `Console::IsInputRedirected` guard to skip when stdin isn't piped.
-- **Windows path wiring.** Use the `args`-array form with a hardcoded absolute path, not a `%VAR%` / `$env:VAR` shell string — which shell parses `command` is not guaranteed across machines. See the "Why" section above.
+- **ASCII-only.** `.ps1` files here MUST be ASCII (no curly quotes, no `→`, no `≥`). PS 5.1 reads `.ps1` as ANSI and non-ASCII corrupts the parse; heredocs become unparseable. Use `>=` and `->`.
+- **Fail-open.** Every hook starts with `$ErrorActionPreference = 'Stop'` and an outer try/catch that exits 0 on any error. A broken hook must never block a prompt.
+- **No interactive prompts.** Hooks run non-interactively. Guard with `[Console]::IsInputRedirected` so a hook never blocks waiting on stdin.
+- **Test a hook by piping it real stdin**, not by reading it. Both retired hooks are a lesson in mechanisms nobody exercised; `objective-loop.ps1` was only trustworthy because 46 assertions drove every branch with real piped payloads.
+- 🔴 **A hook must never be able to override the operator.** If you write one that can block, give it an unconditional, unmissable way out and print that way out in the blocking message itself.

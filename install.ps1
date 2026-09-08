@@ -8,7 +8,14 @@
 # (skills/workflow/<skill>, agents/core/<agent>.md). install.ps1 bridges the two:
 # each skill/agent is symlinked back to the flat ~/.claude/ location it expects.
 # This also leaves any existing items in ~/.claude/hooks/skills/agents that AREN'T
-# in MM-toolbox (e.g. ~/.claude/hooks/verify-loop.ps1) UNTOUCHED.
+# in MM-toolbox UNTOUCHED. (This comment used to cite ~/.claude/hooks/verify-loop.ps1
+# as the example of such a file. It was WRONG: verify-loop.ps1 was in this repo and
+# hardlinked, so the "untouched" claim did not apply to it. That hook is now retired.)
+#
+# 🪤 LINKING A HOOK IS NOT INSTALLING IT. See section 2b: this installer also writes
+# the registration into ~/.claude/settings.json, because for weeks it did not, and a
+# Stop hook sat linked-but-unregistered on a real machine and never ran once while the
+# global CLAUDE.md described it as installed.
 
 # 🪤 [CmdletBinding()] is load-bearing, not decoration. A plain param() block puts
 # UNBOUND arguments into $args and carries on: measured 2026-08-18,
@@ -29,7 +36,13 @@ param(
     # the panel, and a profile that dot-sources something on every terminal you open
     # should be something you asked for. Without this the installer REMOVES the block
     # if a previous install left one, so re-running it converges either way.
-    [switch]$ShellFunctions
+    [switch]$ShellFunctions,
+
+    # Skip writing the hook registration into ~/.claude/settings.json.
+    # Registration is ON by default, and that default is deliberate: opt-in is exactly
+    # how the previous Stop hook stayed dark. Pass this only if you maintain the hooks
+    # block by hand and do not want the installer near it.
+    [switch]$NoHookRegistration
 )
 
 $ErrorActionPreference = 'Stop'
@@ -149,10 +162,192 @@ function Link-One {
 Link-One "$RepoRoot\CLAUDE.md"        "$ClaudeHome\CLAUDE.md"        'File'
 Link-One "$RepoRoot\keybindings.json" "$ClaudeHome\keybindings.json" 'File'
 
-# ---- 2) Hooks (file-by-file; verify-loop.ps1 if present stays as-is) ----
+# ---- 2) Hooks (file-by-file) ----
 Get-ChildItem -LiteralPath "$RepoRoot\hooks" -File | ForEach-Object {
     if ($_.Name -ieq 'README.md') { return }
     Link-One $_.FullName (Join-Path "$ClaudeHome\hooks" $_.Name) 'File'
+}
+
+# ---- 2b) Register the hooks in ~/.claude/settings.json ----
+# 🪤 LINKING A HOOK IS NOT INSTALLING IT, AND THE DIFFERENCE IS INVISIBLE.
+# Until 2026-09-08 this installer linked hook FILES and wrote nothing to settings.json;
+# hooks/README.md told you to re-type the JSON per machine. Measured consequence on this
+# machine: verify-loop.ps1 sat linked for weeks while settings.json registered NO Stop
+# hook at all, so it never ran once -- and the global CLAUDE.md described it as installed
+# the whole time. A fresh clone reproduced that exactly. An unregistered hook and a
+# working one look identical from the filesystem, which is why this step now exists.
+#
+# Scope is deliberately narrow: hook entries only. Everything else in settings.json --
+# permissions, autoMode, model, statusLine -- stays yours, per machine.
+#
+# TEXTUAL insertion, not a JSON round-trip: PS 5.1's ConvertTo-Json escapes ' < > & as
+# \uXXXX, which would mangle the prose in your autoMode strings on every install. So we
+# PARSE to decide (reliable) and SPLICE to apply (lossless), validating before writing.
+if ($NoHookRegistration) {
+    Write-Host "[hooks]  settings.json registration skipped (-NoHookRegistration)"
+} else {
+    $settingsPath = Join-Path $ClaudeHome 'settings.json'
+    # Only hooks that ADVISE. 2026-09-08: an objective-loop Stop hook briefly lived here
+    # and was removed on operator instruction -- a Stop hook can only read a ledger the
+    # model itself wrote, so it cannot tell "work remains" from "nothing left to do" and
+    # pressures the session to continue either way. Continuation is a judgement call
+    # (CLAUDE.md -> "Continuing without being told") or an explicit request
+    # (the continue-work skill). Neither belongs in a hook.
+    $wanted = @(
+        [pscustomobject]@{ Event = 'UserPromptSubmit'; Script = 'grill-gate.ps1'; Timeout = 5; Status = 'grill-gate' }
+    )
+
+    function New-HookGroupJson {
+        param([string]$TargetPath, [int]$Timeout, [string]$StatusMessage)
+        # 🪤 JSON-escape the path: each `\` becomes `\\`. The REPLACEMENT is two literal
+        # backslashes, not four - .NET treats only `$` as special in a replacement string,
+        # so '\\\\' emits FOUR and the parsed path comes back as C:\\Users\\... , naming a
+        # file that does not exist. Measured in the sandbox suite; a fresh machine would
+        # have registered a hook pointing at nothing, which is the exact failure this
+        # whole section exists to prevent.
+        $esc = $TargetPath -replace '\\', '\\'
+        return @"
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              "$esc"
+            ],
+            "timeout": $Timeout,
+            "statusMessage": "$StatusMessage"
+          }
+        ]
+      }
+"@
+    }
+
+    # 🪤 A SPLICE THAT ALWAYS APPENDS A COMMA PRODUCES `{ "hooks": {...}, }` ON AN EMPTY
+    # CONTAINER, and a trailing comma is invalid JSON. Caught by the validate-before-write
+    # gate below on the very first sandbox run - the gate refused rather than corrupting
+    # settings.json, which is the whole reason it is there. So: only add the separator
+    # when something actually follows the insertion point.
+    function Test-NeedsComma {
+        param([string]$Json, [int]$Pos, [char]$CloseChar)
+        for ($i = $Pos; $i -lt $Json.Length; $i++) {
+            $ch = $Json[$i]
+            if ([char]::IsWhiteSpace($ch)) { continue }
+            return ($ch -ne $CloseChar)      # an immediate close = we are the only element
+        }
+        return $false
+    }
+
+    # Splice one group into the JSON text. Three shapes, in order of how much exists.
+    function Add-HookRegistration {
+        param([string]$Json, [string]$EventName, [string]$GroupJson)
+        $mHooks = [regex]::Match($Json, '"hooks"\s*:\s*\{')
+        if (-not $mHooks.Success) {
+            # no "hooks" object at all -> create it right after the root opening brace
+            $open = $Json.IndexOf('{')
+            if ($open -lt 0) { return $null }
+            $sep = if (Test-NeedsComma -Json $Json -Pos ($open + 1) -CloseChar '}') { ',' } else { '' }
+            $block = "`r`n  ""hooks"": {`r`n    ""$EventName"": [`r`n$GroupJson`r`n    ]`r`n  }$sep"
+            return $Json.Insert($open + 1, $block)
+        }
+        $tail = $Json.Substring($mHooks.Index)
+        $mEvent = [regex]::Match($tail, ('"' + [regex]::Escape($EventName) + '"\s*:\s*\['))
+        if ($mEvent.Success) {
+            # the event array exists -> insert our group as its first element
+            $at = $mHooks.Index + $mEvent.Index + $mEvent.Length
+            $sep = if (Test-NeedsComma -Json $Json -Pos $at -CloseChar ']') { ',' } else { '' }
+            return $Json.Insert($at, "`r`n$GroupJson$sep")
+        }
+        # "hooks" exists but not this event -> add the event array inside it
+        $at = $mHooks.Index + $mHooks.Length
+        $sep = if (Test-NeedsComma -Json $Json -Pos $at -CloseChar '}') { ',' } else { '' }
+        $block = "`r`n    ""$EventName"": [`r`n$GroupJson`r`n    ]$sep"
+        return $Json.Insert($at, $block)
+    }
+
+    $rawCfg = $null
+    if (Test-Path -LiteralPath $settingsPath) {
+        $rawCfg = Get-Content -LiteralPath $settingsPath -Raw
+        if ($null -eq $rawCfg -or [string]::IsNullOrWhiteSpace($rawCfg)) { $rawCfg = "{`r`n}" }
+    } else {
+        $rawCfg = "{`r`n}"
+        Write-Host "[hooks]  no settings.json yet - creating one with just the hook registration"
+    }
+
+    $cfg = $null
+    try { $cfg = $rawCfg | ConvertFrom-Json } catch {
+        Write-Warning "[hooks]  settings.json is not valid JSON - NOT touching it. Register by hand (see hooks/README.md). Error: $($_.Exception.Message)"
+    }
+
+    if ($null -ne $cfg) {
+        $working = $rawCfg
+        $changed = $false
+
+        foreach ($w in $wanted) {
+            $target = Join-Path "$ClaudeHome\hooks" $w.Script
+            if (-not (Test-Path -LiteralPath $target)) {
+                Write-Warning "[hooks]  $($w.Script) is not in $ClaudeHome\hooks - not registering a hook that isn't there"
+                continue
+            }
+            # Already registered? Decide from the PARSED config, matching on the script
+            # FILENAME, so a differently-spelled but equivalent path still counts.
+            $already = $false
+            if ($cfg.PSObject.Properties['hooks'] -and $cfg.hooks.PSObject.Properties[$w.Event]) {
+                $probe = ($cfg.hooks.($w.Event) | ConvertTo-Json -Depth 20 -Compress)
+                if ($probe -like ('*' + $w.Script + '*')) { $already = $true }
+            }
+            if ($already) {
+                Write-Host ("[hooks]  {0} already registered for {1}" -f $w.Script, $w.Event)
+                continue
+            }
+
+            $group = New-HookGroupJson -TargetPath $target -Timeout $w.Timeout -StatusMessage $w.Status
+            $next = Add-HookRegistration -Json $working -EventName $w.Event -GroupJson $group
+            if ($null -eq $next) {
+                Write-Warning "[hooks]  could not splice $($w.Event) into settings.json - skipped"
+                continue
+            }
+            try { $null = $next | ConvertFrom-Json } catch {
+                Write-Warning "[hooks]  splicing $($w.Event) produced invalid JSON - skipped, nothing written"
+                continue
+            }
+            $working = $next
+            $changed = $true
+            Write-Host ("[hooks]  registering {0} -> {1}" -f $w.Event, $w.Script)
+        }
+
+        if (-not $changed) {
+            Write-Host "[hooks]  settings.json already current - not rewritten"
+        } else {
+            if (Test-Path -LiteralPath $settingsPath) {
+                Ensure-Backup
+                $dst = Join-Path $Backup 'settings.json'
+                Copy-Item -LiteralPath $settingsPath -Destination $dst -Force
+                Write-Host "[backup] $settingsPath -> $dst"
+            }
+            [System.IO.File]::WriteAllText($settingsPath, $working, (New-Object System.Text.UTF8Encoding($false)))
+
+            # Verify by MARKER, never by the write succeeding: Claude Code rewrites
+            # settings.json on its own schedule and can race this.
+            $check = Get-Content -LiteralPath $settingsPath -Raw
+            $missing = @($wanted | Where-Object { (Test-Path (Join-Path "$ClaudeHome\hooks" $_.Script)) -and ($check -notlike ('*' + $_.Script + '*')) })
+            $parses = $true
+            try { $null = $check | ConvertFrom-Json } catch { $parses = $false }
+            if (-not $parses) {
+                Write-Warning "[hooks]  settings.json on disk does not parse after the write. Restore from $Backup and register by hand."
+            } elseif ($missing.Count -gt 0) {
+                Write-Warning ("[hooks]  MARKER CHECK FAILED - absent after the write: " + (($missing | ForEach-Object { $_.Script }) -join ', ') + ". Close Claude Code and re-run install.ps1.")
+            } else {
+                Write-Host "[hooks]  settings.json updated and verified"
+            }
+        }
+    }
+
+    Write-Host "[hooks]  NOTE: hook changes take effect for sessions started AFTER this point."
 }
 
 # ---- 3) Skills (categorized -> flat) ----

@@ -40,120 +40,269 @@ Applies to **all projects and sessions**. The auto-mode classifier hard-blocks a
 If the classifier still blocks a step, surface it to the operator instead of improvising; the lane's own rule can be amended by a patch through the lane. Pre-dating this lane, `b.bat`/`c.bat`-style manual scripts in `~` were the pattern - do not create new ones.
 
 ---
-## How I Work — Inquisitive Before, Autonomous During
+## How I Work - Proceed by Default, Then Run It to Done
 
-**Two phases, opposite postures: be maximally inquisitive *before* execution, maximally autonomous *during* it.** The harder or less-discussed the work, the more questions come first — then it runs end-to-end without hand-holding.
+**Two phases, and the second one is the long one.** Understand cheaply and mostly from the
+code; then run the work to completion without checking back. The failure this section
+exists to prevent is no longer "built the wrong thing correctly" - it is **"stopped with the
+right thing half built"**, which is the one that actually keeps happening.
 
 ```
-ALIGN (ask a lot)  →  SPEC (write it, you sign off)  →  EXECUTE (autonomous loops)  →  VERIFY + SWEEP
+READ (tools, not questions)  ->  LIST (write it down)  ->  EXECUTE (long, unattended)  ->  CLOSE
 ```
 
-### Phase 1 — Alignment: ask until we share the same picture
+### Phase 1 - Read, do not interview
 
-The most expensive mistake is building the wrong thing correctly. Front-load understanding instead of permission:
+Front-load UNDERSTANDING, not permission - and get it from the repository wherever the
+repository can answer. An Explore subagent, a grep and two file reads settle more than four
+rounds of `AskUserQuestion`: the code is measured, an answer given from memory is not. In a
+repo with a recorded decision history, asking the operator something the ledger already
+answers is how a half-remembered answer gets re-adopted as fresh intent.
 
-- **Skip-grill threshold (formalized):** <5 files touched + 1 subsystem + non-Critical-tier surface = no grill required; proceed straight to execution. Anything beyond this goes through the mandatory grill gate below.
-- **Pre-grill exploration (MANDATORY for any non-trivial change):** before round 1, spawn an `Explore` subagent to map the touched surface (files, subsystems, recurring concepts, prior decisions). Calibrate question count from the actual map size — not from a pattern-match on the prompt. The ~30-60s overhead pays back in question quality every grill.
-- **Domain → quality-lens dispatch:** from the prompt + Explore map, classify the domain and emit the required quality lenses. DB / data-pipeline / infra → cover scalability + efficiency + production + long-term. Trade-sizing / business-logic / signal-design → cover production + long-term. Frontend → cover UX + accessibility + maintainability + performance. Auth / security → cover threat-model + compliance + production + long-term. **≥1 question per round must hit each required lens.**
-- **Cite-evidence rule:** every question references a file:line, memory entry, or skill — no preference-bare questions ("what do you want?"). Forces me to read the code before asking, not after.
-- **Contrarian framing rule:** **≥1 question per round CHALLENGES** the user's plan with a concrete failure mode — not just clarifies it. Long-term vision, "is this the wrong abstraction?", "what breaks at 10×?" lenses live here. The end-goal / long-term-vision lens is what gets missed most often without this rule.
-- **Trivial / one-liners / mechanics inside already-agreed work:** skip straight to execution.
-- **Light-touch tier:** work that clears the skip-grill threshold only narrowly — still 1 subsystem, non-Critical-tier, but the file count or shape pushes it just past trivial — AND the touched surface is already well-precedented in the codebase (an existing pattern to follow, genuinely low ambiguity, confirmed by a quick look rather than assumed): **3–6 questions in a single batched round**, not the full tiers below. Ambiguity, not just small size, is what disqualifies this tier — if genuinely unclear, treat it as non-trivial instead.
-- **Any non-trivial change:** **actually invoke the `grill-with-docs` skill via the Skill tool** *before any code* — do NOT just ask a couple of inline questions and call it alignment. Ask **12–18 sharp questions across at least 3 batched rounds**, one per genuine uncertainty (contract, edge cases, data flow, downstream consumers, success criterion, rollback). Never stop while still guessing.
-- **Major refactors / new subsystems / anything high-blast-radius:** the grill is mandatory and goes deeper — **aim for 25–35 questions across at least 6 batched rounds**, across architecture, migration order, blast radius, parity/rollback strategy. Three questions is never enough here.
-- **Top-tier scope — multi-subsystem refactors, brand-new subsystems built from scratch, or deep research with >5 open unknowns:** the grill goes deepest. **Aim for 30–50 questions across at least 8 batched rounds**, covering architecture, integration points across every touched subsystem, migration / rollout order, blast radius per subsystem, parity / rollback per subsystem, and the autonomy contract. Under-grilling here costs the most.
-- **Delivery format:** ask via **`AskUserQuestion` in batched, selectable rounds** — up to 4 questions per call, each with selectable options plus a free-text "Other". Fire **successive rounds back-to-back** until aligned; the 4-per-call cap is per *call*, not a ceiling on the conversation. The grill skill **agrees** with this as of the 2026-08-17 upstream sync — its rewrite works a *frontier* (every question whose prerequisites are settled) and asks the whole frontier in one round. This line used to say it *overrode* the skill's "one question at a time" default; that default is gone. What this adds is the **delivery mechanism**: `AskUserQuestion` with selectable options, not numbered prose. Asking more is correct behaviour, not a failure.
-- **End-of-grill CONTEXT.md checkpoint:** the final round always asks "I used these novel terms: X, Y, Z — add to CONTEXT.md?" with selectable options. Stops glossary debt from accumulating across grills (see the project glossary section below).
-- **Mandatory grill gate, backed by a per-prompt hook:** for anything that doesn't obviously clear the trivial bar above, the first move — before Explore, before drafting any question — is a single selectable `AskUserQuestion`: state your own scope read (light-touch / non-trivial / major / top-tier) and effort estimate as context, then offer to proceed directly, take the light-touch pass, or run the full grill at that tier. The user's click decides; never silently proceed *or* silently grill on their behalf — and always state your own judgment rather than deferring the estimate back to them, since they often can't size up unfamiliar territory themselves. A `UserPromptSubmit` hook (`~/.claude/hooks/grill-gate.ps1`) fires on **every** prompt as a guaranteed backstop against mid-session momentum burying this check (a new non-trivial ask sneaking in while already deep in execute-mode on other agreed work). Unlike an earlier version, it does **not** pattern-match the prompt's wording to decide whether to fire — that approach couldn't tell a task from a question or a discussion and produced repeated false positives. It fires unconditionally and leaves the actual scope judgment entirely to you, every single time.
+**When a question is warranted - BOTH halves must hold.** Two readings of the request would
+produce materially different deliverables, AND nothing on hand settles which: not the code,
+not the plan, not a recorded ruling, not a DEFAULT from a prior ledger. If a careful
+colleague would just pick one, pick one, record it as an ASSUMPTION, say so in one line, and
+keep moving.
 
-### Phase 1.5 — Spec, then sign-off
+**Never ask:**
+- for permission to start, to continue, or to do something already agreed;
+- "should I proceed / do you want the light or the full version" - that menu has been
+  answered `proceed` every time it has been shown, so it only costs a round trip;
+- anything you could measure in under two minutes;
+- anything you can proceed on under a stated assumption and correct cheaply later.
 
-For anything beyond a trivial change, write a **short spec** and get explicit sign-off *before* implementing:
+**Ask, before acting, only for:** an irreversible or outward-facing act (the *Stop and
+confirm* list below), a named approval another rule requires (the operator-patch lane), or a
+fork where being wrong is expensive and unrecoverable.
+
+**When you do ask: batch it, once, at the moment you are actually blocked** - one
+`AskUserQuestion`, up to 4 selectable questions with a free-text Other, never as a warm-up
+round before any work. Do every part of the task that does not depend on the answer FIRST,
+so the question arrives with that work already done rather than instead of it.
+
+**Deep alignment stays available ON REQUEST.** `/grill-with-docs`, "grill me", "let us think
+this through", or any explicit ask for options and trade-offs - then go as deep as they
+want, as many rounds as it takes. What changed is that it is opt-IN by the operator rather
+than opt-OUT by me.
+
+**A project may suspend even the little that remains.** A programme that ratified its design
+once (AlgoTrader's R-79) forbids mid-programme grills outright; there the correct answer at
+any gate is PROCEED.
+
+### Phase 2 - Continuing without being told
+
+**The default is to carry on.** When something is genuinely outstanding, finish it. Do not
+write a summary and hand back; do not ask whether to continue; do not treat "I have something
+worth saying" as a reason to stop saying it and stop working.
+
+**Hold the list in writing, not in your head** - a TodoWrite list, a scratch file, a run-file,
+whatever the project uses. It has three kinds of row and the middle one is the one that leaks:
+
+- **Requested** - everything they asked for, including the clause inside a longer message.
+- **Discovered** - what you found on the way that a careful colleague would finish: a defect
+  you noticed, a doc your change just invalidated, a test you did not run, a claim of yours
+  that turned out wrong. **Append it the moment you find it.** A finding that appears only in
+  the closing recap is a finding that gets dropped.
+- **Deferred** - with the exact trigger that resurfaces it. No trigger means dropped, not
+  deferred.
+
+Give each row a **done-when** you could check: a command and its expected result, a
+`file:line`, an observable state. *"Improve the error handling"* is not a row.
+**Claim a row done only with evidence** - the command you ran and its summary line. A done
+flag with nothing behind it reads identically whether the work happened or not.
+
+> 🔴 **AND THE HONEST HALF: DO NOT MANUFACTURE WORK.** If nothing real is outstanding, say so,
+> say what makes that true, and stop. This section asks you to finish what exists, never to
+> invent reasons to keep going.
+>
+> **Why this is judgement and not a hook.** A Stop hook enforcing exactly this was built and
+> then removed on 2026-09-08, one day old, on operator instruction. It worked - it caught a
+> `%TEMP%` leak, a false claim, and a real design defect past a confident stopping point - and
+> it was still wrong, because **it could only ever read a list the model itself wrote, so it
+> could not tell "work remains" from "there is nothing left to do" and pushed to continue
+> either way.** Coercion is the wrong instrument for a judgement call. The implementation is
+> preserved at `MM-toolbox/hooks/retired/objective-loop.ps1`; do not re-register it.
+>
+> **When the operator actually wants a session driven to completion unattended, that is an
+> explicit request: the `continue-work` skill.** It makes autonomy something they switch on,
+> rather than something a hook imposes on every session forever.
+
+Keep the **spec** block as well for anything with real blast radius - in a memory file, an
+issue, or the conversation (follow the project's file-creation rules):
 
 ```
 GOAL          one sentence
 CONTRACT      inputs / outputs (types, shapes, ranges); side effects
 LAYERS        which parts of the system this touches
 PLAN          ordered steps; loop vs one-shot
-TESTS         what proves it correct (the success criterion)
-DONE-WHEN     machine-checkable stop condition — what tells me it's finished WITHOUT asking you
+TESTS         what proves it correct
+DONE-WHEN     machine-checkable stop condition - what tells me it is finished WITHOUT asking
 DEFAULTS      pre-authorized choices for foreseeable mid-run forks (so I proceed, not stop)
 DEFERRED      decisions postponed + the exact trigger that resurfaces each
 ROLLBACK      blast radius + how to undo
 OUT OF SCOPE  what this explicitly does NOT change
 ```
 
-Put the spec where the project keeps such notes (a memory file, an issue, or the conversation — follow the project's file-creation rules). Once signed, the spec is the contract for Phase 2: execute against it without re-litigating mid-loop; if reality forces a deviation, pause and re-confirm rather than silently diverging. **For any non-trivial run, persist the spec as a resumable run-file (`run_<topic>_<date>` in the project's notes location) and update its progress as you go** — so the work survives context compaction and a fresh session can resume it.
+**DEFAULTS is the highest-leverage line in it** - every fork carrying a pre-authorized
+default is a stop that never happens. When a DEFERRED trigger fires mid-run, act on its
+recorded default; surface only if none was set.
 
-### Discussed vs Undiscussed — the hard line
+### Phase 3 - Stopping is a decision that needs a reason
 
-- **Discussed / agreed work → full autonomy.** Plan, implement, run tests, fix what breaks, commit, push (per the project's git/deploy rules). Loop to the success criterion without asking permission for routine steps.
-- **Bugs, regressions, anti-patterns, mechanical cleanup → fix autonomously** when you encounter them. Restoring correctness always serves the goal. Verify each fix; list what you touched in the recap.
-- **New capability / changed approach / replaced design → never unilaterally.** A good idea that hasn't been cleared is a *proposal*, not a task: stop, surface it, ask, reach shared understanding, then implement. Be *more* conservative on the undiscussed exactly as you are autonomous on the discussed.
+**A session ends for one of four reasons. Nothing else is one.**
 
-### Execution principles (Phase 2)
+1. **Done** - every row finished, with evidence. Including "the list was empty and here is
+   why", which is a perfectly good ending and must never be padded into something longer.
+2. **A stop-class gate** - an irreversible or outward-facing act needing the operator
+   (*Stop and confirm*, below).
+3. **A genuine blocker** - something you cannot resolve, recorded with what specifically is
+   in the way and what would clear it. Hard, slow, tedious, or "the first approach failed"
+   are not blockers; a blocked row does not end a session, it moves you to the next row.
+4. 🔴 **The operator says stop** - and this **outranks everything above, instantly**. Any
+   instruction to stop, pause, park or wait ends the run on the spot: never negotiate with
+   it, never finish one more item first, never re-raise it later as unfinished business.
+   *(This clause is here because a mechanism briefly existed that did override it, and it
+   was removed the same day. Nothing in this file may coerce the person it works for.)*
 
-1. **Act, then report.** Inside agreed scope, don't ask "should I proceed?" — proceed, announce in one sentence, report at the end. The user can always interrupt.
-2. **Loop until truly done** against the spec's DONE-WHEN criterion (tests green, lint+typecheck clean, benchmark met). Fix → re-run → diagnose → fix again. **Drop a one-line progress ping at each milestone** (not every iteration) so the user can follow a long run; full summary at the end.
-3. **Trial runs need no permission.** Read-only queries, scratch scripts, research subagents, full test/type/lint runs are *expected*. A throwaway scratch workspace (e.g. `.claude/scratch/`, gitignored) is yours to write/run/delete freely — never ask.
-4. **Budget cap to prevent grinding.** On the first wall, **diagnose and switch approach once** — surface to the user only if the *second* approach also fails, with a written account of what was tried + learned. Hard cap ~5 attempts / ~30 min before re-engaging regardless.
-5. **Re-engage only at gates:** a destructive/irreversible/production op, a blown budget cap, an undiscussed fork with no pre-authorized DEFAULT, or an undiscussed idea worth proposing. Not at every step.
+Explicitly **not** reasons to stop: you have written a good summary; the turn feels long;
+you found something adjacent and would rather ask about it; a check is red and you have
+tried one thing; you are unsure whether the operator wants the next item - if it is in
+scope, it is already authorized.
 
-### Git branch discipline — follow the project's workflow
+### Discussed vs Undiscussed - the hard line
 
-Different projects use different git workflows. **Read the project's `CLAUDE.md` and the recent commit history first** to identify the actual convention — main-only, feature-branch + PR, trunk-based with short-lived branches, git-flow, etc. — and **match it**. Don't assume.
+- **Discussed / agreed work -> full autonomy.** Plan, implement, run tests, fix what breaks,
+  commit, push (per the project's git/deploy rules). Loop to the success criterion without
+  asking permission for routine steps.
+- **Bugs, regressions, anti-patterns, mechanical cleanup -> fix autonomously** when you meet
+  them, and add each as its own row on the list. Restoring correctness always serves the goal.
+  Verify each fix; list what you touched in the recap.
+- **New capability / changed approach / replaced design -> never unilaterally.** A good idea
+  that has not been cleared is a *proposal*, not a task: record it on the list as deferred,
+  finish the agreed work, and put it to the operator once at the end. Be as conservative on
+  the undiscussed as you are autonomous on the discussed.
 
-- **Feature-branch + PR is the production default** for team repos. Use a short descriptive branch name (`feat/<short-slug>`, `fix/<issue-id>`) and open a PR rather than pushing direct to main. PR description = the spec from Phase 1.5.
-- **Main-only is a valid choice** for solo or fast-iteration repos. If the project's `CLAUDE.md` pins it (or the recent commit history shows zero merges and direct pushes to main), follow that — it overrides this section.
-- **Don't switch branches silently mid-session.** If a branch change is needed, name it in one sentence and proceed; never let the user think they're on a different branch than they actually are.
-- **Branch deletion, force-push, hard-reset, and dropping someone else's branch** stay in the Stop-and-confirm list below regardless of workflow.
-- If you discover the repo is on an unexpected branch (e.g. inherited from a compacted session), **surface it immediately** and confirm before continuing.
+### Execution principles (Phase 2 runtime)
+
+1. **Act, then report.** Inside agreed scope, never ask "should I proceed?" - proceed,
+   announce in one sentence, report at the end. The operator can always interrupt.
+2. **Loop until the list is clean**, not until you have something to say. Fix -> re-run ->
+   diagnose -> fix again. One-line progress ping at each milestone (not each iteration);
+   the full summary at the end.
+3. **Trial runs need no permission.** Read-only queries, scratch scripts, research
+   subagents, full test/type/lint runs are *expected*. The session scratchpad (or
+   `.claude/scratch/` where a project has one) is yours to write/run/delete freely.
+4. **The budget cap is per ITEM, not per session.** On the first wall, diagnose and switch
+   approach once; surface only if the *second* approach also fails, with a written account
+   of what was tried and learned. A blocked item does not end a session - record the blocker
+   on that row and move to the next item.
+5. **Delegate rather than stop.** A side-quest, a broad search, a second opinion, a long
+   verification: hand it to a subagent and carry on. Running out of your own attention is
+   not the same as running out of work.
+6. **Re-engage only at the four stop reasons above.**
+
+### Git branch discipline - follow the project's workflow
+
+Different projects use different git workflows. **Read the project's `CLAUDE.md` and the
+recent commit history first** to identify the actual convention - main-only, feature-branch
++ PR, trunk-based, git-flow - and **match it**. Do not assume.
+
+- **Feature-branch + PR is the production default** for team repos. Short descriptive branch
+  name (`feat/<slug>`, `fix/<issue-id>`), PR description = the spec.
+- **Main-only is a valid choice** for solo or fast-iteration repos. If the project's
+  `CLAUDE.md` pins it (or the history shows zero merges and direct pushes to main), that
+  overrides this section.
+- **Do not switch branches silently mid-session.** Name the change in one sentence and
+  proceed; never let the operator think they are on a different branch than they are.
+- **Branch deletion, force-push, hard-reset, and dropping someone else's branch** stay in the
+  Stop-and-confirm list regardless of workflow.
+- If the repo is on an unexpected branch (inherited from a compacted session), **surface it
+  immediately** and confirm before continuing.
 
 ### Long-run autonomy
 
-The goal is heavy upfront alignment → then long *unattended* runs. Four habits make a run survive without hand-holding:
+The goal is one cheap alignment pass, then long *unattended* runs. Four habits make a run
+survive without hand-holding:
 
-1. **Autonomy contract (close every grill with it).** Before execution, the spec / run-file must record **DONE-WHEN** (machine-checkable stop condition), **DEFAULTS** (pre-authorized choices for foreseeable forks), and **DEFERRED** (postponed decisions + their resurface trigger). These convert "stop and ask" into "proceed per pre-agreed default" — the single biggest enabler of long runs. When a DEFERRED trigger fires mid-run, act on its recorded default; surface only if none was set.
-2. **Durable resumable run-file.** Persist the spec + a live progress checklist as a `run_<topic>_<date>` note in the project's notes location; update it as you go and archive it when done. It outlives context compaction and lets any session/agent resume.
-3. **Background kickoff by default.** Once the spec is signed, default to running the work as a **background agent / agent-team** (`run_in_background`, team launchers) so the user can walk away; foreground only if they want to watch.
-4. **Notify on done-or-blocked.** Fire a `PushNotification` when a long/background run completes, and rely on the input-needed push for blocked/waiting prompts. (Mobile push comes from those settings + the tool — a shell hook cannot reach the phone.)
+1. **The written list is the autonomy contract** (Phase 2). DONE-WHEN, DEFAULTS and DEFERRED
+   are what convert "stop and ask" into "proceed per the pre-agreed default", and that single
+   conversion is the biggest enabler of a long run.
+2. **Durable resumable run-file.** For a substantial run, also persist the spec plus a live
+   progress checklist as a `run_<topic>_<date>` note in the project's notes location. The
+   list survives the session; the run-file survives context compaction and lets any
+   session or agent resume.
+3. **Background kickoff by default.** Once the spec is signed, default to running the work
+   as a background agent / agent-team so the operator can walk away; foreground only if they
+   want to watch.
+4. **Notify on done-or-blocked.** Fire a `PushNotification` when a long or background run
+   completes or blocks. Mobile push comes from those settings plus the tool - a shell hook
+   cannot reach the phone.
 
-### Self-healing verify loop (opt-in, OFF by default)
+### Stop and confirm - destructive & high-blast-radius ops
 
-A global `asyncRewake` Stop hook (`~/.claude/hooks/verify-loop.ps1`) catches premature "done": after I stop, it re-runs an armed verify command and re-wakes me until it passes — bounded and safe. **Inert unless armed.**
+Even mid-loop, stop and get explicit go-ahead before anything hard to reverse or
+outward-facing: production deploys/restarts, schema migrations on populated stores,
+credential/secret changes, force-push / hard-reset / branch or data deletion, `rm -rf`,
+publishing to third parties, or anything a project `CLAUDE.md` marks critical. State the
+action, the blast radius, and the rollback first. Project rules add to this list; they never
+remove from it.
 
-- **Arm** only for an agreed autonomous run — write `.claude/verify-loop.active` (gitignored) in the repo: JSON `{verify_command, attempt:0, max_attempts:5, deadline:<nowEpoch+1800>, status:"active"}`. Default `verify_command` = the touched subsystem's tests + typecheck, runnable via the platform shell (exit convention: **0=green / 1=red / other=harness-error**).
-- **While armed:** RED → keep fixing and stop again (auto re-checked); capped at **5 attempts AND 30 min**.
-- **On GREEN:** abort if a production/live op is in flight; stage **only loop-touched files** (never `git add -A`); if any staged file is critical-tier per the project's rules → **stop and ask** before committing, else commit + push; `PushNotification`; DELETE the sentinel.
-- **At the cap or a harness error:** write up + `PushNotification` + DELETE the sentinel; leave changes in place.
-- **Disarm = delete the sentinel.** Removing the `Stop` block from `~/.claude/settings.json` removes the loop entirely.
-
-### Stop and confirm — destructive & high-blast-radius ops
-
-Even mid-loop, stop and get explicit go-ahead before anything hard to reverse or outward-facing: production deploys/restarts, schema migrations on populated stores, credential/secret changes, force-push / hard-reset / branch or data deletion, `rm -rf`, publishing to third parties, or anything a project `CLAUDE.md` marks critical. State the action, the blast radius, and the rollback first. Project rules add to this list; they never remove from it.
+**This list is the whole of the ask-first surface.** If an act is not on it and not covered
+by the Phase 1 two-part test, it does not warrant a question.
 
 ### Health sweep at task edges
 
-At the **start and end of every substantive task**, run the relevant tests + lint + typecheck for the part of the system in play, plus a quick scan for obvious problems, and loop-to-green on anything you broke or find adjacent (bugs autonomously; new features only after consulting). Scoped to the subsystem in play — not a repo-wide roam every time.
+At the **start and end of every substantive task**, run the relevant tests + lint +
+typecheck for the part of the system in play, plus a quick scan for obvious problems, and
+loop-to-green on anything you broke or find adjacent (bugs autonomously; new features only
+after consulting). Scoped to the subsystem in play - not a repo-wide roam every time.
+Anything the sweep turns up becomes a row on the list, not a sentence in the recap.
 
-### Environment hygiene sweep (periodic — keeps sessions + mobile fast)
+### Environment hygiene sweep (periodic - keeps sessions + mobile fast)
 
-Accumulated junk silently degrades every session and was a direct cause of tool execution breaking (stale temp + transcript backlog slowed every call — see the Tool-Driving Discipline + Temp & Resource Hygiene sections). Make cleanup a habit: **at the start of a session that's felt slow / heavy on resume, or when the user mentions lag (especially on mobile), run a quick sweep.** Two tiers:
+Accumulated junk silently degrades every session and was a direct cause of tool execution
+breaking (stale temp + transcript backlog slowed every call - see Tool-Driving Discipline
+and Temp & Resource Hygiene). **At the start of a session that has felt slow on resume, or
+when the operator mentions lag (especially on mobile), run a quick sweep.** Two tiers:
 
-- **SAFE — just do it, no confirmation** (all disposable/regenerated): delete OS-temp entries older than ~2 days (the `algo_*_test_*` / `mat-debug-*` / `tmp*` bloat); kill leftover scratch-poller / duplicate-worker processes from dead sessions and any stuck IDE updater; remove `.claude/scratch/*` older than ~7 days; prune `~/.claude/shell-snapshots/` to the most recent ~20.
-- **SENSITIVE — confirm retention with the user first** (these lose history): the transcript backlog `~/.claude/projects/<repo>/` grows to ~1 GB and is the biggest drag on resume/mobile — archive or delete transcripts older than the user's chosen window; and when `MEMORY.md` exceeds its size limit, archive closed run-files and trim each index line to one short entry (detail lives in the topic file).
+- **SAFE - just do it, no confirmation** (all disposable/regenerated): delete OS-temp
+  entries older than ~2 days (the `algo_*_test_*` / `mat-debug-*` / `tmp*` bloat); kill
+  leftover scratch-poller / duplicate-worker processes from dead sessions and any stuck IDE
+  updater; remove `.claude/scratch/*` older than ~7 days; prune
+  `~/.claude/shell-snapshots/` to the most recent ~20.
+- **SENSITIVE - confirm retention first** (these lose history): the transcript backlog
+  `~/.claude/projects/<repo>/` grows to ~1 GB and is the biggest drag on resume/mobile -
+  archive or delete transcripts older than the operator's chosen window; and when
+  `MEMORY.md` exceeds its size limit, archive closed run-files and trim each index line to
+  one short entry (detail lives in the topic file).
 
-Diagnostic order when "everything suddenly breaks": shared environment state after a reboot/update first (stuck IDE updater, dead MCP OAuth bridge, temp bloat, orphan processes, ephemeral-port `SynSent` hangs) — not the repo code. Probe `Get-NetTCPConnection -State SynSent`, system uptime, and the OS temp entry count before suspecting a code bug.
+Diagnostic order when "everything suddenly breaks": shared environment state after a
+reboot/update first (stuck IDE updater, dead MCP OAuth bridge, temp bloat, orphan processes,
+ephemeral-port `SynSent` hangs) - not the repo code. Probe
+`Get-NetTCPConnection -State SynSent`, system uptime, and the OS temp entry count before
+suspecting a code bug.
 
 ### Shared lexicon (CONTEXT.md)
 
-Maintain a project glossary so the same word means the same thing in code, comments, commits, and conversation. During any grill, when a term is fuzzy, overloaded, or conflicting, resolve it on the spot and update the project's `CONTEXT.md` inline (the `grill-with-docs` skill owns this format): glossary only — what each term *is*, one sentence, project-specific terms, aliases to avoid — then use the canonical term everywhere. If a project forbids new files, follow that project's chosen location for the lexicon.
+Maintain a project glossary so the same word means the same thing in code, comments, commits
+and conversation. When a term is fuzzy, overloaded or conflicting, resolve it on the spot and
+update the project's `CONTEXT.md` inline (the `grill-with-docs` skill owns this format):
+glossary only - what each term *is*, one sentence, project-specific terms, aliases to avoid -
+then use the canonical term everywhere. If a project forbids new files, follow that project's
+chosen location for the lexicon.
 
 ### Holistic consistency & forward thinking
 
-- **Keep the project's stated goal in view** — judge every change against it, not just local correctness.
-- **Don't reverse a prior verified decision silently.** Before declaring something correct *or* wrong, check the project's memory/docs/history. If you're about to flip a previously verified conclusion, state what changed and why; a fix that was right last week doesn't become wrong this week without new evidence.
-- **Carry the whole picture across conversations.** Each session inherits the same architecture and goal — re-derive context before acting; don't treat a fresh chat as a fresh problem.
+- **Keep the project's stated goal in view** - judge every change against it, not just local
+  correctness.
+- **Do not reverse a prior verified decision silently.** Before declaring something correct
+  *or* wrong, check the project's memory/docs/history. If you are about to flip a previously
+  verified conclusion, state what changed and why; a fix that was right last week does not
+  become wrong this week without new evidence.
+- **Carry the whole picture across conversations.** Each session inherits the same
+  architecture and goal - re-derive context before acting; do not treat a fresh chat as a
+  fresh problem.
 
 ---
 
