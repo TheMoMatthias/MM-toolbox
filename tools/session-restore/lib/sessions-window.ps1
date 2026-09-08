@@ -167,6 +167,8 @@ foreach ($n in @(
     'SettingsBox','SetName','SetModel','SetEffort','SetPerm','SetPermNote',
     'SetRemote','SetHidden','SetPending','SetCancel','SetApply',
     'CfgBtn','CfgBox','CfgList','CfgWhere','CfgNote','CfgCancel','CfgApply',
+    'ProjBox','ProjName','ProjWhere','ProjRestoreNote','ProjRestoreBtn',
+    'ProjAutoNote','ProjAutoBtn','ProjShelveNote','ProjShelveBtn','ProjClose',
     'SetToolsFold','SetAllow','SetDeny',
     'CastBox','CastWho','CastList','CastText','CastCancel','CastSend','CastCompact',
     'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
@@ -1903,12 +1905,12 @@ function New-RailTile { param([string]$Path, $Kids, [bool]$Picked, $Blank, [stri
     # the rail's marks are for what is WAITING, and spending one here would
     # teach the eye to ignore them. Nothing about it hides anything: the only
     # write is behind the right-click and its confirm sheet.
-    $state = ($bits -join $dot)
-    if ($Suggest) { $state = $state + $dot + 'could be shelved' }
-    # ---- what the two tile controls need to know -------------------------
-    # 🪝 COUNTED OFF $Kids, WHICH IS A List[object]. Where-Object over one is
-    # fine; @() around the RESULT is not, and this file has been bitten by that
-    # twice today. Assign, then read .Count off the assignment.
+    # ---- the two switches, as STATE rather than as controls ---------------
+    # 🔴 THE CONTROLS MOVED TO THE PROJECT'S SETTINGS PANEL; THE STATE DID NOT.
+    # What a switch DID has to be visible without opening anything, or a project
+    # that quietly reopens nothing looks exactly like one that does - and the
+    # morning it matters is the morning nobody is watching.
+    #
     # 🪝 A foreach, NOT Where-Object, AND IT IS NOT STYLE. This runs once per
     # project on every Build-Rail, and a pipeline over ~262 conversations put
     # Move-RowToWorking at 301 ms against a 250 ms bar the suite enforces - the
@@ -1923,6 +1925,13 @@ function New-RailTile { param([string]$Path, $Kids, [bool]$Picked, $Blank, [stri
     # directory itself, and a stand-in would report every project as on.
     $restoreOff = $false
     try { if ($Kids -and $Kids.Count) { $restoreOff = [bool](Test-SRProjectRestoreOff $Kids[0].D) } } catch { }
+    # 🔑 ONLY THE OFF STATES ARE NAMED. "logon on" across thirty-five tiles is
+    # noise that teaches the eye to skip the line; the one project that will not
+    # come back tomorrow is the whole reason the line is worth reading at all.
+    if ($restoreOff) { $bits.Add('no logon') }
+    if ($autoOff)    { $bits.Add('no auto-tick') }
+    $state = ($bits -join $dot)
+    if ($Suggest) { $state = $state + $dot + 'could be shelved' }
     return [PSCustomObject]@{
         Kind   = 'project'
         BandVis = $V_Hide; RowVis = $V_Show
@@ -1931,7 +1940,17 @@ function New-RailTile { param([string]$Path, $Kids, [bool]$Picked, $Blank, [stri
         Label  = (Get-ProjectLabel $Path)
         Count  = $Kids.Count
         State  = $state
-        Tip    = $(if ($Suggest) { 'Right-click to shelve it: ' + $Suggest } else { $null })
+        # 🔑 THE TOOLTIP IS WHERE THE DETAIL WENT when the two controls left the
+        # tile. The state line has room for two words per switch; the number of
+        # conversations that actually reopen, and what each switch means, are
+        # worth having and are not worth two more columns on every row.
+        Tip    = (
+            ('{0} ticked conversation(s) here.' -f $tickedN) +
+            $(if ($restoreOff) { ' This project reopens NOTHING at your next logon - every tick is kept as it is.' } else { ' They reopen at your next logon.' }) +
+            $(if ($autoOff) { ' New conversations started here are not auto-ticked.' } else { '' }) +
+            $(if ($Suggest) { ' ' + $Suggest } else { '' }) +
+            [Environment]::NewLine + 'Right-click for this project''s settings.'
+        )
         # 🔴 THE CAST, AGAIN. A brush handed back from a PowerShell
         # function arrives PSObject-WRAPPED, and WPF cannot convert that to a
         # Brush: the binding fails SILENTLY, Background stays null, and the
@@ -1945,40 +1964,6 @@ function New-RailTile { param([string]$Path, $Kids, [bool]$Picked, $Blank, [stri
         # what catches the eye rather than every project shouting at once.
         AccentOpacity = $(if ($needs) { 1.0 } elseif ($working) { 0.85 } else { 0.35 })
         NeedsVis = $(if ($needs) { $V_Show } else { $V_Hide })
-        # ---- the two controls on the tile's second line --------------------
-        # 🔑 BOTH ARE STATE, NOT ACTIONS, AND THAT IS THE CHANGE. The left one
-        # used to be `untick N` - a one-shot that cleared the ticks and then had
-        # nothing left to say. It is now the project's own logon switch, which is
-        # a fact about the project that is worth reading at a glance, and it is
-        # always drawn: a switch that vanished when a project had nothing ticked
-        # would hide the very state that explains why nothing came back.
-        RestoreText = $(if ($restoreOff) { 'logon off' } else { 'logon on' })
-        # 🔑 THE EXCEPTION CARRIES THE COLOUR, NOT THE NORMAL STATE. Thirty-five
-        # tiles all saying something in green teaches the eye to skip the word;
-        # the one project that will not come back tomorrow is the thing worth
-        # catching. Amber rather than red - it is a decision the operator made,
-        # not a fault. The count is one hover away, in the tooltip, because the
-        # rail is scanned rather than read.
-        RestoreFg   = [System.Windows.Media.Brush]$(if ($restoreOff) { $window.FindResource('HueWarn') } else { $window.FindResource('TextLow') })
-        RestoreTip  = $(if ($restoreOff) {
-            ('This project reopens NOTHING at your next logon. Its {0} ticked conversation(s) are kept exactly as they are - click to switch it back on and they come back.' -f $tickedN)
-        } else {
-            ('{0} ticked conversation(s) here reopen at your next logon. Click to switch this project off without losing a single tick.' -f $tickedN)
-        })
-        # The state is the word itself, dim when off - the same way every other
-        # label in this window says off, and readable without colour.
-        AutoText = $(if ($autoOff) { 'auto off' } else { 'auto on' })
-        # 🪤 THE COLOURS ARE THE OTHER WAY ROUND FROM WHAT THIS SHIPPED WITH, so
-        # that the two controls on this line agree about which state is worth
-        # noticing. Green-when-on painted every tile green and left the switched
-        # -off project - the one that behaves differently from all the others -
-        # as the dimmest thing on the row.
-        AutoFg   = [System.Windows.Media.Brush]$(if ($autoOff) { $window.FindResource('HueWarn') } else { $window.FindResource('TextLow') })
-        AutoTip  = $(if ($autoOff) {
-            'New sessions started in this project are NOT auto-ticked. Click to let them be armed again.'
-        } else {
-            'New sessions started in this project ARE auto-ticked at the hourly roll. Click to stop that.'
-        })
         PickBg = [System.Windows.Media.Brush]$(if ($Picked) { $window.FindResource('SelBg') } else { $Blank })
         PickEdge = [System.Windows.Media.Brush]$(if ($Picked) { $window.FindResource('EdgeLit') } else { $Blank })
         Fg     = [System.Windows.Media.Brush]$(if ($Picked) { $window.FindResource('TextMax') } else { $window.FindResource('TextHigh') })
@@ -8470,30 +8455,14 @@ $ui.SessionList.Add_SelectionChanged({
 # project is done by Add_SelectionChanged, so an unhandled press would run the
 # control AND filter the sessions column to that project - two things from one
 # click, one of which nobody asked for.
-function Get-SRRailBtn { param($Node)
-    $n = $Node
-    for ($d = 0; $d -lt 6 -and $n; $d++) {
-        if ($n -is [System.Windows.FrameworkElement] -and $n.Name) {
-            if ($n.Name -eq 'RailRestoreBtn' -or $n.Name -eq 'RailAutoBtn') { return $n.Name }
-        }
-        try { $n = [System.Windows.Media.VisualTreeHelper]::GetParent($n) } catch { break }
-    }
-    return ''
-}
-
+# 🪤 THE TILE-CONTROL ROUTER IS GONE WITH THE CONTROLS. It walked up to six
+# visual parents on EVERY left click in the rail to find out whether the click
+# had landed on one of two labels - a cost paid by every click to serve a
+# gesture the operator has since asked to be moved off the tile. The two
+# switches live in the project's settings panel now, on right-click.
 $ui.RailList.Add_PreviewMouseLeftButtonDown({
     param($s, $e)
     $it = Get-ClickedRow $e.OriginalSource
-    $btn = Get-SRRailBtn $e.OriginalSource
-    if ($btn -and $it -and "$($it.Kind)" -eq 'project') {
-        $e.Handled = $true
-        $kid = @($script:model | Where-Object { "$($_.D.path)" -eq "$($it.Path)" })
-        if (-not $kid.Count) { return }
-        $d = $kid[0].D
-        if ($btn -eq 'RailRestoreBtn') { Invoke-SRProjectRestore -Dir $d -Label "$($it.Label)" }
-        else { Invoke-SRProjectAutoTick -Dir $d -Label "$($it.Label)" }
-        return
-    }
     if (-not $it -or "$($it.Kind)" -ne 'band') { return }
     Toggle-RailBand "$($it.BandKey)"
     Set-Status $(if ($script:railBandShut["$($it.BandKey)"]) {
@@ -8689,6 +8658,16 @@ function Get-ManageRow {
         $script:manageMenuRow = $null
         return $r
     }
+    # 🪤 THE FALLBACK HAS TO ASK WHICH SURFACE IS SHOWING. The menu is on two
+    # lists now, and a keyboard invocation on the work surface that fell back to
+    # the MANAGER's selection would act on a conversation that is not on screen -
+    # which is the failure the note above exists to prevent, arriving by a
+    # different route.
+    if ($script:surface -ne 'manage') {
+        $sel = $ui.SessionList.SelectedItem
+        if ($sel -and "$($sel.Kind)" -eq 'session') { return $sel.Row }
+        return $null
+    }
     $it = $ui.ManageList.SelectedItem
     if ($it -and $it.Kind -eq 'conv') { return $it.Row }
     return $null
@@ -8822,6 +8801,33 @@ $ui.ManageList.Add_PreviewMouseRightButtonDown({
     $ui.ManageList.SelectedItem = $it
 })
 
+# ---- the same menu on the conversations column -------------------------
+# 🔴 THE RIGHT-CLICK WAS ON THE MANAGER ONLY, and the conversations column is
+# where the operator actually works - so the four things you can do to a
+# conversation were reachable from the surface he is not usually on. Asked for
+# as "right click ... settings for projects, or even sessions".
+#
+# 🪤 THE SAME MENU IS BUILT TWICE, NOT SHARED. A ContextMenu is a
+# FrameworkElement with ONE logical parent: assigning a single instance to two
+# lists leaves the second one with an empty popup. Two instances of the one
+# builder cannot drift - both resolve their target through Get-ManageRow.
+$ui.SessionList.ContextMenu = New-ManageMenu
+$ui.SessionList.Add_PreviewMouseRightButtonDown({
+    param($sender, $e)
+    $it = Get-ClickedRow $e.OriginalSource
+    # A band heading and the "older conversations" row are not conversations, so
+    # they get no menu rather than a menu that acts on whatever was clicked last.
+    if (-not $it -or "$($it.Kind)" -ne 'session') {
+        $script:manageMenuRow = $null
+        $ui.SessionList.ContextMenu.IsOpen = $false
+        $e.Handled = $true
+        return
+    }
+    $script:manageMenuRow = $it.Row
+    # Select it too, so the menu and the highlight agree about the target.
+    $ui.SessionList.SelectedItem = $it
+})
+
 # ===========================================================================
 # THE PROJECT TILE'S OWN MENU - one item, and it is the only way to shelve.
 #
@@ -8834,15 +8840,13 @@ $ui.ManageList.Add_PreviewMouseRightButtonDown({
 $script:railMenuDir = $null
 $script:railMenuLabel = ''
 
-# WHICH WAY THE ONE ITEM GOES. Its own function because it is the part that can
-# be wrong: an item reading "Shelve this project" over one already shelved would
-# put it back, and the operator would have pressed the opposite of what they
-# read. Decided when the menu opens, not by carrying two items of which one is
-# always the wrong thing to offer.
-function Get-RailShelveVerb { param($Dir)
-    if (Test-SRProjectShelved $Dir) { return 'Put this project back' }
-    return 'Shelve this project'
-}
+# 🪤 THE THREE "WHICH WAY DOES THIS ITEM GO" HELPERS ARE GONE WITH THE ITEMS
+# THEY HEADED. Each existed because a menu item is BOTH the control and the
+# display of the state, and one naming the opposite of what it does is a click
+# the operator makes believing it does the other thing. Update-ProjectPanel now
+# carries that risk - it names the state in a sentence and the change on the
+# button - so it is what the suite asserts. A helper nothing renders is a helper
+# whose test proves nothing.
 
 # ===========================================================================
 # TWO THINGS A PROJECT CAN BE TOLD, BOTH FROM THE RAIL'S OWN MENU.
@@ -8911,11 +8915,6 @@ function Test-SRProjectRestoreOff { param($Dir)
     return (-not [bool]$prop.Value)
 }
 
-function Get-RailRestoreVerb { param($Dir)
-    if (Test-SRProjectRestoreOff $Dir) { return 'Reopen at logon: OFF' }
-    return 'Reopen at logon: ON'
-}
-
 # Modelled on Set-ProjectShelved, down to the rollback: this writes the REGISTRY,
 # so a refused save has to put the field back or the window would show a state
 # the file does not have - and that file is the one that decides the morning.
@@ -8947,11 +8946,6 @@ function Test-SRProjectAutoTickOff { param($Dir)
     $n = -1
     try { $n = [int]$one.Value } catch { return $false }
     return ($n -eq 0)
-}
-
-function Get-RailAutoTickVerb { param($Dir)
-    if (Test-SRProjectAutoTickOff $Dir) { return 'Auto-tick new sessions here: OFF' }
-    return 'Auto-tick new sessions here: ON'
 }
 
 # TRAP: READ, CHANGE ONE KEY, WRITE BACK. autoTickLaneBudgets is a whole object
@@ -9043,69 +9037,125 @@ function Invoke-SRProjectAutoTick { param($Dir, [string]$Label)
         "new sessions in '{0}' will no longer be auto-ticked - saved" -f $Label
     }) 'ok'
 }
+# Lifted out of the rail menu item it used to be, so the project panel and the
+# menu cannot drift apart about what shelving says or confirms - the same reason
+# Invoke-SRProjectRestore and Invoke-SRProjectAutoTick are functions rather than
+# two copies of a handler body.
+function Invoke-SRProjectShelve { param($Dir, [string]$Label)
+    if (-not $Dir) { return }
+    if (Test-SRProjectShelved $Dir) {
+        if (Set-ProjectShelved -Dir $Dir -Shelved $false) {
+            Build-Rail; Build-Sessions
+            Set-Status ("'{0}' is back on the rail, and will be restored at logon again" -f $Label) 'ok'
+        }
+        return
+    }
+    # 🔴 IT CHANGES WHAT COMES BACK TOMORROW MORNING, so it says so before it
+    # does it. Hiding is undoable - nothing is deleted and the count in the
+    # header is the way back - but the consequence that matters happens while
+    # nobody is watching, at the next logon, and a gesture whose effect is
+    # invisible for sixteen hours is one to confirm.
+    $kids = @($script:model | Where-Object { "$($_.D.path)" -eq "$($Dir.path)" })
+    $ticked = @($kids | Where-Object { [bool]$_.S.enabled }).Count
+    if (-not (Confirm-Action 'Shelve this project' (
+        "'{0}' leaves the projects rail, and none of its conversations will be restored at the next logon{1}.`n`n" +
+        "Nothing is deleted: its {2} conversation(s) and their ticks are kept, and the rail header will say it is shelved so you can put it back." -f `
+            $Label, $(if ($ticked) { " ($ticked of them are ticked today)" } else { '' }), $kids.Count) -Verb 'Shelve it')) {
+        Set-Status 'nothing shelved'; return
+    }
+    if (Set-ProjectShelved -Dir $Dir -Shelved $true) {
+        # 🪤 THE FILTER GOES WITH IT. Leaving railPick on a project that is no
+        # longer drawn would narrow the sessions column to conversations from
+        # a tile nobody can see.
+        if ("$($script:railPick)" -eq "$($Dir.path)") { $script:railPick = $null }
+        Build-Rail; Build-Sessions
+        Set-Status ("'{0}' is shelved - click the count in the projects header to put it back" -f $Label) 'ok'
+    }
+}
+
+# ===========================================================================
+# THIS PROJECT - the three switches that belong to a project, in one panel
+# ===========================================================================
+# 🔴 ONE ENTRY, NOT THREE. The rail menu carried a verb per switch and each one
+# had to be re-headed as the menu opened, so the menu was both the control and
+# the display of the state - which is why two of them ended up duplicated onto
+# the tile as well. The panel is the display; the menu is the way in.
+#
+# 🪤 THE DIRECTORY IS HELD FOR AS LONG AS THE PANEL IS. $script:railMenuDir is
+# consumed by the click that reads it, deliberately, so a later gesture cannot
+# act on a project the mouse pointed at minutes ago. A panel is different: it is
+# open, named, and on screen, so it keeps its own reference and drops it on
+# close.
+$script:projDir = $null
+$script:projPanelLabel = ''
+
+function Hide-Project {
+    $ui.ProjBox.Visibility = $V_Hide
+    $script:projDir = $null
+    $script:projPanelLabel = ''
+}
+
+# Re-read after every action rather than toggled in place: each of these three
+# writes can be REFUSED - by a confirm sheet, or by the registry writer - and a
+# panel that assumed its own click succeeded would show a project as switched
+# off while the file still has it on.
+function Update-ProjectPanel {
+    $d = $script:projDir
+    if (-not $d) { Hide-Project; return }
+    $ui.ProjName.Text  = $script:projPanelLabel
+    $ui.ProjWhere.Text = "$($d.path)"
+
+    $kids = @($script:model | Where-Object { "$($_.D.path)" -eq "$($d.path)" })
+    $ticked = @($kids | Where-Object { [bool]$_.S.enabled }).Count
+
+    $rOff = Test-SRProjectRestoreOff $d
+    $ui.ProjRestoreNote.Text = $(if ($rOff) {
+        ('Nothing here reopens. Its {0} ticked conversation(s) are kept exactly as they are, so switching this back on brings the same ones back.' -f $ticked)
+    } else {
+        ('{0} ticked conversation(s) here reopen at your next logon.' -f $ticked)
+    })
+    $ui.ProjRestoreBtn.Content = $(if ($rOff) { 'Turn on' } else { 'Turn off' })
+
+    $aOff = Test-SRProjectAutoTickOff $d
+    $ui.ProjAutoNote.Text = $(if ($aOff) {
+        'New conversations started here are never armed on their own - you tick the ones you want.'
+    } else {
+        'New conversations started here are armed by the hourly roll, up to the caps in Settings.'
+    })
+    $ui.ProjAutoBtn.Content = $(if ($aOff) { 'Turn on' } else { 'Turn off' })
+
+    $sh = Test-SRProjectShelved $d
+    $ui.ProjShelveNote.Text = $(if ($sh) {
+        'Shelved: off the rail and out of the restore entirely. Nothing was deleted.'
+    } else {
+        'On the rail. Shelving puts the whole project away without deleting a conversation or a tick.'
+    })
+    $ui.ProjShelveBtn.Content = $(if ($sh) { 'Put it back' } else { 'Shelve it' })
+}
+
+function Show-Project { param($Dir, [string]$Label)
+    if (-not $Dir) { return }
+    # One panel at a time in that spot, or the two draw on top of each other.
+    try { Hide-Config } catch { }
+    $script:projDir = $Dir
+    $script:projPanelLabel = $(if ($Label) { $Label } else { (Get-ProjectLabel "$($Dir.path)") })
+    Update-ProjectPanel
+    $ui.ProjBox.Visibility = $V_Show
+}
+
 function New-RailMenu {
     $m = New-Object System.Windows.Controls.ContextMenu
     $m.Style = [System.Windows.Style]$window.FindResource([System.Windows.Controls.ContextMenu])
     $i = New-Object System.Windows.Controls.MenuItem
     $i.Style = [System.Windows.Style]$window.FindResource([System.Windows.Controls.MenuItem])
-    $i.Header = 'Shelve this project'
+    $i.Header = 'Project settings...'
     $i.Add_Click({
         $d = $script:railMenuDir
         $script:railMenuDir = $null
         if (-not $d) { return }
-        $lbl = $script:railMenuLabel
-        if (Test-SRProjectShelved $d) {
-            if (Set-ProjectShelved -Dir $d -Shelved $false) {
-                Build-Rail; Build-Sessions
-                Set-Status ("'{0}' is back on the rail, and will be restored at logon again" -f $lbl) 'ok'
-            }
-            return
-        }
-        # 🔴 IT CHANGES WHAT COMES BACK TOMORROW MORNING, so it says so before it
-        # does it. Hiding is undoable - nothing is deleted and the count in the
-        # header is the way back - but the consequence that matters happens while
-        # nobody is watching, at the next logon, and a gesture whose effect is
-        # invisible for sixteen hours is one to confirm.
-        $kids = @($script:model | Where-Object { "$($_.D.path)" -eq "$($d.path)" })
-        $ticked = @($kids | Where-Object { [bool]$_.S.enabled }).Count
-        if (-not (Confirm-Action 'Shelve this project' (
-            "'{0}' leaves the projects rail, and none of its conversations will be restored at the next logon{1}.`n`n" +
-            "Nothing is deleted: its {2} conversation(s) and their ticks are kept, and the rail header will say it is shelved so you can put it back." -f `
-                $lbl, $(if ($ticked) { " ($ticked of them are ticked today)" } else { '' }), $kids.Count) -Verb 'Shelve it')) {
-            Set-Status 'nothing shelved'; return
-        }
-        if (Set-ProjectShelved -Dir $d -Shelved $true) {
-            # 🪤 THE FILTER GOES WITH IT. Leaving railPick on a project that is no
-            # longer drawn would narrow the sessions column to conversations from
-            # a tile nobody can see.
-            if ("$($script:railPick)" -eq "$($d.path)") { $script:railPick = $null }
-            Build-Rail; Build-Sessions
-            Set-Status ("'{0}' is shelved - click the count in the projects header to put it back" -f $lbl) 'ok'
-        }
+        Show-Project -Dir $d -Label $script:railMenuLabel
     })
     $null = $m.Items.Add($i)
-
-    # ---- whether this project comes back at logon at all -------------------
-    $u = New-Object System.Windows.Controls.MenuItem
-    $u.Style = [System.Windows.Style]$window.FindResource([System.Windows.Controls.MenuItem])
-    $u.Header = 'Reopen at logon: ON'
-    $u.Add_Click({
-        $d = $script:railMenuDir
-        $script:railMenuDir = $null
-        Invoke-SRProjectRestore -Dir $d -Label $script:railMenuLabel
-    })
-    $null = $m.Items.Add($u)
-
-    # ---- and whether new ones get armed at all ----------------------------
-    $a = New-Object System.Windows.Controls.MenuItem
-    $a.Style = [System.Windows.Style]$window.FindResource([System.Windows.Controls.MenuItem])
-    $a.Header = 'Auto-tick new sessions here: ON'
-    $a.Add_Click({
-        $d = $script:railMenuDir
-        $script:railMenuDir = $null
-        Invoke-SRProjectAutoTick -Dir $d -Label $script:railMenuLabel
-    })
-    $null = $m.Items.Add($a)
     return $m
 }
 
@@ -9125,12 +9175,12 @@ $ui.RailList.Add_PreviewMouseRightButtonDown({
     if (-not $kid.Count) { $script:railMenuDir = $null; $e.Handled = $true; return }
     $script:railMenuDir = $kid[0].D
     $script:railMenuLabel = "$($it.Label)"
-    $ui.RailList.ContextMenu.Items[0].Header = Get-RailShelveVerb $script:railMenuDir
-    # Both of the others read their state too, for the reason Get-RailShelveVerb
-    # gives: an item that names the opposite of what it does is one the operator
-    # presses believing it does the other thing.
-    $ui.RailList.ContextMenu.Items[1].Header = Get-RailRestoreVerb $script:railMenuDir
-    $ui.RailList.ContextMenu.Items[2].Header = Get-RailAutoTickVerb $script:railMenuDir
+    # 🔑 NOTHING TO RE-HEAD ANY MORE. Each item used to name the state it would
+    # move away from, and getting that backwards is a click the operator makes
+    # believing it does the other thing - so all three were rewritten every time
+    # the menu opened. One item that opens a panel says the same thing whatever
+    # the project's state is; the panel does the naming, where there is room to
+    # say what each switch means as well as what it currently is.
 })
 
 $ui.SaveBtn.Add_Click({
@@ -11839,6 +11889,35 @@ $ui.CfgBtn.Add_Click({
 $ui.CfgCancel.Add_Click({ Hide-Config; Set-Status 'nothing changed' })
 $ui.CfgApply.Add_Click({ Invoke-ConfigApply })
 
+# ---- the project panel's three switches --------------------------------
+# 🔑 EACH ONE RE-READS THE PANEL AFTER ACTING, and that is not politeness. All
+# three writes can be REFUSED - two behind a confirm sheet, all three behind the
+# registry or config writer - and a panel that assumed its own click succeeded
+# would show a project as switched off while the file still has it on. That file
+# is the one that decides what reopens tomorrow.
+$ui.ProjClose.Add_Click({ Hide-Project })
+$ui.ProjRestoreBtn.Add_Click({
+    $d = $script:projDir
+    if (-not $d) { return }
+    Invoke-SRProjectRestore -Dir $d -Label $script:projPanelLabel
+    Update-ProjectPanel
+})
+$ui.ProjAutoBtn.Add_Click({
+    $d = $script:projDir
+    if (-not $d) { return }
+    Invoke-SRProjectAutoTick -Dir $d -Label $script:projPanelLabel
+    Update-ProjectPanel
+})
+$ui.ProjShelveBtn.Add_Click({
+    $d = $script:projDir
+    if (-not $d) { return }
+    Invoke-SRProjectShelve -Dir $d -Label $script:projPanelLabel
+    # 🪤 THE PANEL STAYS OPEN OVER A SHELVED PROJECT. Its tile has just left the
+    # rail, so closing here would leave the operator with no way back to the one
+    # control that undoes it until they went looking in the rail header.
+    Update-ProjectPanel
+})
+
 $ui.SetApply.Add_Click({
     $r = $null
     foreach ($x in $script:model) { if ($x.Id -eq $script:setFor) { $r = $x; break } }
@@ -12527,6 +12606,13 @@ $window.Add_PreviewKeyDown({
     if ($e.Key -eq 'Escape' -and $ui.CfgBox.Visibility -eq $V_Show) {
         Hide-Config
         Set-Status 'nothing changed'
+        $e.Handled = $true
+        return
+    }
+    # The project panel applies as you press, so there is nothing to discard and
+    # nothing to say - Escape just puts it away.
+    if ($e.Key -eq 'Escape' -and $ui.ProjBox.Visibility -eq $V_Show) {
+        Hide-Project
         $e.Handled = $true
         return
     }

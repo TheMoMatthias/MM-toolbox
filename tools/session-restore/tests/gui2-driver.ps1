@@ -323,6 +323,31 @@ elseif (-not @($cm.Style.Setters | Where-Object { $_.Property.Name -eq 'Template
     $bare = @($items | Where-Object { -not $_.Style })
     if ($bare.Count) { Fail "$($bare.Count) menu item(s) carry no style - they would highlight in Windows blue" }
     else { Pass "the right-click menu and all $($items.Count) of its items are drawn by this window, not by Windows" }
+
+    # 🔴 AND THE SAME MENU ON THE COLUMN THE OPERATOR ACTUALLY WORKS IN. These
+    # four actions were reachable only from the manager surface, which is not
+    # where he spends the day. Asked for as "right click ... settings for
+    # projects, or even sessions".
+    #
+    # 🪤 A DIFFERENT INSTANCE, NOT THE SAME ONE. A ContextMenu has one logical
+    # parent: assigning the manager's to this list as well would leave one of the
+    # two lists with an empty popup, and which one would depend on assignment
+    # order - so the object identity is what is asserted, not just presence.
+    $scm = $ui.SessionList.ContextMenu
+    if (-not $scm) { Fail 'the conversations column has no right-click menu' }
+    elseif ([object]::ReferenceEquals($scm, $cm)) {
+        Fail 'both lists share one ContextMenu instance - one of them will open empty'
+    } else {
+        $sItems = @($scm.Items | Where-Object { $_ -is [System.Windows.Controls.MenuItem] })
+        $sBare = @($sItems | Where-Object { -not $_.Style })
+        if ($sItems.Count -ne $items.Count) {
+            Fail ("the conversations column offers {0} action(s) against the manager's {1}" -f $sItems.Count, $items.Count)
+        } elseif ($sBare.Count) {
+            Fail "$($sBare.Count) item(s) on the conversations menu carry no style"
+        } elseif (-not @($sItems | Where-Object { "$($_.Header)" -like '*Settings*' }).Count) {
+            Fail 'the conversations column menu has no Settings item'
+        } else { Pass "the conversations column carries the same $($sItems.Count) actions, on its own menu instance" }
+    }
 }
 if (-not $ui.ManageList.ContextMenu) { Fail 'the manager has no per-row menu' }
 else {
@@ -1606,16 +1631,23 @@ else {
         elseif ($hideBack.Count -ne $hideTilesWas) { Fail "showing them back gives $($hideBack.Count) tile(s), not $hideTilesWas" }
         else { Pass "'show shelved' puts all $hideTilesWas back, so nothing is ever stranded" }
 
-        # The menu's one item has to read the way it will act. An item saying
-        # "Shelve this project" over a shelved one would do the opposite of what
-        # it says, which on this gesture is the whole risk.
-        $verbHidden = Get-RailShelveVerb $hideDir
+        # The control has to read the way it will act. One saying "Shelve it"
+        # over an already-shelved project would do the opposite of what it says,
+        # which on this gesture is the whole risk. It moved off a menu item onto
+        # the project panel, and the risk moved with it - so that is what is
+        # asserted now, rather than a verb helper nothing renders.
+        Show-Project -Dir $hideDir -Label 'shelve-check'
+        $verbHidden = "$($ui.ProjShelveBtn.Content)"
+        $noteHidden = "$($ui.ProjShelveNote.Text)"
         Set-Field $hideDir 'shelved' $false
-        $verbShown = Get-RailShelveVerb $hideDir
-        if ($verbHidden -eq $verbShown) { Fail "the menu offers '$verbShown' whichever state the project is in" }
-        elseif ($verbHidden -notmatch 'Put') { Fail "over a shelved project the menu offers '$verbHidden'" }
-        elseif ($verbShown -notmatch 'Shelve') { Fail "over a visible project the menu offers '$verbShown'" }
-        else { Pass "the one menu item reads the way it acts ('$verbShown' / '$verbHidden')" }
+        Update-ProjectPanel
+        $verbShown = "$($ui.ProjShelveBtn.Content)"
+        Hide-Project
+        if ($verbHidden -eq $verbShown) { Fail "the panel offers '$verbShown' whichever state the project is in" }
+        elseif ($verbHidden -notmatch 'back') { Fail "over a shelved project the panel offers '$verbHidden'" }
+        elseif ($verbShown -notmatch 'Shelve') { Fail "over a visible project the panel offers '$verbShown'" }
+        elseif ($noteHidden -notmatch 'Shelved') { Fail "the panel describes a shelved project as '$noteHidden'" }
+        else { Pass "the panel's button reads the way it acts ('$verbShown' / '$verbHidden')" }
     } finally {
         if ($hideFieldHad) { Set-Field $hideDir 'shelved' $hideFieldWas }
         elseif ($null -ne $hideDir.PSObject.Properties['shelved']) { $hideDir.PSObject.Properties.Remove('shelved') }
@@ -2005,6 +2037,17 @@ function Get-AskShot { param([string]$Name)
 $roundFresh = Get-AskShot 'round-single-fresh.txt'
 if (-not $roundFresh) { Fail 'the captured round did not parse, so the panel cannot be driven by it' }
 else {
+    # 🪤 AND THE OTHER HALF OF THE WRAP FIX: collecting a BLOCK must not collect
+    # more than the block. On this real capture the question is one line with a
+    # blank above it, then the tab bar and the rule - so a walk that kept
+    # climbing to its 12-line cap would hand the panel the round's own
+    # navigation, and the scrollback above that, as the thing being asked.
+    # An exact match rather than a -like, because that is the whole point here:
+    # anything extra IS the defect. (What this pins is the stop; which of the
+    # three stops fires on this particular screen is the blank line.)
+    if ("$($roundFresh.Question)" -ne 'Which alpha do you want') {
+        Fail ("the captured question reads '{0}', not the one line it is" -f $roundFresh.Question)
+    } else { Pass 'a one-line question stays one line - the walk stops at the block, not at its 12-line cap' }
     Show-Ask $roundFresh
     # The strip: two arrows plus one chip per question.
     if ($ui.AskTabs.Visibility -ne $V_Show) { Fail 'a three-question round draws no tab strip' }
@@ -2403,8 +2446,10 @@ try {
 
     if (Test-SRProjectAutoTickOff $atDir) { Fail 'a project with no key of its own reads as auto-tick OFF' }
     else { Pass 'a project with no key of its own is auto-ticked' }
-    if ((Get-RailAutoTickVerb $atDir) -notlike '*ON') { Fail 'the menu item does not say ON when it is on' }
-    else { Pass 'the menu item reads ON when it is on' }
+    Show-Project -Dir $atDir -Label 'AlgoTrader'
+    if ("$($ui.ProjAutoBtn.Content)" -ne 'Turn off') {
+        Fail ("the panel offers '{0}' over a project that IS auto-ticking" -f $ui.ProjAutoBtn.Content)
+    } else { Pass 'the panel offers Turn off while auto-tick is on' }
 
     $null = Set-SRProjectAutoTick -Dir $atDir -On $false
     if (-not $script:atWrote) { Fail 'turning auto-tick off wrote nothing' }
@@ -2430,8 +2475,13 @@ try {
     }
     if (-not (Test-SRProjectAutoTickOff $atDir)) { Fail 'after turning it off it does not read as off' }
     else { Pass 'after turning it off it reads as off' }
-    if ((Get-RailAutoTickVerb $atDir) -notlike '*OFF') { Fail 'the menu item does not say OFF when it is off' }
-    else { Pass 'the menu item reads OFF when it is off' }
+    Update-ProjectPanel
+    if ("$($ui.ProjAutoBtn.Content)" -ne 'Turn on') {
+        Fail ("the panel offers '{0}' over a project with auto-tick off" -f $ui.ProjAutoBtn.Content)
+    } elseif ("$($ui.ProjAutoNote.Text)" -notlike '*never armed*') {
+        Fail ("the panel describes auto-tick-off as '{0}'" -f $ui.ProjAutoNote.Text)
+    } else { Pass 'the panel offers Turn on, and says what off means, once auto-tick is off' }
+    Hide-Project
 
     # KEY: BACK ON REMOVES THE KEY rather than writing a number, so the generic
     # per-directory cap applies again instead of this project being pinned to
@@ -2447,10 +2497,15 @@ try {
         else { Pass 'the other lanes survive that write too' }
     }
 
+    # 🔑 ONE ITEM NOW, NOT THREE. The switches moved into the project panel at
+    # the operator's request - a control he sets once a month was on screen
+    # thirty-five times - so the menu is the way IN and the panel is the control.
     $atMenu = $ui.RailList.ContextMenu
-    if (-not $atMenu -or $atMenu.Items.Count -lt 3) {
-        Fail ('the rail menu has {0} item(s), so shelve, reopen-at-logon and auto-tick are not all on it' -f $(if ($atMenu) { $atMenu.Items.Count } else { 0 }))
-    } else { Pass ('the rail menu carries all {0} items' -f $atMenu.Items.Count) }
+    if (-not $atMenu -or $atMenu.Items.Count -ne 1) {
+        Fail ('the rail menu has {0} item(s), expected the one that opens the project panel' -f $(if ($atMenu) { $atMenu.Items.Count } else { 0 }))
+    } elseif ("$($atMenu.Items[0].Header)" -notlike '*settings*') {
+        Fail ("the rail menu's one item reads '{0}'" -f $atMenu.Items[0].Header)
+    } else { Pass ("the rail menu is one item that opens the project panel ('{0}')" -f $atMenu.Items[0].Header) }
 } catch {
     Fail ("the project auto-tick check threw: {0}" -f $_.Exception.Message)
 } finally {
@@ -2481,8 +2536,11 @@ try {
     $prDir = [PSCustomObject]@{ path = 'C:/work/AlgoTrader'; enabled = $true; sessions = @() }
     if (Test-SRProjectRestoreOff $prDir) { Fail 'an enabled project reads as switched off' }
     else { Pass 'an enabled project reads as reopening at logon' }
-    if ((Get-RailRestoreVerb $prDir) -notlike '*ON') { Fail 'the menu item does not say ON when it is on' }
-    else { Pass 'the menu item reads ON when the project reopens' }
+    Show-Project -Dir $prDir -Label 'AlgoTrader'
+    if ("$($ui.ProjRestoreBtn.Content)" -ne 'Turn off') {
+        Fail ("the panel offers '{0}' over a project that DOES reopen" -f $ui.ProjRestoreBtn.Content)
+    } else { Pass 'the panel offers Turn off while the project reopens at logon' }
+    Hide-Project
 
     # 🔴 NO `enabled` FIELD AT ALL MUST READ AS ON. The restore treats a missing
     # field as false, so the tempting implementation is `-not $Dir.enabled` -
@@ -2513,8 +2571,13 @@ try {
 
     if (-not (Test-SRProjectRestoreOff $prTicked)) { Fail 'after switching off it does not read as off' }
     else { Pass 'after switching off it reads as off' }
-    if ((Get-RailRestoreVerb $prTicked) -notlike '*OFF') { Fail 'the menu item does not say OFF when it is off' }
-    else { Pass 'the menu item reads OFF when the project is off' }
+    Show-Project -Dir $prTicked -Label 'Ticked'
+    if ("$($ui.ProjRestoreBtn.Content)" -ne 'Turn on') {
+        Fail ("the panel offers '{0}' over a switched-off project" -f $ui.ProjRestoreBtn.Content)
+    } elseif ("$($ui.ProjRestoreNote.Text)" -notlike '*kept exactly as they are*') {
+        Fail ("the panel describes a switched-off project as '{0}' - it must say the ticks survive" -f $ui.ProjRestoreNote.Text)
+    } else { Pass 'the panel offers Turn on, and says the ticks are kept, once it is off' }
+    Hide-Project
 
     # ---- and switching it back on ----------------------------------------
     $script:prSaved = 0
@@ -2542,10 +2605,17 @@ try {
         S = [PSCustomObject]@{ sessionId = 'x'; enabled = $true }
     })
     $prTile = New-RailTile -Path 'C:/work/Off' -Kids $prKids -Picked $false -Blank $null
-    if ("$($prTile.RestoreText)" -ne 'logon off') { Fail ("a switched-off project's tile reads '{0}'" -f $prTile.RestoreText) }
-    else { Pass 'a switched-off project says so on its tile' }
-    if ("$($prTile.RestoreTip)" -notlike '*kept*') { Fail 'the tile does not say the ticks are kept' }
-    else { Pass 'the tile says the ticks are kept while it is off' }
+    # 🔴 THE CONTROL LEFT THE TILE; THE STATE DID NOT. A project that quietly
+    # reopens nothing has to be distinguishable from one that does without
+    # opening anything - the morning it matters is the morning nobody is
+    # watching. It is now a word on the line that already says what is happening
+    # in there, rather than a pressable label on every one of thirty-five tiles.
+    if ("$($prTile.State)" -notlike '*no logon*') { Fail ("a switched-off project's tile reads '{0}'" -f $prTile.State) }
+    else { Pass ("a switched-off project says so on its tile ('{0}')" -f $prTile.State) }
+    if ("$($prTile.Tip)" -notlike '*kept*') { Fail 'the tile does not say the ticks are kept' }
+    else { Pass 'the tile tooltip says the ticks are kept while it is off' }
+    if ("$($prTile.Tip)" -notlike '*Right-click*') { Fail 'the tile does not say where the switch went' }
+    else { Pass 'the tile points at the right-click that now carries the switch' }
 
     # 🪤 AND THE OTHER STATE, or an inverted condition draws every project as
     # off and the assertion above passes on all 35 of them.
@@ -2556,8 +2626,10 @@ try {
         S = [PSCustomObject]@{ sessionId = 'y'; enabled = $true }
     })
     $prTileOn = New-RailTile -Path 'C:/work/On' -Kids $prOnKids -Picked $false -Blank $null
-    if ("$($prTileOn.RestoreText)" -ne 'logon on') { Fail ("a project that does reopen reads '{0}' on its tile" -f $prTileOn.RestoreText) }
-    else { Pass 'a project that does reopen says so too, so the two states cannot be swapped' }
+    # 🔑 AND THE NORMAL STATE IS SILENT. Naming both would put a word on every
+    # tile and teach the eye to skip the line the exception has to be read in.
+    if ("$($prTileOn.State)" -like '*no logon*') { Fail ("a project that does reopen reads '{0}' on its tile" -f $prTileOn.State) }
+    else { Pass 'a project that does reopen says nothing about logon, so only the exception stands out' }
 } catch {
     Fail ("the project reopen-at-logon check threw: {0}" -f $_.Exception.Message)
 } finally {
@@ -7528,6 +7600,18 @@ if (-not $proseQ -or @($proseQ.Options).Count -lt 2) {
     Fail 'the prose fixture no longer parses as a question - this test can no longer prove anything'
 } else {
     Pass ("the parser still reads plain prose as a {0}-option question - which is why the gate exists" -f @($proseQ.Options).Count)
+
+    # 🔴 THE WHOLE QUESTION, NOT ITS LAST LINE. This fixture WRAPS ACROSS TWO
+    # LINES and every assertion on it until now asked about the options - so a
+    # parser handing back only "selectable prompt, so here they are in prose."
+    # passed all of them. Reported by the operator as the question being cut off
+    # with only the last few words readable, which is what he was being shown.
+    $pQ = "$($proseQ.Question)"
+    if ($pQ -notlike '*Two decisions are yours*') {
+        Fail ("the first line of a wrapped question is dropped - the question reads '{0}'" -f $pQ)
+    } elseif ($pQ -notlike '*here they are in prose*') {
+        Fail ("the last line of a wrapped question is dropped - the question reads '{0}'" -f $pQ)
+    } else { Pass 'a question wrapped across two screen lines arrives whole' }
     $pAt = -1
     try { if ($proseQ.PSObject.Properties['CursorAt']) { $pAt = [int]$proseQ.CursorAt } } catch { }
     if ($pAt -ge 0) { Fail ("the prose fixture reports a cursor at {0} - it cannot stand in for a cursorless parse" -f $pAt) }

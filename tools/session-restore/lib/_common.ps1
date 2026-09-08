@@ -5266,20 +5266,47 @@ function Invoke-SRParseScreenQuestion {
         }
     }
 
-    # The question is the last line of prose above the first option. Box-drawing and
-    # the header chips are furniture, not the question.
-    $q = ''
+    # 🔴 THE QUESTION IS THE WHOLE BLOCK OF PROSE ABOVE THE FIRST OPTION, NOT ITS
+    # LAST LINE. This took the first non-furniture line it met walking up and
+    # stopped there, so a question the TERMINAL HAD WRAPPED across two or three
+    # lines reached the window as its final fragment. Reported as "the question
+    # is cut off and I only see the last few words" - which is exactly what it
+    # was: the panel drew everything it was given, and it was given one line.
+    #
+    # 🪤 THE FIXTURE HAD CARRIED THE DEFECT SINCE IT WAS WRITTEN. gui2-driver's
+    # prose screen is two lines:
+    #
+    #     Two decisions are yours. R-269 forbids me putting them through the
+    #     selectable prompt, so here they are in prose.
+    #
+    # and every assertion on it asked about the OPTIONS, so a parser returning
+    # only "selectable prompt, so here they are in prose." passed all of them.
+    # A question is not a field anything checked the whole of.
+    #
+    # Box-drawing and the header chips are furniture, not the question.
+    $qLines = New-Object System.Collections.Generic.List[string]
     for ($i = $firstIdx - 1; $i -ge 0 -and $i -ge $firstIdx - 12; $i--) {
         $cand = ($lines[$i] -replace '^[\s' + [regex]::Escape([string][char]0x2502) + ']+', '').Trim()
-        if (-not $cand) { continue }
-        if ($cand -match '^[' + [regex]::Escape('-=_' + [string][char]0x2500 + [string][char]0x2502) + ']+$') { continue }
+        # 🔑 THE SAME BLANK LINE MEANS TWO THINGS, TOLD APART BY WHAT HAS BEEN
+        # COLLECTED. Below the question it is the gap between it and the options,
+        # and the walk has to cross it. Above the question it is the top of the
+        # block, and the walk has to stop - or it climbs into the scrollback and
+        # hands the window whatever prose was on screen before the question.
+        if (-not $cand) { if ($qLines.Count) { break }; continue }
+        # 🪤 break, NOT continue, ON THE FURNITURE. Skipping past a rule or the
+        # tab bar is what let the old walk keep climbing; on a screen with no
+        # question at all it would return a line of scrollback rather than
+        # nothing, and nothing is the honest answer there.
+        if ($cand -match '^[' + [regex]::Escape('-=_' + [string][char]0x2500 + [string][char]0x2502) + ']+$') { break }
         # The tab bar is furniture too, and it is the line immediately above the
         # question on a one-line question - so without this the round's own
         # navigation would be read as the thing it is asking.
-        if ($cand -match ($boxEmpty + '|' + $boxFull)) { continue }
-        $q = $cand
-        break
+        if ($cand -match ($boxEmpty + '|' + $boxFull)) { break }
+        $qLines.Insert(0, $cand)
     }
+    # Joined with a space: the line breaks are the terminal's wrapping, not the
+    # question's own, and the panel wraps it again to its own width.
+    $q = ($qLines -join ' ')
     if (-not $header -and $tabs.Count -eq 1) { $header = "$($tabs[0].Label)" }
 
     return [PSCustomObject]@{

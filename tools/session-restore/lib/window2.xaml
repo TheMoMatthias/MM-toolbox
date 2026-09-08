@@ -1248,33 +1248,22 @@
                      Text="{Binding State}" Style="{StaticResource Meta}"
                      Margin="0,4,0,0" LineHeight="15" LineStackingStrategy="BlockLineHeight"
                      TextTrimming="CharacterEllipsis"/>
-          <!-- ============== THE TWO PROJECT CONTROLS ==============
-               🔴 THESE COST DENSITY AND THAT WAS A DELIBERATE TRADE, made by
-               the operator after it was put to him the other way. The rail was
-               tuned to say less per tile - the context bar on a session row is
-               hidden below half a window for exactly this reason - and two
-               controls on every project undo some of that. They are placed on
-               the SECOND line beside the state text rather than beside the
-               name, so the thing you scan for is still the project.
+          <!-- ============== NO CONTROLS ON THE TILE ==============
+               🔴 TWO PRESSABLE LABELS LIVED HERE AND THE OPERATOR ASKED FOR
+               THEM BACK OFF IT. They were a deliberate trade when they went on -
+               the density cost was put to him and he took it - and having used
+               them he reversed it: a switch he sets once a month should not be
+               on screen thirty-five times. The rail is tuned to say less per
+               tile (the context bar on a session row is hidden below half a
+               window for exactly this reason), and both controls now live in
+               the project's own settings panel, on right-click.
 
-               🪝 THEY ARE NOT BUTTONS. A real Button brings its own chrome,
-               focus ring and hit box into a tile 24px tall; every other
-               pressable label in this window - RailSort, ListSort, RailClear -
-               is a hand-cursor TextBlock, and matching them is what keeps the
-               rail from looking like a form. The click is routed in the rail is
-               PreviewMouseLeftButtonDown, which tunnels, so it lands before the
-               tile can select itself. ============================== -->
-          <StackPanel Grid.Column="2" Grid.Row="1" Orientation="Horizontal"
-                      VerticalAlignment="Center" Margin="10,4,0,0">
-            <TextBlock x:Name="RailRestoreBtn" Text="{Binding RestoreText}"
-                       Style="{StaticResource Meta}" Cursor="Hand"
-                       Foreground="{Binding RestoreFg}"
-                       ToolTip="{Binding RestoreTip}"/>
-            <TextBlock x:Name="RailAutoBtn" Text="{Binding AutoText}"
-                       Style="{StaticResource Meta}" Cursor="Hand"
-                       Margin="10,0,0,0" Foreground="{Binding AutoFg}"
-                       ToolTip="{Binding AutoTip}"/>
-          </StackPanel>
+               🪤 THE TILE STILL SAYS WHAT IS TRUE OF THE PROJECT. What moved is
+               the CONTROL, not the state: a project switched off for logon is
+               named in the state line beside the counts, because the whole
+               reason it is a setting worth having is that you can see it took
+               effect. A switch you cannot find is a nuisance; a state you
+               cannot see is a defect. ============================== -->
         </Grid>
       </Border>
       </Grid>
@@ -2643,6 +2632,89 @@
             </StackPanel>
           </Grid>
         </Grid>
+      </Border>
+    </Grid>
+
+    <!-- ================== THIS PROJECT ==================
+         The three switches that belong to a project rather than to a
+         conversation, in one place, opened by right-clicking its tile.
+
+         🔑 IT IS THE SIBLING OF THE PER-CONVERSATION PANEL, deliberately. The
+         window already had "THIS CONVERSATION" behind a right-click; a project
+         had two pressable labels wedged onto its tile and shelving on a menu,
+         which is three different shapes for the same idea. One shape, two
+         scopes.
+
+         🪤 EVERY ROW SAYS THE STATE AND THE BUTTON SAYS THE CHANGE. A tick box
+         that both reports and acts has to be put back by hand when the confirm
+         behind it is declined, and one that silently failed to revert would
+         show a project as switched off while the registry still has it on - on
+         the panel whose whole job is telling you what will happen tomorrow.
+         A sentence plus a verb cannot drift that way: the panel re-reads itself
+         after every action.
+         ================================================== -->
+    <Grid Grid.Row="2" Panel.ZIndex="99">
+      <Border x:Name="ProjBox" Visibility="Collapsed"
+              VerticalAlignment="Center" HorizontalAlignment="Center" Margin="24"
+              Width="580" Background="{StaticResource PanelHi}" CornerRadius="12"
+              BorderBrush="{StaticResource EdgeLit}" BorderThickness="1" Padding="22,18,22,16">
+        <Border.Effect>
+          <DropShadowEffect BlurRadius="52" ShadowDepth="16" Opacity="0.7" Color="#000000"/>
+        </Border.Effect>
+        <StackPanel>
+          <TextBlock Text="THIS PROJECT" Style="{StaticResource Caption}"/>
+          <TextBlock x:Name="ProjName" Style="{StaticResource Display}" TextWrapping="Wrap"
+                     Margin="0,6,0,2" Text=""/>
+          <TextBlock x:Name="ProjWhere" Style="{StaticResource Meta}" TextWrapping="Wrap"
+                     Margin="0,0,0,16" Text=""/>
+
+          <Grid Margin="0,0,0,15">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Margin="0,0,16,0">
+              <TextBlock Text="Reopen at logon" Style="{StaticResource Body}"/>
+              <TextBlock x:Name="ProjRestoreNote" Style="{StaticResource Dim}" TextWrapping="Wrap"
+                         Margin="0,3,0,0" Text=""/>
+            </StackPanel>
+            <Button x:Name="ProjRestoreBtn" Grid.Column="1" Style="{StaticResource Btn}"
+                    MinWidth="112" VerticalAlignment="Top"/>
+          </Grid>
+
+          <Grid Margin="0,0,0,15">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Margin="0,0,16,0">
+              <TextBlock Text="Auto-tick new conversations" Style="{StaticResource Body}"/>
+              <TextBlock x:Name="ProjAutoNote" Style="{StaticResource Dim}" TextWrapping="Wrap"
+                         Margin="0,3,0,0" Text=""/>
+            </StackPanel>
+            <Button x:Name="ProjAutoBtn" Grid.Column="1" Style="{StaticResource Btn}"
+                    MinWidth="112" VerticalAlignment="Top"/>
+          </Grid>
+
+          <Grid Margin="0,0,0,4">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Margin="0,0,16,0">
+              <TextBlock Text="On the rail" Style="{StaticResource Body}"/>
+              <TextBlock x:Name="ProjShelveNote" Style="{StaticResource Dim}" TextWrapping="Wrap"
+                         Margin="0,3,0,0" Text=""/>
+            </StackPanel>
+            <Button x:Name="ProjShelveBtn" Grid.Column="1" Style="{StaticResource Btn}"
+                    MinWidth="112" VerticalAlignment="Top"/>
+          </Grid>
+
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="ProjClose" Content="Close" Style="{StaticResource BtnPrimary}"
+                    MinWidth="92"/>
+          </StackPanel>
+        </StackPanel>
       </Border>
     </Grid>
 
