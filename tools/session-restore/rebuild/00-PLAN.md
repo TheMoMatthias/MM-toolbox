@@ -4,8 +4,8 @@ One pass, worked top to bottom. Every item has a **done-when** you can check
 without asking anybody — a command and its expected result, or an observable
 state. An item with no done-when is not an item.
 
-**Phases 0 and 1 are complete, and 2.1 with them.** Everything from 2.2 down is
-still to do. The PowerShell tool remains the daily driver and is untouched by any
+**Phases 0 and 1 are complete, and 2.1-2.2 with them.** Everything from 2.3 down
+is still to do. The PowerShell tool remains the daily driver and is untouched by any
 of it.
 
 ---
@@ -116,7 +116,7 @@ against the PowerShell on the operator's real data.
 | | what | done-when | state |
 |---|---|---|---|
 | 2.1 | **Config** — the 25 settings, defaults, allowed values (`03-CONTRACTS.md`) | reads the operator's real config; every setting resolves to the same value; an untouched default is never written | ✅ 3 oracle cases, 13 tests |
-| 2.2 | **Registry read** — typed model of `sessions-registry.json` | same conversation count, ids and ticks as `Get-SRRegistry` on the real 1 MB file | — |
+| 2.2 | **Registry read** — typed model of `sessions-registry.json` | same conversation count, ids and ticks as `Get-SRRegistry` on the real 1 MB file | ✅ 3 oracle cases, 558 sessions x 13 fields |
 | 2.3 | **Transcripts** — `.jsonl` reader, turn folding | same turn count and same last-said text as the PowerShell, over every conversation on disk | — |
 | 2.4 | **Console API** — one class, the 36 imports (`03-CONTRACTS.md`) | a live screen read matches `Get-SRScreenText` character for character, and the attribute plane matches too | — |
 | 2.5 | **Sessions / agents** — `claude agents --json`, `wt.exe`, process tree | the agent map matches, including `busy` | — |
@@ -155,6 +155,41 @@ and the second is the one that matters:
   because when this code is wrong the safe thing is to keep what the operator
   wrote. The strictness moved into a test that fails if any Choice or Flags
   setting declares no options, confirmed red by re-injecting the defect.
+
+### 2.2 as it turned out
+
+**Agreed first time on all 558 conversations, every field** - and that is
+precisely why it was then broken on purpose. Flipping one boolean on one row in
+558 must be caught, and it was: `$.rows[0].pinned: PowerShell "true", C# "false"`.
+
+🪤 **AND THE FIRST ATTEMPT AT THAT PROOF WAS ITSELF A FALSE GREEN.** The build
+failed on an analyzer rule, `dotnet run --no-build` happily ran the PREVIOUS
+assembly, and the deliberately-broken comparison came back **ok**. A stale green
+is worse than a red: it is the harness reporting on something it did not check.
+`src/build.ps1 -Oracle` exists now so the oracle can only run behind a build that
+passed — the fix is structural rather than a note to remember.
+
+🔴 **The two data files disagree about the byte-order mark.**
+`sessions-registry.json` starts `EF BB BF`; `session-restore.config.json` does
+not. Measured, not assumed. `ReadAllText` detects and strips it, but a reader
+that hands raw bytes to a parser breaks on exactly one of the two - so both
+readers state it, and a test writes a BOM'd file and reads it back.
+
+🔴 **Every record carries a `[JsonExtensionData]` bag, and that is for 2.7.** A
+registry written by a newer build carries fields this one does not model; a model
+that drops them turns the next save into a silent delete. Tested at all three
+levels - file, directory and session.
+
+🔴 **The v1 and v2 migrations are deliberately NOT ported.** They rewrite the
+operator's ticks in place - v2→v3 re-parents every session onto its repo rather
+than its working directory - and the only file available to test them against is
+already v3, so a port would be code that has never once run on its own input.
+The PowerShell still has both and still runs, so an old registry is **refused
+with advice** ("open Sessions.exe once"), not migrated by something unexercised.
+*Deferred; trigger: a v1 or v2 registry actually turns up.*
+
+**Reading is 8x faster than the PowerShell** on the same file (13 ms against
+106), which is a by-product rather than the point - the point is that they agree.
 
 🔴 **2.7 is last on purpose.** Nothing writes until everything reads correctly.
 The guards are ported before the writer they guard, and they are ported as

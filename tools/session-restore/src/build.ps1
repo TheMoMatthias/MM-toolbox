@@ -5,6 +5,8 @@
 #      ... -Publish            also produce dist\Sessions2.exe
 #      ... -Publish -Framework framework-dependent (0,2 MB, needs the runtime)
 #      ... -SkipTests          build only
+#      ... -Oracle             also run sr-oracle against the live PowerShell
+#      ... -Oracle -Only registry   just the comparisons whose name matches
 #
 #  WHY A SCRIPT AND NOT "dotnet build". Three things have to be true together
 #  and each fails differently: the SDK has to be present, the tests have to
@@ -19,7 +21,9 @@
 param(
     [switch]$Publish,
     [switch]$Framework,
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$Oracle,
+    [string]$Only
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,7 +77,23 @@ if (-not $SkipTests) {
     Write-Host '        tests skipped' -ForegroundColor DarkGray
 }
 
-# ---- 4. publish ------------------------------------------------------------
+# ---- 4. the oracle ---------------------------------------------------------
+if ($Oracle) {
+    # 🔴 IT RUNS ONLY BEHIND A BUILD THAT PASSED, and that is the whole reason
+    # this lives here rather than being typed by hand. `dotnet run --no-build`
+    # after a failed compile runs the PREVIOUS binary and reports on it happily:
+    # a deliberately broken comparison came back GREEN that way, because the
+    # mutation never made it into the assembly. A stale green is worse than a
+    # red - it is the harness telling you it checked something it did not.
+    $oargs = @('run', '--project', (Join-Path $here 'SessionRestore.Oracle'),
+               '-c', 'Release', '--no-build')
+    if ($Only) { $oargs += '--'; $oargs += $Only }
+    & dotnet @oargs
+    if ($LASTEXITCODE -ne 0) { Bad 'the oracle found a difference'; exit 1 }
+    Good 'the oracle agrees where it should and disagrees where it should'
+}
+
+# ---- 5. publish ------------------------------------------------------------
 if ($Publish) {
     # 🔑 SELF-CONTAINED BY DEFAULT, AND THE SIZE IS THE PRICE OF THAT. Measured
     # 2026-09-09 on this machine:
