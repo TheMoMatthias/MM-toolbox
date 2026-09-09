@@ -8750,6 +8750,187 @@ if ($lpSrc -notmatch 'ScrollToVerticalOffset') {
     Fail 'the terminal watcher jumps to the bottom on every read - scrolling up is impossible'
 } else { Pass 'the terminal watcher follows the foot only while you are at the foot' }
 
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the watcher as a terminal ---'
+# ===========================================================================
+# 🔴 THE MERGE IS THE WHOLE FEATURE AND IT IS PURE LOGIC, so it is tested as
+# logic. The console holds no scrollback under ConPTY - term-bench measures 31
+# lines whether or not 600 more are asked for - so the only history that can
+# exist is the one this window keeps, and it is kept by reconciling consecutive
+# reads of an overlapping viewport. Get this wrong and the pane either repeats
+# every line thirty times a second or silently drops what scrolled past.
+$tmA = @('one', 'two', 'three', 'four')
+$tmR = Merge-SRTermLines -Have @() -Got $tmA
+if (@($tmR).Count -ne 4) { Fail ("a first read of 4 lines kept {0}" -f @($tmR).Count) }
+else { Pass 'a first read is kept whole' }
+
+# The viewport has not moved: nothing new to keep.
+$tmR2 = Merge-SRTermLines -Have $tmR -Got $tmA
+if (@($tmR2).Count -ne 4) {
+    Fail ("an unchanged viewport added {0} lines - every line would repeat at frame rate" -f (@($tmR2).Count - 4))
+} else { Pass 'an unchanged viewport adds nothing' }
+
+# Scrolled by two: two new lines, and the old ones are not duplicated.
+$tmR3 = Merge-SRTermLines -Have $tmR2 -Got @('three', 'four', 'five', 'six')
+if ((@($tmR3) -join '|') -ne 'one|two|three|four|five|six') {
+    Fail ("a viewport scrolled by two merged to '{0}'" -f (@($tmR3) -join '|'))
+} else { Pass 'a viewport that scrolled by two keeps exactly the two new lines' }
+
+# 🪤 A SCREEN THAT CHANGED COMPLETELY OVERLAPS BY NOTHING and must be
+# appended whole - that is what a cleared screen looks like, and dropping it
+# would lose everything after a clear.
+$tmR4 = Merge-SRTermLines -Have $tmR3 -Got @('alpha', 'beta')
+if ((@($tmR4) -join '|') -notmatch 'six\|alpha\|beta$') {
+    Fail ("a screen with no overlap merged to '{0}'" -f (@($tmR4) -join '|'))
+} else { Pass 'a screen that overlaps by nothing is appended whole' }
+
+# 🪤 BLANK LINES CANNOT ANCHOR AN OVERLAP. A console pads with them, so a run
+# of blanks matches a run of blanks at any offset; an all-blank candidate has to
+# be refused or the merge locks onto the wrong place and eats real output.
+$tmB1 = Merge-SRTermLines -Have @() -Got @('real line', '', '')
+$tmB2 = Merge-SRTermLines -Have $tmB1 -Got @('', '', 'a new line')
+if ((@($tmB2) -join '|') -notmatch 'a new line') {
+    Fail ("a run of blank lines swallowed the line after it: '{0}'" -f (@($tmB2) -join '|'))
+} else { Pass 'a run of blank lines cannot anchor the overlap' }
+
+# The history is bounded, or a morning of output is a morning of memory.
+$tmBig = @(); for ($i = 0; $i -lt 40; $i++) { $tmBig += "line $i" }
+$tmCap = Merge-SRTermLines -Have @() -Got $tmBig -Max 10
+if (@($tmCap).Count -ne 10) { Fail ("the history cap did not hold: {0} lines" -f @($tmCap).Count) }
+elseif ("$(@($tmCap)[-1])" -ne 'line 39') { Fail 'the history cap dropped the NEWEST lines rather than the oldest' }
+else { Pass 'the kept scrollback is capped, and it is the oldest that goes' }
+
+# 🔒 ONLY KEYS THIS TOOL ALREADY SENDS. Every forwarded key must be one some
+# other path here has already exercised against a real console. Ctrl+C, Ctrl+D
+# and Ctrl+Z can end a conversation that cannot be relaunched and no path here
+# has ever sent one - so they must not appear.
+$tmProven = @(0x0D, 0x08, 0x09, 0x1B, 0x25, 0x26, 0x27, 0x28, 0x20)
+$tmBad = @()
+foreach ($tmK in $script:termKeys.Keys) {
+    if ($tmProven -notcontains [int]$script:termKeys[$tmK]) { $tmBad += ("{0}=0x{1:X2}" -f $tmK, [int]$script:termKeys[$tmK]) }
+}
+if ($tmBad.Count) {
+    Fail ("the terminal forwards a key no other path here sends: {0}" -f ($tmBad -join ', '))
+} else { Pass ('the terminal forwards only the {0} keys this tool already sends' -f $script:termKeys.Count) }
+$tmKdSrc = ''
+foreach ($tmH in @('Send-SRTermKey', 'Send-SRTermText', 'Get-SRTermTarget')) {
+    if (-not (Get-Command $tmH -ErrorAction SilentlyContinue)) { Fail "the terminal has no $tmH" }
+}
+$tmKdSrc = "$((Get-Command Send-SRTermText).ScriptBlock)" + "$((Get-Command Send-SRTermKey).ScriptBlock)"
+if ($tmKdSrc -notmatch 'Get-SRTermTarget') {
+    Fail 'a key can be sent without checking which conversation is being watched'
+} else { Pass 'nothing is sent without resolving the watched conversation first' }
+
+# 🪤 AND THE TARGET IS THE ONE BEING WATCHED, NOT THE ONE SELECTED. A
+# selection that moves underneath a focused terminal must never redirect keys
+# into a different live session.
+$tmWas = "$($script:liveShownFor)"
+$script:liveShownFor = 'no-such-conversation'
+if (Get-SRTermTarget) { Fail 'the terminal resolved a target for a conversation nobody is watching' }
+else { Pass 'a conversation nobody is watching is not a target for keys' }
+$script:liveShownFor = $tmWas
+
+# The reads have to be budgeted, because they happen on the drawing thread.
+$lpSrc2 = "$((Get-Command Update-LivePane).ScriptBlock)"
+if ($lpSrc2 -notmatch 'ServedOnly') {
+    Fail 'the watcher can fall through to spawning a process per frame'
+} elseif ($lpSrc2 -notmatch 'SR_TermReadMs') {
+    Fail 'the watcher reads with the standard four-second budget on the thread that draws'
+} else { Pass 'a frame that cannot be read cheaply is dropped, not waited for' }
+if ($SR_TermEvery -gt 50) {
+    Fail ("the watcher refreshes every {0} ms - that is a slideshow, not a terminal" -f $SR_TermEvery)
+} else { Pass ('the watcher refreshes every {0} ms' -f $SR_TermEvery) }
+$wlSrc = "$((Get-Command Invoke-WriteLane).ScriptBlock)"
+if ($wlSrc -notmatch 'streamTerm') {
+    Fail 'nothing drives the watcher at frame rate - it would refresh on the one-second follow tick'
+} else { Pass 'the 30 ms lane drives the watcher, not the follow tick' }
+
+# 🔴 AND THE KEYS HAVE TO ACTUALLY ARRIVE. Everything above proves the
+# window's own reasoning; none of it proves that pressing a key in this panel
+# puts a character into a console. That is the half nobody can test against a
+# live conversation - the standing rule here is that nothing types into a
+# session, not to test, not once - so it is tested against a console that is
+# not one: tests\term-replica.ps1, a real console with a real input queue read
+# through [Console]::ReadKey, which is what consumes the INPUT_RECORDs
+# SRCon::Send writes.
+#
+# 🔒 THE TARGET IS THE REPLICA AND CANNOT BE ANYTHING ELSE. Get-SRTermTarget
+# resolves through $script:liveShownFor, which is set to the fake row's id here,
+# so there is no path from this block to a real pid.
+$tmReplica = Join-Path $SR_Root 'tests\term-replica.ps1'
+if (-not (Test-Path -LiteralPath $tmReplica)) {
+    Fail 'term-replica.ps1 is missing, so the terminal send path cannot be proven'
+} else {
+    $tmOut = Join-Path $SR_StateDir ('termprobe-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+    $tmProc = $null
+    $tmId = 'term-probe-console'
+    try {
+        $tmProc = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Minimized -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tmReplica,
+            '-Out', $tmOut, '-TimeoutSeconds', '90')
+        # A console takes a moment to exist. Poll for it rather than guessing.
+        $tmReady = $false
+        $tmSw = [Diagnostics.Stopwatch]::StartNew()
+        while ($tmSw.Elapsed.TotalSeconds -lt 20) {
+            $tmPeek = $null
+            try { $tmPeek = Get-SRScreenText -ProcessId $tmProc.Id } catch { }
+            if ("$tmPeek" -match 'type into me') { $tmReady = $true; break }
+            Start-Sleep -Milliseconds 200
+        }
+        if (-not $tmReady) {
+            Note 'the replica console never came up - the terminal send path is not exercised'
+        } else {
+            $tmRow = [PSCustomObject]@{
+                Id = $tmId; Live = $true
+                A = [PSCustomObject]@{ Pid = $tmProc.Id; Status = 'idle'; Kind = 'interactive' }
+                Conv = [PSCustomObject]@{ State = 'waiting' } }
+            $script:model.Add($tmRow) | Out-Null
+            $script:streamTerm[$tmId] = $true
+            $script:liveShownFor = $tmId
+            $tmTarget = Get-SRTermTarget
+            if (-not $tmTarget -or "$($tmTarget.Id)" -ne $tmId) {
+                Fail 'the terminal did not resolve the conversation being watched as its target'
+            } else {
+                Pass 'the terminal resolves the watched conversation as where keys go'
+                $tmSent = Send-SRTermText 'hello'
+                $tmSentKey = Send-SRTermKey 0x09      # TAB
+                $null = Send-SRTermKey 0x0D           # ENTER commits the replica
+                if (-not $tmSent) { Fail 'the terminal could not write characters into a real console' }
+                if (-not $tmSentKey) { Fail 'the terminal could not write a virtual key into a real console' }
+                $tmWait = [Diagnostics.Stopwatch]::StartNew()
+                while ($tmWait.Elapsed.TotalSeconds -lt 20 -and -not (Test-Path -LiteralPath $tmOut)) {
+                    Start-Sleep -Milliseconds 150
+                }
+                if (-not (Test-Path -LiteralPath $tmOut)) {
+                    Fail 'the replica never wrote what it was sent - the keys did not arrive'
+                } else {
+                    $tmGot = [System.IO.File]::ReadAllText($tmOut)
+                    if ("$tmGot" -ne 'hello<tab>') {
+                        Fail ("the console received '{0}' where 'hello<tab>' was typed" -f "$tmGot")
+                    } else {
+                        Pass 'what the panel sends arrives in a real console as characters and as keys'
+                    }
+                }
+            }
+            $script:streamTerm.Remove($tmId)
+            $script:liveShownFor = ''
+            # 🪤 THE FAKE ROW COMES OUT OF THE MODEL. Leaving it in would give
+            # every check after this one a conversation whose pid is a process
+            # that no longer exists.
+            $tmDrop = $null
+            foreach ($tmR in $script:model) { if ("$($tmR.Id)" -eq $tmId) { $tmDrop = $tmR } }
+            if ($tmDrop) { $null = $script:model.Remove($tmDrop) }
+        }
+    } catch {
+        Fail ("the terminal send path threw: {0}" -f $_.Exception.Message)
+    } finally {
+        try { if ($tmProc -and -not $tmProc.HasExited) { $tmProc.Kill() } } catch { }
+        Remove-Item -LiteralPath $tmOut -Force -ErrorAction SilentlyContinue
+        try { $script:streamTerm.Remove($tmId) } catch { }
+    }
+}
+
 Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
 Write-Host 'the shipped window holds' -ForegroundColor Green

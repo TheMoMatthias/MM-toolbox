@@ -5035,7 +5035,36 @@ $SR_LiveRead     = 2      # seconds between screen reads - it is a child process
 # against one console every couple of seconds, which is fine for the ONE session
 # you are watching and would not be fine for the 26 the sweep reads - which is
 # why the sweep passes no -Back at all and gets the old single-screen read.
-$SR_StreamBack   = 600
+# 🪤 AND MEASU🔴 AT ZERO ON THIS MACHINE. Rows(pid, back) is correct and
+# reaches nothing here: claude runs under ConPTY, whose pseudo-console buffer is
+# THE SIZE OF THE VIEWPORT. Whatever has scrolled past belongs to Windows
+# Terminal, where no console API can follow it. tests\term-bench.ps1 asks for
+# 600 rows above the top and gets the same 31 lines back.
+#
+# So the scrollback is one this window KEEPS. See $script:termHist: while you
+# are watching, every line that leaves the top of the viewport is appended to a
+# history of its own, and that is what you scroll. It covers what happened
+# while you were watching - which is the honest offer, and is more than the
+# console can give.
+$SR_StreamBack   = 0
+# 🔴 THIRTY TIMES A SECOND, BECAUSE THAT IS WHAT "NO INPUT LAG" MEANS.
+# Measured with the held-open reader against a live session: a served viewport
+# read is 3,6 ms median, 10,4 ms worst. At 33 ms between frames an echo appears
+# within 37 ms and the reader is busy 11% of the time - which is a terminal, not
+# a slideshow. The old $SR_LiveRead of 2 SECONDS is what "it streamed the
+# terminal" was built on, and it stays for the compact card, which is a
+# progress bar and does not need frames.
+#
+# 🪤 IT ONLY RUNS WHILE YOU ARE WATCHING ONE. Nothing polls at this rate
+# unless a conversation has been asked to stream and its pane is up.
+$SR_TermEvery    = 33
+# 🔒 AND THE READ IS BUDGETED IN FRAMES. Two of them: a pipe that stalls
+# costs a dropped frame, not a frozen window. Without this the read would take
+# the standard four-second budget on the thread that draws.
+$SR_TermReadMs   = 66
+# How much of what has scrolled past is kept, per conversation. 4.000 lines is
+# a long morning of output and about a megabyte.
+$SR_TermHistMax  = 4000
 $SR_CompactWatch = 420    # stop watching after seven minutes, whatever happened
 $script:compactSent = @{}
 $script:liveAt  = $null
@@ -5046,6 +5075,59 @@ $script:liveTxt = ''
 # switching conversations has to start at the bottom rather than at whatever
 # offset the last one was left at.
 $script:liveShownFor = ''
+# 🔴 THE SCROLLBACK THIS WINDOW KEEPS, because the console has none to give.
+# Keyed by conversation id, a list of the lines that have left the top of the
+# viewport since watching started.
+#
+# 🔑 THE MERGE IS AN OVERLAP, NOT AN APPEND. Two consecutive reads of a
+# console mostly show the SAME lines - the viewport has scrolled by nought, one
+# or six rows, and appending the whole viewport each time would repeat every
+# line thirty times a second. So: find the largest k where the tail of what we
+# have already equals the head of what we just read, and keep only what is past
+# it. That is the standard screen-scrape reconciliation and it degrades
+# correctly - a screen that has changed completely overlaps by 0 and is
+# appended whole, which is what a cleared screen should do.
+#
+# 🪤 BLANK LINES CANNOT ANCHOR AN OVERLAP. A console pads with them, so a
+# run of blanks matches a run of blanks anywhere and the merge would lock onto
+# the wrong offset. The search runs from the LONGEST candidate down, so a real
+# overlap always wins over a coincidental one, and an all-blank candidate is
+# refused outright.
+$script:termHist = @{}
+$script:termAt   = $null
+
+function Merge-SRTermLines {
+    param($Have, $Got, [int]$Max = 4000)
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($h in $Have) { $null = $out.Add("$h") }
+    $g = @($Got)
+    if (-not $g.Count) { return $out }
+    # 🪤 EVERY EXIT GOES PAST THE CAP. The first-read path used to return
+    # from here, so an opening read longer than $Max was kept whole and the
+    # bound did not apply until the SECOND read - caught by the suite with a
+    # 40-line first read against a cap of 10.
+    $best = 0
+    if (-not $out.Count) {
+        foreach ($x in $g) { $null = $out.Add("$x") }
+        while ($out.Count -gt $Max) { $out.RemoveAt(0) }
+        return $out
+    }
+    $cap = [Math]::Min($out.Count, $g.Count)
+    for ($k = $cap; $k -ge 1; $k--) {
+        $ok = $true
+        $anyInk = $false
+        for ($i = 0; $i -lt $k; $i++) {
+            $a = "$($out[$out.Count - $k + $i])"
+            $b = "$($g[$i])"
+            if ($a -ne $b) { $ok = $false; break }
+            if ($a.Trim()) { $anyInk = $true }
+        }
+        if ($ok -and $anyInk) { $best = $k; break }
+    }
+    for ($i = $best; $i -lt $g.Count; $i++) { $null = $out.Add("$($g[$i])") }
+    while ($out.Count -gt $Max) { $out.RemoveAt(0) }
+    return $out
+}
 
 function Test-SRCompacting { param($R)
     if (-not $R) { return $false }
@@ -5099,6 +5181,16 @@ function Set-SRStreaming { param($Row, [bool]$On)
     if (-not $Row) { return }
     $id = "$($Row.Id)"
     if ($On) { $script:streamTerm[$id] = $true } else { $script:streamTerm.Remove($id) }
+    # 🪤 THE KEPT SCROLLBACK GOES WITH THE WATCH. It is what this window saw
+    # WHILE IT WAS WATCHING; keeping it across a stop and a restart would splice
+    # two periods together with an unknown gap in the middle and present it as
+    # one run of output. Starting again starts again.
+    if (-not $On) {
+        try { $script:termHist.Remove($id) } catch { }
+        if ("$($script:liveShownFor)" -eq $id) { $script:liveShownFor = '' }
+    } else {
+        $script:termAt = $null
+    }
 }
 
 function Update-LivePane {
@@ -5173,25 +5265,54 @@ function Update-LivePane {
         $ui.PaneDoc.Visibility  = $V_Hide
         return
     }
-    # Throttled: every read is a child process against a 6-second budget, and
-    # the thing being watched changes about once a second.
-    $stale = ($script:liveFor -ne $id) -or (-not $script:liveAt) -or
-             (($now - $script:liveAt).TotalSeconds -ge $SR_LiveRead)
+    # 🔴 AT FRAME RATE, NOT EVERY TWO SECONDS. $SR_LiveRead is the compact
+    # card's cadence - a progress bar does not need frames. A terminal does:
+    # asked for as "precisely what is the terminal without any input lag or
+    # delay", and an echo that takes two seconds to appear is not a terminal at
+    # any resolution. A served read is 3,6 ms, so this affords 33.
+    #
+    # 🔒 -ServedOnly AND A 66 ms BUDGET. This runs ON THE DRAWING THREAD, so
+    # the two ways a read can be slow both have to be refused: the held-open
+    # reader is bounded to two frames, and the spawn-per-read fallbacks below it
+    # are declined outright rather than taken thirty times a second.
+    $stale = ($script:liveFor -ne $id) -or (-not $script:termAt) -or
+             (($now - $script:termAt).TotalMilliseconds -ge $SR_TermEvery)
     if ($stale) {
         if ($script:liveFor -ne $id) { $script:liveTxt = '' }
         $script:liveFor = $id
-        $script:liveAt  = $now
+        $script:termAt  = $now
         $got = ''
-        try { $got = Get-SRScreenText -ProcessId ([int]$r.A.Pid) -Back $SR_StreamBack } catch { $got = '' }
-        # 🪤 KEEP THE LAST GOOD SCREEN. A read can miss - the budget is short and
-        # the child can lose a race - and blanking the panel on a miss makes the
-        # one thing you are watching flicker in and out.
-        if ("$got".Trim()) { $script:liveTxt = $got }
+        try {
+            $got = Get-SRScreenText -ProcessId ([int]$r.A.Pid) -TimeoutMs $SR_TermReadMs -ServedOnly
+        } catch { $got = '' }
+        # 🪤 KEEP THE LAST GOOD SCREEN. A read can miss - the budget is two
+        # frames and the pipe can lose a race - and blanking the panel on a miss
+        # makes the one thing you are watching flicker in and out.
+        if ("$got".Trim()) {
+            $script:liveTxt = $got
+            # 🔑 AND WHATEVER LEFT THE TOP IS KEPT. The console buffer holds no
+            # scrollback under ConPTY (measured: 31 lines whether or not 600
+            # more are asked for), so the only place a history can exist is
+            # here. Merge-SRTermLines reconciles the overlap; see the note on
+            # $script:termHist for why it is an overlap and not an append.
+            $vp = @("$got" -replace "`r", '' -split "`n")
+            $vEnd = $vp.Count - 1
+            while ($vEnd -ge 0 -and -not "$($vp[$vEnd])".Trim()) { $vEnd-- }
+            if ($vEnd -ge 0) {
+                $script:termHist[$id] = Merge-SRTermLines -Have $script:termHist[$id] `
+                                                          -Got $vp[0..$vEnd] -Max $SR_TermHistMax
+            }
+        }
     }
 
     $body = ''
-    if ("$($script:liveTxt)".Trim()) {
+    $keep = $script:termHist[$id]
+    if ($keep -and $keep.Count) {
+        $lines = @($keep.ToArray())
+    } elseif ("$($script:liveTxt)".Trim()) {
         $lines = @("$($script:liveTxt)" -replace "`r", '' -split "`n")
+    } else { $lines = @() }
+    if ($lines.Count) {
         # A console buffer is padded with blanks ABOVE what has been written and
         # BELOW where the cursor is, so both ends are trimmed - otherwise the
         # scroller opens on hundreds of empty rows and the spinner sits in the
@@ -5250,6 +5371,15 @@ function Update-LivePane {
     $cHead = 'COMPACTING'
     if ($cScr -and [bool]$cScr.Compacting) {
         $cHead = (Get-SRCompactText -Pct ([int]$cScr.CompactPct) -Secs ([int]$cScr.CompactSecs) -Bar).ToUpper()
+    }
+    # 🔒 THE HEADER SAYS WHERE THE KEYS GO, and this is a safety device rather
+    # than a label. A panel that silently forwards keystrokes into one of two
+    # dozen live conversations must never leave you guessing WHICH - so it names
+    # the conversation, and it says plainly whether this panel has the focus,
+    # because if it does not then what you type is going to the list behind it.
+    if ($stream) {
+        $cHead = 'TERMINAL'
+        if (-not $ui.LivePane.IsKeyboardFocusWithin) { $cHead = 'TERMINAL  (click here to type)' }
     }
     $ui.LiveHead.Text = ($cHead + $(if ($who) { '   ' + $who } else { '' }))
     $ui.LivePane.Visibility = $V_Show
@@ -9570,7 +9700,11 @@ function New-ManageMenu {
         $script:selId = $r.Id
         Build-Sessions
         try { Update-LivePane } catch { }
-        if ($on) { Set-Status 'watching its terminal - right-click again to stop' 'ok' }
+        # 🔑 AND THE PANEL TAKES THE KEYBOARD, or the first thing typed goes to
+        # the conversation list behind it and an arrow key changes the selection
+        # instead of moving a cursor.
+        if ($on) { try { $null = $ui.LivePane.Focus() } catch { } }
+        if ($on) { Set-Status 'watching its terminal - type into it, right-click again to stop' 'ok' }
         else { Set-Status 'stopped watching its terminal' 'ok' }
     }
     $null = $m.Items.Add((New-Object System.Windows.Controls.Separator))
@@ -11850,6 +11984,99 @@ $ui.ShellList.AddHandler(
 $ui.PaneCompact.Add_Click({ Invoke-Compact })
 
 # ===========================================================================
+# TYPING INTO THE SESSION YOU ARE WATCHING.
+#
+# 🔴 ASKED FOR AS PARITY: "we should be able to type and everything we type
+# should also correspond to anything we would exactly do as in the terminal...
+# precisely what is the terminal". And on the input side that is literally
+# achievable, which is worth being precise about: SRCon::Send and
+# SRCon::SendKeys write INPUT_RECORDs into the session's OWN console input
+# queue - the same queue the keyboard writes to. A forwarded keystroke is not a
+# simulation of typing; by the time claude reads it there is no way to tell the
+# two apart.
+#
+# 🔒 ONLY THE KEYS THIS TOOL ALREADY SENDS, AND THAT IS THE WHOLE SAFETY
+# ARGUMENT. Every key below is one some other path here already sends and has
+# been exercised against a real console: characters and ENTER (answering),
+# the four arrows and TAB and SPACE (moving through a menu), ESCAPE
+# (interrupting). Nothing else is forwarded - Ctrl+C, Ctrl+D and Ctrl+Z in
+# particular are NOT, because they can end a conversation that cannot be
+# relaunched and because no path here has ever sent one. A key nobody has
+# proved is not a key to discover through somebody's live work.
+#
+# 🪤 IT GOES TO THE CONVERSATION BEING WATCHED, NOT THE ONE SELECTED. Those
+# are the same today and the panel is what has focus, so the row it belongs to
+# is the authority - a selection that moved underneath a focused terminal must
+# never redirect the keys.
+$script:termKeys = @{
+    'Return' = 0x0D; 'Enter' = 0x0D; 'Back' = 0x08; 'Tab' = 0x09; 'Escape' = 0x1B
+    'Left' = 0x25; 'Up' = 0x26; 'Right' = 0x27; 'Down' = 0x28
+}
+
+function Get-SRTermTarget {
+    # The one conversation currently being streamed into the pane.
+    $id = "$($script:liveShownFor)"
+    if (-not $id) { return $null }
+    if (-not $script:streamTerm["$id"]) { return $null }
+    foreach ($r in $script:model) {
+        if ("$($r.Id)" -ne $id) { continue }
+        if (-not ($r.Live -and $r.A -and $r.A.Pid)) { return $null }
+        return $r
+    }
+    return $null
+}
+
+function Send-SRTermText { param([string]$Text)
+    $r = Get-SRTermTarget
+    if (-not $r -or -not "$Text") { return $false }
+    try { $n = [SRCon]::Send([uint32]$r.A.Pid, "$Text", $false) } catch { return $false }
+    return ($n -gt 0)
+}
+
+function Send-SRTermKey { param([int]$Vk)
+    $r = Get-SRTermTarget
+    if (-not $r -or $Vk -le 0) { return $false }
+    try { $n = [SRCon]::SendKeys([uint32]$r.A.Pid, [uint16[]]@([uint16]$Vk)) } catch { return $false }
+    return ($n -gt 0)
+}
+
+# 🔑 THE PANEL TAKES FOCUS, or the keys go to the list behind it and arrow
+# keys change which conversation is selected instead of moving a cursor.
+$ui.LivePane.Focusable = $true
+$ui.LivePane.Add_MouseLeftButtonDown({ $null = $ui.LivePane.Focus() })
+
+$ui.LivePane.Add_PreviewTextInput({
+    param($sender, $e)
+    if (-not (Get-SRTermTarget)) { return }
+    if (Send-SRTermText "$($e.Text)") { $e.Handled = $true }
+})
+
+$ui.LivePane.Add_PreviewKeyDown({
+    param($sender, $e)
+    $r = Get-SRTermTarget
+    if (-not $r) { return }
+    $ctrl = ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control)
+    # Paste is typing, with the characters coming from somewhere else - so it
+    # takes the same path and needs no new permission.
+    if ($ctrl -and "$($e.Key)" -eq 'V') {
+        $clip = ''
+        try { $clip = [System.Windows.Clipboard]::GetText() } catch { }
+        if ("$clip" -and (Send-SRTermText "$clip")) { $e.Handled = $true }
+        return
+    }
+    # 🪤 A MODIFIER MEANS A CHORD THIS DOES NOT SEND. Ctrl+arrow is not an
+    # arrow, and forwarding the bare key would send something the operator did
+    # not press. Left alone, so it does whatever it does in this window.
+    if ($ctrl) { return }
+    $vk = $script:termKeys["$($e.Key)"]
+    if (-not $vk) { return }
+    # 🪴 PAGE UP AND PAGE DOWN SCROLL THE VIEW, they do not go to the session.
+    # The pane holds thousands of lines this window kept; the session's own
+    # buffer holds one screen. Scrolling is the reader's, not the terminal's.
+    if (Send-SRTermKey $vk) { $e.Handled = $true }
+})
+
+# ===========================================================================
 # WATCHING THE TRANSCRIPT INSTEAD OF ASKING ABOUT IT.
 #
 # The follow tick polls the selected conversation once a second, so the pane was
@@ -12937,6 +13164,16 @@ function Invoke-WriteLane {
         # the window opening instead of trickling in over a quarter of a minute.
         try { if (Complete-VitalsSweep) { Update-Board } } catch { }
         try { Start-VitalsSweep } catch { }
+        # 🔴 THE TERMINAL WATCHER RUNS ON THIS LANE, which ticks every 30 ms -
+        # the follow tick is a SECOND and a watcher on it would be a slideshow.
+        # Update-LivePane throttles itself to $SR_TermEvery, so this is an
+        # invitation to draw a frame rather than an instruction to.
+        #
+        # 🪤 GATED ON SOMEBODY ACTUALLY WATCHING. Without the count test this
+        # would call into the pane thirty times a second for every window that
+        # has never streamed anything, to be told each time that there is
+        # nothing to do.
+        if ($script:streamTerm.Count) { try { Update-LivePane } catch { } }
         # 🔑 THE STRIP'S OWN WARM, on the same tick and behind its own gate.
         # It does NOT rebuild the list when it lands: nothing on a row comes
         # from these vitals - the row's context bar is the swept screen reading

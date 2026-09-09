@@ -4580,16 +4580,23 @@ function Connect-SRScreenServer {
     }
 }
 
+# 🔒 -TimeoutMs IS A CEILING ON HOW LONG A CALLER CAN BE STUCK HERE, and the
+# terminal view is why it exists. $SR_ScreenReadMs is 4 SECONDS, which is the
+# right budget for a read a gesture is waiting on and a catastrophic one for a
+# read the DRAWING THREAD makes thirty times a second: one stalled pipe would
+# freeze the window for four seconds. The watcher passes a couple of frames and
+# drops the frame instead.
 function Get-SRScreenTextServed {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][int]$ProcessId, [int]$Back = 0)
+    param([Parameter(Mandatory)][int]$ProcessId, [int]$Back = 0, [int]$TimeoutMs = 0)
     if (-not (Connect-SRScreenServer)) { return $null }
+    if ($TimeoutMs -le 0) { $TimeoutMs = $SR_ScreenReadMs }
     try {
         $ask = [string]$ProcessId
         if ($Back -gt 0) { $ask = '{0}:{1}' -f $ProcessId, $Back }
         $script:SR_ScreenWr.WriteLine($ask)
         $sb = New-Object System.Text.StringBuilder
-        $stop = [DateTime]::UtcNow.AddMilliseconds($SR_ScreenReadMs)
+        $stop = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
         while ($true) {
             $t = $script:SR_ScreenRd.ReadLineAsync()
             $left = [int]($stop - [DateTime]::UtcNow).TotalMilliseconds
@@ -4621,16 +4628,23 @@ function Get-SRScreenTextServed {
 # the one caller that wants to look further up than the session is showing.
 function Get-SRScreenText {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][int]$ProcessId, [int]$Back = 0)
+    param([Parameter(Mandatory)][int]$ProcessId, [int]$Back = 0, [int]$TimeoutMs = 0, [switch]$ServedOnly)
     if ($ProcessId -le 0) { return $null }
     if (-not (Test-Path -LiteralPath $SR_StateDir)) { return $null }
 
     # The held-open reader first. It returns $null for anything it is not sure
     # about, and everything below is the path that was here before.
     if (-not $SR_ScreenNoServe) {
-        $served = Get-SRScreenTextServed -ProcessId $ProcessId -Back $Back
+        $served = Get-SRScreenTextServed -ProcessId $ProcessId -Back $Back -TimeoutMs $TimeoutMs
         if ($served) { return $served }
     }
+    # 🔒 -ServedOnly REFUSES THE SLOW PATHS RATHER THAN TAKING THEM. Below
+    # this line are a process spawn and, failing that, a powershell child - 130
+    # ms and 300 ms of work on whichever thread called. That is the right
+    # fallback for a gesture and the wrong one for a frame: a watcher that drops
+    # to spawning per frame would spawn thirty processes a second. It skips the
+    # frame and asks again in 33 ms.
+    if ($ServedOnly) { return $null }
 
     # The fast path. Falls through to the powershell child below if the exe
     # cannot be built - a machine without csc still reads screens, slowly.
