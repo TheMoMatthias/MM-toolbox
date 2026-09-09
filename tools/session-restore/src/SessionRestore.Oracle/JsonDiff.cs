@@ -68,8 +68,14 @@ public static class JsonDiff
 
         if (a is JsonObject oa && b is JsonObject ob)
         {
-            // Key ORDER is not a difference; a missing key is.
-            foreach (var kv in oa.OrderBy(k => k.Key, StringComparer.Ordinal))
+            // Key ORDER IS NOT A DIFFERENCE, but it IS the right order to look
+            // in. Walking the left side's own order - which PowerShell's
+            // [ordered]@{} preserves and System.Text.Json preserves too - means
+            // the first difference reported is the first one the author thought
+            // mattered. Sorting alphabetically instead put `bodyLen` ahead of
+            // `kinds` and reported a body-length difference on a row whose
+            // block SEQUENCE was the actual problem.
+            foreach (var kv in oa)
             {
                 if (!ob.TryGetPropertyValue(kv.Key, out var bv))
                 {
@@ -83,7 +89,7 @@ public static class JsonDiff
                 }
             }
 
-            foreach (var kv in ob.OrderBy(k => k.Key, StringComparer.Ordinal))
+            foreach (var kv in ob)
             {
                 if (!oa.ContainsKey(kv.Key))
                 {

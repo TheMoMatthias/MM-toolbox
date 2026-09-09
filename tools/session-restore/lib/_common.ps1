@@ -6493,6 +6493,27 @@ function Get-SRTranscriptBlocks {
     foreach ($ln in $lines) {
         $r = $null
         try { $r = $ln | ConvertFrom-Json } catch { continue }
+        # 🔴 AND IT IS READ HERE, BEFORE ANY BRANCH, BECAUSE IT WAS NOT.
+        # New-Block closes over $recWhen, and $recWhen used to be assigned only
+        # in the user/assistant branch below - so every system, compact, hook,
+        # file and queued block was stamped with the PREVIOUS conversation
+        # record's time. Found 2026-09-09 by the C# rebuild's differential
+        # oracle: the two sides agreed on every field of a block except `when`,
+        # 36 ms apart, which is a record boundary rather than a rounding.
+        #
+        # 🪤 THE QUEUE-OPERATION BRANCH ALREADY CARRIED A NOTE ABOUT EXACTLY
+        # THIS and fixed it locally, for itself, which is why it read as handled.
+        # An unassigned local in a loop is not empty, it is last round's - the
+        # same defect class as the $scr off-by-one in the window, found the same
+        # day. Reading it once, up here, is what makes it unrepeatable.
+        $recWhen = $null
+        if ($r.PSObject.Properties['timestamp'] -and "$($r.timestamp)") {
+            try {
+                $recWhen = ([datetime]::Parse("$($r.timestamp)", [System.Globalization.CultureInfo]::InvariantCulture,
+                                              [System.Globalization.DateTimeStyles]::AdjustToUniversal)).ToLocalTime()
+            } catch { $recWhen = $null }
+        }
+
         # 🔴 EVERYTHING THAT IS NOT A user OR assistant RECORD USED TO BE
         # DROPPED ON THE FLOOR - and a great deal happens in those records. A
         # compact writes a `system` record with subtype compact_boundary and
@@ -6598,32 +6619,15 @@ function Get-SRTranscriptBlocks {
                 # user record when the session takes it, and drawing it here as
                 # well would show everything the operator typed twice.
                 if ($script:SR_RxMsgIn.IsMatch("$qc")) {
-                    # 🪤 $recWhen is computed BELOW this guard and New-Block
-                    # closes over it, so a block added here with the previous
-                    # record's timestamp would be stamped with somebody else's
-                    # time. Read it before building the block.
-                    $recWhen = $null
-                    if ($r.PSObject.Properties['timestamp'] -and "$($r.timestamp)") {
-                        try {
-                            $recWhen = ([datetime]::Parse("$($r.timestamp)", [System.Globalization.CultureInfo]::InvariantCulture,
-                                                          [System.Globalization.DateTimeStyles]::AdjustToUniversal)).ToLocalTime()
-                        } catch { $recWhen = $null }
-                    }
+                    # The timestamp is already this record's - read at the top of
+                    # the loop. This branch used to read it again for itself,
+                    # which fixed the symptom here and left it everywhere else.
                     $out.Add((New-SRUserBlock $qc))
                 }
             }
             continue
         }
         if ($r.type -ne 'user' -and $r.type -ne 'assistant') { continue }
-        # WHEN it was said. Kept as LOCAL time because the only question anyone
-        # asks of it is "was that before or after I went to lunch".
-        $recWhen = $null
-        if ($r.PSObject.Properties['timestamp'] -and "$($r.timestamp)") {
-            try {
-                $recWhen = ([datetime]::Parse("$($r.timestamp)", [System.Globalization.CultureInfo]::InvariantCulture,
-                                              [System.Globalization.DateTimeStyles]::AdjustToUniversal)).ToLocalTime()
-            } catch { $recWhen = $null }
-        }
         $m = $r.message
         if (-not $m) { continue }
         $role = [string]$m.role

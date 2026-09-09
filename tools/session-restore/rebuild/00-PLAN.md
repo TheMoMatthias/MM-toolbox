@@ -4,7 +4,7 @@ One pass, worked top to bottom. Every item has a **done-when** you can check
 without asking anybody — a command and its expected result, or an observable
 state. An item with no done-when is not an item.
 
-**Phases 0 and 1 are complete, and 2.1-2.2 with them.** Everything from 2.3 down
+**Phases 0 and 1 are complete, and 2.1-2.3 with them.** Everything from 2.4 down
 is still to do. The PowerShell tool remains the daily driver and is untouched by any
 of it.
 
@@ -118,7 +118,7 @@ against the PowerShell on the operator's real data.
 | 2.1 | **Config** — the 25 settings, defaults, allowed values (`03-CONTRACTS.md`) | reads the operator's real config; every setting resolves to the same value; an untouched default is never written | ✅ 3 oracle cases, 13 tests |
 | 2.2 | **Registry read** — typed model of `sessions-registry.json` | same conversation count, ids and ticks as `Get-SRRegistry` on the real 1 MB file | ✅ 3 oracle cases, 558 sessions x 13 fields |
 | 2.3a | **Transcripts: last said** — the tail reader and the headline | same last-said text, pending tool and timestamp over every conversation on disk | ✅ 2 oracle cases, 546 transcripts |
-| 2.3b | **Transcripts: blocks** — `Get-SRTranscriptBlocks`, the reading model | same block kinds and bodies over every conversation on disk | — |
+| 2.3b | **Transcripts: blocks** — `Get-SRTranscriptBlocks`, the reading model | same blocks, same order, same fields over a 40-conversation sample | ✅ 2 oracle cases + a defect found in the PowerShell |
 | 2.4 | **Console API** — one class, the 36 imports (`03-CONTRACTS.md`) | a live screen read matches `Get-SRScreenText` character for character, and the attribute plane matches too | — |
 | 2.5 | **Sessions / agents** — `claude agents --json`, `wt.exe`, process tree | the agent map matches, including `busy` | — |
 | 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | — |
@@ -214,6 +214,41 @@ The first version of the markdown fixtures was built out of C# string
 concatenation with backtick escapes and produced 13 fixtures where there are 10.
 There is now not one backtick in that PowerShell: single quotes and an explicit
 `[char]10` have one meaning each.
+
+### 2.3b as it turned out — and the oracle found a live defect
+
+🔴 **`Get-SRTranscriptBlocks` was stamping five kinds of block with the WRONG
+TIME, in the shipped tool.** `New-Block` closes over `$recWhen`, and `$recWhen`
+was assigned only in the user/assistant branch - so every **system, compact,
+hook, file and queued** block carried the *previous* conversation record's
+timestamp. It surfaced as the two sides agreeing on every field of a block
+except `when`, 36 ms apart: a record boundary, not a rounding.
+
+🪤 **The queue-operation branch already carried a note about exactly this
+hazard** and had fixed it *locally, for itself* - which is why the whole thing
+read as handled. Same defect class as the `$scr` off-by-one found in the window
+the same day: **an unassigned local in a loop is not empty, it is last round's.**
+Fixed in `lib/_common.ps1` by reading the timestamp once, at the top of the
+record, before any branch can run; both local fixes removed.
+
+**Three more differences, each real and each decided rather than papered over:**
+
+| what the oracle said | what it was | what changed |
+|---|---|---|
+| one block whose every property was an array | `@(Get-SRTranscriptBlocks …)` on a comma-guarded return gives ONE element, and member enumeration then reads every kind at once | the harness: assign first, wrap second |
+| `"lane position 3,8s"` vs `"3.8s"` | `InvariantGlobalization` made **display** invariant too, on a German machine | the property is gone; comparisons are ordinal because they *say so*, and CA1307/CA1310 are errors |
+| `a.png b.png` vs `["a.png","b.png"]` | a tool argument that is a list | the C#: PowerShell's shape is the better one on a reading surface |
+
+🪤 **Scoped to 40 conversations, not all 546, and the reason is what it costs:**
+this reads a 2 MB tail per conversation, so running it over everything would
+read the better part of a gigabyte to answer a question about a pane that only
+ever parses ONE conversation - the selected one. The sample is the most recently
+active, which is what the surface shows.
+
+🪤 **And the diff now walks the left side's own key order.** Sorting
+alphabetically put `bodyLen` ahead of `kinds` and reported a body-length
+difference on a row whose block *sequence* was the thing worth looking at. Key
+order is still not a difference; it is just the right order to look in.
 
 🔴 **2.7 is last on purpose.** Nothing writes until everything reads correctly.
 The guards are ported before the writer they guard, and they are ported as

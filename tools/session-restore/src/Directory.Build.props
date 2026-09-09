@@ -25,18 +25,24 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AnalysisLevel>latest-recommended</AnalysisLevel>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-    <InvariantGlobalization>true</InvariantGlobalization>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CA1303</NoWarn>
   </PropertyGroup>
 
   <!--
-    🔑 InvariantGlobalization IS A CORRECTNESS SETTING HERE, not a size one.
-    `("· x").StartsWith("⏵")` returned True under the current culture and cost a
-    day - see the knowledge ledger. Pinning the invariant culture makes the
-    default comparison the one that was wanted everywhere it was gotten wrong.
-    Ordinal is still passed explicitly where it matters; this stops the DEFAULT
-    from being the trap.
+    🔴 InvariantGlobalization WAS SET HERE AND HAS BEEN REMOVED, and the reason
+    is worth keeping. It was set to make the default string comparison ordinal,
+    because `("· x").StartsWith("⏵")` returned True under the current culture and
+    cost a day. But it is the wrong instrument: it makes CurrentCulture invariant
+    for EVERYTHING, including display - so a hook duration this operator's
+    PowerShell renders as "3,8s" on his German machine came out as "3.8s". The
+    rebuild's oracle caught it at $.rows[479].head80.
+
+    🔑 COMPARISONS ARE ORDINAL BECAUSE THEY SAY SO, NOT BECAUSE THE CULTURE IS
+    GONE. Every comparison in this solution passes StringComparison explicitly,
+    and CA1307/CA1310 are errors here, so the compiler refuses one that does not.
+    That leaves real cultures available for the one thing they are for: showing
+    a number to the person whose machine it is.
   -->
 
   <PropertyGroup>

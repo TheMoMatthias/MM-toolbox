@@ -75,6 +75,7 @@ var cases = new List<(OracleCase Case, bool ExpectAgree, string Meaning)>
 cases.AddRange(ConfigCases.All());
 cases.AddRange(RegistryCases.All());
 cases.AddRange(TranscriptCases.All());
+cases.AddRange(BlockCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
