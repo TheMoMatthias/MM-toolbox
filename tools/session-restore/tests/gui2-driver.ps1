@@ -9141,6 +9141,77 @@ if (-not (Test-Path -LiteralPath $rdPath)) {
     } else { Pass 'and every group heading the settings screen uses' }
 }
 
+
+# ===========================================================================
+Write-Host ''
+Write-Host '--- where a keystroke goes while the terminal is being watched ---'
+# 🔴 REPORTED: "the escape button is not working, and the rewind is also not
+# working". One cause. PreviewKeyDown TUNNELS, so $window's handler runs before
+# $ui.LivePane's, and its bare-Escape rule handled the key and moved the focus
+# to the session list - so Escape never reached the session, and the second
+# Escape of the rewind gesture was not even aimed at the pane any more.
+#
+# 🪤 THIS SUITE HAS NO KEYBOARD FOCUS TO GIVE. The window is built and never
+# shown, so IsKeyboardFocusWithin is false for everything and raising the key
+# would prove nothing. That is why the decision is a function taking the focus
+# state as an argument - it can be posed here, and it is posed both ways.
+$ktCases = @(
+    @{ F = $true;  S = 'abc'; M = @{ 'abc' = $true };  W = $true;  Why = 'focused, and that conversation is streamed' }
+    @{ F = $false; S = 'abc'; M = @{ 'abc' = $true };  W = $false; Why = 'streamed but the pane does not have the keyboard' }
+    @{ F = $true;  S = 'abc'; M = @{};                 W = $false; Why = 'focused but showing the transcript, not the terminal' }
+    @{ F = $true;  S = '';    M = @{ 'abc' = $true };  W = $false; Why = 'focused with no conversation in the pane' }
+    @{ F = $true;  S = 'abc'; M = @{ 'zzz' = $true };  W = $false; Why = 'a DIFFERENT conversation is the one being streamed' }
+)
+foreach ($kt in $ktCases) {
+    $ktGot = Test-SRTermTyping -Focused $kt.F -Shown $kt.S -Streaming $kt.M
+    if ([bool]$ktGot -ne [bool]$kt.W) {
+        Fail ("the shortcut guard says {0} when {1}" -f $ktGot, $kt.Why)
+    } else { Pass ("shortcuts stand down = {0}: {1}" -f $ktGot, $kt.Why) }
+}
+
+# 🔴 AND IT HAS TO BE ASKED BEFORE THE SHORTCUTS, not merely exist. The whole
+# defect was an ORDERING one: every rule below the guard is unreachable for the
+# watcher, every rule above it eats a keystroke the operator meant for the
+# session. Escape is the one the operator reported; `/` and `l` are the two that
+# silently corrupted what was typed.
+$ktSrc = $winSrc.Substring($winSrc.LastIndexOf('$window.Add_PreviewKeyDown'))
+$ktGuard = $ktSrc.IndexOf('Test-SRTermTyping')
+if ($ktGuard -lt 0) {
+    Fail 'the window shortcut handler never asks whether the terminal pane has the keyboard'
+} else {
+    foreach ($ktKey in @("`$e.Key -eq 'Escape') { `$null = `$ui.SessionList.Focus()",
+                         "`$e.Key -eq 'Oem2'",
+                         "`$e.Key -eq 'L'")) {
+        $ktAt = $ktSrc.IndexOf($ktKey)
+        if ($ktAt -lt 0) { Note ("no longer present: {0}" -f $ktKey); continue }
+        if ($ktAt -lt $ktGuard) {
+            Fail ("the window still claims {0} before it asks whether the watcher has the keyboard" -f $ktKey)
+        } else { Pass ("{0} is only a window shortcut when the watcher does NOT have the keyboard" -f $ktKey) }
+    }
+}
+
+# 🔒 THE FORWARDED SET IS STILL CLOSED. The fix opens a route for keys that
+# previously never arrived, so this is the moment the closed list matters most:
+# it must not have grown as a side effect of being reachable.
+$ktWant = @('Return', 'Enter', 'Back', 'Tab', 'Escape', 'Left', 'Up', 'Right', 'Down')
+$ktHave = @($script:termKeys.Keys | Sort-Object)
+$ktExtra = @($ktHave | Where-Object { $ktWant -notcontains $_ })
+if ($ktExtra.Count) {
+    Fail ("the forwarded key set has grown: {0}" -f ($ktExtra -join ', '))
+} else { Pass ("the forwarded set is still the {0} keys that were agreed" -f $ktHave.Count) }
+$ktCh = @($script:termChords.Keys | Sort-Object)
+if (($ktCh -join ',') -ne 'C,D,Z') {
+    Fail ("the forwarded chords are now {0}, not the three that were asked for" -f ($ktCh -join ', '))
+} else { Pass 'and the chords are still exactly Ctrl+C, Ctrl+D, Ctrl+Z' }
+
+# 🪤 TWO ESCAPES IS THE REWIND GESTURE. Nothing blocks it, but the window has
+# to SAY so - the difference between clearing the input box and opening a picker
+# that reverts code is one press.
+if ($winSrc -notmatch 'rewind picker, and it can revert code') {
+    Fail 'a second Esc into a watched session says nothing about opening the rewind picker'
+} else { Pass 'a second Esc names the rewind picker on the status line' }
+Note 'the picker itself is never parsed here - what drives it is the same forwarded arrows and Enter, read off the streamed screen'
+
 Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
 Write-Host 'the shipped window holds' -ForegroundColor Green

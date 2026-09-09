@@ -255,6 +255,41 @@ function Test-SRTypingTarget { param($Element)
     return $false
 }
 
+# 🔴 THE TERMINAL PANE IS A TYPING TARGET AND THE SHORTCUT GUARD DID NOT KNOW
+# IT. Reported as "the escape button is not working, and the rewind is also not
+# working" - one cause, and the second is a consequence of the first.
+#
+# PreviewKeyDown TUNNELS, root to leaf, so the handler on $window runs BEFORE
+# the one on $ui.LivePane. With the watcher focused, the window's own bare-key
+# shortcuts got every keystroke first and Escape hit
+#   if ($e.Key -eq 'Escape') { $ui.SessionList.Focus(); $e.Handled = $true }
+# which swallowed the key AND threw the focus out of the pane. Escape never
+# reached the session; and because focus had left, the SECOND Escape of the
+# rewind gesture went to the conversation list too. Neither could ever work.
+#
+# 🪤 AND IT WAS NEVER ONLY ESCAPE. `/` and `l` are bare shortcuts on the work
+# surface, so typing `/compact` into a watched terminal sent `compact` and
+# `hello` sent `heo` - the identical defect the typing guard below was written
+# for, reproduced verbatim because Test-SRTypingTarget answers about TextBoxBase
+# and the watcher is a Border.
+#
+# 🔒 IT IS DELIBERATELY NOT "the pane is visible". The pane is visible while it
+# shows the transcript too, where `/` and `l` must still be shortcuts. What
+# suspends them is the conversation in it being STREAMED and the pane holding
+# the keyboard - the same two facts the header uses to promise where the keys
+# are going, so the promise and the behaviour cannot drift apart.
+#
+# Extracted rather than inlined for the reason Test-SRTypingTarget was: the
+# handler around it cannot be called in a suite that has no keyboard focus to
+# give, and this can.
+function Test-SRTermTyping {
+    param([bool]$Focused, [string]$Shown, $Streaming)
+    if (-not $Focused) { return $false }
+    if (-not "$Shown") { return $false }
+    if (-not $Streaming) { return $false }
+    return [bool]$Streaming["$Shown"]
+}
+
 
 # Esc answers with whatever the caller nominated as the safe way out; Enter
 # takes the primary. Preview, so the sheet gets the key before the list below
@@ -12340,6 +12375,9 @@ function Send-SRTermKey { param([int]$Vk)
 
 # 🔑 THE PANEL TAKES FOCUS, or the keys go to the list behind it and arrow
 # keys change which conversation is selected instead of moving a cursor.
+# When the last Escape was forwarded, so a second one inside the gesture window
+# can be named. Zero means "the last press completed a pair".
+$script:termEscAt = 0
 $ui.LivePane.Focusable = $true
 $ui.LivePane.Add_MouseLeftButtonDown({ $null = $ui.LivePane.Focus() })
 
@@ -12379,10 +12417,32 @@ $ui.LivePane.Add_PreviewKeyDown({
     }
     $vk = $script:termKeys["$($e.Key)"]
     if (-not $vk) { return }
+    # 🔒 TWO ESCAPES IS THE REWIND GESTURE, AND IT REVERTS CODE. Nothing here
+    # blocks it - parity was asked for and Escape is on the forwarded list - but
+    # the window says what it just did, because the difference between "I
+    # cleared the box" and "I opened the picker that reverts code" is one press
+    # and no visible warning until claude draws it.
+    #
+    # 🪤 THE PANE SHOWS THE PICKER, THIS TOOL DOES NOT PARSE IT. What is on
+    # screen after this is claude's own screen, streamed - the arrows and Enter
+    # that drive it are the same forwarded keys. There is no model of that
+    # picker anywhere in this file and there must not be one: a parser built
+    # against a guessed layout sends arrow keys into a menu that reverts code.
+    if ("$($e.Key)" -eq 'Escape') {
+        $escNow = [Environment]::TickCount
+        $escGap = $escNow - [int]$script:termEscAt
+        $script:termEscAt = $escNow
+        if ($escGap -ge 0 -and $escGap -le 1200) { $script:termEscAt = 0 }
+    }
     # 🪴 PAGE UP AND PAGE DOWN SCROLL THE VIEW, they do not go to the session.
     # The pane holds thousands of lines this window kept; the session's own
     # buffer holds one screen. Scrolling is the reader's, not the terminal's.
-    if (Send-SRTermKey $vk) { $e.Handled = $true }
+    if (Send-SRTermKey $vk) {
+        $e.Handled = $true
+        if ("$($e.Key)" -eq 'Escape' -and $script:termEscAt -eq 0) {
+            Set-Status 'sent a second Esc - that is the rewind picker, and it can revert code' 'warn'
+        }
+    }
 })
 
 # ===========================================================================
@@ -14322,6 +14382,21 @@ $window.Add_PreviewKeyDown({
     if ($e.Key -eq 'Escape' -and $ui.ProjBox.Visibility -eq $V_Show) {
         Hide-Project
         $e.Handled = $true
+        return
+    }
+    # 🔴 EVERY REMAINING SHORTCUT STANDS DOWN FOR THE WATCHER. Returning
+    # UNHANDLED is the whole point: the key carries on down the tunnel to
+    # $ui.LivePane's own PreviewKeyDown, which owns the closed forwarded set.
+    # Handling it here would be the same bug in the other direction.
+    #
+    # 🪤 BELOW THE TWO PANEL ESCAPES, ABOVE EVERYTHING ELSE. A settings panel
+    # in front of the watcher must still close on Escape - it cannot hold the
+    # keyboard and the watcher at once, but ordering it this way means the
+    # answer does not depend on that being true. Ctrl+N and Ctrl+1/2 stay above
+    # as window shortcuts: the watcher forwards no such chord, so leaving them
+    # there costs the terminal nothing.
+    if (Test-SRTermTyping -Focused ([bool]$ui.LivePane.IsKeyboardFocusWithin) `
+                          -Shown "$($script:liveShownFor)" -Streaming $script:streamTerm) {
         return
     }
     if ($typing) {
