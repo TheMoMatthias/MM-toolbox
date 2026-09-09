@@ -1,0 +1,7 @@
+# The JSON sidecars are byte-for-byte derivable from the Markdown's own source
+# and duplicate it - knowledge.json alone is 700 KB against 02-KNOWLEDGE.md's
+# 633 KB. The Markdown is committed because it is what gets READ, on whichever
+# machine the operator is at; these are tool input and are one command away.
+#
+#     python rebuild/tools/extract_<name>.py
+*.json
