@@ -8893,20 +8893,49 @@ if ($wlSrc -notmatch 'streamTerm') {
 } else { Pass 'the 30 ms lane drives the watcher, not the follow tick' }
 
 # The other way of marking your own words, offered because it was asked for.
-if (-not $SR_CfgMeta['yourWords']) {
-    Fail 'there is no setting for how your own messages are marked'
-} elseif (@($SR_CfgMeta['yourWords'].Options).Count -ne 2) {
-    Fail 'the your-words setting does not offer both a ground and orange text'
-} else { Pass 'the settings screen offers a ground or orange text for your own words' }
-# 🪤 ONE OR THE OTHER, NEVER BOTH. Orange text on an orange-ish ground is the
-# version that reads worst, and it is exactly what adding the second without
-# removing the first would produce.
+# 🔴 THE BACKGROUND AND THE TEXT COLOUR ARE SEPARATE SETTINGS. Offered first
+# as one either/or, and the operator's answer to being shown that was "let me
+# pick both colours" - so either can be set without touching the other, and
+# either can be turned off.
+foreach ($ywK in @('yourGround', 'yourInk')) {
+    if (-not $SR_CfgMeta[$ywK]) { Fail ("there is no '{0}' setting" -f $ywK) }
+    elseif (@($SR_CfgMeta[$ywK].Options).Count -lt 2) { Fail ("'{0}' offers nothing to choose between" -f $ywK) }
+    else { Pass ("the settings screen offers '{0}'" -f $ywK) }
+}
 $ywSrc = "$((Get-Command Add-ReadTurn).ScriptBlock)"
-if ($ywSrc -notmatch 'SR_YouStyle') {
-    Fail 'the pane ignores the your-words setting'
-} elseif ($ywSrc -notmatch 'youBg\s*=\s*\$null') {
-    Fail 'choosing orange text does not remove the ground - the two would be drawn together'
-} else { Pass 'orange text and the ground are alternatives, never both at once' }
+if ($ywSrc -notmatch 'Get-SRYouGroundBrush' -or $ywSrc -notmatch 'Get-SRYouInkBrush') {
+    Fail 'the pane ignores one of the two your-words settings'
+} else { Pass 'the pane reads both the ground and the ink' }
+# 🪤 EVERY OPTION MUST RESOLVE TO A BRUSH THIS WINDOW OWNS. The settings
+# screen's own note says a text box over a fixed set is how 'grayscal' gets into
+# a config file; the same applies to a colour name nothing can look up, which
+# would draw nothing and read as a broken pane.
+$ywBadOpt = @()
+foreach ($ywO in @($SR_CfgMeta['yourGround'].Options)) {
+    if (-not $SR_YouGrounds.ContainsKey("$($ywO.V)")) { $ywBadOpt += "yourGround/$($ywO.V)" }
+}
+foreach ($ywO in @($SR_CfgMeta['yourInk'].Options)) {
+    if (-not $SR_YouInks.ContainsKey("$($ywO.V)")) { $ywBadOpt += "yourInk/$($ywO.V)" }
+}
+if ($ywBadOpt.Count) {
+    Fail ("the settings screen offers colours the pane cannot resolve: {0}" -f ($ywBadOpt -join ', '))
+} else { Pass 'every colour the settings screen offers resolves to a brush the window owns' }
+# And each one actually produces a brush rather than throwing.
+$ywWas = $SR_YouGround; $ywWasInk = $SR_YouInk
+try {
+    foreach ($ywG in @($SR_YouGrounds.Keys)) {
+        $SR_YouGround = "$ywG"
+        $ywB = Get-SRYouGroundBrush
+        if ("$ywG" -eq 'none') {
+            if ($null -ne $ywB) { Fail "'none' produced a background anyway" }
+        } elseif ($null -eq $ywB) { Fail ("the '{0}' ground produced no brush" -f $ywG) }
+    }
+    foreach ($ywI in @($SR_YouInks.Keys)) {
+        $SR_YouInk = "$ywI"
+        if ($null -eq (Get-SRYouInkBrush)) { Fail ("the '{0}' ink produced no brush" -f $ywI) }
+    }
+    Pass ('all {0} grounds and {1} inks resolve to a real brush' -f $SR_YouGrounds.Count, $SR_YouInks.Count)
+} finally { $SR_YouGround = $ywWas; $SR_YouInk = $ywWasInk }
 
 # 🔴 AND THE KEYS HAVE TO ACTUALLY ARRIVE. Everything above proves the
 # window's own reasoning; none of it proves that pressing a key in this panel
@@ -9011,7 +9040,7 @@ Write-Host '--- a setting you cannot find is a setting you do not have ---'
 # "where is the setting to change the background of my prompts? I couldn't find
 # it in the global settings", and it was not there. Five keys were in that
 # state at the time: launchGapMs, lineSpacing, listDays, shelveSuggestDays and
-# yourWords.
+# yourWords (now yourGround and yourInk).
 Show-Config
 $cfgDrawn = @{}
 foreach ($cfgR in $script:cfgRows) { $cfgDrawn["$($cfgR.Name)"] = $true }
@@ -9026,7 +9055,7 @@ if ($cfgHidden.Count) {
     Pass ('every one of the {0} settings this tool supports is on the settings screen' -f $script:SR_CfgMeta.Count)
 }
 # The two the operator went looking for, named rather than left to the count.
-foreach ($cfgWant in @('yourWords', 'lineSpacing')) {
+foreach ($cfgWant in @('yourGround', 'yourInk', 'lineSpacing')) {
     if (-not $cfgDrawn["$cfgWant"]) { Fail ("'{0}' is still not reachable from the settings screen" -f $cfgWant) }
     else { Pass ("'{0}' is on the settings screen" -f $cfgWant) }
 }
