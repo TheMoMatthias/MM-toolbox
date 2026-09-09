@@ -8583,6 +8583,173 @@ foreach ($wantItem in @('Call it finished', 'Watch its terminal')) {
     } else { Pass ("the row menu offers '{0}'" -f $wantItem) }
 }
 
+# ===========================================================================
+Write-Host ''
+Write-Host '--- the compact, the ground and the cadence ---'
+# ===========================================================================
+# 🔴 THE COMPACT LINE WAS DRAWN ON THE WRONG ROW. $scr - the screen record -
+# was READ in the said-line override sixteen lines before it was ASSIGNED, and
+# it is a plain local in a foreach, so row N tested row N-1's record. Measured
+# by injecting a compact onto one live row: exactly one row drew the text and it
+# was the row after it. This is the assertion that would have caught it.
+$cmpLive = @()
+foreach ($cmpR in $script:model) { if ($cmpR.Live -and $cmpR.A -and $cmpR.A.Pid) { $cmpLive += $cmpR } }
+if ($cmpLive.Count -lt 2) {
+    Note 'fewer than two live conversations - the compact-row attribution is not exercised'
+} else {
+    Clear-SRRowItemCache; Build-Sessions
+    $cmpDrawn = @()
+    foreach ($cmpIt in $script:listItems) { if ("$($cmpIt.Kind)" -eq 'session') { $cmpDrawn += "$($cmpIt.Id)" } }
+    $cmpPick = ''
+    foreach ($cmpId in $cmpDrawn) {
+        foreach ($cmpR in $cmpLive) { if ("$($cmpR.Id)" -eq $cmpId) { $cmpPick = $cmpId; break } }
+        if ($cmpPick) { break }
+    }
+    if (-not $cmpPick) {
+        Note 'no live conversation is drawn in the column - the compact row is not exercised'
+    } else {
+        $cmpWas = $script:rowScreen["$cmpPick"]
+        try {
+            $script:rowScreen["$cmpPick"] = @{
+                At = (Get-Date); Shells = 0; Agents = -1; Effort = ''
+                TurnSecs = -1; TurnDone = $false; CtxTokens = -1; CtxWindow = -1
+                Compacting = $true; CompactPct = 66; CompactSecs = 97 }
+            Clear-SRRowItemCache; Build-Sessions
+            $cmpOn = @(); $cmpItem = $null
+            foreach ($cmpIt in $script:listItems) {
+                if ("$($cmpIt.Kind)" -ne 'session') { continue }
+                if ("$($cmpIt.Id)" -eq $cmpPick) { $cmpItem = $cmpIt }
+                if ("$($cmpIt.Said)" -match 'compacting') { $cmpOn += "$($cmpIt.Id)" }
+            }
+            if ($cmpOn.Count -ne 1) {
+                Fail ("{0} rows say 'compacting' and exactly one session is - the line is on the wrong rows" -f $cmpOn.Count)
+            } elseif ("$($cmpOn[0])" -ne "$cmpPick") {
+                Fail 'the compact line landed on a row that is not the one compacting - the screen record is read before it is assigned'
+            } else { Pass 'the compact line is drawn on the row that is compacting' }
+            # 🔑 AND IT IS A BAR, which is what was asked for twice. A line of
+            # text reading 66% is not a progress bar; the row's own 34px gauge is.
+            if (-not $cmpItem) {
+                Fail 'the compacting row was not drawn at all'
+            } elseif ("$($cmpItem.CtxVis)" -ne "$V_Show") {
+                Fail 'a compacting row draws no bar - the progress has nowhere to show'
+            } elseif ([Math]::Abs([double]$cmpItem.CtxWidth - 22.44) -gt 0.6) {
+                Fail ("the compact bar is {0:N1}px where 66% of 34px is 22,4" -f [double]$cmpItem.CtxWidth)
+            } elseif ("$($cmpItem.CtxTip)" -notmatch 'compact') {
+                Fail ("the bar changed meaning and its tooltip did not: '{0}'" -f $cmpItem.CtxTip)
+            } else { Pass 'a compacting row draws its progress as a bar, and says so' }
+            # 🪤 NO PER CENT IS NOT NOUGHT PER CENT.
+            $script:rowScreen["$cmpPick"].CompactPct = -1
+            Clear-SRRowItemCache; Build-Sessions
+            $cmpNo = $null
+            foreach ($cmpIt in $script:listItems) {
+                if ("$($cmpIt.Kind)" -eq 'session' -and "$($cmpIt.Id)" -eq $cmpPick) { $cmpNo = $cmpIt }
+            }
+            if ($cmpNo -and "$($cmpNo.CtxVis)" -eq "$V_Show" -and [double]$cmpNo.CtxWidth -le 2.5) {
+                Pass 'a compact that has not printed a per cent shows a track, not a reading'
+            } elseif ($cmpNo) {
+                Fail ("a compact with no per cent drew {0:N1}px - that is a measurement nobody made" -f [double]$cmpNo.CtxWidth)
+            }
+        } finally {
+            if ($cmpWas) { $script:rowScreen["$cmpPick"] = $cmpWas } else { $script:rowScreen.Remove("$cmpPick") }
+            Clear-SRRowItemCache; Build-Sessions
+        }
+    }
+}
+
+# 🔴 THE GROUND BEHIND YOUR OWN WORDS HAD A NOTCH IN IT wherever the message
+# contained a list. A Block's Background paints its padding and never its
+# margin, and the bullet indent was a margin - measured at 13,2 px for prose
+# against 58,8 px for every numbered item, a 45,6 px bite out of the left edge.
+$gndDoc = New-Object System.Windows.Documents.FlowDocument
+$gndDoc.PagePadding = New-Object System.Windows.Thickness 0
+$gndDoc.FontFamily = $script:ProseFace
+$gndDoc.FontSize = [double]$script:Type.Pane
+$gndSrcText = "A line of prose that opens the message." + "`n" + "1. A numbered item." + "`n" + "- A bulleted item." + "`n`n" + "And a closing line."
+Add-ReadProse -Doc $gndDoc -Text $gndSrcText -Brush $Pal.TextMax -Size ([double]$script:Type.Pane) `
+              -Line $script:readLead -Kind 'you' -Ground $PalYouGround | Out-Null
+$gndLefts = @(); $gndBare = 0
+foreach ($gndB in $gndDoc.Blocks) {
+    if ($null -eq $gndB.Background) { $gndBare++; continue }
+    $gndLefts += [double]$gndB.Margin.Left
+}
+if ($gndBare -gt 0) {
+    Fail ("{0} block(s) of a grounded turn carry no background - those are holes in the surface" -f $gndBare)
+} elseif ($gndLefts.Count -lt 4) {
+    Fail ("a five-line message made {0} grounded blocks - the ground is not covering the turn" -f $gndLefts.Count)
+} else {
+    $gndMin = ($gndLefts | Measure-Object -Minimum).Minimum
+    $gndMax = ($gndLefts | Measure-Object -Maximum).Maximum
+    if (($gndMax - $gndMin) -gt 1.0) {
+        Fail ("the ground runs from {0:N1}px to {1:N1}px - a {2:N1}px notch on every list line" -f $gndMin, $gndMax, ($gndMax - $gndMin))
+    } else { Pass 'the ground behind a message has one straight left edge, lists included' }
+}
+
+# 🪤 AND THE TEXT DID NOT MOVE. The indent went from Margin to Padding, which
+# is the same pixels on the other side of the paint - so a list item's words
+# still start where they did. Margin.Left + Padding.Left is where the content
+# box begins, and for a list item that must exceed a plain line's by the hang.
+$gndPlain = $null; $gndList = $null
+foreach ($gndB in $gndDoc.Blocks) {
+    $gndX = [double]$gndB.Margin.Left + [double]$gndB.Padding.Left
+    $gndT = ''
+    try { $gndT = (New-Object System.Windows.Documents.TextRange $gndB.ContentStart, $gndB.ContentEnd).Text } catch { }
+    if ("$gndT".TrimStart().StartsWith('1.')) { $gndList = $gndX }
+    elseif ("$gndT".TrimStart().StartsWith('A line of prose')) { $gndPlain = $gndX }
+}
+if ($null -eq $gndPlain -or $null -eq $gndList) {
+    Note 'could not find both a plain line and a list line to compare indents'
+} elseif ($gndList -le $gndPlain) {
+    Fail ("a list item's content box starts at {0:N1} against prose at {1:N1} - the indent was lost with the margin" -f $gndList, $gndPlain)
+} else { Pass ('a list item is still indented, by {0:N1}px, now inside the ground' -f ($gndList - $gndPlain)) }
+
+# 🔴 THE INTERVAL IS ANCHO🔴 TO THE START OF A PASS, NOT ITS FINISH. Resetting
+# the clock on arrival made the cadence "the pass, and then the interval" - 916
+# ms measured where the interval says 600, and a status up to 1.231 ms old.
+$swpSrc = "$((Get-Command Complete-VitalsSweep).ScriptBlock)"
+# 🪤 THE COLLECTION PATH ONLY, AND THE FIRST VERSION OF THIS DID NOT SAY SO.
+# Complete-VitalsSweep has two exits: a pass that LANDED, and a pass abandoned
+# after 30 s. The abandoned one is SUPPOSED to reset the clock and drop the
+# runspace - the thread is stuck inside a console read and the next pass must
+# not queue behind it - so a scan of the whole function fails on the code being
+# correct. The split is at $res, which is where collection begins.
+$swpCut = $swpSrc.IndexOf('$res = $null')
+if ($swpCut -lt 0) {
+    Note 'Complete-VitalsSweep no longer starts collecting at $res - the cadence checks are skipped'
+} else {
+    $swpTake = $swpSrc.Substring($swpCut)
+    if ($swpTake -match '(?m)^\s*\$script:sweepAt\s*=\s*Get-Date\s*$') {
+        Fail 'a landed sweep resets the clock - the interval is being added to the pass again'
+    } else { Pass 'the sweep interval is measured from the start of a pass, not its finish' }
+    # ...and the runspace it ran in survives, or the cache below cannot exist.
+    if ($swpTake -match '\$script:sweepRs\.Close\(\)') {
+        Fail 'a landed sweep disposes its runspace - every pass would re-read _common.ps1'
+    } else { Pass 'a finished pass keeps the runspace it ran in' }
+    # And the abandon path must still do both, or a wedged read stops the board.
+    $swpDrop = $swpSrc.Substring(0, $swpCut)
+    if ($swpDrop -notmatch 'sweepWarmRs') {
+        Fail 'an abandoned sweep keeps the runspace its thread is stuck in - the next pass would queue behind it'
+    } else { Pass 'an abandoned sweep drops the runspace rather than handing it on' }
+}
+$jobSrc = "$($script:SweepJob)"
+if ($jobSrc -notmatch 'sweepSeen') {
+    Fail 'the sweep parses every screen on every pass - most of them have not changed'
+} elseif ($jobSrc -notmatch 'StringComparison') {
+    Fail 'the unchanged-screen test is not an ordinal compare'
+} else { Pass 'a screen that has not changed since the last pass is not parsed again' }
+
+# The watcher can look further up the buffer than the session is showing.
+$backSrc = "$((Get-Command Get-SRScreenText).ScriptBlock)"
+if ($backSrc -notmatch 'Back') {
+    Fail 'Get-SRScreenText cannot be asked for scrollback - "watch its terminal" has nothing to scroll'
+} else { Pass 'the screen reader can be asked for rows above the visible top' }
+if (-not $ui.LiveScroll) {
+    Fail 'the live pane has no named scroller - it cannot hold your place across a refresh'
+} else { Pass 'the live pane has a scroller it can hold your place in' }
+$lpSrc = "$((Get-Command Update-LivePane).ScriptBlock)"
+if ($lpSrc -notmatch 'ScrollToVerticalOffset') {
+    Fail 'the terminal watcher jumps to the bottom on every read - scrolling up is impossible'
+} else { Pass 'the terminal watcher follows the foot only while you are at the foot' }
+
 Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
 Write-Host 'the shipped window holds' -ForegroundColor Green

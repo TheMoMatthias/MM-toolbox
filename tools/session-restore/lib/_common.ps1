@@ -4151,7 +4151,23 @@ public static class SRConLite {
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
     public static extern bool ReadConsoleOutputCharacterW(IntPtr h, [Out] char[] buf, uint len, uint coord, out uint got);
 
-    public static string Screen(uint pid) {
+    // The visible screen, which is what every caller but the watcher wants.
+    public static string Screen(uint pid) { return Rows(pid, 0); }
+
+    // 🔴 THE VIEWPORT IS NOT THE BUFFER, and reading only the viewport is why
+    // "watch its terminal" had nothing to scroll up to. A console keeps
+    // thousands of rows above what is on screen - Size.Y is the buffer,
+    // Window.T/B is the window onto it - and this walked the window alone.
+    //
+    // `back` is how many rows ABOVE the visible top to include. 0 is the old
+    // behaviour exactly, which is what every other caller passes.
+    //
+    // 🪤 IT IS BOUNDED BY THE CALLER, NOT BY THE BUFFER. A Windows Terminal
+    // buffer is 9.001 rows; reading all of it is a ReadConsoleOutputCharacterW
+    // per row, and doing that on the sweep's 26 consoles would be thousands of
+    // calls a second. The watcher asks for hundreds, for one console, and
+    // nothing else asks at all.
+    public static string Rows(uint pid, int back) {
         FreeConsole();
         if (!AttachConsole(pid)) { return "!attach " + Marshal.GetLastWin32Error(); }
         try {
@@ -4165,6 +4181,7 @@ public static class SRConLite {
                 int top = info.Window.T < 0 ? 0 : info.Window.T;
                 int bot = info.Window.B >= rows ? rows - 1 : info.Window.B;
                 if (bot < top) { top = 0; bot = rows - 1; }
+                if (back > 0) { top = top - back; if (top < 0) top = 0; }
                 System.Text.StringBuilder sb = new System.Text.StringBuilder();
                 char[] line = new char[w];
                 for (int y = top; y <= bot; y++) {
@@ -4267,9 +4284,19 @@ public static class SRScreenMain {
                         if (line == "-quit") return 0;
                         uint one;
                         string got;
-                        if (!uint.TryParse(line, out one)) { got = "!badpid"; }
+                        // "<pid>" as before, or "<pid>:<back>" for scrollback.
+                        // A colon cannot occur in the old form, so an older
+                        // caller and a newer server still understand each other.
+                        int askBack = 0;
+                        string pidPart = line;
+                        int colon = line.IndexOf(':');
+                        if (colon > 0) {
+                            int.TryParse(line.Substring(colon + 1), out askBack);
+                            pidPart = line.Substring(0, colon);
+                        }
+                        if (!uint.TryParse(pidPart, out one)) { got = "!badpid"; }
                         else {
-                            try { got = SRConLite.Screen(one); }
+                            try { got = SRConLite.Rows(one, askBack); }
                             catch (System.Exception e) { got = "!ex " + e.Message; }
                         }
                         // The reply is the text, then a sentinel line that cannot
@@ -4311,10 +4338,13 @@ public static class SRScreenMain {
             System.IO.File.WriteAllText(a[1], all.ToString(), new System.Text.UTF8Encoding(false));
             return 0;
         }
+        // SRScreenMain <pid> <out> [back]   back rows above the visible top
         if (a.Length < 2) return 2;
         uint pid;
         if (!uint.TryParse(a[0], out pid)) return 2;
-        string t = SRConLite.Screen(pid);
+        int backRows = 0;
+        if (a.Length >= 3) { int.TryParse(a[2], out backRows); }
+        string t = SRConLite.Rows(pid, backRows);
         System.IO.File.WriteAllText(a[1], t, new System.Text.UTF8Encoding(false));
         return 0;
     }
@@ -4552,10 +4582,12 @@ function Connect-SRScreenServer {
 
 function Get-SRScreenTextServed {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][int]$ProcessId)
+    param([Parameter(Mandatory)][int]$ProcessId, [int]$Back = 0)
     if (-not (Connect-SRScreenServer)) { return $null }
     try {
-        $script:SR_ScreenWr.WriteLine([string]$ProcessId)
+        $ask = [string]$ProcessId
+        if ($Back -gt 0) { $ask = '{0}:{1}' -f $ProcessId, $Back }
+        $script:SR_ScreenWr.WriteLine($ask)
         $sb = New-Object System.Text.StringBuilder
         $stop = [DateTime]::UtcNow.AddMilliseconds($SR_ScreenReadMs)
         while ($true) {
@@ -4584,16 +4616,19 @@ function Get-SRScreenTextServed {
     }
 }
 
+# 🔑 -Back IS ROWS ABOVE THE VISIBLE TOP, and 0 - the default - is the old
+# behaviour byte for byte. Only the terminal watcher passes anything else: it is
+# the one caller that wants to look further up than the session is showing.
 function Get-SRScreenText {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][int]$ProcessId)
+    param([Parameter(Mandatory)][int]$ProcessId, [int]$Back = 0)
     if ($ProcessId -le 0) { return $null }
     if (-not (Test-Path -LiteralPath $SR_StateDir)) { return $null }
 
     # The held-open reader first. It returns $null for anything it is not sure
     # about, and everything below is the path that was here before.
     if (-not $SR_ScreenNoServe) {
-        $served = Get-SRScreenTextServed -ProcessId $ProcessId
+        $served = Get-SRScreenTextServed -ProcessId $ProcessId -Back $Back
         if ($served) { return $served }
     }
 
@@ -4605,7 +4640,7 @@ function Get-SRScreenText {
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $exe
-            $psi.Arguments = ('{0} "{1}"' -f $ProcessId, $outE)
+            $psi.Arguments = ('{0} "{1}" {2}' -f $ProcessId, $outE, [int]$Back)
             $psi.UseShellExecute = $false
             $psi.CreateNoWindow = $true
             $ep = [System.Diagnostics.Process]::Start($psi)
@@ -4638,7 +4673,7 @@ function Get-SRScreenText {
         # cold start of ~0.3 s and leaves the budget for the work.
         $body = @(
             ($script:SR_ScreenTypeSrc),
-            ('$t = [SRConLite]::Screen([uint32]' + $ProcessId + ')'),
+            ('$t = [SRConLite]::Rows([uint32]' + $ProcessId + ', ' + [int]$Back + ')'),
             ('[System.IO.File]::WriteAllText(' + $Q + $outEsc + $Q + ', $t, (New-Object System.Text.UTF8Encoding($false)))')
         ) -join [Environment]::NewLine
         [System.IO.File]::WriteAllText($scr, $body, (New-Object System.Text.UTF8Encoding($false)))

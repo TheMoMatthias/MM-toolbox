@@ -1109,7 +1109,7 @@
                 <Border Grid.Column="3" Visibility="{Binding CtxVis}" Width="34" Height="4"
                         CornerRadius="2" Background="{StaticResource CtxTrack}"
                         VerticalAlignment="Center" Margin="10,0,0,0"
-                        ToolTip="How much of its context window this conversation has used">
+                        ToolTip="{Binding CtxTip}">
                   <Border Height="4" CornerRadius="2" HorizontalAlignment="Left"
                           Width="{Binding CtxWidth}" Background="{Binding CtxBrush}"/>
                 </Border>
@@ -2083,7 +2083,10 @@
                   <TextBlock x:Name="LiveHead" Text="" Foreground="{StaticResource HueAsk}"
                              FontFamily="{DynamicResource FontPane}" FontSize="{DynamicResource SzPane}"/>
                 </StackPanel>
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                <!-- Named, because holding your place across a refresh needs
+                     something to ask where your place was. -->
+                <ScrollViewer x:Name="LiveScroll" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Auto">
                   <TextBlock x:Name="LiveText" Text="" TextWrapping="NoWrap"
                              Foreground="{StaticResource TextHigh}"
                              FontFamily="{DynamicResource FontPane}" FontSize="{DynamicResource SzPane}"

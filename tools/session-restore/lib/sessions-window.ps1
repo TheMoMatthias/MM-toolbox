@@ -171,7 +171,7 @@ foreach ($n in @(
     'ProjAutoNote','ProjAutoBtn','ProjShelveNote','ProjShelveBtn','ProjClose',
     'SetToolsFold','SetAllow','SetDeny',
     'CastBox','CastWho','CastList','CastText','CastCancel','CastSend','CastCompact',
-    'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote',
+    'PaneDoc','PaneEmpty','PaneChips','PaneTools','PaneZoom','ShellBox','ShellHead','ShellList','ShellFold','PaneWorktree','PaneCompact','AskBox','AskHeader','AskText','AskOptions','AskFooter','AskNote','LiveScroll',
     'LivePane','LiveMark','LiveHead','LiveText',
     'RailFold','ListFold','RailStrip','RailOpen','ListOpen','ListStrip','StripList','StripCount','AskScroll','AskCard',
     'SendDock','SendNote','SendBox','SendBtn','SkillPop','SkillList','SkillHint',
@@ -2331,8 +2331,13 @@ function Get-SRRowInputSig {
         # The compact per cent is in here because the row DRAWS it - see the
         # said-line override in Build-Sessions. Without it the bar would freeze
         # at whatever it read when something else happened to move the row.
-        $marks = '{0},{1},{2},{3}' -f [int]$scr.Shells, [int]$scr.Agents,
-                                      [int][bool]$scr.Compacting, [int]$scr.CompactPct
+        # 🪴 AND THE ELAPSED CLOCK, which is not decoration: the per cent
+        # can sit on one number for twenty seconds while the clock is the only
+        # thing saying the compact has not wedged. It costs a rebuild of ONE row
+        # a second, and only while that row is compacting.
+        $marks = '{0},{1},{2},{3},{4}' -f [int]$scr.Shells, [int]$scr.Agents,
+                                          [int][bool]$scr.Compacting, [int]$scr.CompactPct,
+                                          [int]$scr.CompactSecs
     }
     # 🔑 THE BAR AS DRAWN, NOT THE TOKENS BEHIND IT. A live session's count
     # moves on every sweep; the bar is 34px wide, so quantising to the pixel is
@@ -2533,7 +2538,7 @@ function Build-Sessions {
             # A heading is not a session, but it goes through the same template,
             # and a binding to a property that is not there is a silent error in
             # the trace and an empty cell on screen. Named, so it is off.
-            CtxVis = $V_Hide; CtxWidth = 0.0; AgentVis = $V_Hide; AgentText = ''
+            CtxVis = $V_Hide; CtxWidth = 0.0; CtxTip = ''; AgentVis = $V_Hide; AgentText = ''
             ShellVis = $V_Hide; ShellText = ''
             QVis = $V_Hide; QText = ''; QTip = ''; QBrush = $qGrey
             SubVis = $V_Hide; SubName = ''; SubDesc = ''; SubTag = ''; SubAge = ''
@@ -2591,6 +2596,33 @@ function Build-Sessions {
             }
             $rowFirst = $items.Count
             $t = $r.T
+            # 🔴 THIS BLOCK USED TO SIT SIXTEEN LINES FURTHER DOWN, AND THE
+            # COMPACT LINE READ IT FROM UP HERE. $scr is a plain local in a
+            # foreach, so on row N it still held row N-1's screen record - which
+            # means the row that was compacting drew its stale last words and
+            # THE ROW AFTER IT drew the progress. Measured by injecting a
+            # compact on one live row and asking the built column which rows
+            # carried the text: exactly one did, and it was the wrong one.
+            # Reported as "I still did not fully see the progression bar when
+            # the session was compacting", and it was there - one row down.
+            #
+            # 🪤 AN UNASSIGNED LOCAL IN A LOOP IS NOT EMPTY, IT IS LAST
+            # ROUND'S. Nothing warns; the first row reads $null and every row
+            # after it reads a real record belonging to somebody else, so the
+            # feature looks half-working rather than broken.
+            #
+            # 🪤 THE TTL IS THE POINT AND MUST NOT BE DROPPED. A count read
+            # four minutes ago describes a session that has since done anything
+            # at all; past its life it is not evidence and must not draw. Kept
+            # identical to Get-RowScreenSig, and gui2 asserts they agree.
+            # 🔑 INLINED, for the reason WO-2 proved and WO-4/7 disproved:
+            # what costs here is the invocation, not the work. With $nowDate
+            # hoisted this function is a dictionary read and a TTL compare, and
+            # it still measured 13,3 ms per rebuild over 52 calls. The function
+            # stays - four other callers hold a bare id and are not in a loop.
+            $scr = $null
+            $scrV = $script:rowScreen["$($r.Id)"]
+            if ($scrV -and ($nowDate - $scrV.At).TotalSeconds -le $SR_RowScreenTTL) { $scr = $scrV }
             $saidText = ''
             if ($r.Said -and "$($r.Said.Said)".Trim()) { $saidText = ("$($r.Said.Said)".Trim() -replace '\s+', ' ') }
             elseif ($r.Conv -and "$($r.Conv.Detail)") { $saidText = "$($r.Conv.Detail)" }
@@ -2603,21 +2635,17 @@ function Build-Sessions {
                 $saidText = Get-SRCompactText -Pct ([int]$scr.CompactPct) -Secs ([int]$scr.CompactSecs)
             }
             # What this conversation has out, from the two readers that can each
-            # answer half of it. See the note beside the marks below.
-            # 🔑 INLINED, for the reason WO-2 proved and WO-4/7 disproved:
-            # what costs here is the invocation, not the work. With $nowDate
-            # hoisted this function is a dictionary read and a TTL compare, and
-            # it still measured 13,3 ms per rebuild over 52 calls. The function
-            # stays - four other callers hold a bare id and are not in a loop.
-            #
-            # 🪤 THE TTL IS THE POINT AND MUST NOT BE DROPPED. A count read four
-            # minutes ago describes a session that has since done anything at
-            # all; past its life it is not evidence and must not draw. Kept
-            # identical to Get-RowScreenSig, and gui2 asserts they agree.
-            $scr = $null
-            $scrV = $script:rowScreen["$($r.Id)"]
-            if ($scrV -and ($nowDate - $scrV.At).TotalSeconds -le $SR_RowScreenTTL) { $scr = $scrV }
+            # answer half of it. $scr was read at the top of the row - see the
+            # note there for why it cannot be read here.
             $rowShells = $(if ($scr) { [int]$scr.Shells } else { 0 })
+            # The compact, as the bar draws it. -1 per cent means the screen has
+            # not printed one yet, which is a 0.0 fraction and a visible track -
+            # see the note on CtxWidth.
+            $rowCompact = ($scr -and [bool]$scr.Compacting)
+            $rowCompactFrac = 0.0
+            if ($rowCompact -and [int]$scr.CompactPct -ge 0) {
+                $rowCompactFrac = [Math]::Min(1.0, [int]$scr.CompactPct / 100.0)
+            }
             # 🔴 ACTIVE, ON EVIDENCE - NOT "A TASK ID THE TAIL NEVER SAW
             # ANSWERED". The count came from $r.Sig.Agents, which is an open
             # `Task` tool_use with no tool_result quoting it back in the read
@@ -2793,12 +2821,36 @@ function Build-Sessions {
                 # the 2px minimum bar for the first would be inventing a
                 # reading and showing it in the same green as a real one.
                 # No window, no bar - and the sub-agent dot is unchanged.
-                CtxVis = $(if ($rowWin -gt 0) { $V_Show } else { $V_Hide })
-                CtxWidth = [Math]::Max(2.0, 34.0 * [Math]::Min(1.0, $rowFrac))
+                # 🔴 WHILE IT COMPACTS, THE 34px IS THE COMPACT'S. Asked for
+                # twice - "add a progress bar for compacting", then "I still did
+                # not fully see the progression bar" - and the honest reading of
+                # the second is that a line of TEXT saying 66% is not a bar. The
+                # row already owns a 34x4 gauge, so the compact borrows it.
+                #
+                # 🔑 AND THE SLOT IS THE RIGHT ONE, not merely the free one. A
+                # compact is a piece of work whose entire subject is the context
+                # window; showing its progress where the context normally sits
+                # is what that bar is about, and the figure it replaces is the
+                # one figure that is meaningless mid-compact - the count drops
+                # to a quarter of itself the moment it lands.
+                #
+                # 🪤 NO PER CENT IS NOT NOUGHT PER CENT. The bar appears a
+                # beat after the marker line does; until then the track shows
+                # with the 2px minimum, which reads as "started", not as a
+                # measurement nobody made.
+                CtxVis = $(if ($rowCompact -or $rowWin -gt 0) { $V_Show } else { $V_Hide })
+                CtxWidth = $(if ($rowCompact) { [Math]::Max(2.0, 34.0 * $rowCompactFrac) }
+                             else { [Math]::Max(2.0, 34.0 * [Math]::Min(1.0, $rowFrac)) })
                 # Green, amber, red - on the token count, not on the fraction.
                 # See Get-CtxBrush: 85% of a 200k window and 85% of a 1M window
                 # are not the same situation and must not be the same colour.
-                CtxBrush = [System.Windows.Media.Brush](Get-CtxBrush $rowTok)
+                CtxBrush = [System.Windows.Media.Brush]$(if ($rowCompact) { $Pal.Ask } else { Get-CtxBrush $rowTok })
+                # 🔴 A GAUGE THAT MEANS TWO THINGS MUST SAY WHICH. The tooltip
+                # was a fixed string in the XAML claiming every bar is a context
+                # reading, and while a compact runs that is the one thing it is
+                # not.
+                CtxTip = $(if ($rowCompact) { 'How far through compacting this conversation is' }
+                           else { 'How much of its context window this conversation has used' })
                 # 🔴 SHAPE FIRST, HUE SECOND. A sub-agent is a ROUND amber dot -
                 # another mind working on your behalf. A background shell is a
                 # SQUARE violet mark - machinery still running. They answer
@@ -2909,7 +2961,7 @@ function Build-Sessions {
                     DotVis = $V_Hide; BandLabel = ''; BandCount = ''; Accent = $acc
                     Name = ''; Age = ''; Said = ''; NameWeight = 'Normal'; NameStyle = 'Normal'
                     BarOpacity = 0.0
-                    CtxVis = $V_Hide; CtxWidth = 0.0
+                    CtxVis = $V_Hide; CtxWidth = 0.0; CtxTip = ''
                     CtxBrush = [System.Windows.Media.Brush][System.Windows.Media.Brushes]::Transparent
                     AgentVis = $V_Hide; AgentText = ''; ShellVis = $V_Hide; ShellText = ''
                     QVis = $V_Hide; QText = ''; QTip = ''; QBrush = $qGrey
@@ -4135,7 +4187,32 @@ function Add-ReadProse {
             if ($sw -gt 0) { $pad = [int][Math]::Round(($hang - $mw) / $sw) }
             if ($pad -lt 1) { $pad = 1 }
             $body = $markTxt + (' ' * $pad) + $markRest
-            $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW + $bump - $padX + $hang), $groundPad, 0, $groundPad
+            # 🔴 A LIST ITEM USED TO CUT A NOTCH OUT OF THE GROUND. A Block's
+            # Background paints its PADDING and its content and never its
+            # MARGIN - so expressing the bullet indent as margin moved the left
+            # edge of the surface with it. Measured on the shape the operator
+            # sent back: prose at 13,2 px, every numbered item at 58,8 px, a
+            # 45,6 px bite out of the left of the panel on every list line.
+            # Reported as "the white background still looks a bit off... I would
+            # like everything shown in full without having any gaps in there".
+            #
+            # 🔑 THE SAME PIXELS, THE OTHER SIDE OF THE PAINT. Margin stays at
+            # the turn's own left edge and the indent goes into Padding, which
+            # is inside the background. The text lands on exactly the x it did
+            # before - the assertion in gui2 measures the first character, not
+            # the box - and the surface now has one straight edge.
+            #
+            # 🪤 UNGROUNDED BLOCKS KEEP THE MARGIN. With no background there
+            # is nothing to notch, and padding on a Paragraph nobody paints is
+            # a second way to say indent - one way per outcome, and the way that
+            # is wrong here is the one that is invisible until somebody grounds
+            # it.
+            if ($Ground) {
+                $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW - $padX), $groundPad, 0, $groundPad
+                $p.Padding = New-Object System.Windows.Thickness ($padX + $bump + $hang), $p.Padding.Top, $padX, $p.Padding.Bottom
+            } else {
+                $p.Margin = New-Object System.Windows.Thickness ($Indent + $script:GutterW + $bump - $padX + $hang), $groundPad, 0, $groundPad
+            }
             $p.TextIndent = -$hang
         }
         # 🔴 HOW MANY INLINES THIS PARAGRAPH STARTED WITH, because that number is
@@ -4178,10 +4255,15 @@ function Add-ReadProse {
     # here rather than per-paragraph because which paragraph is last is only
     # known once there are no more of them.
     if ($Ground -and $groundPs.Count -gt 0) {
+        # 🪤 THE LEFT INSET IS NOT $padX ANY MORE, so it cannot be retyped
+        # here. A list item carries its indent in Padding.Left now, and writing
+        # the literal back would flatten exactly the first and last paragraph of
+        # a turn - which is every one-line message, and any message that opens or
+        # closes on a bullet.
         $pf = $groundPs[0]
-        $pf.Padding = New-Object System.Windows.Thickness $padX, 9, $padX, $pf.Padding.Bottom
+        $pf.Padding = New-Object System.Windows.Thickness $pf.Padding.Left, 9, $pf.Padding.Right, $pf.Padding.Bottom
         $pl = $groundPs[$groundPs.Count - 1]
-        $pl.Padding = New-Object System.Windows.Thickness $padX, $pl.Padding.Top, $padX, 9
+        $pl.Padding = New-Object System.Windows.Thickness $pl.Padding.Left, $pl.Padding.Top, $pl.Padding.Right, 9
     }
 }
 
@@ -4942,11 +5024,28 @@ $script:shellHidden = $false
 # /compact and it has not come back yet. Both are honoured, because the operator
 # can also type /compact in the terminal, where this window never saw it.
 $SR_LiveRead     = 2      # seconds between screen reads - it is a child process
+# 🔴 HOW FAR UP THE TERMINAL YOU CAN LOOK. The reader used to return the
+# VIEWPORT and nothing else, so "watch its terminal" gave you a photograph of
+# the last 27 lines with nothing above them - asked for as "would like to expand
+# that functionality to also be capable of scrolling up and down in the
+# session". A console keeps thousands of rows above what is on screen; this is
+# how many of them are fetched.
+#
+# 🪤 IT IS A ReadConsoleOutputCharacterW PER ROW. 600 rows is 600 calls
+# against one console every couple of seconds, which is fine for the ONE session
+# you are watching and would not be fine for the 26 the sweep reads - which is
+# why the sweep passes no -Back at all and gets the old single-screen read.
+$SR_StreamBack   = 600
 $SR_CompactWatch = 420    # stop watching after seven minutes, whatever happened
 $script:compactSent = @{}
 $script:liveAt  = $null
 $script:liveFor = ''
 $script:liveTxt = ''
+# Which conversation the pane is currently SHOWING, which is not the same as
+# which one was last read: the scroll position belongs to what is on screen, and
+# switching conversations has to start at the bottom rather than at whatever
+# offset the last one was left at.
+$script:liveShownFor = ''
 
 function Test-SRCompacting { param($R)
     if (-not $R) { return $false }
@@ -5083,7 +5182,7 @@ function Update-LivePane {
         $script:liveFor = $id
         $script:liveAt  = $now
         $got = ''
-        try { $got = Get-SRScreenText -ProcessId ([int]$r.A.Pid) } catch { $got = '' }
+        try { $got = Get-SRScreenText -ProcessId ([int]$r.A.Pid) -Back $SR_StreamBack } catch { $got = '' }
         # 🪤 KEEP THE LAST GOOD SCREEN. A read can miss - the budget is short and
         # the child can lose a race - and blanking the panel on a miss makes the
         # one thing you are watching flicker in and out.
@@ -5093,18 +5192,52 @@ function Update-LivePane {
     $body = ''
     if ("$($script:liveTxt)".Trim()) {
         $lines = @("$($script:liveTxt)" -replace "`r", '' -split "`n")
-        # A console screen is padded to its full height with blanks; showing
-        # them would put the spinner at the top of an empty box.
+        # A console buffer is padded with blanks ABOVE what has been written and
+        # BELOW where the cursor is, so both ends are trimmed - otherwise the
+        # scroller opens on hundreds of empty rows and the spinner sits in the
+        # middle of a blank box.
         $end = $lines.Count - 1
         while ($end -ge 0 -and -not "$($lines[$end])".Trim()) { $end-- }
-        if ($end -ge 0) {
-            $start = [Math]::Max(0, $end - 26)
-            $body = (($lines[$start..$end]) -join "`n")
-        }
+        $start = 0
+        while ($start -le $end -and -not "$($lines[$start])".Trim()) { $start++ }
+        # 🔴 ALL OF IT, NOT THE LAST 26 LINES. Cutting to a window here is what
+        # made the ScrollViewer around this TextBlock decoration: there was never
+        # more than a screenful in it to scroll.
+        if ($end -ge $start) { $body = (($lines[$start..$end]) -join "`n") }
     }
     if (-not $body) { $body = 'reading this session''s screen...' }
 
+    # 🔑 IT FOLLOWS UNLESS YOU HAVE SCROLLED AWAY. A watcher that jumped to the
+    # bottom on every read would make scrolling up impossible - you would get
+    # about two seconds up the buffer before being dragged back down. So: at the
+    # bottom means keep up with it, anywhere else means stay where you are. The
+    # same rule every log viewer uses, and the one thing that makes a live
+    # buffer readable.
+    #
+    # 🪤 THE OFFSET IS READ BEFORE THE TEXT CHANGES AND APPLIED AFTER LAYOUT.
+    # A ScrollViewer clamps to the extent it currently knows about, so restoring
+    # an offset before UpdateLayout silently clamps it to the OLD height.
+    $sv = $ui.LiveScroll
+    $wasEnd = $true
+    $wasOff = 0.0
+    if ($sv) {
+        try {
+            $wasOff = [double]$sv.VerticalOffset
+            $wasEnd = ($sv.ScrollableHeight -le 0.5) -or ($wasOff -ge ($sv.ScrollableHeight - 2.0))
+        } catch { }
+    }
+    $sameConv = ($script:liveShownFor -eq $id)
+    $script:liveShownFor = $id
     $ui.LiveText.Text = $body
+    if ($sv) {
+        try {
+            $sv.UpdateLayout()
+            # A different conversation starts at the bottom, wherever you were
+            # in the last one.
+            if ($wasEnd -or -not $sameConv) { $sv.ScrollToEnd() }
+            else { $sv.ScrollToVerticalOffset($wasOff) }
+        } catch { }
+    }
     $who = ''
     try { $who = "$((Get-Title $r.S $r.D).Text)" } catch { $who = '' }
     # 🔑 THE HEADER CARRIES THE BAR. This pane is what you are looking at while
@@ -12023,30 +12156,107 @@ $script:sweepAt = $null
 # at its first line while one is in flight, so a slow read stretches the cadence
 # instead of stacking child processes behind it. That guard is what makes a
 # one-second interval safe on a machine running two dozen sessions.
-# 🔴 600, AND THE INTERVAL WAS ALWAYS THE FLOOR. Measured 2026-09-09 end to
-# end - Start to Complete, the way the lane actually runs it - at 290 ms, so a
-# status was ~1,29 s old worst case and 1000 of that was this number. At 600 the
-# worst case is 927 ms, measured.
+# 🔴 600, AND IT IS THE WHOLE CADENCE NOW - not 600 ON TOP OF THE PASS.
 #
-# 🪤 AND THE POOLED RUNSPACE DID NOT PAY FOR IT, which is what the first
-# version of this note claimed. Switching Start-VitalsSweep to the spare pool
-# measured 327 ms against 290 - the same within run-to-run noise, because what
-# the pass actually spends is the job dot-sourcing a 435 KB _common.ps1, not
-# opening the runspace. The swap is still right (opening one happened on the UI
-# THREAD) but it bought latency it did not buy, and the number said so.
+# Asked a third time: "sessions when they change their status are still not
+# instantaneous". Measured 2026-09-09 over the 26 consoles on this machine,
+# decomposed rather than timed end to end, which is what found it:
+#
+#     a COLD pass: open a runspace, dot-source, do the work    316 ms
+#       of which  open + dot-source _common.ps1                  42 ms
+#       of which  read all 26 consoles, one child process        91 ms
+#       of which  parse 26 screens in PowerShell                ~183 ms
+#     a WARM pass: the work alone, runspace already primed      289 ms
+#
+# 🪤 THE INTERVAL WAS COUNTED FROM THE WRONG END, and that was the whole of
+# the reported lag. Complete-VitalsSweep reset $script:sweepAt when the pass
+# LANDED, so the gap between two reads was the pass PLUS this figure - 916 ms,
+# not 600 - and a status could be 1.231 ms old. It is anchored to the START now:
+# 600 ms between reads, 889 ms worst case, and a pass that runs long eats its
+# own slack instead of adding to it.
+#
+# 🔴 AND THIS COMMENT HAS NOW BLAMED THE WRONG THING TWICE. First it said the
+# spare runspace pool bought the shorter interval (327 against 290 - noise).
+# Then, having removed the dot-source, it said THAT was what the pass spent
+# itself on. The itemised numbers above say otherwise: the dot-source is 42 ms
+# of 316. What a pass actually spends is PARSING - 26 screens through
+# Read-SRScreenVitals and Test-SRLiveMenu, about 7 ms each - which is why the
+# saving that matters is not parsing a screen that has not changed. See
+# $script:SweepJob.
+#
+# 🪤 THE FIRST WARM MEASUREMENT WAS 133 ms AND IT WAS NOT MEASURING THE JOB.
+# It ran Read-SRScreenVitals and left Test-SRLiveMenu out, so it flattered the
+# warm runspace by removing work rather than by removing the dot-source. b + d
+# is checked against c in the bench for exactly this reason: three numbers that
+# do not add up are one number that is a lie.
 #
 # 🪤 AN OVERRUNNING SWEEP IS STILL SKIPPED, NOT QUEUED - Start-VitalsSweep
 # returns at its first line while one is in flight. That guard is what makes any
 # interval safe; without it this number would be a promise the machine cannot
 # keep on a bad day.
-$SR_SweepEvery = 600       # ms between sweeps, once one has finished
+$SR_SweepEvery = 600       # ms between the START of one sweep and the next
+
+# 🔑 A RUNSPACE THE SWEEP KEEPS - AND THE 42 ms IS THE SMALLER HALF OF WHY.
+# The sweep is the one job here that runs forever: every other off-thread lane
+# fires on a gesture and is done, while this one goes out every 600 ms for as
+# long as the window is open. Keeping the runspace saves the dot-source, which
+# measured 42 ms of a 316 ms pass - worth having and not the point.
+#
+# THE POINT IS THAT A RUNSPACE THAT SURVIVES CAN REMEMBER. The pass costs ~183
+# ms parsing 26 screens, and on a machine with two dozen conversations most of
+# those screens are byte-for-byte what they were 600 ms ago. Somewhere to keep
+# last pass's answer is what turns that into a skip, and it did not exist while
+# every pass built its own runspace and threw it away.
+#
+# 🪤 ONE RUNSPACE, NOT A POOL, and it is the same reasoning as the spare: an
+# open runspace holds a thread. This buys back 171 ms on a lane that runs a
+# hundred times a minute, which is the case the spare's note says a permanent
+# thread has to make.
+#
+# 🔒 A WEDGED PASS ABANDONS THE RUNSPACE RATHER THAN REUSING IT. If a pass
+# does not answer inside its budget the runspace is holding a thread inside a
+# console read; handing the next pass the same runspace would queue it behind a
+# read that is never coming back. It is dropped and a fresh one is primed, which
+# leaks one thread in a case that has not been observed - and the alternative is
+# a board that stops updating for the life of the window.
+$script:sweepWarmRs = $null
+
+$script:SweepPrime = {
+    . (Join-Path $SRHere '_common.ps1')
+    1
+}
 
 $script:SweepJob = {
-    . (Join-Path $SRHere '_common.ps1')
     $out = @{}
     try {
         $screens = Get-SRScreenTextMany -ProcessIds ([int[]]$SRSweep.Pids)
+        # 🔴 A SCREEN THAT HAS NOT CHANGED HAS NOT CHANGED ITS ANSWER, and the
+        # parse is what the pass is made of: 26 screens through
+        # Read-SRScreenVitals and Test-SRLiveMenu at about 7 ms each, ~183 ms of
+        # a 316 ms pass. Most of them are identical to the pass before - a
+        # conversation sitting idle redraws nothing at all - so the work is
+        # being done again for an answer already in hand.
+        #
+        # 🔑 SAFE BY CONSTRUCTION, not by judgement. Both readers are pure
+        # functions of the screen text, so identical text has identical vitals
+        # including the turn clock: this is not a staleness trade, it is the
+        # same answer reached without computing it. Compare that with the
+        # cheap-identity note in the project memory, which is about a proxy -
+        # length and mtime - that CAN collide. This compares the input itself.
+        #
+        # 🪤 IT LIVES IN THE RUNSPACE, WHICH IS WHY IT ONLY WORKS NOW. Before
+        # the sweep kept its runspace, every pass started with an empty table
+        # and this would have hit on nothing, forever.
+        if (-not $script:sweepSeen) { $script:sweepSeen = @{} }
+        $fresh = @{}
         foreach ($k in $screens.Keys) {
+            $txt = "$($screens[$k])"
+            $was = $script:sweepSeen[$k]
+            if ($was -and [string]::Equals("$($was.Txt)", $txt, [System.StringComparison]::Ordinal)) {
+                $out[[int]$k] = $was.Out
+                $fresh[$k] = $was
+                continue
+            }
             $v = Read-SRScreenVitals -ScreenText $screens[$k]
             # 🔑 THE SAME SCREEN ANSWERS "IS IT ASKING?" TOO, and having it for
             # every session on every pass is what lets the flag be cleared by
@@ -12098,7 +12308,14 @@ $script:SweepJob = {
                 CompactPct  = [int]$v.CompactPct
                 CompactSecs = [int]$v.CompactSecs
             }
+            $fresh[$k] = @{ Txt = $txt; Out = $out[[int]$k] }
         }
+        # 🪤 THE TABLE IS REPLACED, NOT ADDED TO. Keyed on pid, and pids are
+        # reused by the operating system - a table that only ever grows would
+        # hold the screen of a session that closed an hour ago against the pid
+        # of one that opened a minute ago, and answer for it. Only what this
+        # pass actually read survives the pass.
+        $script:sweepSeen = $fresh
     } catch { }
     $out
 }
@@ -12116,18 +12333,22 @@ function Start-VitalsSweep {
     }
     if (-not $pids.Count) { $script:sweepAt = Get-Date; return }
     try {
-        # 🔑 THE SPARE, NOT A FRESH ONE. Opening a runspace is done ON THE UI
-        # THREAD and this runs every pass; Get-SRRunspace hands back one that is
-        # already open and queues its replacement at idle priority. Measured end
-        # to end - start to collected - at 290 ms with a fresh runspace, which is
-        # what made a one-second interval the floor rather than a choice.
-        #
-        # 🪤 THE RUNSPACE GOES WITH A THROW, exactly as Start-VitalsWarm's
-        # catch does: Get-SRRunspace hands back something already OPEN, so a
-        # failure after this point leaks a thread.
-        $rs = Get-SRRunspace
-        if (-not $rs) { throw 'no runspace' }
-        $rs.SessionStateProxy.SetVariable('SRHere', $here)
+        # 🔑 THE SWEEP'S OWN RUNSPACE, PRIMED ONCE. The first pass of the
+        # window's life pays the open and the dot-source on the UI thread - one
+        # 35 ms hit at startup, where the spare pool's note puts it - and every
+        # pass after it finds _common.ps1 already loaded.
+        $rs = $script:sweepWarmRs
+        if (-not $rs) {
+            $rs = Get-SRRunspace
+            if (-not $rs) { throw 'no runspace' }
+            $rs.SessionStateProxy.SetVariable('SRHere', $here)
+            $pp = [powershell]::Create()
+            $pp.Runspace = $rs
+            $null = $pp.AddScript($script:SweepPrime)
+            $null = $pp.Invoke()
+            $pp.Dispose()
+            $script:sweepWarmRs = $rs
+        }
         $rs.SessionStateProxy.SetVariable('SRSweep', @{ Pids = $pids.ToArray() })
         $ps = [powershell]::Create()
         $ps.Runspace = $rs
@@ -12138,7 +12359,11 @@ function Start-VitalsSweep {
         $script:sweepFor = $ids.ToArray()
         $script:sweepAt = Get-Date
     } catch {
-        try { if ($rs) { $rs.Close(); $rs.Dispose() } } catch { }
+        # 🪤 THE WARM RUNSPACE GOES WITH THE THROW. Whatever failed, it
+        # failed with this runspace in hand; keeping it would hand the same
+        # broken state to every pass after it.
+        try { if ($script:sweepWarmRs) { $script:sweepWarmRs.Close(); $script:sweepWarmRs.Dispose() } } catch { }
+        $script:sweepWarmRs = $null
         $script:sweepPs = $null; $script:sweepRs = $null
     }
 }
@@ -12150,20 +12375,32 @@ function Complete-VitalsSweep {
         # must not wedge the lane that collects it.
         if ($script:sweepAt -and ((Get-Date) - $script:sweepAt).TotalSeconds -gt 30) {
             try { $script:sweepPs.Stop(); $script:sweepPs.Dispose() } catch { }
+            # 🔒 ABANDONED, NOT REUSED - see the note on $script:sweepWarmRs.
+            # The thread is inside a read that never came back; the next pass
+            # gets a fresh runspace rather than a queue behind it.
             try { $script:sweepRs.Close(); $script:sweepRs.Dispose() } catch { }
+            if ($script:sweepWarmRs -eq $script:sweepRs) { $script:sweepWarmRs = $null }
             $script:sweepPs = $null; $script:sweepRs = $null; $script:sweepHandle = $null
+            $script:sweepAt = Get-Date
             Write-SRLog '  [warn] the vitals sweep did not answer in 30s - abandoned'
         }
         return $false
     }
     $res = $null
     try { $res = @($script:sweepPs.EndInvoke($script:sweepHandle))[0] } catch { }
-    try { $script:sweepPs.Dispose(); $script:sweepRs.Close(); $script:sweepRs.Dispose() } catch { }
+    # 🔑 THE PIPELINE GOES, THE RUNSPACE STAYS. Disposing the runspace here is
+    # what made every pass re-open one and re-read _common.ps1 into it.
+    try { $script:sweepPs.Dispose() } catch { }
     $script:sweepPs = $null; $script:sweepRs = $null; $script:sweepHandle = $null
-    # When this pass's screens were taken, kept before the clock is reset: a
-    # session that wrote after that moment has outrun the read.
+    # When this pass's screens were taken. A session that wrote after that
+    # moment has outrun the read.
+    #
+    # 🔴 AND THE C🔒 IS NOT RESET HERE ANY MORE. $script:sweepAt is when the
+    # pass STARTED, and Start-VitalsSweep gates on it - so resetting it on
+    # arrival made the cadence "the pass, and then the interval", which measured
+    # 904 ms where the interval says 600. Anchoring to the start means a pass
+    # that runs long eats its own slack instead of adding to it.
     $started = $script:sweepAt
-    $script:sweepAt = Get-Date
     if (-not $res) { return $false }
     $changed = $false
     # 🔑 ONE INDEX, NOT A PIPELINE SCAN PER SWEPT ROW.
@@ -14345,6 +14582,7 @@ $window.Add_Closed({
     # 🔒 AND THE SPARE RUNSPACE, which holds a thread exactly like the ones the
     # jobs use. It is nobody else's to close.
     try { if ($script:spareRs) { $script:spareRs.Close(); $script:spareRs.Dispose(); $script:spareRs = $null } } catch { }
+    try { if ($script:sweepWarmRs) { $script:sweepWarmRs.Close(); $script:sweepWarmRs.Dispose(); $script:sweepWarmRs = $null } } catch { }
 })
 
 $null = $window.ShowDialog()
