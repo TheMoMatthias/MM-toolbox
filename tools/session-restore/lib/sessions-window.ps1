@@ -1005,6 +1005,18 @@ function Set-AskSeen { param([string]$Id, [bool]$Asking)
     return $true
 }
 
+# 🔑 WHICH OF THE TWO RESTING BANDS A STOPPED CONVERSATION IS IN. Lifted out
+# of Get-Band unchanged because the sweep's turn clock now needs the same answer,
+# and the alternative was a second copy of a rule about what counts as handing
+# something back - two copies of which would disagree the first time either was
+# touched. gui2 asserts the two callers agree.
+function Get-SRRestingBand { param($Row)
+    $sd = $Row.Said
+    if ($sd -and -not "$($sd.Pending)".Trim() -and
+        "$($sd.Said)".Trim().Length -ge $script:HandbackMinChars) { return 'done' }
+    return 'idle'
+}
+
 function Get-Band { param($Row)
     $cv = $Row.Conv
     if (-not $cv) { return 'quiet' }
@@ -1016,12 +1028,7 @@ function Get-Band { param($Row)
         'working'     { $band = 'working' }
         'summarising' { $band = 'working' }
         'waiting'     { $band = 'needs' }
-        'idle' {
-            $sd = $Row.Said
-            if ($sd -and -not "$($sd.Pending)".Trim() -and
-                "$($sd.Said)".Trim().Length -ge $script:HandbackMinChars) { $band = 'done' }
-            else { $band = 'idle' }
-        }
+        'idle'        { $band = Get-SRRestingBand $Row }
     }
     # 🔴 ANY LIVE BAND, NOT JUST 'working' - see the note on Test-QuietVerdict for
     # why this reversed. In short: the one-way rule was containing a parser that
@@ -1036,6 +1043,52 @@ function Get-Band { param($Row)
     # definition, so it must not decide anything.
     if ($band -ne 'quiet' -and $script:askSeen["$($Row.Id)"]) { return 'needs' }
     return $band
+}
+
+# ===========================================================================
+# WHAT A SESSION SAYS ABOUT ITS OWN TURN, USED TO DECIDE THE BAND.
+#
+# 🔴 GET-BAND DECIDES working / idle / done FROM $Row.Conv, AND ONLY THE PROBE
+# REFRESHES Conv. Measured 2026-09-08: working->done, idle->working and
+# ->quiet were reachable at ~17 s and by nothing faster, while needs->working
+# took 0,1 s and ->needs took one sweep. That asymmetry is the whole of "I have
+# to click a different session to see whether this one is still going" - the two
+# transitions the operator watches for were the two on the slowest path.
+#
+# The evidence was already being read and thrown away. The sweep parses every
+# live session's own status line on every pass and takes the turn clock off it -
+# "for 3m 9s . done", or "Deciphering... (32s . 1.7k tokens)" - and used it for
+# the strip's chips and nothing else.
+#
+# 🪴 IT OVERRULES NOTHING THAT WAS MEASURED MORE RECENTLY.
+#   - 'needs' is left alone. A menu actually seen on screen is a stronger claim
+#     than a spinner, and it is the one the operator is waiting to be told.
+#   - 'quiet' is left alone. Get-Band reaches it for a conversation that is
+#     stuck, stale, or has no process at all - none of which has a turn clock
+#     worth believing.
+#   - A screen that said nothing about a turn decides nothing. TurnSecs -1 means
+#     "the line did not say", which is not the same as "the turn is over", and
+#     treating those alike is how a busy session would be marked finished every
+#     time a read came back thin.
+#
+# 🪴 AND IT IS ITS OWN FUNCTION SO THE RULE CAN BE PUT UNDER TEST - the same
+# reason Test-QuietVerdict is one. Inside the collector it would only be
+# reachable through a completed screen read, and a suite that cannot reach it
+# writes three assertions that pass because nothing ran.
+function Test-SRTurnVerdict { param($Row, [int]$TurnSecs, [bool]$TurnDone)
+    if (-not $Row) { return $false }
+    if ($TurnSecs -lt 0) { return $false }
+    $band = "$($Row.Band)"
+    if ($band -eq 'needs' -or $band -eq 'quiet') { return $false }
+    if (-not $TurnDone) {
+        if ($band -eq 'working') { return $false }
+        $Row.Band = 'working'
+        return $true
+    }
+    if ($band -ne 'working') { return $false }
+    $was = $band
+    $Row.Band = Get-SRRestingBand $Row
+    return ("$($Row.Band)" -ne $was)
 }
 
 # 🔴 THE LEAF NAME IS NOT UNIQUE. Eight projects on this machine are called
@@ -1775,7 +1828,7 @@ function Build-Rail {
         $paths = $inBand[$b.Key]
         $shut = [bool]$script:railBandShut["$($b.Key)"]
         $items.Add([PSCustomObject]@{
-            Kind = 'band'; BandKey = "$($b.Key)"
+            Kind = 'band'; BandKey = "$($b.Key)"; Id = ('band:' + $b.Key)
             BandVis = $V_Show; RowVis = $V_Hide
             BandLabel = $b.Label; BandCount = $paths.Count
             BandCaret = [string][char]$(if ($shut) { 0x25B8 } else { 0x25BE })
@@ -1799,7 +1852,25 @@ function Build-Rail {
                             -Suggest "$($script:shelveSuggest[$k])"))
         }
     }
-    $ui.RailList.ItemsSource = $items
+    # 🔑 PATCHED, NOT REPLACED - the same fix the sessions column got, for the
+    # same measured reason. Handing the ListBox a new collection tears down and
+    # re-realises a container, a template and every binding in it for all 35
+    # tiles; the sessions column measured a keystroke at 199-491 ms doing that
+    # and the data work was never the cost. This column had never been on a
+    # background pass at all, so it was only ever paid on a gesture - now it
+    # refreshes with the board (see Update-Board) and has to be cheap.
+    foreach ($it in $items) {
+        if ($null -eq $it.PSObject.Properties['Sig']) {
+            $it | Add-Member -NotePropertyName Sig -NotePropertyValue (Get-SRItemSig $it) -Force
+        }
+    }
+    if (-not [object]::ReferenceEquals($ui.RailList.ItemsSource, $script:railBound)) {
+        $script:railBound.Clear()
+        foreach ($it in $items) { $script:railBound.Add($it) }
+        $ui.RailList.ItemsSource = $script:railBound
+    } else {
+        Sync-SRSessionItems $items $script:railBound
+    }
     $ui.RailClear.Visibility = $(if ($script:railPick) { $V_Show } else { $V_Hide })
     Update-RailShelved
     Update-RailSuggest
@@ -1934,6 +2005,10 @@ function New-RailTile { param([string]$Path, $Kids, [bool]$Picked, $Blank, [stri
     if ($Suggest) { $state = $state + $dot + 'could be shelved' }
     return [PSCustomObject]@{
         Kind   = 'project'
+        # The key the diff matches on. A path is unique across the rail and
+        # survives a project moving between age bands, which is the move that
+        # would otherwise rebuild a tile that had not changed.
+        Id     = ('proj:' + $Path)
         BandVis = $V_Hide; RowVis = $V_Show
         BandKey = ''; BandLabel = ''; BandCount = 0; BandCaret = ''
         Path   = $Path
@@ -2073,6 +2148,10 @@ function Sort-SessionRows { param($Rows)
 # draws, and stringifying them would make every row's signature differ on every
 # rebuild - which is precisely the "cache that never hits" this replaces.
 $script:listItems = New-Object System.Collections.ObjectModel.ObservableCollection[object]
+# The same for the projects column. Named railBound rather than railItems
+# because the suite already has a local $railItems, and the harness appends the
+# driver into THIS scope - see the clash guard in run-tests.ps1.
+$script:railBound = New-Object System.Collections.ObjectModel.ObservableCollection[object]
 
 function Get-SRItemSig { param($It)
     $sb = New-Object System.Text.StringBuilder
@@ -2084,11 +2163,177 @@ function Get-SRItemSig { param($It)
     return $sb.ToString()
 }
 
+# ===========================================================================
+# AND THE ROW ITSELF IS NOT REBUILT UNLESS ITS INPUTS MOVED.
+#
+# 🔴 THE LIST WAS ALREADY PATCHED RATHER THAN REPLACED - see the note above
+# Sync-SRSessionItems - AND THAT FIXED THE WRONG HALF. WPF was no longer tearing
+# down containers, but every rebuild still BUILT all 39 item objects to hand the
+# diff something to compare, at 1,5 ms each. Measured 2026-09-08 on 431
+# conversations, 39 rows drawn: Build-Sessions 71 ms, of which the filter walk
+# over all 431 is 18 - so the per-row body is the cost and the walk is not.
+#
+# 🪴 AND NO SINGLE HELPER IN IT IS THE CAUSE, which is why this is a cache and
+# not an optimisation. Ablated against the real function - stub one helper,
+# rebuild, take the difference: Get-SRItemSig 19%, Get-Title 10%, Get-AgeTicks
+# 10%, Sync-SRSessionItems 8%, Get-RowSubAgents 7%, Sort-SessionRows 6%. A third
+# is the loop body itself. Trimming the top three would leave 50 ms of the 71.
+#
+# The probe rebuilds unconditionally every 15 s, so that 71 ms was 286 ms a
+# minute of UI thread spent redrawing rows that had not moved - and it is what
+# made a faster refresh unaffordable, which is the actual reported complaint.
+$script:rowItems = @{}
+
+# 🔴 ANYTHING THAT CHANGES WHAT A ROW DRAWS WITHOUT CHANGING ITS INPUTS MUST
+# CALL THIS. The signature covers the DATA a row reads; it cannot see the
+# palette the brushes come from or the labels Update-ProjectLabels deals out.
+function Clear-SRRowItemCache { $script:rowItems = @{} }
+
+# 🔑 ONE PLACE THE CONTEXT BAR'S TWO NUMBERS COME FROM. The row build and the
+# rebuild-or-not signature both need them, and two copies would drift - and the
+# way they would drift is a bar that quietly stops moving, which reads as a bug
+# in the sweep rather than in a cache.
+#
+# 🔴 SCREEN FIRST WHILE IT IS RUNNING, TRANSCRIPT OTHERWISE - and this reverses
+# a considered decision, so here is why. The rule was: only a window the session
+# PRINTED may draw a bar, because the transcript has to derive the window from
+# the model it recorded and reads 200k for a 1M conversation until that
+# conversation passes 200k. True, and the price was measured: a freshly opened
+# window drew 0 bars of 39, and a conversation never seen running under this
+# window never drew one at all. A derived scale that is right for most
+# conversations and low for a few beats no gauge; a measured figure still
+# outranks it wherever one exists.
+#
+# 🪴 THE RAW CACHE ENTRY, NOT Get-SRVitalsCached. That guard stats the
+# transcript on disk to check its cached length - once per row, per repaint, on
+# the thread between a keystroke and the screen. For a gauge that is the wrong
+# trade: a bar four seconds behind is a bar slightly behind, and the warm pass
+# corrects it. The strip keeps the guarded reader, where the cost is paid once.
+function Get-SRRowCtx { param($R, $Scr, $Now = $null)
+    if ($Scr -and [int]$Scr.CtxWindow -gt 0) {
+        return @{ Tok = [int]$Scr.CtxTokens; Win = [int]$Scr.CtxWindow }
+    }
+    $none = @{ Tok = 0; Win = 0 }
+    $id = "$($R.Id)"
+    $v = $script:vitalsCache[$id]
+    if (-not $v) { return $none }
+    if ("$($v.J)" -ne "$($R.S.jsonl)") { return $none }
+    if (-not $Now) { $Now = Get-Date }
+    if (($Now - $v.At).TotalSeconds -gt $SR_VitalsTTL) { return $none }
+    $tok = [int]$v.V.Tokens
+    if ($tok -le 0) { return $none }
+    # The window this conversation printed for itself outranks the derivation,
+    # wherever a screen has ever been read for it.
+    $w = $script:ctxWindowTrue[$id]
+    $win = $(if ($w -and [int]$w -gt 0) { [int]$w } else { [int]$v.V.Window })
+    if ($win -le 0) { return $none }
+    return @{ Tok = $tok; Win = $win }
+}
+
+# 🔴 EVERY INPUT THE ROW BODY READS, AND NOTHING ELSE. A row is rebuilt when
+# this string moves and reused when it does not, so an input MISSING here is a
+# row that silently stops updating - this session's whole complaint, brought
+# back as a bug. gui2 changes one input at a time and requires a redraw for each.
+#
+# 🪴 TIME IS FOLDED IN AS THE DISPLAYED VALUE, NEVER AS A CLOCK. $NowTicks
+# itself would differ on every call and the cache would never hit once; the age
+# LABEL is what the row draws and it moves about once a minute. Exactly the rule
+# Get-ModelFingerprint states for itself a few hundred lines down.
+# 🪴 ONE FORMAT CALL, NOT TWENTY APPENDS - and this is the second version,
+# because the first was written with a StringBuilder and measured 0,71 ms a row.
+# That is per-call overhead again, exactly as WO-2 and Test-OnSurface found: a
+# StringBuilder .Append is a method dispatch through PowerShell, and twenty of
+# them per row on the path that runs for EVERY row on EVERY repaint costs more
+# than the rebuild it is there to avoid. The parts are gathered into locals and
+# joined once.
+function Get-SRRowInputSig {
+    param($R, [long]$NowTicks, $NowDate, [string]$BandKey, [bool]$Expand)
+    $id = "$($R.Id)"
+    $t = $R.T
+    $age = ''
+    if ($R.At -gt 0) { $age = Get-AgeLabel ($NowTicks - $R.At) }
+    $said = ''
+    if ($R.Said -and "$($R.Said.Said)".Trim()) { $said = "$($R.Said.Said)" }
+    elseif ($R.Conv -and "$($R.Conv.Detail)") { $said = "$($R.Conv.Detail)" }
+    # The screen reading, applied past its TTL exactly as the row applies it. An
+    # entry that has just aged out changes what draws, so the TTL is an input
+    # and not an implementation detail of reading one.
+    $scr = $null
+    $scrV = $script:rowScreen[$id]
+    if ($scrV -and ($NowDate - $scrV.At).TotalSeconds -le $SR_RowScreenTTL) { $scr = $scrV }
+    $marks = ''
+    if ($scr) { $marks = '{0},{1}' -f [int]$scr.Shells, [int]$scr.Agents }
+    # 🔑 THE BAR AS DRAWN, NOT THE TOKENS BEHIND IT. A live session's count
+    # moves on every sweep; the bar is 34px wide, so quantising to the pixel is
+    # what stops a row rebuilding once a second for a gauge that has not visibly
+    # moved. The brush goes in whole because its thresholds are what the eye
+    # actually reads off the bar.
+    $bar = ''
+    $cx = Get-SRRowCtx -R $R -Scr $scr -Now $NowDate
+    $cxWin = [int]$cx.Win
+    if ($cxWin -gt 0) {
+        $frac = [double]$cx.Tok / [double]$cxWin
+        if ($frac -gt 1.0) { $frac = 1.0 }
+        $bar = '{0},{1}' -f [int](34.0 * $frac), [string](Get-CtxBrush ([int]$cx.Tok))
+    }
+    # The sub-agents, by the moment the probe last filed them. Their Live flags
+    # are decided on the probe thread, so the fill moment is the only thing that
+    # can move them - one value instead of a walk over the list.
+    $subs = ''
+    $sv = $script:subAgents[$id]
+    if ($sv) { $subs = '{0},{1}' -f $sv.At.Ticks, $sv.List.Count }
+    # 🪴 THE QUEUE CARRIES A CLOCK OF ITS OWN. Its mark HIDES once every item
+    # in it has gone stale, which is a function of wall time - so a queued row,
+    # and only a queued row, also carries a coarse minute bucket. Six rows on
+    # this machine have a queue; the rest contribute nothing here and so never
+    # rebuild for the clock.
+    $que = ''
+    $q = $R.Q
+    if ($q -and [int]$q.Count -gt 0) {
+        $que = '{0},{1},{2},{3}' -f [int]$q.Count, [int]$q.Mine, [int]$q.Machine,
+                                    [long]($NowDate.Ticks / 600000000)
+    }
+    return ('{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}' -f `
+            $BandKey, [int]$Expand, $t.Text, [int][bool]$t.Derived, $age, $said,
+            $marks, $bar, $subs, $que)
+}
+
+# The items one row contributed to this build, filed under it. Called only when
+# a row was actually rebuilt, so its own cost is paid on the rare path.
+#
+# 🔑 THE SIGNATURE IS STAMPED HERE, on the fresh items only. Get-SRItemSig
+# walks ~40 properties and was 19% of the whole rebuild when it ran over every
+# item on every pass; a reused item's signature still describes it exactly,
+# because nothing about what it draws has changed.
+function Set-SRRowItems { param([string]$Key, [string]$Sig, $Items, [int]$From)
+    $mine = New-Object System.Collections.Generic.List[object]
+    for ($i = $From; $i -lt $Items.Count; $i++) {
+        $it = $Items[$i]
+        $it | Add-Member -NotePropertyName Sig -NotePropertyValue (Get-SRItemSig $it) -Force
+        $null = $mine.Add($it)
+    }
+    $script:rowItems[$Key] = @{ Sig = $Sig; Items = $mine.ToArray() }
+}
+
 # Transform the collection the ListBox is already bound to into $Target, with the
 # fewest notifications that will do it. Every row this does NOT touch keeps its
 # container, its template instance and its bindings.
-function Sync-SRSessionItems { param($Target)
-    $col = $script:listItems
+# 🔑 $Col SO THE PROJECTS COLUMN CAN USE THE SAME DIFF. It was written for the
+# sessions list and the rail needs exactly it - keyed on Id, move what moved,
+# replace only what changed. A second copy would be the same code with its own
+# off-by-one, and this one has already had the back-to-front removal bug found
+# in it once. Defaults to the sessions collection so every existing caller is
+# untouched.
+function Sync-SRSessionItems { param($Target, $Col = $null)
+    # 🪴 ASSIGNED, NOT CHOSEN IN A SUBEXPRESSION. `$col = $(if (...) { $Col }
+    # else { ... })` UNROLLS the collection - $() enumerates it - so $col became
+    # a fixed-size Object[] copy, RemoveAt threw "Collection was of a fixed
+    # size", and every mutation that did not throw was applied to a copy the
+    # ListBox was not bound to. The symptom was a column that had simply stopped
+    # updating, which is the bug this whole pass exists to remove. Same trap the
+    # project memory records as "assign first, wrap second".
+    $col = $Col
+    if ($null -eq $col) { $col = $script:listItems }
     # 🪝 NOT @($Target). Build-Sessions hands this a List[object], and @() on
     # one throws "Argument types do not match" in PS 5.1 with NO line number to
     # say where. The list indexes and counts perfectly well as it is.
@@ -2229,6 +2474,51 @@ function Build-Sessions {
         # the counts beside them are the reason to switch in the first place.
         if ($script:bandPick -and $script:bandPick -ne $b.Key) { continue }
         foreach ($r in $inBand) {
+            # 🔴 THE EXPAND TEST MOVED UP HERE FROM THE FOOT OF THE LOOP, and it
+            # had to. The signature below decides whether this row is rebuilt at
+            # all, and whether the row is EXPANDED changes what it draws, so the
+            # signature has to know. Putting $script:selId into the signature
+            # instead is the lazy version and a far worse one: every row's
+            # signature would then change on every click, so every click would
+            # rebuild the whole column - the exact cost this cache removes.
+            #
+            # 🪴 AND $subsAll IS FETCHED ONLY WHEN THE TEST NEEDS IT. It is a
+            # dictionary read rather than a transcript read - the probe fills
+            # $script:subAgents off-thread - but @() copies the array, and this
+            # runs for every row on every repaint. Only the agent-selected case
+            # asks; the rebuild below fetches it for itself.
+            #
+            # 🪴 Ordinal. See the note in the project memory: a culture-sensitive
+            # StartsWith is how ("· x").StartsWith("⏵") came out True.
+            $subsAll = $null
+            $expand = ($script:selId -eq $r.Id)
+            $pickedSub = $null
+            if (-not $expand -and "$($script:selId)".StartsWith('agent:', [System.StringComparison]::Ordinal)) {
+                $subsAll = @(Get-RowSubAgents $r)
+                foreach ($sa in $subsAll) {
+                    if (('agent:' + $sa.Id) -eq "$($script:selId)") {
+                        $expand = $true
+                        $pickedSub = $sa
+                        break
+                    }
+                }
+            }
+            $rowKey = "$($r.Id)"
+            $inSig = Get-SRRowInputSig -R $r -NowTicks $nowTicks -NowDate $nowDate -BandKey $b.Key -Expand $expand
+            $hit = $script:rowItems[$rowKey]
+            if ($hit -and "$($hit.Sig)" -eq $inSig) {
+                # 🔴 THE ROW REFERENCE IS RE-POINTED, NOT KEPT. Update-Model
+                # REPLACES every row object every time it runs, so a cached item
+                # is holding last generation's row a quarter of a minute later -
+                # and Row is what every click handler acts on. Clearing the cache
+                # on a model rebuild would be the other answer and the wrong one:
+                # it hands the probe the whole 71 ms back, which is the cost
+                # being removed. Row is excluded from Get-SRItemSig - it is not
+                # drawn - so re-pointing it changes nothing the list can see.
+                foreach ($ci in $hit.Items) { $ci.Row = $r; $items.Add($ci) }
+                continue
+            }
+            $rowFirst = $items.Count
             $t = $r.T
             $saidText = ''
             if ($r.Said -and "$($r.Said.Said)".Trim()) { $saidText = ("$($r.Said.Said)".Trim() -replace '\s+', ' ') }
@@ -2269,7 +2559,7 @@ function Build-Sessions {
             # on the object made every screen-supplied count fall through to the
             # fallback, and the suite caught it: a staged session with a shell
             # AND a sub-agent drew neither mark.
-            $subsAll = @(Get-RowSubAgents $r)
+            if ($null -eq $subsAll) { $subsAll = @(Get-RowSubAgents $r) }
             $subsLive = @($subsAll | Where-Object { $_.Live })
             $rowAgents = $subsLive.Count
             if ($scr -and [int]$scr.Agents -ge 0) { $rowAgents = [int]$scr.Agents }
@@ -2280,35 +2570,16 @@ function Build-Sessions {
             # The bar the session prints, or no bar at all - see the note in
             # Update-Chips. An inferred window drew the wrong scale for every 1M
             # conversation until it passed 200k.
-            $rowTok = 0; $rowWin = 0
-            if ($scr -and [int]$scr.CtxWindow -gt 0) { $rowTok = [int]$scr.CtxTokens; $rowWin = [int]$scr.CtxWindow }
-            else {
-                # 🔑 AN IDLE CONVERSATION GETS A BAR TOO, OUT OF TWO REAL FIGURES.
-                # Reported: no visual indication of how much context is used, and
-                # showing it only above half a window was one half of that - this
-                # is the other. A session that is not running prints no status bar,
-                # so the sweep has nothing current to file and the row went blank.
-                #
-                # Both halves here are measured, neither is inferred: the WINDOW is
-                # the one this conversation itself printed while it was last live
-                # (see $script:ctxWindowTrue), and the COUNT is the transcript's own
-                # last usage figure, which is real - it is only the window that
-                # Get-SRSessionVitals guesses, and that guess is not used.
-                #
-                # 🪤 IT IS A LAST KNOWN WINDOW, NOT A LAST KNOWN BAR. Pairing a
-                # remembered window with a remembered COUNT would freeze the gauge
-                # at whatever it read when the session stopped; pairing it with the
-                # live transcript count keeps the bar moving with the conversation,
-                # which is the thing being asked about.
-                $wTrue = $script:ctxWindowTrue["$($r.Id)"]
-                if ($wTrue -and [int]$wTrue -gt 0) {
-                    $vCached = Get-SRVitalsCached $r
-                    if ($vCached -and [int]$vCached.Tokens -gt 0) {
-                        $rowTok = [int]$vCached.Tokens
-                        $rowWin = [int]$wTrue
-                    }
-                }
-            }
+            # 🔑 ONE RESOLVER, SHARED WITH THE REBUILD-OR-NOT SIGNATURE. See
+            # Get-SRRowCtx: screen first while the session is running, the
+            # transcript otherwise. The rule this replaces required a window the
+            # session had PRINTED, which is the honest figure and was measured
+            # to cost every bar on the board - 0 of 39 rows drew one on a window
+            # that had just opened, and a conversation never seen running under
+            # this window never drew one at all.
+            $cx = Get-SRRowCtx -R $r -Scr $scr -Now $nowDate
+            $rowTok = [int]$cx.Tok
+            $rowWin = [int]$cx.Win
             $rowFrac = $(if ($rowWin -gt 0) { [double]$rowTok / [double]$rowWin } else { 0.0 })
 
             # 🔴 WHAT IS QUEUED BEHIND IT. Read off the transcript's own
@@ -2521,18 +2792,10 @@ function Build-Sessions {
             # every sort click and every 2.5s sweep. Measured 2026-09-04: the
             # rebuild's parts summed to 24 ms of a 45 ms whole, and this is what
             # was in the gap.
-            $expand = ($script:selId -eq $r.Id)
-            $pickedSub = $null
-            if (-not $expand -and "$($script:selId)".StartsWith('agent:')) {
-                foreach ($sa in $subsAll) {
-                    if (('agent:' + $sa.Id) -eq "$($script:selId)") {
-                        $expand = $true
-                        $pickedSub = $sa
-                        break
-                    }
-                }
+            if (-not $expand) {
+                Set-SRRowItems -Key $rowKey -Sig $inSig -Items $items -From $rowFirst
+                continue
             }
-            if (-not $expand) { continue }
             $subsShow = @($subsLive)
             # Keep the one being read on screen even once it stops writing, or
             # selecting it would close it.
@@ -2581,12 +2844,24 @@ function Build-Sessions {
                     SubTip = $tip
                 })
             }
+            # The expanded row and its agent rows are one cache entry: they are
+            # built together and $Expand is in the signature, so they can only
+            # ever go stale together.
+            Set-SRRowItems -Key $rowKey -Sig $inSig -Items $items -From $rowFirst
         }
     }
 
     # 🔑 BOUND ONCE, PATCHED FOREVER AFTER. Re-assigning ItemsSource is what
     # cost the keystroke; see the note above Sync-SRSessionItems.
-    foreach ($it in $items) { $it | Add-Member -NotePropertyName Sig -NotePropertyValue (Get-SRItemSig $it) -Force }
+    # 🔑 ONLY WHAT HAS NOT BEEN STAMPED. Set-SRRowItems stamps every row it
+    # files, and a reused item still carries the signature it was filed with -
+    # so this now covers the band headings and nothing else. It used to walk ~40
+    # properties of all 42 items on every rebuild, 19% of the whole build.
+    foreach ($it in $items) {
+        if ($null -eq $it.PSObject.Properties['Sig']) {
+            $it | Add-Member -NotePropertyName Sig -NotePropertyValue (Get-SRItemSig $it) -Force
+        }
+    }
     # 🔑 THE OLD PATH IS KEPT REACHABLE ON PURPOSE, and this flag is the only
     # way the patch can be shown to be worth anything. Every speed claim in this
     # repo that was made without an A/B in ONE run has since been withdrawn - the
@@ -11465,7 +11740,18 @@ $script:sweepRs = $null
 $script:sweepHandle = $null
 $script:sweepFor = @()
 $script:sweepAt = $null
-$SR_SweepEvery = 2500      # ms between sweeps, once one has finished
+# 🔴 1000, NOT 2500 - AND THE REPAINT IS WHAT PAID FOR IT. This is now the
+# cadence of the BAND as well as the marks (see Test-SRTurnVerdict), so it is
+# how stale "is it still working" can be: one second rather than the ~17 the
+# probe imposed. It is affordable because a repaint where nothing moved went
+# from 71 ms to about 20 - see $script:rowItems - so a sweep that changes one
+# row costs one row.
+#
+# 🪴 A SWEEP THAT OVERRUNS IS SKIPPED, NOT QUEUED. Start-VitalsSweep returns
+# at its first line while one is in flight, so a slow read stretches the cadence
+# instead of stacking child processes behind it. That guard is what makes a
+# one-second interval safe on a machine running two dozen sessions.
+$SR_SweepEvery = 1000      # ms between sweeps, once one has finished
 
 $script:SweepJob = {
     . (Join-Path $SRHere '_common.ps1')
@@ -11657,6 +11943,15 @@ function Complete-VitalsSweep {
             # the row can now leave NEEDS YOU because the menu is gone, not
             # merely because something else recomputed the band.
             if ("$($live.Band)" -eq 'needs') { $live.Band = Get-Band $live }
+            $changed = $true
+        }
+
+        # ---- and whether it is still working -----------------------------
+        # 🪴 AFTER the asking block, never before it: a row that has just been
+        # moved into NEEDS YOU must not be moved straight back out by a spinner
+        # on the same screen. Test-SRTurnVerdict refuses 'needs' outright, so
+        # the ordering and the rule agree rather than one relying on the other.
+        if (Test-SRTurnVerdict -Row $live -TurnSecs ([int]$got.TurnSecs) -TurnDone ([bool]$got.TurnDone)) {
             $changed = $true
         }
     }
@@ -12079,14 +12374,14 @@ function Invoke-WriteLane {
             $projHit = $true
         }
         if ($projHit -and $script:sheetDepth -eq 0) {
-            if (Update-LiveWriters) { Build-Sessions }
+            if (Update-LiveWriters) { Update-Board }
         }
     } catch { }
 
     # The other direction: a session that has STOPPED writing may be asking.
     # Collected first, then at most one new check a second.
     if ($script:sheetDepth -eq 0) {
-        try { if (Complete-QuietCheck) { Build-Sessions } } catch { }
+        try { if (Complete-QuietCheck) { Update-Board } } catch { }
         if (-not $script:quietAt -or ((Get-Date) - $script:quietAt).TotalMilliseconds -ge 1000) {
             $script:quietAt = Get-Date
             try { Start-QuietCheck } catch { }
@@ -12095,7 +12390,7 @@ function Invoke-WriteLane {
         # than one session per second. The first sweep goes out as soon as the
         # model exists, so the marks are up within a few hundred milliseconds of
         # the window opening instead of trickling in over a quarter of a minute.
-        try { if (Complete-VitalsSweep) { Build-Sessions } } catch { }
+        try { if (Complete-VitalsSweep) { Update-Board } } catch { }
         try { Start-VitalsSweep } catch { }
         # 🔑 THE STRIP'S OWN WARM, on the same tick and behind its own gate.
         # It does NOT rebuild the list when it lands: nothing on a row comes
@@ -13123,6 +13418,57 @@ function Update-LiveWriters {
     return $moved
 }
 
+# ===========================================================================
+# 🔴 THE PROJECTS COLUMN HAD NO REFRESH AT ALL. Every call to Build-Rail was
+# from a gesture - a search keystroke, RailClear, a tick, the project panel, a
+# surface switch. No timer, no probe, no sweep, no write lane. So its live
+# counts, its NEEDS marks and its state lines were exactly as old as the last
+# time the operator clicked something, which is precisely the reported "I have
+# to click on a different project to see".
+#
+# 🔑 AND IT NEEDS NO FINGERPRINT OF ITS OWN. Everything on a tile that can
+# change unattended - the live count, the needs count, the state line, the age
+# band - is derived from the same rows the sessions fingerprint already walks,
+# so the moment that fingerprint moves, the rail may have moved too. The rest of
+# a tile (shelved, suggested, picked) only changes on a gesture, and those call
+# Build-Rail directly. A second walk over 433 conversations to ask a question
+# the first one has already answered would be pure cost.
+# 🔑 AND THE RAIL IS GATED THE WAY THE SESSIONS COLUMN IS. Ablated at 25,7 ms
+# - New-RailTile 35%, Test-SRProjectShelved 14%, the item signature 12% - and it
+# rebuilds every tile every time, so putting it on a one-second lane unguarded
+# would spend all of that on a column where usually nothing moved.
+#
+# 🪴 LIVE AND WARM ROWS ONLY, and that is not a shortcut. A quiet row's band
+# cannot change without Update-Model, which bumps the generation in this same
+# string; and everything else a tile draws - shelved, ticked, auto-tick, reopen,
+# the suggestion - only changes on a gesture, and every one of those gestures
+# calls Build-Rail directly rather than coming through here.
+$script:railFp = $null
+function Get-SRRailFingerprint {
+    $sb = New-Object System.Text.StringBuilder 512
+    $null = $sb.Append($script:modelGen).Append('|').Append("$($script:railPick)").Append('|').
+                Append("$($script:railSort)").Append('|').Append([int][bool]$script:railOnlyLive).Append('|').
+                Append([int][bool]$script:railShowShelved).Append('|').
+                Append("$($ui.Search.Text)").Append('|').Append("$($ui.RailSearch.Text)").Append("`n")
+    foreach ($b in $script:RailBands) {
+        $null = $sb.Append([int][bool]$script:railBandShut["$($b.Key)"])
+    }
+    $null = $sb.Append("`n")
+    foreach ($r in $script:model) {
+        if (-not $r.Live -and -not $r.Warm) { continue }
+        $null = $sb.Append("$($r.D.path)").Append('|').Append("$($r.Band)").Append("`n")
+    }
+    return $sb.ToString()
+}
+
+function Update-Board {
+    Build-Sessions
+    $rfp = Get-SRRailFingerprint
+    if ($rfp -eq $script:railFp) { return }
+    $script:railFp = $rfp
+    Build-Rail
+}
+
 function Invoke-FastPass {
     # The stamp is the one thing that must move every tick: it is how you know
     # the window is still watching rather than frozen.
@@ -13137,7 +13483,7 @@ function Invoke-FastPass {
     $fp = Get-ModelFingerprint
     if (-not $moved -and $fp -eq $script:lastFp) { return }
     $script:lastFp = $fp
-    Build-Sessions
+    Update-Board
 }
 $script:lastFp = $null
 
@@ -13548,7 +13894,7 @@ function Complete-LiveProbe {
         }
     }
 
-    if ($script:surface -eq 'work') { Build-Sessions } else { Build-Manager }
+    if ($script:surface -eq 'work') { Update-Board } else { Build-Manager }
     $ui.LiveCount.Text = ('{0} live of {1} in {2} projects' -f `
         @($script:model | Where-Object { $_.Live }).Count, $script:model.Count, @($script:dirs).Count)
 

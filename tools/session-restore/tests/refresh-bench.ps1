@@ -52,14 +52,38 @@ ZZ-Say ('  items drawn in the column  : {0}' -f $zzItems.Count)
 # pass, the probe, the sweep, the write lane and every click.
 ZZ-Say ''
 ZZ-Say '--- what one repaint costs (UI thread, blocking) ---'
+# 🔴 COLD AND WARM, OR THE CACHE IS MEASURED AGAINST ITSELF. A repeated
+# Build-Sessions hits the row cache from the second call on, so timing it alone
+# reports the hit path and calls it "the rebuild". Clearing the cache before
+# each call is the only way to see what a row that really changed costs.
+$zzCold = ZZ-Ms { Clear-SRRowItemCache; Build-Sessions }
 $zzBuild = ZZ-Ms { Build-Sessions }
-ZZ-Say ('  Build-Sessions          {0,8:N1} ms   ({1:N2} ms per drawn item)' -f $zzBuild, $(if ($zzItems.Count) { $zzBuild / $zzItems.Count } else { 0 }))
+ZZ-Say ('  Build-Sessions COLD     {0,8:N1} ms   (every row rebuilt)' -f $zzCold)
+ZZ-Say ('  Build-Sessions WARM     {0,8:N1} ms   ({1:N2} ms per drawn item, nothing moved)' -f $zzBuild, $(if ($zzItems.Count) { $zzBuild / $zzItems.Count } else { 0 }))
 $zzFp = ZZ-Ms { Get-ModelFingerprint }
 ZZ-Say ('  Get-ModelFingerprint    {0,8:N1} ms   (the guard that decides whether to repaint)' -f $zzFp)
 $zzLW = ZZ-Ms { Update-LiveWriters }
 ZZ-Say ('  Update-LiveWriters      {0,8:N1} ms   (the file-stat pass over live rows)' -f $zzLW)
 $zzRail = ZZ-Ms { Build-Rail }
 ZZ-Say ('  Build-Rail              {0,8:N1} ms   (the projects column)' -f $zzRail)
+# What the background passes actually pay: Update-Board rebuilds the rail only
+# when its fingerprint moved, so the steady state is the fingerprint alone.
+$zzBoard = ZZ-Ms { Update-Board }
+$zzRfp = ZZ-Ms { Get-SRRailFingerprint }
+ZZ-Say ('  Update-Board            {0,8:N1} ms   (both columns, nothing moved)' -f $zzBoard)
+ZZ-Say ('  Get-SRRailFingerprint   {0,8:N1} ms   (the guard in front of the rail)' -f $zzRfp)
+# Who can rebuild the projects column WITHOUT a gesture. Derived, because the
+# answer used to be "nothing" and a bench that says so from memory is no use.
+$zzBoardSrc = ''
+try { $zzBoardSrc = "$((Get-Command Update-Board).ScriptBlock)" } catch { }
+$zzRailBg = @()
+foreach ($zzF in @('Invoke-FastPass', 'Complete-LiveProbe', 'Invoke-WriteLane')) {
+    $zzB = ''
+    try { $zzB = "$((Get-Command $zzF).ScriptBlock)" } catch { continue }
+    if ($zzB -match 'Build-Rail' -or ($zzBoardSrc -match 'Build-Rail' -and $zzB -match 'Update-Board')) { $zzRailBg += $zzF }
+}
+if ($zzRailBg.Count) { ZZ-Say ('    refreshed unattended by  : {0}' -f ($zzRailBg -join ', ')) }
+else { ZZ-Say '    refreshed unattended by  : NOTHING - it is only as fresh as your last click' }
 $zzMgr = ZZ-Ms { Build-Manager } 3
 ZZ-Say ('  Build-Manager           {0,8:N1} ms   (the manage surface)' -f $zzMgr)
 
@@ -86,10 +110,23 @@ $zzWriters = ($zzSrcBand -match "'working'")
 ZZ-Say ('  needs   -> working   file growth, on the write lane      : {0}' -f $(if ($zzWriters) { 'yes, ~0.1 s' } else { 'NO' }))
 ZZ-Say ('  working -> needs     screen read, on the sweep           : yes, ~{0:N1} s' -f ($SR_SweepEvery / 1000))
 ZZ-Say ('  needs   -> not-needs measured absence, on the sweep      : yes, ~{0:N1} s' -f ($SR_SweepEvery / 1000))
-# Everything else is Get-Band over $r.Conv, and only the probe refreshes Conv.
-$zzProbeOnly = @('idle -> working', 'working -> done', 'done -> working', 'idle -> done', 'anything -> quiet')
-foreach ($zzT in $zzProbeOnly) {
-    ZZ-Say ('  {0,-20} the probe only                        : ~{1} s worst case' -f $zzT, ($script:LiveSeconds + 2))
+# The rest is Get-Band over $r.Conv, which only the probe refreshes - UNLESS the
+# sweep's turn clock is wired in, in which case the two the operator actually
+# watches for come off the screen instead. Read from the collector rather than
+# stated here: a table in a bench that the code has moved past is worse than no
+# table, because it reads as a measurement.
+$zzSweepSrc = "$((Get-Command Complete-VitalsSweep).ScriptBlock)"
+$zzTurn = ($zzSweepSrc -match 'Test-SRTurnVerdict')
+$zzSweepS = ($SR_SweepEvery / 1000)
+$zzProbeS = ($script:LiveSeconds + 2)
+foreach ($zzT in @('idle -> working', 'done -> working', 'working -> done', 'working -> idle')) {
+    if ($zzTurn) { ZZ-Say ('  {0,-20} the turn clock, on the sweep          : yes, ~{1:N1} s' -f $zzT, $zzSweepS) }
+    else         { ZZ-Say ('  {0,-20} the probe only                        : ~{1} s worst case' -f $zzT, $zzProbeS) }
+}
+ZZ-Say ('  {0,-20} the probe only                        : ~{1} s worst case' -f 'anything -> quiet', $zzProbeS)
+if ($zzTurn) {
+    ZZ-Say '  (the turn clock never moves a row out of NEEDS YOU or out of QUIET -'
+    ZZ-Say '   see Test-SRTurnVerdict; a menu seen on screen outranks a spinner.)'
 }
 
 # --- 5. the context bar ----------------------------------------------------
@@ -106,7 +143,63 @@ ZZ-Say ('  windows learned from a screen  : {0}   (script:ctxWindowTrue, in memo
 ZZ-Say ('  vitals cached                  : {0}   (the token count half)' -f @($script:vitalsCache.Keys).Count)
 ZZ-Say ('  warm batch size                : {0} rows per pass, newest first' -f $SR_VitalsBatch)
 if ($zzSess.Count -and -not $zzDrawn.Count) {
-    ZZ-Say '  => a window that has just opened draws NO bars at all until a sweep lands.'
+    ZZ-Say '  => before any warm has landed, this window draws no bars at all.'
+}
+
+# 🔴 AND NOW WITH THE CACHE WARM, which is the only version of this count that
+# can go red. A never-shown window has run no warm pass, so counting bars on it
+# measures the harness rather than the row: zero is the right answer either way.
+# This drives one real warm - a transcript parse, off-thread, read-only - and
+# asks again. Under the rule this replaced the answer stays zero however warm
+# the cache is, because that rule required a window read off a live SCREEN.
+ZZ-Say ''
+ZZ-Say '--- the same count, after one warm pass ---'
+$zzWarmSw = [Diagnostics.Stopwatch]::StartNew()
+try {
+    Start-VitalsWarm
+    while ($zzWarmSw.Elapsed.TotalSeconds -lt 30) {
+        if (Complete-VitalsWarm) { break }
+        Start-Sleep -Milliseconds 100
+    }
+} catch { ZZ-Say ('  the warm pass would not run: ' + $_.Exception.Message) }
+$zzWarmSw.Stop()
+Clear-SRRowItemCache
+Build-Sessions
+$zzItems2 = @($ui.SessionList.Items)
+$zzDrawn2 = @($zzItems2 | Where-Object { $_.Kind -eq 'session' -and $_.CtxVis -eq $V_Show })
+$zzSess2  = @($zzItems2 | Where-Object { $_.Kind -eq 'session' })
+ZZ-Say ('  one warm pass took             : {0:N0} ms' -f $zzWarmSw.Elapsed.TotalMilliseconds)
+ZZ-Say ('  vitals cached now              : {0}' -f @($script:vitalsCache.Keys).Count)
+ZZ-Say ('  rows drawing a context bar     : {0} of {1}' -f $zzDrawn2.Count, $zzSess2.Count)
+if ($zzSess2.Count -and -not $zzDrawn2.Count) {
+    ZZ-Say '  => STILL NONE. The bar has no source the transcript can supply.'
+}
+
+# 🔴 AND THE SAME COUNT UNDER THE RULE THIS REPLACED, in the same run. Every
+# speed or coverage claim in this repo made against a number from a DIFFERENT
+# run has since been withdrawn; the old rule is still reachable, so the two are
+# measured side by side. It required a window the session had PRINTED, held in
+# memory only - so it can only ever answer for conversations this window has
+# watched running, and answers zero for everything else however warm the cache.
+$zzCtxKeep = (Get-Command Get-SRRowCtx -CommandType Function).ScriptBlock
+try {
+    Set-Item -Path function:Get-SRRowCtx -Value {
+        param($R, $Scr, $Now = $null)
+        if ($Scr -and [int]$Scr.CtxWindow -gt 0) { return @{ Tok = [int]$Scr.CtxTokens; Win = [int]$Scr.CtxWindow } }
+        $w = $script:ctxWindowTrue["$($R.Id)"]
+        if (-not $w -or [int]$w -le 0) { return @{ Tok = 0; Win = 0 } }
+        $v = Get-SRVitalsCached $R
+        if (-not $v -or [int]$v.Tokens -le 0) { return @{ Tok = 0; Win = 0 } }
+        return @{ Tok = [int]$v.Tokens; Win = [int]$w }
+    }
+    Clear-SRRowItemCache
+    Build-Sessions
+    $zzOldDrawn = @($ui.SessionList.Items | Where-Object { $_.Kind -eq 'session' -and $_.CtxVis -eq $V_Show })
+    ZZ-Say ('  under the old rule, same cache : {0} of {1}' -f $zzOldDrawn.Count, $zzSess2.Count)
+} finally {
+    Set-Item -Path function:Get-SRRowCtx -Value $zzCtxKeep
+    Clear-SRRowItemCache
+    Build-Sessions
 }
 
 # --- 6. is the fingerprint complete? ---------------------------------------
@@ -228,6 +321,39 @@ foreach ($zzA in $zzAbl) {
     }
 }
 Build-Sessions
+
+# --- 11. the same ablation, on the projects column --------------------------
+# It rebuilds every tile every time - there is no per-tile cache - so this is
+# where its 30-odd ms actually goes. Same method: stub one, rebuild, subtract.
+ZZ-Say ''
+ZZ-Say '--- ablation, against the real Build-Rail ---'
+$zzRBase = ZZ-Ms { Build-Rail } 7
+ZZ-Say ('  baseline                       {0,7:N1} ms' -f $zzRBase)
+$zzRAbl = @(
+    @{ N = 'New-RailTile';       F = 'New-RailTile';       S = { param([string]$Path, $Kids, [bool]$Picked, $Blank, [string]$Suggest = '')
+            [PSCustomObject]@{ Kind='project'; Id=('proj:'+$Path); BandVis=$V_Hide; RowVis=$V_Show
+                BandKey=''; BandLabel=''; BandCount=0; BandCaret=''; Path=$Path; Label='x'; Count=0
+                State=''; Tip=$null; Accent=$Blank; AccentOpacity=1.0; NeedsVis=$V_Hide
+                PickBg=$Blank; PickEdge=$Blank; Fg=$Blank } } }
+    @{ N = 'Get-SRItemSig';      F = 'Get-SRItemSig';      S = { param($It) '' } }
+    @{ N = 'Sync-SRSessionItems';F = 'Sync-SRSessionItems';S = { param($Target, $Col = $null) } }
+    @{ N = 'Get-ProjectLabel';   F = 'Get-ProjectLabel';   S = { param($P) 'x' } }
+    @{ N = 'Test-SRProjectShelved'; F = 'Test-SRProjectShelved'; S = { param($Dir) $false } }
+    @{ N = 'Get-RailGrouping';   F = 'Get-RailGrouping';   S = $null }
+)
+foreach ($zzA in $zzRAbl) {
+    if (-not $zzA.S) { continue }
+    $zzKeep2 = $null
+    try { $zzKeep2 = (Get-Command $zzA.F -CommandType Function -ErrorAction Stop).ScriptBlock } catch { }
+    if (-not $zzKeep2) { ZZ-Say ('  {0,-30} not a function here' -f $zzA.N); continue }
+    try {
+        Set-Item -Path ('function:' + $zzA.F) -Value $zzA.S
+        $zzROff = ZZ-Ms { Build-Rail } 7
+        ZZ-Say ('  without {0,-22} {1,7:N1} ms   ({2,6:N1} ms, {3,4:N0}%)' -f `
+                $zzA.N, $zzROff, ($zzRBase - $zzROff), $(if ($zzRBase) { 100 * ($zzRBase - $zzROff) / $zzRBase } else { 0 }))
+    } finally { Set-Item -Path ('function:' + $zzA.F) -Value $zzKeep2 }
+}
+Build-Rail
 
 ZZ-Say ''
 ZZ-Say '=== refresh-bench done ==='

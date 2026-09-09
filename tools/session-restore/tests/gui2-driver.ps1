@@ -8120,6 +8120,298 @@ foreach ($qc in $queueCases) {
 
 
 Write-Host ''
+Write-Host '--- a row is rebuilt when its inputs move, and only then ---'
+# ===========================================================================
+# 🔴 A CACHE WHOSE SIGNATURE IS MISSING AN INPUT IS A ROW THAT SILENTLY STOPS
+# UPDATING - which is the complaint this whole pass exists to fix, reintroduced
+# as a bug and much harder to see the second time. So every input
+# Get-SRRowInputSig claims to cover gets moved here, one at a time, and the row
+# must be REBUILT rather than reused.
+#
+# 🪴 AND THE FIRST ASSERTION IS THE ONE THAT MAKES THE REST MEAN ANYTHING. If
+# the cache never hit, every mutation below would "rebuild the row" and the
+# whole table would pass while proving nothing. So the no-change case is
+# asserted first and requires the SAME OBJECT back.
+# 🪤 THE FIRST VERSION OF THIS COMPARED OBJECT IDENTITY IN THE BOUND COLLECTION
+# AND WAS MEASURING THE WRONG FUNCTION. Sync-SRSessionItems only REPLACES an
+# item when what it draws changed, so a row that really had been rebuilt still
+# showed the old object whenever the rebuild produced identical pixels - and the
+# check reported "the cache does not cover this input" for five inputs it covers
+# perfectly well. The property that actually matters is the SIGNATURE: if it
+# moves, the row is rebuilt; if it does not, the row is reused. Assert that.
+$rcRows = @($script:model | Where-Object { $_.Live -or $_.Warm })
+if (-not $rcRows.Count) { Note 'nothing live or warm, so the row cache cannot be exercised' }
+else {
+    $rcRow = $rcRows[0]
+    $rcId  = "$($rcRow.Id)"
+    $rcTicks = [DateTime]::Now.Ticks
+    $rcNow   = Get-Date
+    function Get-RcSig { param([bool]$Expand = $false)
+        return (Get-SRRowInputSig -R $script:rcProbeRow -NowTicks $script:rcProbeTicks `
+                                  -NowDate $script:rcProbeNow -BandKey 'working' -Expand $Expand)
+    }
+    $script:rcProbeRow = $rcRow
+    $script:rcProbeTicks = $rcTicks
+    $script:rcProbeNow = $rcNow
+
+    # 🔴 THE ASSERTION THAT MAKES THE REST MEAN ANYTHING. If the signature were
+    # unstable - a raw clock in it, say - it would differ every call, every row
+    # would rebuild every pass, and every check below would pass while proving
+    # the opposite of what it claims.
+    $rcBase = Get-RcSig
+    if ((Get-RcSig) -ne $rcBase) {
+        Fail 'the row signature differs from itself with nothing changed - every row would rebuild on every pass'
+    } else { Pass 'the row signature is stable while nothing moves' }
+
+    # And the cache really does reuse the item when the signature holds.
+    Build-Sessions
+    $rcA = $null; $rcB = $null
+    foreach ($it in $ui.SessionList.Items) { if ("$($it.Kind)" -eq 'session' -and "$($it.Id)" -eq $rcId) { $rcA = $it; break } }
+    Build-Sessions
+    foreach ($it in $ui.SessionList.Items) { if ("$($it.Kind)" -eq 'session' -and "$($it.Id)" -eq $rcId) { $rcB = $it; break } }
+    if (-not $rcA -or -not $rcB) { Note 'the row under test is not on the surface, so reuse cannot be observed' }
+    elseif (-not [object]::ReferenceEquals($rcA, $rcB)) {
+        Fail 'a rebuild with nothing changed replaced the row object - the cache is not hitting at all'
+    } else { Pass 'a rebuild with nothing changed reuses the row it already built' }
+
+    # Each entry moves ONE input and puts it back. The signature must move.
+    $rcCases = @(
+        @{ N = 'what it last said'
+           Do = { $script:rcKeep = $rcRow.Said
+                  $rcRow.Said = [PSCustomObject]@{ Said = 'ZZ a line no conversation ends with'; Pending = '' } }
+           Undo = { $rcRow.Said = $script:rcKeep } }
+        @{ N = 'how long ago it spoke'
+           Do = { $script:rcKeep = $rcRow.At; $rcRow.At = [DateTime]::Now.AddDays(-40).Ticks }
+           Undo = { $rcRow.At = $script:rcKeep } }
+        @{ N = 'its title'
+           Do = { $script:rcKeep = $rcRow.T
+                  $rcRow.T = [PSCustomObject]@{ Text = 'ZZ-CACHE-PROBE'; Derived = $false; Tip = '' } }
+           Undo = { $rcRow.T = $script:rcKeep } }
+        @{ N = 'what is queued behind it'
+           Do = { $script:rcKeep = $rcRow.Q
+                  $rcRow.Q = [PSCustomObject]@{ Count = 3; Mine = 2; Machine = 1; Items = @() } }
+           Undo = { $rcRow.Q = $script:rcKeep } }
+        @{ N = 'the shells its screen reported'
+           Do = { $script:rcKeep = $script:rowScreen[$rcId]
+                  $script:rowScreen[$rcId] = @{ At = $script:rcProbeNow; Shells = 7; Agents = -1; Effort = ''
+                                                TurnSecs = -1; TurnDone = $false; CtxTokens = -1; CtxWindow = -1 } }
+           Undo = { if ($script:rcKeep) { $script:rowScreen[$rcId] = $script:rcKeep } else { $script:rowScreen.Remove($rcId) } } }
+        @{ N = 'the context its screen reported'
+           Do = { $script:rcKeep = $script:rowScreen[$rcId]
+                  $script:rowScreen[$rcId] = @{ At = $script:rcProbeNow; Shells = 0; Agents = -1; Effort = ''
+                                                TurnSecs = -1; TurnDone = $false; CtxTokens = 190000; CtxWindow = 200000 } }
+           Undo = { if ($script:rcKeep) { $script:rowScreen[$rcId] = $script:rcKeep } else { $script:rowScreen.Remove($rcId) } } }
+        @{ N = 'the sub-agents the probe filed'
+           Do = { $script:rcKeep = $script:subAgents[$rcId]
+                  $script:subAgents[$rcId] = @{ At = $script:rcProbeNow
+                                                List = @([PSCustomObject]@{ Id = 'zz'; Label = 'zz'; Live = $true }) } }
+           Undo = { if ($script:rcKeep) { $script:subAgents[$rcId] = $script:rcKeep } else { $script:subAgents.Remove($rcId) } } }
+    )
+    foreach ($rcC in $rcCases) {
+        $rcWas = Get-RcSig
+        & $rcC.Do
+        $rcNowSig = Get-RcSig
+        & $rcC.Undo
+        if ($rcNowSig -eq $rcWas) {
+            Fail "$($rcC.N) changed and the row signature did not move - Get-SRRowInputSig does not cover it, so that row stops updating"
+        } else { Pass "$($rcC.N) changed: the row is rebuilt" }
+    }
+    # 🪤 THE TRANSCRIPT'S CONTEXT NEEDS THE SCREEN OUT OF THE WAY, and the first
+    # version of this check did not do that - so it ran against a LIVE row whose
+    # own printed bar already answered, the transcript was never consulted, and
+    # the signature correctly did not move. The check read as a hole in the
+    # cache and was a hole in the test. The screen entry comes out first, and
+    # the baseline is taken with it out, or removing it would be the change
+    # being measured.
+    $rcScrKeep = $script:rowScreen[$rcId]
+    $rcVitKeep = $script:vitalsCache[$rcId]
+    try {
+        $script:rowScreen.Remove($rcId)
+        $script:vitalsCache.Remove($rcId)
+        $rcNoVit = Get-RcSig
+        $script:vitalsCache[$rcId] = @{ At = $script:rcProbeNow; Len = 1; J = "$($rcRow.S.jsonl)"
+                                        V = [PSCustomObject]@{ Tokens = 987654; Window = 1000000 } }
+        $rcWithVit = Get-RcSig
+        if ($rcNoVit -eq $rcWithVit) {
+            Fail 'the context the transcript knows changed and the row signature did not move - a session that is not running would never get a bar'
+        } else { Pass 'the context the transcript knows changed: the row is rebuilt' }
+    } finally {
+        if ($rcScrKeep) { $script:rowScreen[$rcId] = $rcScrKeep } else { $script:rowScreen.Remove($rcId) }
+        if ($rcVitKeep) { $script:vitalsCache[$rcId] = $rcVitKeep } else { $script:vitalsCache.Remove($rcId) }
+    }
+    # The band and the expanded state are parameters rather than row fields, so
+    # they are moved through the parameter rather than by mutating anything.
+    $rcBandA = Get-SRRowInputSig -R $rcRow -NowTicks $rcTicks -NowDate $rcNow -BandKey 'working' -Expand $false
+    $rcBandB = Get-SRRowInputSig -R $rcRow -NowTicks $rcTicks -NowDate $rcNow -BandKey 'needs' -Expand $false
+    if ($rcBandA -eq $rcBandB) { Fail 'the band changed and the row signature did not move' }
+    else { Pass 'the band changed: the row is rebuilt' }
+    $rcExpB = Get-SRRowInputSig -R $rcRow -NowTicks $rcTicks -NowDate $rcNow -BandKey 'working' -Expand $true
+    if ($rcBandA -eq $rcExpB) { Fail 'the row was expanded and the signature did not move - its sub-agent rows would never appear' }
+    else { Pass 'expanding a row to show its sub-agents: the row is rebuilt' }
+    # 🔴 AND THE SELECTION IS NOT IN IT, deliberately. Putting $script:selId in
+    # the signature would change EVERY row's signature on every click, so every
+    # click would rebuild the whole column - the cost this cache exists to
+    # remove. $Expand carries the only part of the selection a row draws.
+    $rcSelWas = $script:selId
+    try {
+        $script:selId = 'zz-not-a-real-conversation'
+        if ((Get-RcSig) -ne $rcBase) { Fail 'the selection moved and an unrelated row rebuilt - every click would rebuild the column' }
+        else { Pass 'the selection moving does not rebuild rows that are not the selection' }
+    } finally { $script:selId = $rcSelWas }
+    Build-Sessions
+}
+
+Write-Host ''
+Write-Host '--- what a session says about its own turn decides its band ---'
+# ===========================================================================
+# The measurement behind this: working->done, idle->working and ->quiet were
+# reachable ONLY from the 15 s probe, at ~17 s worst case, while the two cheap
+# transitions took 0,1 s and one sweep. Test-SRTurnVerdict moves the slow pair
+# onto the sweep. What has to hold is that it never overrules better evidence.
+function New-TurnRow { param([string]$Band, [string]$Said = '')
+    [PSCustomObject]@{ Id = 'turn-probe'; Band = $Band
+                       Said = [PSCustomObject]@{ Said = $Said; Pending = '' } }
+}
+$turnLong = ('x' * ([int]$script:HandbackMinChars + 20))
+$turnCases = @(
+    @{ N = 'a running turn moves an idle row into WORKING'
+       R = (New-TurnRow 'idle'); S = 32; D = $false; Want = 'working'; Moved = $true }
+    @{ N = 'a running turn moves a finished row back into WORKING'
+       R = (New-TurnRow 'done' $turnLong); S = 5; D = $false; Want = 'working'; Moved = $true }
+    @{ N = 'a finished turn with a handback moves WORKING into FINISHED'
+       R = (New-TurnRow 'working' $turnLong); S = 189; D = $true; Want = 'done'; Moved = $true }
+    @{ N = 'a finished turn with nothing said moves WORKING into IDLE'
+       R = (New-TurnRow 'working'); S = 189; D = $true; Want = 'idle'; Moved = $true }
+    @{ N = 'a row already WORKING is left alone by a running turn'
+       R = (New-TurnRow 'working'); S = 32; D = $false; Want = 'working'; Moved = $false }
+    # 🔴 The three refusals. Each of these is a way the window could start
+    # lying about a conversation that is actually waiting on the operator.
+    @{ N = 'a row in NEEDS YOU is never moved by a spinner'
+       R = (New-TurnRow 'needs'); S = 32; D = $false; Want = 'needs'; Moved = $false }
+    @{ N = 'a row in NEEDS YOU is never moved by a finished turn either'
+       R = (New-TurnRow 'needs'); S = 189; D = $true; Want = 'needs'; Moved = $false }
+    @{ N = 'a QUIET row has no turn clock worth believing'
+       R = (New-TurnRow 'quiet'); S = 32; D = $false; Want = 'quiet'; Moved = $false }
+    @{ N = 'a screen that said nothing about a turn decides nothing'
+       R = (New-TurnRow 'working'); S = -1; D = $false; Want = 'working'; Moved = $false }
+)
+foreach ($tc in $turnCases) {
+    $tMoved = $false
+    try { $tMoved = [bool](Test-SRTurnVerdict -Row $tc.R -TurnSecs $tc.S -TurnDone $tc.D) }
+    catch { Fail "Test-SRTurnVerdict threw on '$($tc.N)': $($_.Exception.Message)"; continue }
+    if ("$($tc.R.Band)" -ne $tc.Want) {
+        Fail "$($tc.N): landed in $($tc.R.Band), wanted $($tc.Want)"
+    } elseif ($tMoved -ne $tc.Moved) {
+        Fail "$($tc.N): reported moved=$tMoved, and a wrong answer here means the column either does not repaint or repaints for nothing"
+    } else { Pass $tc.N }
+}
+
+# 🔑 AND THE RESTING RULE IS ONE RULE. Test-SRTurnVerdict asks
+# Get-SRRestingBand for which of the two stopped bands a row is in, and so does
+# Get-Band's 'idle' arm. Two copies would disagree the first time either was
+# touched, and the disagreement would be a row that reads FINISHED in the column
+# and IDLE in the strip.
+$restCases = @(
+    @{ N = 'a real handback'; Said = $turnLong; Pending = ''; Want = 'done' }
+    @{ N = 'nothing said';    Said = '';        Pending = ''; Want = 'idle' }
+    @{ N = 'something still pending'; Said = $turnLong; Pending = 'more'; Want = 'idle' }
+)
+foreach ($rc2 in $restCases) {
+    $rRow = [PSCustomObject]@{ Id = 'rest-probe'; Band = 'idle'
+                               Said = [PSCustomObject]@{ Said = $rc2.Said; Pending = $rc2.Pending } }
+    $got2 = "$(Get-SRRestingBand $rRow)"
+    if ($got2 -ne $rc2.Want) { Fail "the resting rule put '$($rc2.N)' in $got2, wanted $($rc2.Want)" }
+    else { Pass "the resting rule: $($rc2.N) -> $($rc2.Want)" }
+}
+
+Write-Host ''
+Write-Host '--- the projects column refreshes itself, and is patched not replaced ---'
+# ===========================================================================
+# 🔴 EVERY Build-Rail CALL USED TO BE A GESTURE. A search keystroke, RailClear,
+# a tick, the project panel, a surface switch - and nothing else. No timer, no
+# probe, no sweep, no write lane, so the live counts and the NEEDS marks on the
+# tiles were exactly as old as the operator's last click. Reported as having to
+# click a different project to see what is happening in this one.
+$boardSrc = "$((Get-Command Update-Board).ScriptBlock)"
+if ($boardSrc -notmatch 'Build-Rail') { Fail 'Update-Board no longer touches the projects column' }
+else { Pass 'Update-Board keeps both columns, not just the sessions one' }
+$bgWired = @()
+foreach ($fn in @('Invoke-FastPass', 'Complete-LiveProbe', 'Invoke-WriteLane')) {
+    $fb = ''
+    try { $fb = "$((Get-Command $fn).ScriptBlock)" } catch { continue }
+    if ($fb -match 'Update-Board') { $bgWired += $fn }
+}
+if ($bgWired.Count -lt 3) {
+    Fail ("the projects column is only reached unattended by " + $bgWired.Count + " of the three background passes - it goes stale on the rest")
+} else { Pass 'all three background passes keep the projects column current' }
+
+# The rail must be PATCHED like the sessions list: the same collection instance
+# across rebuilds, or WPF tears down and re-realises every tile each time.
+Build-Rail
+$railSrcA = $ui.RailList.ItemsSource
+Build-Rail
+$railSrcB = $ui.RailList.ItemsSource
+if (-not [object]::ReferenceEquals($railSrcA, $railSrcB)) {
+    Fail 'a rail rebuild handed the list a new collection - every tile is torn down and rebuilt'
+} else { Pass 'a rail rebuild patches the collection the list is already bound to' }
+if (@($railSrcA | Where-Object { $_.Kind -eq 'project' -and -not "$($_.Id)" }).Count) {
+    Fail 'a project tile carries no Id, so the diff cannot match it and replaces it every time'
+} else { Pass 'every tile carries the key the diff matches on' }
+
+# And the guard in front of it: unchanged inputs must not rebuild 35 tiles.
+$rfp1 = Get-SRRailFingerprint
+$rfp2 = Get-SRRailFingerprint
+if ($rfp1 -ne $rfp2) { Fail 'the rail fingerprint differs from itself - the column would rebuild on every pass' }
+else { Pass 'the rail fingerprint is stable while nothing moves' }
+$rfpRows = @($script:model | Where-Object { $_.Live -or $_.Warm })
+if (-not $rfpRows.Count) { Note 'nothing live or warm, so the rail fingerprint cannot be moved' }
+else {
+    $rfpRow = $rfpRows[0]
+    $rfpWas = "$($rfpRow.Band)"
+    $rfpRow.Band = $(if ($rfpWas -eq 'quiet') { 'needs' } else { 'quiet' })
+    $rfp3 = Get-SRRailFingerprint
+    $rfpRow.Band = $rfpWas
+    if ($rfp3 -eq $rfp1) { Fail 'a conversation changed band and the rail fingerprint did not move - the tile counts would stay stale' }
+    else { Pass 'a conversation changing band moves the rail fingerprint' }
+}
+
+Write-Host ''
+Write-Host '--- the context bar has a source for a session that is not running ---'
+# ===========================================================================
+# 🔴 MEASURED: 0 OF 39 ROWS DREW A BAR on a freshly built window. The rule was
+# that only a window the session had PRINTED could draw one, held in memory
+# only - so a conversation this window had never watched running never got a
+# bar at all, and a restart lost every one it had learned.
+$cxScr = @{ CtxTokens = 50000; CtxWindow = 200000 }
+$cxRow = [PSCustomObject]@{ Id = 'ctx-probe'; S = [PSCustomObject]@{ jsonl = 'C:/nope/ctx-probe.jsonl' } }
+$cxA = Get-SRRowCtx -R $cxRow -Scr $cxScr -Now (Get-Date)
+if ([int]$cxA.Win -ne 200000 -or [int]$cxA.Tok -ne 50000) {
+    Fail "a running session's own printed bar was not used: $($cxA.Tok) of $($cxA.Win)"
+} else { Pass "a running session's own printed figures are used as they are" }
+
+$script:vitalsCache['ctx-probe'] = @{ At = (Get-Date); Len = 1; J = 'C:/nope/ctx-probe.jsonl'
+                                      V = [PSCustomObject]@{ Tokens = 40000; Window = 1000000 } }
+try {
+    $cxB = Get-SRRowCtx -R $cxRow -Scr $null -Now (Get-Date)
+    if ([int]$cxB.Win -ne 1000000 -or [int]$cxB.Tok -ne 40000) {
+        Fail "a session that is not running got no bar from its transcript: $($cxB.Tok) of $($cxB.Win)"
+    } else { Pass 'a session that is not running gets its bar from the transcript' }
+    # 🪴 AND THE SCREEN STILL WINS. The transcript has to derive the window
+    # from the model it recorded and reads 200k for a 1M conversation until that
+    # conversation passes 200k, so a figure the session PRINTED must outrank it
+    # wherever one exists - otherwise this change makes the live rows worse.
+    $cxC = Get-SRRowCtx -R $cxRow -Scr $cxScr -Now (Get-Date)
+    if ([int]$cxC.Win -ne 200000) {
+        Fail 'the transcript overruled a figure the session printed for itself'
+    } else { Pass 'a printed figure still outranks the transcript' }
+    # An entry past its life is not evidence.
+    $script:vitalsCache['ctx-probe'].At = (Get-Date).AddSeconds(-($SR_VitalsTTL + 30))
+    $cxD = Get-SRRowCtx -R $cxRow -Scr $null -Now (Get-Date)
+    if ([int]$cxD.Win -gt 0) { Fail 'a stale transcript reading still drew a bar' }
+    else { Pass 'a transcript reading past its life draws nothing' }
+} finally { $script:vitalsCache.Remove('ctx-probe') }
+
+Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
 Write-Host 'the shipped window holds' -ForegroundColor Green
 exit 0
