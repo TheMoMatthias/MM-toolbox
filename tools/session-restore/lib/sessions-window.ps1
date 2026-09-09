@@ -11383,7 +11383,7 @@ $script:SR_CfgMeta = @{
         Min = 1; Max = 1000
     }
     'launchGapMs' = @{
-        Group = 'What comes back at your next logon'; Order = 2
+        Group = 'What comes back at your next logon'; Order = 2; Default = 250
         Label = 'Pause between opening one tab and the next'
         Help  = 'Milliseconds. The gap stops Windows Terminal racing itself, and the failure it prevents is a tab that opens and dies. 250 is the tuned value; 0 means no pause at all.'
         Min = 0; Max = 2000
@@ -11425,7 +11425,7 @@ $script:SR_CfgMeta = @{
 
     # ---- what the lists show ----------------------------------------------
     'listDays' = @{
-        Group = 'What the lists show'; Order = 1
+        Group = 'What the lists show'; Order = 1; Default = 7
         Label = 'Days of conversations in the list'
         Help  = 'Nothing older is hidden silently: what falls outside is counted on a row at the end, and a search still reaches past it.'
         Min = 1; Max = 3650
@@ -11437,7 +11437,7 @@ $script:SR_CfgMeta = @{
         Min = 1; Max = 3650
     }
     'shelveSuggestDays' = @{
-        Group = 'What the lists show'; Order = 3
+        Group = 'What the lists show'; Order = 3; Default = 14
         Label = 'Quiet days before a project is suggested for shelving'
         Help  = 'A sentence on the tile and nothing more - nothing is ever shelved on its own.'
         Min = 1; Max = 3650
@@ -11476,7 +11476,7 @@ $script:SR_CfgMeta = @{
         )
     }
     'yourWords' = @{
-        Group = 'The reading pane'; Order = 4
+        Group = 'The reading pane'; Order = 4; Default = 'ground'
         Label = 'How your own messages are marked'
         Help  = 'A ground reads at a glance down a long conversation; orange text is quieter and leaves the words uncoloured by anything behind them.'
         Options = @(
@@ -11485,7 +11485,7 @@ $script:SR_CfgMeta = @{
         )
     }
     'lineSpacing' = @{
-        Group = 'The reading pane'; Order = 3
+        Group = 'The reading pane'; Order = 3; Default = 'normal'
         Label = 'How far apart the lines of a reply sit'
         Help  = 'Your terminal draws lines 1,16 times the font size apart. Normal is 1,45 here, because a proportional face needs more than a terminal one.'
         Options = @(
@@ -11587,6 +11587,9 @@ function Show-Config {
     $buckets = @{}
     foreach ($g in $script:SR_CfgGroups) { $buckets[$g] = New-Object System.Collections.Generic.List[object] }
     $notes = 0
+    # Which keys the file itself carries, so the pass below can offer the ones
+    # it does not without offering anything twice.
+    $seen = @{}
     foreach ($pr in @($live.PSObject.Properties)) {
         $name = "$($pr.Name)"
         if (Test-SRCfgComment $name) { $notes++; continue }
@@ -11600,6 +11603,38 @@ function Show-Config {
         }
         $null = $buckets[$g].Add([PSCustomObject]@{
             Name = $name; Value = $pr.Value; Meta = $meta; Order = $ord
+        })
+        $seen[$name] = $true
+    }
+
+    # 🔴 A SETTING THIS TOOL SUPPORTS BUT THE FILE HAS NEVER MENTIONED WAS
+    # UNREACHABLE. The loop above walks the properties of the file ON DISK, so
+    # the only settings that could ever appear were the ones already written
+    # into it - which means a setting added in a new build was invisible to the
+    # person it was added for, with no way to discover it existed and no way to
+    # set it short of editing JSON by hand. Reported as "where is the setting to
+    # change the background of my prompts? I couldn't find it in the global
+    # settings", and it was not there. Five keys were in this state:
+    # launchGapMs, lineSpacing, listDays, shelveSuggestDays and yourWords.
+    #
+    # 🔑 AND IT DOES NOT WRITE THEM IN. Get-SRCfgChanges returns only rows the
+    # operator actually CHANGED - each row remembers what it was built with - so
+    # an untouched default is drawn, never saved. The file keeps saying nothing
+    # about a setting until there is something to say.
+    #
+    # 🪤 ONLY WHERE THERE IS A DEFAULT TO SHOW. A row drawn at a value nobody
+    # chose and nothing declares is the invented value the note above refuses;
+    # a meta entry with no Default is left out rather than guessed at.
+    foreach ($mk in @($script:SR_CfgMeta.Keys)) {
+        if ($seen["$mk"]) { continue }
+        $mm = $script:SR_CfgMeta["$mk"]
+        if (-not $mm -or $null -eq $mm.Default) { continue }
+        $mg = "$($mm.Group)"
+        if (-not $buckets.ContainsKey($mg)) { $mg = $script:SR_CfgOtherGroup }
+        $mo = 999
+        try { $mo = [int]$mm.Order } catch { $mo = 999 }
+        $null = $buckets[$mg].Add([PSCustomObject]@{
+            Name = "$mk"; Value = $mm.Default; Meta = $mm; Order = $mo
         })
     }
 

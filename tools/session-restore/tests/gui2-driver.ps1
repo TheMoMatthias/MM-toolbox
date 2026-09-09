@@ -8968,6 +8968,55 @@ if (-not (Test-Path -LiteralPath $tmReplica)) {
     }
 }
 
+# ===========================================================================
+Write-Host ''
+Write-Host '--- a setting you cannot find is a setting you do not have ---'
+# ===========================================================================
+# 🔴 THE SCREEN LISTED THE FILE, NOT THE SETTINGS. Show-Config walked the
+# properties of session-restore.config.json on disk, so a setting this tool
+# supports but the file had never mentioned could not appear - no way to
+# discover it existed, no way to set it short of hand-editing JSON. Reported as
+# "where is the setting to change the background of my prompts? I couldn't find
+# it in the global settings", and it was not there. Five keys were in that
+# state at the time: launchGapMs, lineSpacing, listDays, shelveSuggestDays and
+# yourWords.
+Show-Config
+$cfgDrawn = @{}
+foreach ($cfgR in $script:cfgRows) { $cfgDrawn["$($cfgR.Name)"] = $true }
+$cfgHidden = @()
+foreach ($cfgK in @($script:SR_CfgMeta.Keys)) {
+    if (-not $cfgDrawn["$cfgK"]) { $cfgHidden += "$cfgK" }
+}
+if ($cfgHidden.Count) {
+    Fail ("{0} setting(s) this tool supports are not on the settings screen: {1}" -f `
+          $cfgHidden.Count, (($cfgHidden | Sort-Object) -join ', '))
+} else {
+    Pass ('every one of the {0} settings this tool supports is on the settings screen' -f $script:SR_CfgMeta.Count)
+}
+# The two the operator went looking for, named rather than left to the count.
+foreach ($cfgWant in @('yourWords', 'lineSpacing')) {
+    if (-not $cfgDrawn["$cfgWant"]) { Fail ("'{0}' is still not reachable from the settings screen" -f $cfgWant) }
+    else { Pass ("'{0}' is on the settings screen" -f $cfgWant) }
+}
+# 🪤 AND DRAWING ONE DOES NOT WRITE IT. A row the operator never touched must
+# not be saved: the file goes on saying nothing about a setting until there is
+# something to say. Get-SRCfgChanges is what decides, so ask it - with nothing
+# touched it must have nothing to write.
+$cfgChg = Get-SRCfgChanges
+if ($cfgChg.Values.Count -gt 0) {
+    Fail ("opening the settings screen and changing nothing would write {0} key(s) into the config" -f $cfgChg.Values.Count)
+} else { Pass 'a setting shown at its default is drawn, never written' }
+# 🪤 A DEFAULT ON THE SCREEN THAT IS NOT THE DEFAULT IN THE CODE would show
+# the operator one value while the tool used another.
+foreach ($cfgPair in @(@{ K = 'listDays'; V = 7 }, @{ K = 'shelveSuggestDays'; V = 14 }, @{ K = 'launchGapMs'; V = 250 })) {
+    $cfgM = $script:SR_CfgMeta["$($cfgPair.K)"]
+    if ($null -eq $cfgM.Default) { Fail ("'{0}' declares no default, so it cannot be offered" -f $cfgPair.K) }
+    elseif ([string]$cfgM.Default -ne [string]$cfgPair.V) {
+        Fail ("'{0}' is offered at {1} where the tool's own default is {2}" -f $cfgPair.K, $cfgM.Default, $cfgPair.V)
+    } else { Pass ("'{0}' is offered at the same default the tool uses" -f $cfgPair.K) }
+}
+Hide-Config
+
 Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
 Write-Host 'the shipped window holds' -ForegroundColor Green
