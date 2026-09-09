@@ -4,8 +4,8 @@ One pass, worked top to bottom. Every item has a **done-when** you can check
 without asking anybody — a command and its expected result, or an observable
 state. An item with no done-when is not an item.
 
-**Phases 0 and 1 are complete, and 2.1-2.3 and 2.4a with them.** Everything from
-2.4b down is still to do. The PowerShell tool remains the daily driver and is untouched by any
+**Phases 0 and 1 are complete, and 2.1-2.4 with them.** Everything from 2.5 down
+is still to do. The PowerShell tool remains the daily driver and is untouched by any
 of it.
 
 ---
@@ -120,7 +120,7 @@ against the PowerShell on the operator's real data.
 | 2.3a | **Transcripts: last said** — the tail reader and the headline | same last-said text, pending tool and timestamp over every conversation on disk | ✅ 2 oracle cases, 546 transcripts |
 | 2.3b | **Transcripts: blocks** — `Get-SRTranscriptBlocks`, the reading model | same blocks, same order, same fields over a 40-conversation sample | ✅ 2 oracle cases + a defect found in the PowerShell |
 | 2.4a | **Console API: reading** — attach, read, detach | a live screen matches `Get-SRScreenText` character for character | ✅ 22 live screens, 1 oracle case |
-| 2.4b | **Console API: the pipe server, and WRITING** | a held-open helper matches the spawn-per-read; keys land in a REPLICA console this tool owns | — |
+| 2.4b | **Console API: the pipe server, and WRITING** | a held-open helper matches the spawn-per-read; keys land in a REPLICA console this tool owns | ✅ 26 consoles in 25 ms; `hello<tab><ctrl-c>` in a real console |
 | 2.5 | **Sessions / agents** — `claude agents --json`, `wt.exe`, process tree | the agent map matches, including `busy` | — |
 | 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | — |
 | 2.7 | **Registry WRITE** — last, behind the guards | refuses every case the PowerShell refuses; the stale check still fires; verified against a *copy*, never the live file | — |
@@ -289,6 +289,52 @@ things came out of getting that right:
 happened to be working, the case would compare nothing and pass - so it emits a
 row saying so, and the run prints how many screens it actually held to a
 comparison.
+
+### 2.4b as it turned out
+
+**The write path is proven against `tests/term-replica.ps1`** - the same real
+console with a real input queue the PowerShell suite uses, deliberately, because
+two implementations proven against one stand-in are comparable and two proven
+against two are not. `hello<tab><ctrl-c>` arrives as itself.
+
+🔴 **And it was then broken on purpose.** Dropping the control bit from
+`SendChord` gave `hello<tab>` - the chord vanished entirely, because a chord
+without it is a bare `c` and the character 0x03 is below the replica's threshold.
+That is the whole content of the "a chord is three fields" rule, demonstrated
+rather than asserted.
+
+🔒 **The guard is a TYPE.** `ConsoleWriter` takes a `ConsoleTarget`, which has no
+public constructor - the only public way to get one is `ForSession`, which
+refuses anything that is not a live `claude` process and says what it found
+instead. A new call site cannot forget the check; it cannot be written without
+it. The test escape hatch (`ForOwnedConsole`) is `internal`, so it stays inside
+the assembly the tests live in rather than on the public surface.
+
+🔴 **The server was measured before it was built, and again after** - over the
+operator's 26 live consoles:
+
+| | |
+|---|---|
+| spawned, one process per read | **1.673 ms** (51,7 ms each) |
+| the PowerShell's own held-open pipe | 63 ms |
+| **this** | **25 ms** (0,9 ms each) |
+
+Spawning is eleven times over a 150 ms sweep budget before anything is drawn, so
+the server is not an optimisation but the difference between the design working
+and not. 🪤 The test asserts a **direction, not a figure** - a threshold in
+milliseconds is a fact about whichever machine runs it, and this repo has already
+withdrawn speed claims made that way.
+
+🪤 **Framed by length, not by a sentinel:** console text can contain anything at
+all, including whatever separator looked safe. And the protocol lives in `Core`
+so the client that builds a request and the server that reads one share one
+definition - two copies of a wire format is two things to keep in step, and the
+one that drifts is the one nobody looks at.
+
+🪤 **One request at a time down the pipe**, for the reason the oracle's own
+session already taught: two in flight would each read part of the other's answer,
+producing screens that are real, reproducible under load, and belong to the wrong
+session.
 
 🔴 **2.7 is last on purpose.** Nothing writes until everything reads correctly.
 The guards are ported before the writer they guard, and they are ported as

@@ -6,6 +6,7 @@ using SessionRestore.Core.Console;
 // sr-screen <pid> <outfile>            the visible screen
 // sr-screen -attrs <pid> <outfile>     its colour plane
 // sr-screen -back <n> <pid> <outfile>  n rows above the visible top as well
+// sr-screen -serve <pipe> [idleSeconds]  stay alive and answer reads on a pipe
 //
 // 🔴 THE ANSWER GOES TO A FILE, NEVER TO STDOUT, and that is a measured lesson
 // rather than a preference: this process frees its own console, attaches to
@@ -18,9 +19,20 @@ using SessionRestore.Core.Console;
 // degrades every later session on this machine.
 // ---------------------------------------------------------------------------
 
+// The held-open form. See Server for why it exists and what it measured at.
+if (args.Length >= 2 && string.Equals(args[0], "-serve", StringComparison.Ordinal))
+{
+    var idle = args.Length >= 3 &&
+               int.TryParse(args[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var s)
+        ? s
+        : 120;
+    return SessionRestore.Screen.Server.Run(args[1], idle);
+}
+
 if (args.Length < 2)
 {
     Console.Error.WriteLine("usage: sr-screen [-attrs] [-back <n>] <pid> <outfile>");
+    Console.Error.WriteLine("       sr-screen -serve <pipe> [idleSeconds]");
     return 2;
 }
 
