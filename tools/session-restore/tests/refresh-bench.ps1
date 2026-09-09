@@ -355,6 +355,75 @@ foreach ($zzA in $zzRAbl) {
 }
 Build-Rail
 
+# --- 12. how long a status actually takes to change -------------------------
+# The sweep decides NEEDS YOU and WORKING. Its cadence is one number; the OTHER
+# number is how long a pass takes, and the two add up. A one-second interval on
+# a pass that takes two seconds is a two-second cadence with a misleading
+# constant next to it.
+ZZ-Say ''
+ZZ-Say '--- what a status change actually waits for ---'
+$zzPids = New-Object System.Collections.Generic.List[object]
+foreach ($zzR in $script:model) {
+    if (-not $zzR.Live -or -not $zzR.A -or -not $zzR.A.Pid) { continue }
+    if ($zzR.A.Kind -and "$($zzR.A.Kind)" -ne 'interactive') { continue }
+    $null = $zzPids.Add([int]$zzR.A.Pid)
+}
+ZZ-Say ('  sessions the sweep covers      : {0}' -f $zzPids.Count)
+if ($zzPids.Count) {
+    $zzSw = [Diagnostics.Stopwatch]::StartNew()
+    $zzScreens = @{}
+    try { $zzScreens = Get-SRScreenTextMany -ProcessIds ([int[]]$zzPids.ToArray()) } catch { }
+    $zzSw.Stop()
+    $zzRead = $zzSw.Elapsed.TotalMilliseconds
+    ZZ-Say ('  one pass over all of them      : {0,6:N0} ms   ({1} screens back)' -f $zzRead, @($zzScreens.Keys).Count)
+    # And the parse the collector runs on what came back.
+    $zzSw2 = [Diagnostics.Stopwatch]::StartNew()
+    foreach ($zzK in @($zzScreens.Keys)) {
+        $null = Read-SRScreenVitals -ScreenText $zzScreens[$zzK]
+        $null = Test-SRLiveMenu -Text $zzScreens[$zzK]
+    }
+    $zzSw2.Stop()
+    ZZ-Say ('  parsing what came back         : {0,6:N0} ms' -f $zzSw2.Elapsed.TotalMilliseconds)
+    $zzCycle = ($SR_SweepEvery + $zzRead + $zzSw2.Elapsed.TotalMilliseconds)
+    ZZ-Say ('  => worst case a status is      : {0,6:N0} ms old  (interval {1} + pass {2:N0} + parse {3:N0})' -f `
+            $zzCycle, $SR_SweepEvery, $zzRead, $zzSw2.Elapsed.TotalMilliseconds)
+    if ($zzRead -gt $SR_SweepEvery) {
+        ZZ-Say '  NOTE: the pass takes longer than the interval, so the interval is not the cadence.'
+    }
+}
+
+# --- 13. and the same thing END TO END, the way the app pays for it ---------
+# 🔴 THE WORK IS NOT THE COST. Section 12 calls Get-SRScreenTextMany in a
+# runspace that is already open, with _common.ps1 already loaded. Start-VitalsSweep
+# does neither: it creates a runspace, opens it, and the job dot-sources a 435 KB
+# _common.ps1 before it reads a single screen - once per pass, every second.
+# This drives the real pair and times the whole round trip.
+ZZ-Say ''
+ZZ-Say '--- the sweep as the window actually runs it ---'
+$zzE2E = New-Object System.Collections.Generic.List[double]
+for ($zzI = 0; $zzI -lt 3; $zzI++) {
+    $script:sweepAt = $null          # clear the cadence gate, not the guard
+    $zzSw3 = [Diagnostics.Stopwatch]::StartNew()
+    Start-VitalsSweep
+    if (-not $script:sweepPs) { ZZ-Say '  the sweep would not start'; break }
+    $zzSpin = 0
+    while ($zzSpin -lt 400) {
+        if (Complete-VitalsSweep) { break }
+        if (-not $script:sweepPs) { break }
+        Start-Sleep -Milliseconds 25
+        $zzSpin++
+    }
+    $zzSw3.Stop()
+    $null = $zzE2E.Add($zzSw3.Elapsed.TotalMilliseconds)
+}
+if ($zzE2E.Count) {
+    $zzArr = @($zzE2E.ToArray() | Sort-Object)
+    $zzMed = [double]$zzArr[[int][Math]::Floor($zzArr.Count / 2)]
+    ZZ-Say ('  start to collected             : {0,6:N0} ms  (of {1} runs: {2})' -f `
+            $zzMed, $zzArr.Count, (($zzArr | ForEach-Object { '{0:N0}' -f $_ }) -join ', '))
+    ZZ-Say ('  => a status is really          : {0,6:N0} ms old worst case' -f ($SR_SweepEvery + $zzMed))
+}
+
 ZZ-Say ''
 ZZ-Say '=== refresh-bench done ==='
 exit 0

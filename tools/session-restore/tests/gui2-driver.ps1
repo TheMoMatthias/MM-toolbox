@@ -8510,6 +8510,80 @@ if ($stripSrc -notmatch "'open'") {
 } else { Pass 'the collapsed strip carries it too' }
 
 Write-Host ''
+Write-Host '--- the console is something you ask for, and a flag you can wave off ---'
+# ===========================================================================
+# 🔴 PRESSING COMPACT PUT THE RAW TERMINAL IN THE READING PANE. The last 27
+# lines of the console, verbatim, for the whole minute the compact ran -
+# reported as "it streamed the terminal and showed me the content of it". This
+# window's argument is that it shows YOUR view of a conversation rather than the
+# console it lives in, so the console is now asked for rather than assumed.
+$lpRows = @($script:model | Where-Object { $_.Live -and $_.A -and $_.A.Pid })
+if (-not $lpRows.Count) { Note 'nothing live, so the live pane cannot be exercised' }
+else {
+    $lpRow = $lpRows[0]
+    if (Test-SRStreaming $lpRow) { Fail 'a conversation is streaming its terminal without being asked' }
+    else { Pass 'no conversation streams its terminal until it is asked to' }
+    Set-SRStreaming -Row $lpRow -On $true
+    if (-not (Test-SRStreaming $lpRow)) { Fail 'asking to watch a terminal did not take' }
+    else { Pass 'a conversation can be asked to stream its terminal' }
+    Set-SRStreaming -Row $lpRow -On $false
+    if (Test-SRStreaming $lpRow) { Fail 'stopping the stream did not take - the console would stay on screen' }
+    else { Pass 'and asked to stop' }
+}
+# The card path must not read a screen at all. Asserted at the source, because
+# the alternative is pointing a screen probe at one of the operator's sessions.
+$lpSrc = "$((Get-Command Update-LivePane).ScriptBlock)"
+$lpCard = $lpSrc.IndexOf('if (-not $stream) {')
+$lpRead = $lpSrc.IndexOf('Get-SRScreenText')
+if ($lpCard -lt 0) { Fail 'Update-LivePane has no card path - a compact would show the console again' }
+elseif ($lpRead -ge 0 -and $lpRead -lt $lpCard) {
+    Fail 'the screen is read before the card path returns, so not watching still costs a child process'
+} else { Pass 'the card is drawn without reading the session screen at all' }
+
+# ---- and the flag you can wave off ----------------------------------------
+# 🔑 PER MESSAGE, NOT PER SESSION. A permanent dismissal is a way to hide a
+# conversation from yourself for good; this one comes back the moment the
+# session says anything new, which is the difference between "not today" and
+# "never tell me again".
+$obLong2 = ('x' * ([int]$script:HandbackMinChars + 20))
+$dRow = [PSCustomObject]@{
+    Id = 'dismiss-probe'; Band = 'idle'
+    Said = [PSCustomObject]@{ Said = $obLong2; Pending = ''
+                              Full = "Done.`n`nStill open: the README."
+                              At = (Get-Date) }
+}
+if ("$(Get-SRRestingBand $dRow)" -ne 'open') { Fail 'the fixture does not start in SOMETHING OPEN, so the dismissal proves nothing' }
+else {
+    Pass 'a hand-back naming something open starts in SOMETHING OPEN'
+    if (-not (Set-SROpenDismissed $dRow)) { Fail 'calling it finished did not take' }
+    elseif ("$(Get-SRRestingBand $dRow)" -ne 'done') { Fail 'called it finished and it is still flagged as open' }
+    else { Pass 'calling it finished moves it to FINISHED' }
+    # 🔴 AND IT COMES BACK when the conversation says something new.
+    $dRow.Said = [PSCustomObject]@{ Said = $obLong2; Pending = ''
+                                    Full = "Done.`n`nStill open: the README."
+                                    At = (Get-Date).AddMinutes(5) }
+    if ("$(Get-SRRestingBand $dRow)" -ne 'open') {
+        Fail 'the conversation said something new and stayed waved off - that is hiding it for good, not for today'
+    } else { Pass 'it flags again the moment the conversation says anything new' }
+    # 🪤 An undatable message cannot be matched, so it must not read as dismissed.
+    $dRow.Said = [PSCustomObject]@{ Said = $obLong2; Pending = ''
+                                    Full = "Done.`n`nStill open: the README."; At = $null }
+    if (Test-SROpenDismissed $dRow) { Fail 'a message with no timestamp read as dismissed - an unreadable stamp must never mean unchanged' }
+    else { Pass 'a message with no timestamp is not treated as waved off' }
+}
+$script:openDismissed.Remove('dismiss-probe')
+
+# Both actions have to be reachable from the row, which is where they were asked for.
+$menuProbe = New-ManageMenu
+$menuHeads = @()
+foreach ($mi in $menuProbe.Items) { if ($mi -is [System.Windows.Controls.MenuItem]) { $menuHeads += "$($mi.Header)" } }
+foreach ($wantItem in @('Call it finished', 'Watch its terminal')) {
+    if ($menuHeads -notcontains $wantItem) {
+        Fail ("the row menu has no '{0}' - it was asked for as a right-click and there is no other way to reach it" -f $wantItem)
+    } else { Pass ("the row menu offers '{0}'" -f $wantItem) }
+}
+
+Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
 Write-Host 'the shipped window holds' -ForegroundColor Green
 exit 0

@@ -1020,6 +1020,39 @@ function Set-AskSeen { param([string]$Id, [bool]$Asking)
 # and the alternative was a second copy of a rule about what counts as handing
 # something back - two copies of which would disagree the first time either was
 # touched. gui2 asserts the two callers agree.
+# 🔴 SEEN IT, NOT DOING IT. A conversation that finished and named something
+# open is right to be flagged, and there are mornings when the answer is "yes, I
+# know, not today". Without this the only way to clear the flag is to go and
+# work on it, which turns a useful band into one you learn to ignore - the exact
+# failure the queue mark had.
+#
+# 🔑 IT IS DISMISSED PER MESSAGE, NOT PER SESSION. The stamp of the message
+# that was waved off is what gets stored, so the flag comes BACK the moment the
+# conversation says anything new. A permanent dismissal would be a way to hide a
+# session from yourself for good, which is not what was asked for and is not
+# recoverable from the board.
+$script:openDismissed = @{}
+function Test-SROpenDismissed { param($Row)
+    if (-not $Row) { return $false }
+    $was = $script:openDismissed["$($Row.Id)"]
+    if (-not $was) { return $false }
+    $sd = $Row.Said
+    $now = ''
+    if ($sd -and $sd.At) { $now = "$($sd.At.Ticks)" }
+    # 🪤 NO STAMP MEANS IT CANNOT BE MATCHED, so it is not dismissed. An
+    # unreadable stamp must never mean "unchanged" - see the cheap-identity note
+    # in the project memory.
+    if (-not $now) { return $false }
+    return ("$was" -eq $now)
+}
+function Set-SROpenDismissed { param($Row)
+    if (-not $Row) { return $false }
+    $sd = $Row.Said
+    if (-not $sd -or -not $sd.At) { return $false }
+    $script:openDismissed["$($Row.Id)"] = "$($sd.At.Ticks)"
+    return $true
+}
+
 function Get-SRRestingBand { param($Row)
     $sd = $Row.Said
     if ($sd -and -not "$($sd.Pending)".Trim() -and
@@ -1032,7 +1065,8 @@ function Get-SRRestingBand { param($Row)
         #
         # 🪤 Full IS EMPTY UNTIL A PROBE HAS READ IT, exactly as Said is, so
         # this degrades to plain FINISHED rather than to a wrong answer.
-        if ($sd.PSObject.Properties['Full'] -and (Test-SROpenItems -Text "$($sd.Full)")) { return 'open' }
+        if ($sd.PSObject.Properties['Full'] -and (Test-SROpenItems -Text "$($sd.Full)") -and
+            -not (Test-SROpenDismissed $Row)) { return 'open' }
         return 'done'
     }
     return 'idle'
@@ -4943,6 +4977,31 @@ function Test-SRCompacting { param($R)
     return ("$($R.Conv.State)" -eq 'summarising')
 }
 
+# 🔴 THE PANE USED TO DUMP THE RAW CONSOLE AT YOU WITHOUT BEING ASKED. Pressing
+# Compact put the session's terminal - the last 27 lines of it, verbatim - into
+# the reading pane for the whole minute the compact ran. Reported as "it streamed
+# the terminal for a second and showed me the content of it", and it is the right
+# complaint: this window's whole argument is that it shows you YOUR view of a
+# conversation rather than the console it happens to live in.
+#
+# So the console is now something you ASK for, per conversation, and the default
+# while compacting is this tool's own card - the progress the session prints,
+# drawn the way everything else here is drawn.
+#
+# 🔑 AND STREAMING IS NOW A FEATURE RATHER THAN A SIDE EFFECT. It is useful -
+# sometimes the console is exactly what you want to see - so it is on the
+# right-click menu for any live conversation, not only a compacting one.
+$script:streamTerm = @{}
+function Test-SRStreaming { param($Row)
+    if (-not $Row) { return $false }
+    return [bool]$script:streamTerm["$($Row.Id)"]
+}
+function Set-SRStreaming { param($Row, [bool]$On)
+    if (-not $Row) { return }
+    $id = "$($Row.Id)"
+    if ($On) { $script:streamTerm[$id] = $true } else { $script:streamTerm.Remove($id) }
+}
+
 function Update-LivePane {
     # -Row is for the tests: it lets the SHOWING path be exercised against a
     # made-up row with a pid that does not exist, so the visibility switch is
@@ -4955,8 +5014,14 @@ function Update-LivePane {
         if ($it -and $it.Kind -eq 'session') { $r = $it.Row }
     }
 
+    # 🪤 A CONVERSATION WITH NO PROCESS HAS NO SCREEN, whatever the switch
+    # says, so the pid test stays in front of both reasons.
+    $stream = $false
     $want = $false
-    if ($r -and $r.A -and $r.A.Pid) { $want = (Test-SRCompacting $r) }
+    if ($r -and $r.A -and $r.A.Pid) {
+        $stream = (Test-SRStreaming $r)
+        $want = ($stream -or (Test-SRCompacting $r))
+    }
 
     if (-not $want) {
         if ("$($ui.LivePane.Visibility)" -ne 'Collapsed') {
@@ -4969,6 +5034,46 @@ function Update-LivePane {
 
     $id  = "$($r.Id)"
     $now = Get-Date
+    # 🔑 NOT STREAMING MEANS NOT READING. The card is drawn from figures the
+    # sweep already has, so a compact you are watching costs no screen read of
+    # its own - which is the other half of not showing the console: the window
+    # stops opening a child process every two seconds to fetch text it is not
+    # going to draw.
+    if (-not $stream) {
+        $cS = $null
+        try { $cS = $script:rowScreen[$id] } catch { }
+        $cardPct  = -1; $cardSecs = -1
+        if ($cS) { $cardPct = [int]$cS.CompactPct; $cardSecs = [int]$cS.CompactSecs }
+        $card = New-Object System.Collections.Generic.List[string]
+        $null = $card.Add('This conversation is compacting.')
+        $null = $card.Add('')
+        $null = $card.Add((Get-SRCompactText -Pct $cardPct -Secs $cardSecs -Bar))
+        $null = $card.Add('')
+        # 🔴 WHY THE PANE IS EMPTY UNDERNEATH, said once rather than left to be
+        # inferred from a blank document. A compact writes NOTHING to the
+        # transcript until it finishes, so there is genuinely nothing to read
+        # yet - that is the fact this pane exists to cover.
+        $null = $card.Add('Nothing is written to the transcript until it finishes,')
+        $null = $card.Add('so there is nothing to read here yet. It will appear on')
+        $null = $card.Add('its own when the compact lands.')
+        $null = $card.Add('')
+        $null = $card.Add('Right-click the conversation to watch its terminal instead.')
+        $ui.LiveText.Text = ($card -join "`n")
+        $who0 = ''
+        try { $who0 = "$((Get-Title $r.S $r.D).Text)" } catch { }
+        $head0 = 'COMPACTING'
+        if ($cS -and [bool]$cS.Compacting) {
+            $head0 = (Get-SRCompactText -Pct $cardPct -Secs $cardSecs -Bar).ToUpper()
+        }
+        $ui.LiveHead.Text = ($head0 + $(if ($who0) { '   ' + $who0 } else { '' }))
+        # 🪤 AND THE PANE HAS TO BE SHOWN, which the streaming path does forty
+        # lines below and this early return skipped. Caught by the assertion that
+        # a compact in flight brings the live pane up: the card was being drawn
+        # correctly into a panel nobody could see.
+        $ui.LivePane.Visibility = $V_Show
+        $ui.PaneDoc.Visibility  = $V_Hide
+        return
+    }
     # Throttled: every read is a child process against a 6-second budget, and
     # the thing being watched changes about once a second.
     $stale = ($script:liveFor -ne $id) -or (-not $script:liveAt) -or
@@ -9311,6 +9416,31 @@ function New-ManageMenu {
         if ($why) { Set-Status $why 'warn' } else { Set-Status 'jumped to its tab' 'ok' }
     }
     $null = $m.Items.Add((New-Object System.Windows.Controls.Separator))
+    $null = & $mk 'Call it finished' {
+        $r = Get-ManageRow; if (-not $r) { return }
+        if ("$($r.Band)" -ne 'open') {
+            Set-Status 'that conversation is not flagged as having anything open' 'warn'; return
+        }
+        if (-not (Set-SROpenDismissed $r)) {
+            Set-Status 'that conversation has not said anything datable, so there is nothing to wave off' 'warn'; return
+        }
+        $r.Band = Get-Band $r
+        Update-Board
+        Set-Status ("called it finished - it will flag again if '{0}' says anything new" -f (Get-Title $r.S $r.D).Text) 'ok'
+    }
+    $null = & $mk 'Watch its terminal' {
+        $r = Get-ManageRow; if (-not $r) { return }
+        if (-not ($r.A -and $r.A.Pid)) { Set-Status 'that conversation is not running, so it has no screen' 'warn'; return }
+        $on = -not (Test-SRStreaming $r)
+        Set-SRStreaming -Row $r -On $on
+        # Watching is about the conversation in the pane, so put it there.
+        $script:selId = $r.Id
+        Build-Sessions
+        try { Update-LivePane } catch { }
+        if ($on) { Set-Status 'watching its terminal - right-click again to stop' 'ok' }
+        else { Set-Status 'stopped watching its terminal' 'ok' }
+    }
+    $null = $m.Items.Add((New-Object System.Windows.Controls.Separator))
     $null = & $mk 'Settings...' {
         $r = Get-ManageRow; if (-not $r) { return }
         # The settings panel lives on the work surface, so go there and select it
@@ -11893,7 +12023,23 @@ $script:sweepAt = $null
 # at its first line while one is in flight, so a slow read stretches the cadence
 # instead of stacking child processes behind it. That guard is what makes a
 # one-second interval safe on a machine running two dozen sessions.
-$SR_SweepEvery = 1000      # ms between sweeps, once one has finished
+# 🔴 600, AND THE INTERVAL WAS ALWAYS THE FLOOR. Measured 2026-09-09 end to
+# end - Start to Complete, the way the lane actually runs it - at 290 ms, so a
+# status was ~1,29 s old worst case and 1000 of that was this number. At 600 the
+# worst case is 927 ms, measured.
+#
+# 🪤 AND THE POOLED RUNSPACE DID NOT PAY FOR IT, which is what the first
+# version of this note claimed. Switching Start-VitalsSweep to the spare pool
+# measured 327 ms against 290 - the same within run-to-run noise, because what
+# the pass actually spends is the job dot-sourcing a 435 KB _common.ps1, not
+# opening the runspace. The swap is still right (opening one happened on the UI
+# THREAD) but it bought latency it did not buy, and the number said so.
+#
+# 🪤 AN OVERRUNNING SWEEP IS STILL SKIPPED, NOT QUEUED - Start-VitalsSweep
+# returns at its first line while one is in flight. That guard is what makes any
+# interval safe; without it this number would be a promise the machine cannot
+# keep on a bad day.
+$SR_SweepEvery = 600       # ms between sweeps, once one has finished
 
 $script:SweepJob = {
     . (Join-Path $SRHere '_common.ps1')
@@ -11970,10 +12116,17 @@ function Start-VitalsSweep {
     }
     if (-not $pids.Count) { $script:sweepAt = Get-Date; return }
     try {
-        $rs = [runspacefactory]::CreateRunspace()
-        $rs.ApartmentState = 'MTA'
-        $rs.ThreadOptions = 'ReuseThread'
-        $rs.Open()
+        # 🔑 THE SPARE, NOT A FRESH ONE. Opening a runspace is done ON THE UI
+        # THREAD and this runs every pass; Get-SRRunspace hands back one that is
+        # already open and queues its replacement at idle priority. Measured end
+        # to end - start to collected - at 290 ms with a fresh runspace, which is
+        # what made a one-second interval the floor rather than a choice.
+        #
+        # 🪤 THE RUNSPACE GOES WITH A THROW, exactly as Start-VitalsWarm's
+        # catch does: Get-SRRunspace hands back something already OPEN, so a
+        # failure after this point leaks a thread.
+        $rs = Get-SRRunspace
+        if (-not $rs) { throw 'no runspace' }
         $rs.SessionStateProxy.SetVariable('SRHere', $here)
         $rs.SessionStateProxy.SetVariable('SRSweep', @{ Pids = $pids.ToArray() })
         $ps = [powershell]::Create()
@@ -11984,7 +12137,10 @@ function Start-VitalsSweep {
         $script:sweepHandle = $ps.BeginInvoke()
         $script:sweepFor = $ids.ToArray()
         $script:sweepAt = Get-Date
-    } catch { $script:sweepPs = $null }
+    } catch {
+        try { if ($rs) { $rs.Close(); $rs.Dispose() } } catch { }
+        $script:sweepPs = $null; $script:sweepRs = $null
+    }
 }
 
 function Complete-VitalsSweep {
