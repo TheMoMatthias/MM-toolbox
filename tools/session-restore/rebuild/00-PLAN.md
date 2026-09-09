@@ -117,7 +117,8 @@ against the PowerShell on the operator's real data.
 |---|---|---|---|
 | 2.1 | **Config** — the 25 settings, defaults, allowed values (`03-CONTRACTS.md`) | reads the operator's real config; every setting resolves to the same value; an untouched default is never written | ✅ 3 oracle cases, 13 tests |
 | 2.2 | **Registry read** — typed model of `sessions-registry.json` | same conversation count, ids and ticks as `Get-SRRegistry` on the real 1 MB file | ✅ 3 oracle cases, 558 sessions x 13 fields |
-| 2.3 | **Transcripts** — `.jsonl` reader, turn folding | same turn count and same last-said text as the PowerShell, over every conversation on disk | — |
+| 2.3a | **Transcripts: last said** — the tail reader and the headline | same last-said text, pending tool and timestamp over every conversation on disk | ✅ 2 oracle cases, 546 transcripts |
+| 2.3b | **Transcripts: blocks** — `Get-SRTranscriptBlocks`, the reading model | same block kinds and bodies over every conversation on disk | — |
 | 2.4 | **Console API** — one class, the 36 imports (`03-CONTRACTS.md`) | a live screen read matches `Get-SRScreenText` character for character, and the attribute plane matches too | — |
 | 2.5 | **Sessions / agents** — `claude agents --json`, `wt.exe`, process tree | the agent map matches, including `busy` | — |
 | 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | — |
@@ -190,6 +191,29 @@ with advice** ("open Sessions.exe once"), not migrated by something unexercised.
 
 **Reading is 8x faster than the PowerShell** on the same file (13 ms against
 106), which is a by-product rather than the point - the point is that they agree.
+
+### 2.3a as it turned out
+
+**Agrees over every one of the 546 transcripts on this machine** - the headline,
+the pending tool, the timestamp and both ends of the full message. PowerShell
+11,1 s, C# 1,08 s for the same work. Confirmed red by appending one character to
+any headline over 30 characters.
+
+🔴 **Scope call: the three sub-agent readers moved to 2.5.** `Get-SRSubAgents`,
+`Get-SRLiveTasks` and `Get-SRAgentLastLine` read a transcript, but what they
+answer is *what is running now* - which is the agent map's question, not the
+transcript's content. Keeping them here would have made 2.3 unfinishable in one
+piece.
+
+🪤 **THE BODY CAP TAKES THE TAIL, NOT THE HEAD.** What is still open is written
+at the *close* of a message, so a cap that kept the first 4.000 characters would
+throw away the only part anything reads it for.
+
+🪤 **And a difference the oracle reported was about the harness, not the code.**
+The first version of the markdown fixtures was built out of C# string
+concatenation with backtick escapes and produced 13 fixtures where there are 10.
+There is now not one backtick in that PowerShell: single quotes and an explicit
+`[char]10` have one meaning each.
 
 🔴 **2.7 is last on purpose.** Nothing writes until everything reads correctly.
 The guards are ported before the writer they guard, and they are ported as

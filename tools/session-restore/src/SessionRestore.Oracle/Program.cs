@@ -74,6 +74,7 @@ var cases = new List<(OracleCase Case, bool ExpectAgree, string Meaning)>
 // ---- phase 2: the domain, one item at a time ------------------------------
 cases.AddRange(ConfigCases.All());
 cases.AddRange(RegistryCases.All());
+cases.AddRange(TranscriptCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");

@@ -1,0 +1,162 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using SessionRestore.Core.Transcripts;
+
+namespace SessionRestore.Oracle.Cases;
+
+/// <summary>
+/// Plan item 2.3 - the transcript reader, over every conversation on disk.
+/// </summary>
+public static class TranscriptCases
+{
+    private static readonly JsonSerializerOptions Compact = new()
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    public static IEnumerable<(OracleCase Case, bool ExpectAgree, string Meaning)> All()
+    {
+        yield return (LastSaidEverywhere(), true, "what every conversation last said, and what it left running");
+        yield return (FirstLineRules(), true, "one line out of markdown, on the awkward shapes");
+    }
+
+    /// <summary>
+    /// 🔴 THE COLUMN THE WHOLE LIST IS FOR. "What did this conversation last
+    /// say" is the question the work surface exists to answer, so it is compared
+    /// over every transcript on the machine rather than a sample.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 `Full` IS COMPARED BY LENGTH AND BOTH ENDS, NOT WHOLE. It is capped at
+    /// 4.000 characters and there are ~550 conversations, so emitting it in full
+    /// would put two megabytes through a pipe to prove something its length and
+    /// its two ends already prove - and a difference in the middle still moves
+    /// the length. Head and tail are there so a difference says WHERE.
+    /// </remarks>
+    private static OracleCase LastSaidEverywhere() => new(
+        "transcript/last-said",
+        "every conversation's last words, its pending tool and when it spoke",
+        """
+        $reg = Get-SRRegistry
+        $rows = @()
+        foreach ($d in @($reg.directories)) {
+            foreach ($s in @($d.sessions)) {
+                $p = "$($s.jsonl)"
+                if (-not $p -or -not (Test-Path -LiteralPath $p)) { continue }
+                $v = Get-SRLastSaid -JsonlPath $p
+                $full = "$($v.Full)"
+                $rows += [ordered]@{
+                    id          = "$($s.sessionId)"
+                    said        = "$($v.Said)"
+                    pending     = "$($v.Pending)"
+                    pendingTool = "$($v.PendingTool)"
+                    at          = $(if ($v.At) { ([datetime]$v.At).ToUniversalTime().Ticks } else { $null })
+                    fullLen     = $full.Length
+                    fullHead    = $(if ($full.Length -gt 60) { $full.Substring(0, 60) } else { $full })
+                    fullTail    = $(if ($full.Length -gt 60) { $full.Substring($full.Length - 60) } else { $full })
+                }
+            }
+        }
+        (@{ rows = $rows } | ConvertTo-Json -Compress -Depth 6)
+        """,
+        psOut =>
+        {
+            // The question is "these conversations" - the ids come from the
+            // PowerShell so both sides answer about the same set. The ANSWERS
+            // are computed here from the file, never read back out of psOut.
+            var asked = JsonNode.Parse(psOut)?["rows"]?.AsArray() ?? [];
+            var byId = Core.Registry.SessionRegistry.Read()
+                .AllSessions
+                .Where(s => !string.IsNullOrEmpty(s.Jsonl))
+                .GroupBy(s => s.SessionId, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.First().Jsonl!, StringComparer.Ordinal);
+
+            var rows = new JsonArray();
+            foreach (var a in asked)
+            {
+                var id = a?["id"]?.GetValue<string>() ?? string.Empty;
+                if (!byId.TryGetValue(id, out var path))
+                {
+                    // Say so rather than skipping: a row this side cannot even
+                    // find is a difference, not an absence.
+                    rows.Add(new JsonObject { ["id"] = id, ["said"] = "(no such conversation here)" });
+                    continue;
+                }
+
+                var v = LastSaid.Read(path);
+                var full = v.Full;
+                rows.Add(new JsonObject
+                {
+                    ["id"] = id,
+                    ["said"] = v.Said,
+                    ["pending"] = v.Pending,
+                    ["pendingTool"] = v.PendingTool,
+                    ["at"] = v.At?.UtcTicks,
+                    ["fullLen"] = full.Length,
+                    ["fullHead"] = full.Length > 60 ? full[..60] : full,
+                    ["fullTail"] = full.Length > 60 ? full[^60..] : full,
+                });
+            }
+
+            return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);
+        });
+
+    /// <summary>
+    /// The headline rules, on the shapes that actually break them.
+    /// </summary>
+    /// <remarks>
+    /// 🔑 THESE ARE FIXTURES, NOT LIVE DATA, and deliberately so. The live
+    /// comparison above proves the two agree on what is there; this one proves
+    /// they agree on the awkward shapes that may not be in any transcript today
+    /// - a fenced code block first, a heading, a bullet, an over-long line.
+    /// </remarks>
+    private static OracleCase FirstLineRules() => new(
+        "transcript/first-line",
+        "a one-line headline out of markdown, including the shapes with no prose at the top",
+        // 🪤 NOT ONE BACKTICK IN HERE, DELIBERATELY. The first version built
+        // this PowerShell out of C# string concatenation with backtick-n escapes
+        // and came back with 13 fixtures where there are 10 - the escaping was
+        // splitting entries, so the difference the oracle reported was about the
+        // harness rather than about the code. Single quotes and an explicit
+        // newline character have one meaning each.
+        """
+        $nl    = [string][char]10
+        $fence = [string][char]96 + [string][char]96 + [string][char]96
+        $cases = @(
+            'plain sentence',
+            ($nl + $nl + '   leading blanks then text'),
+            ($fence + $nl + 'fenced first' + $nl + $fence + $nl + 'after the fence'),
+            ('## a heading' + $nl + 'and a line'),
+            ('- a bullet' + $nl + 'and a line'),
+            ('**bold** and ' + [string][char]96 + 'code' + [string][char]96 + ' inline'),
+            '   spaced    out     words   ',
+            ('x' * 400),
+            '',
+            ($nl + $nl + $nl)
+        )
+        $rows = New-Object System.Collections.Generic.List[string]
+        foreach ($c in $cases) { $null = $rows.Add((Get-SRFirstLine "$c")) }
+        (@{ rows = $rows.ToArray() } | ConvertTo-Json -Compress -Depth 4)
+        """,
+        () =>
+        {
+            string[] cases =
+            [
+                "plain sentence",
+                "\n\n   leading blanks then text",
+                "```\nfenced first\n```\nafter the fence",
+                "## a heading\nand a line",
+                "- a bullet\nand a line",
+                "**bold** and `code` inline",
+                "   spaced    out     words   ",
+                new string('x', 400),
+                string.Empty,
+                "\n\n\n",
+            ];
+            // 🪤 JsonArray.Add(string) GOES THROUGH AN IMPLICIT CONVERSION that
+            // needs a TypeInfoResolver on the options, and these have none - it
+            // throws at serialise time rather than at compile time. Serialising
+            // a plain array asks nothing of the options.
+            var rows = cases.Select(c => LastSaid.FirstLine(c)).ToArray();
+            return JsonSerializer.Serialize(new { rows }, Compact);
+        });
+}
