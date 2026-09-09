@@ -1,0 +1,40 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SessionRestore.Core", "SessionRestore.Core\SessionRestore.Core.csproj", "{A391F72E-96C9-49BB-919D-5FFCB80022D4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SessionRestore.App", "SessionRestore.App\SessionRestore.App.csproj", "{D3D09EF1-780E-4838-8E05-1CE6940C00EA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SessionRestore.Oracle", "SessionRestore.Oracle\SessionRestore.Oracle.csproj", "{5639F729-1402-4905-A745-7CA1E541CFD2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SessionRestore.Tests", "SessionRestore.Tests\SessionRestore.Tests.csproj", "{F6358BBE-F2F9-41C4-8927-EA578E51365A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A391F72E-96C9-49BB-919D-5FFCB80022D4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A391F72E-96C9-49BB-919D-5FFCB80022D4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A391F72E-96C9-49BB-919D-5FFCB80022D4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A391F72E-96C9-49BB-919D-5FFCB80022D4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D3D09EF1-780E-4838-8E05-1CE6940C00EA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D3D09EF1-780E-4838-8E05-1CE6940C00EA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D3D09EF1-780E-4838-8E05-1CE6940C00EA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D3D09EF1-780E-4838-8E05-1CE6940C00EA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5639F729-1402-4905-A745-7CA1E541CFD2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5639F729-1402-4905-A745-7CA1E541CFD2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5639F729-1402-4905-A745-7CA1E541CFD2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5639F729-1402-4905-A745-7CA1E541CFD2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F6358BBE-F2F9-41C4-8927-EA578E51365A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F6358BBE-F2F9-41C4-8927-EA578E51365A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F6358BBE-F2F9-41C4-8927-EA578E51365A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F6358BBE-F2F9-41C4-8927-EA578E51365A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

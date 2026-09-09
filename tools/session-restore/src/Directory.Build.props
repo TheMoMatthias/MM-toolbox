@@ -1,0 +1,48 @@
+<Project>
+
+  <!--
+    Settings every project in the rebuild shares.
+
+    🔴 WARNINGS ARE ERRORS FROM THE FIRST COMMIT, and that is the point of doing
+    it now rather than "once it settles". The whole case for leaving PowerShell
+    was the defect classes a compiler rejects - an unassigned local holding the
+    previous iteration's value, a null flowing somewhere that cannot take one, a
+    culture-sensitive compare. A build that tolerates warnings throws that away
+    quietly, and by the time anyone turns it on there are four hundred of them
+    and it gets turned off again.
+
+    🪤 NULLABLE IS THE ONE THAT PAYS FOR ITSELF HERE. The PowerShell reads a
+    registry, a config and a transcript that are all allowed to be missing,
+    half-written or from an older version, and every one of those paths is
+    currently a $null that flows until something downstream notices.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CA1303</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    🔑 InvariantGlobalization IS A CORRECTNESS SETTING HERE, not a size one.
+    `("· x").StartsWith("⏵")` returned True under the current culture and cost a
+    day - see the knowledge ledger. Pinning the invariant culture makes the
+    default comparison the one that was wanted everywhere it was gotten wrong.
+    Ordinal is still passed explicitly where it matters; this stops the DEFAULT
+    from being the trap.
+  -->
+
+  <PropertyGroup>
+    <Product>session-restore</Product>
+    <Company>MM-toolbox</Company>
+    <Copyright>Personal tool. No warranty.</Copyright>
+  </PropertyGroup>
+
+</Project>

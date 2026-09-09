@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    THE WINDOW, and as thin as it can be made. Views, view models, and the
+    wiring that starts the background work.
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>SessionRestore.App</RootNamespace>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>Sessions2</AssemblyName>
+    <ApplicationIcon>..\..\app\sessions.ico</ApplicationIcon>
+    <!--
+      🔴 NOT "Sessions". Sessions.exe is the launcher the operator uses every
+      day and it stays untouched until the cutover at plan item 6.1. A scaffold
+      that overwrites the working tool on its first build is how a rebuild takes
+      the tool down before it has replaced anything.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SessionRestore.Core\SessionRestore.Core.csproj" />
+  </ItemGroup>
+
+</Project>

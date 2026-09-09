@@ -1,0 +1,12 @@
+<Application xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+  <Application.Resources>
+    <!--
+      The real resource dictionary is lib\window2.xaml - 169 KB, 66 styles and
+      templates, tuned against rendered pixels. It is ported at plan item 4.1
+      and NOT before: a scaffold that starts inventing styles is a scaffold that
+      has to be un-invented later.
+    -->
+  </Application.Resources>
+</Application>

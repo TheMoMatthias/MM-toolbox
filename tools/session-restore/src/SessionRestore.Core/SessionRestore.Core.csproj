@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    THE DOMAIN. It reads registries, transcripts, consoles and processes, and it
+    knows nothing about a window.
+
+    🔑 THE ABSENCE OF A WPF REFERENCE IS THE WHOLE DESIGN. Everything the old
+    test suites fight is a consequence of the domain and the window living in one
+    15.252-line script: run-tests.ps1 has to SPLICE the GUI at a literal line to
+    get a testable object, and refresh-bench-run.ps1 needs a name-clash guard
+    because drivers are appended into the window's own scope. None of that exists
+    once this is a library. If a UI type is ever needed in here, the design is
+    wrong, not the rule.
+  -->
+
+  <PropertyGroup>
+    <RootNamespace>SessionRestore.Core</RootNamespace>
+    <UseWPF>false</UseWPF>
+    <UseWindowsForms>false</UseWindowsForms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SessionRestore.Tests" />
+    <InternalsVisibleTo Include="SessionRestore.Oracle" />
+  </ItemGroup>
+
+</Project>

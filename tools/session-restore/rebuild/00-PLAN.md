@@ -4,8 +4,8 @@ One pass, worked top to bottom. Every item has a **done-when** you can check
 without asking anybody — a command and its expected result, or an observable
 state. An item with no done-when is not an item.
 
-**Nothing in this plan is started.** Phase 0 is complete; everything below it is
-work to be authorised.
+**Phases 0 and 1 are complete.** Everything from Phase 2 down is still to do.
+The PowerShell tool remains the daily driver and is untouched by any of it.
 
 ---
 
@@ -52,18 +52,58 @@ snapshot.
 
 ---
 
-## Phase 1 — scaffold
+## Phase 1 — scaffold ✅ DONE
 
-| | what | done-when |
-|---|---|---|
-| 1.1 | .NET 8 solution, four projects per `05-ARCHITECTURE.md` | `dotnet build` clean, zero warnings, `TreatWarningsAsErrors` on |
-| 1.2 | `Nullable` and `ImplicitUsings` on; analyzers at `latest-recommended` | build stays clean with them enabled |
-| 1.3 | Self-contained publish to the current `Sessions.exe` path | the published exe runs and shows an empty window |
-| 1.4 | `Install.bat` learns to build it, and to say so when the SDK is absent | a machine without the SDK gets a sentence, not a stack trace |
-| 1.5 | The differential-oracle harness: run a PS function and a C# one on one input, diff | it can compare two trivial functions and report a difference |
+| | what | done-when | state |
+|---|---|---|---|
+| 1.1 | .NET 8 solution, four projects per `05-ARCHITECTURE.md` | `dotnet build` clean, zero warnings, `TreatWarningsAsErrors` on | ✅ 0 warnings, 0 errors |
+| 1.2 | `Nullable` and `ImplicitUsings` on; analyzers at `latest-recommended` | build stays clean with them enabled | ✅ plus `InvariantGlobalization` |
+| 1.3 | Self-contained publish to **`dist/`** | the published exe runs and shows a window | ✅ 68,4 MB, window in 1.529 ms |
+| 1.4 | A build script that says so when the SDK is absent | a machine without the SDK gets a sentence, not a stack trace | ✅ `src/build.ps1`, exit 3 |
+| 1.5 | The differential-oracle harness | it can compare two trivial functions and report a difference | ✅ `sr-oracle`, 5 self-tests |
 
-🔴 **1.5 before any domain code.** It is the thing every step below leans on;
-building it after the first port means the first port was never verified.
+**Two corrections to this phase as it was originally written:**
+
+🔴 **1.3 said "to the current `Sessions.exe` path", and that was wrong.** In
+phase 1 it would overwrite the launcher the operator uses every day, before the
+rebuild has replaced anything at all. It publishes `Sessions2.exe` into `dist/`;
+the swap is item 6.1 and nothing points at the new one until then.
+
+🪤 **1.4 said `Install.bat`, and that is premature.** Nothing uses the new exe
+yet, so teaching the installer to build it would wire a dependency to a thing
+with no callers. The SDK check lives in `src/build.ps1`; the `Install.bat`
+wiring moves to **6.4**, where the rest of the launcher re-pointing already is.
+
+**Publish size, measured rather than assumed:**
+
+| | |
+|---|---|
+| self-contained, single file | 154,5 MB |
+| **self-contained + compression** | **68,4 MB** ← what ships |
+| framework-dependent | 0,2 MB (`-Framework`) |
+
+Self-contained is chosen because the operator moves between machines, and a tool
+that will not start because a runtime is absent is the exact silent failure
+`app/SessionsHost.cs` was written to remove. `dist/` is gitignored, so the size
+costs disk and copy time, not history.
+
+🪤 **1.529 ms to a window is the SCAFFOLD, with no data in it** - against the
+5,8 s the PowerShell takes. Do not read it as the startup target being met: the
+model, the registry and the first paint are all still to come, and a compressed
+single-file pays an extraction cost on its first run after each build.
+
+🔑 **The oracle got 550x faster during this phase, and that mattered.** A fresh
+`powershell.exe` dot-sourcing `lib/_common.ps1` (455 KB) cost **4,5 to 14,5
+seconds** per comparison - five self-tests took 41 s. Phase 2 compares hundreds
+of things against real data; at that price the safety net would simply not get
+run. The session is now kept open and fed one comparison at a time down its
+stdin: **14.539 ms → 26 ms**. Same trick the tool already uses for screen reads.
+
+🪤 And two defects in the harness itself, both found before it was trusted:
+`Run` was not serialised, so xUnit's parallel test classes would have interleaved
+two comparisons on one pipe and invented differences about nothing; and the
+timeout path disposed the semaphore from inside its own guarded region, so a
+comparison that merely timed out came back as an `ObjectDisposedException`.
 
 ---
 

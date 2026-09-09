@@ -1,0 +1,7 @@
+# A BUILD OUTPUT, NOT A COMMITTED FILE - the same rule Sessions.exe follows.
+# The self-contained publish is 68 MB; committing it would put that in history
+# for ever, on every rebuild, for a file that src\build.ps1 reproduces.
+#
+#     powershell -NoProfile -ExecutionPolicy Bypass -File src\build.ps1 -Publish
+*
+!.gitignore

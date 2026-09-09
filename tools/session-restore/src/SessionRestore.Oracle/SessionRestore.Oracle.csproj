@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    THE DIFFERENTIAL ORACLE. Runs a PowerShell function and its C# replacement
+    on the SAME real input and diffs the answers.
+
+    🔑 This exists BEFORE any domain code, on purpose. It is what every step of
+    phase 2 leans on, and building it afterwards would mean the first port was
+    never actually verified against anything.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>SessionRestore.Oracle</RootNamespace>
+    <AssemblyName>sr-oracle</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SessionRestore.Core\SessionRestore.Core.csproj" />
+  </ItemGroup>
+
+</Project>
