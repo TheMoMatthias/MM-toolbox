@@ -8619,13 +8619,34 @@ if ($cmpLive.Count -lt 2) {
             foreach ($cmpIt in $script:listItems) {
                 if ("$($cmpIt.Kind)" -ne 'session') { continue }
                 if ("$($cmpIt.Id)" -eq $cmpPick) { $cmpItem = $cmpIt }
-                if ("$($cmpIt.Said)" -match 'compacting') { $cmpOn += "$($cmpIt.Id)" }
+                # 🪤 THE WORD IS NOT THE LINE. Matching /compacting/ also
+                # matches a conversation that has been TALKING about compacting,
+                # which on this machine today is several of them. The override
+                # writes exactly what Get-SRCompactText returns, so that is what
+                # to compare against.
+                $cmpRec0 = $script:rowScreen["$($cmpIt.Id)"]
+                if ($cmpRec0) {
+                    $cmpWant = Get-SRCompactText -Pct ([int]$cmpRec0.CompactPct) -Secs ([int]$cmpRec0.CompactSecs)
+                    if ("$($cmpIt.Said)" -eq "$cmpWant") { $cmpOn += "$($cmpIt.Id)" }
+                }
             }
-            if ($cmpOn.Count -ne 1) {
-                Fail ("{0} rows say 'compacting' and exactly one session is - the line is on the wrong rows" -f $cmpOn.Count)
-            } elseif ("$($cmpOn[0])" -ne "$cmpPick") {
-                Fail 'the compact line landed on a row that is not the one compacting - the screen record is read before it is assigned'
-            } else { Pass 'the compact line is drawn on the row that is compacting' }
+            # 🪤 OTHER SESSIONS MAY GENUINELY BE COMPACTING while this runs -
+            # this machine carries two dozen live conversations and the first
+            # version of this counted rows and demanded exactly one, which
+            # failed the moment three real compacts were in flight. The
+            # invariant that actually holds is a correspondence, not a count:
+            # every row saying "compacting" has a screen record that says so,
+            # and the row we made say so is one of them.
+            $cmpWrong = @()
+            foreach ($cmpId in $cmpOn) {
+                $cmpRec = $script:rowScreen["$cmpId"]
+                if (-not ($cmpRec -and [bool]$cmpRec.Compacting)) { $cmpWrong += "$cmpId" }
+            }
+            if ($cmpWrong.Count) {
+                Fail ("{0} row(s) say 'compacting' whose screen does not - the line is being read off another row" -f $cmpWrong.Count)
+            } elseif ($cmpOn -notcontains $cmpPick) {
+                Fail 'the row we made compact does not say so - the screen record is read before it is assigned'
+            } else { Pass ('the compact line is drawn on the row that is compacting, and on no other ({0} in flight)' -f $cmpOn.Count) }
             # 🔑 AND IT IS A BAR, which is what was asked for twice. A line of
             # text reading 66% is not a progress bar; the row's own 34px gauge is.
             if (-not $cmpItem) {
@@ -8845,6 +8866,22 @@ $wlSrc = "$((Get-Command Invoke-WriteLane).ScriptBlock)"
 if ($wlSrc -notmatch 'streamTerm') {
     Fail 'nothing drives the watcher at frame rate - it would refresh on the one-second follow tick'
 } else { Pass 'the 30 ms lane drives the watcher, not the follow tick' }
+
+# The other way of marking your own words, offered because it was asked for.
+if (-not $SR_CfgMeta['yourWords']) {
+    Fail 'there is no setting for how your own messages are marked'
+} elseif (@($SR_CfgMeta['yourWords'].Options).Count -ne 2) {
+    Fail 'the your-words setting does not offer both a ground and orange text'
+} else { Pass 'the settings screen offers a ground or orange text for your own words' }
+# 🪤 ONE OR THE OTHER, NEVER BOTH. Orange text on an orange-ish ground is the
+# version that reads worst, and it is exactly what adding the second without
+# removing the first would produce.
+$ywSrc = "$((Get-Command Add-ReadTurn).ScriptBlock)"
+if ($ywSrc -notmatch 'SR_YouStyle') {
+    Fail 'the pane ignores the your-words setting'
+} elseif ($ywSrc -notmatch 'youBg\s*=\s*\$null') {
+    Fail 'choosing orange text does not remove the ground - the two would be drawn together'
+} else { Pass 'orange text and the ground are alternatives, never both at once' }
 
 # 🔴 AND THE KEYS HAVE TO ACTUALLY ARRIVE. Everything above proves the
 # window's own reasoning; none of it proves that pressing a key in this panel

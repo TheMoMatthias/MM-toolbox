@@ -3207,6 +3207,27 @@ $PalGlassHi = New-SRTint $Pal.TextMax 0.055
 # the text rather than beside it, so it tints the words themselves. White at 8%
 # reads as a surface, not as a colour, which is what a ground is for.
 $PalYouGround = New-SRTint $Pal.TextMax 0.08
+# 🔑 AND THE OTHER WAY OF SAYING "THIS IS YOU", offered because it was asked
+# for: "using the same orange colour that we use for our prompts as font colour
+# to flag our post-it content instead of using the white highlighted
+# background". Both work and they are not the same trade, which is why this is
+# a setting rather than a decision:
+#
+#   ground - a surface behind the words. Reads instantly at a glance down a
+#            long conversation, and tints the words themselves very slightly.
+#   ink    - the prompt orange as the TEXT colour. Nothing sits behind the
+#            words, so they are exactly as crisp as everything else, and the
+#            signal is quieter until you are looking at it.
+#
+# 🪤 ONE OR THE OTHER, NEVER BOTH. Orange text ON an orange-ish ground is
+# the version that reads worst, and it is what you get by adding the second
+# without removing the first.
+$SR_YouStyles = @('ground', 'ink')
+$SR_YouStyle = 'ground'
+try {
+    $ys0 = "$((Get-SRConfig).yourWords)".Trim().ToLower()
+    if ($ys0 -and ($SR_YouStyles -contains $ys0)) { $SR_YouStyle = $ys0 }
+} catch { }
 $PalHair    = New-SRTint $Pal.TextMax 0.07
 $PalSunk    = New-SRTint $Pal.Ink 0.55
 # ===========================================================================
@@ -6252,7 +6273,12 @@ function Add-ReadTurn { param($Doc, $Turn)
                 if ($script:docHidden -gt 0) { $trail = "$script:docHidden steps hidden"; $script:docHidden = 0 }
                 Add-ReadLabel -Doc $doc -Text 'you said' -Brush $Pal.Out -Trailing $trail -TrailBrush $Pal.TextLow -When $t.When
                 $inner = New-Object System.Windows.Documents.FlowDocument
-                Add-ReadProse -Doc $inner -Text (Convert-SRSpoken $t.Body) -Brush $Pal.TextMax -Size $script:readSize -Line $script:readLead -Kind 'you' -Ground $PalYouGround
+                # 🔑 ONE OR THE OTHER. See $SR_YouStyle: a ground behind the
+                # words, or the prompt orange as the words. Never both.
+                $youInk = $Pal.TextMax
+                $youBg  = $PalYouGround
+                if ($SR_YouStyle -eq 'ink') { $youInk = $Pal.Out; $youBg = $null }
+                Add-ReadProse -Doc $inner -Text (Convert-SRSpoken $t.Body) -Brush $youInk -Size $script:readSize -Line $script:readLead -Kind 'you' -Ground $youBg
                 # Blocks is a live collection: moving them while enumerating it
                 # silently drops every second one, hence the @() snapshot. And
                 # $null = on Remove is not tidiness - it returns a BOOL, and an
@@ -11447,6 +11473,15 @@ $script:SR_CfgMeta = @{
             @{ V = 'folded'; L = 'folded - the names and the count, not the contents' },
             @{ V = 'full';   L = 'full - every tool call in the transcript' },
             @{ V = 'hidden'; L = 'hidden - prose only' }
+        )
+    }
+    'yourWords' = @{
+        Group = 'The reading pane'; Order = 4
+        Label = 'How your own messages are marked'
+        Help  = 'A ground reads at a glance down a long conversation; orange text is quieter and leaves the words uncoloured by anything behind them.'
+        Options = @(
+            @{ V = 'ground'; L = 'a ground - your words sit on a surface' },
+            @{ V = 'ink';    L = 'orange text - the same orange as the prompt marker' }
         )
     }
     'lineSpacing' = @{
