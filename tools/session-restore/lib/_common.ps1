@@ -3285,6 +3285,44 @@ public static class SRCon {
         } finally { GiveBack(had); }
     }
 
+    // A CHORD, WHICH IS NEITHER A CHARACTER NOR A BARE KEY.
+    //
+    // 🔴 Ctrl+C IS NOT THE LETTER C AND IT IS NOT THE C KEY. A console reader
+    // decides what it received from THREE fields together: the virtual key, the
+    // character, and dwControlKeyState. Send the key alone and a TUI sees a
+    // plain "c"; send the character alone and a reader watching for the key
+    // sees nothing. Both, with the control bit set, is what a keyboard
+    // produces, and it is the only form that works for readers of either kind.
+    //
+    // 🔒 ADDED ON THE OPERATOR'S EXPLICIT INSTRUCTION, 2026-09-09, asked as
+    // "should the terminal forward Ctrl+C, Ctrl+D and Ctrl+Z" and answered
+    // "yes, all three". Recorded because the default here was NO and the
+    // reasoning for that default still stands on its own: these three can end a
+    // conversation that cannot be relaunched. It was a decision, not an
+    // oversight, and it is not one to reverse without asking again.
+    public static int SendCtrl(uint pid, ushort vk, char ch) {
+        bool had = GetConsoleWindow() != IntPtr.Zero;
+        FreeConsole();
+        if (!AttachConsole(pid)) { GiveBack(had); return -Marshal.GetLastWin32Error(); }
+        try {
+            IntPtr h = OpenConIn();
+            if (h == new IntPtr(-1)) return -Marshal.GetLastWin32Error();
+            try {
+                INPUT_RECORD[] r = new INPUT_RECORD[2];
+                // 0x0008 is LEFT_CTRL_PRESSED. The release record carries it
+                // too, because a reader that tracks modifier state sees the
+                // control key go up with the letter rather than stay down.
+                r[0].EventType = 1; r[0].bKeyDown = true;  r[0].wRepeatCount = 1;
+                r[0].wVirtualKeyCode = vk; r[0].UnicodeChar = ch; r[0].dwControlKeyState = 0x0008;
+                r[1].EventType = 1; r[1].bKeyDown = false; r[1].wRepeatCount = 1;
+                r[1].wVirtualKeyCode = vk; r[1].UnicodeChar = ch; r[1].dwControlKeyState = 0x0008;
+                uint written;
+                if (!WriteConsoleInputW(h, r, (uint)r.Length, out written)) return -Marshal.GetLastWin32Error();
+                return (int)written;
+            } finally { CloseHandle(h); }
+        } finally { GiveBack(had); }
+    }
+
     // WHAT IS ON THE SCREEN. The only place a PENDING question exists.
     //
     // The transcript cannot answer this: the AskUserQuestion tool_use block is

@@ -12065,14 +12065,23 @@ $ui.PaneCompact.Add_Click({ Invoke-Compact })
 # simulation of typing; by the time claude reads it there is no way to tell the
 # two apart.
 #
-# 🔒 ONLY THE KEYS THIS TOOL ALREADY SENDS, AND THAT IS THE WHOLE SAFETY
-# ARGUMENT. Every key below is one some other path here already sends and has
-# been exercised against a real console: characters and ENTER (answering),
-# the four arrows and TAB and SPACE (moving through a menu), ESCAPE
-# (interrupting). Nothing else is forwarded - Ctrl+C, Ctrl+D and Ctrl+Z in
-# particular are NOT, because they can end a conversation that cannot be
-# relaunched and because no path here has ever sent one. A key nobody has
-# proved is not a key to discover through somebody's live work.
+# 🔒 THE FORWARDED SET IS A CLOSED LIST, AND IT IS WRITTEN DOWN HERE.
+# Characters and ENTER, the four arrows, TAB, ESCAPE - each of which some other
+# path in this tool already sends and has exercised against a real console -
+# and, since 2026-09-09, the three control chords.
+#
+# 🔒 THE CHORDS WERE ADDED ON THE OPERATOR'S EXPLICIT INSTRUCTION. Asked as
+# "should the terminal forward Ctrl+C, Ctrl+D and Ctrl+Z?" with "no" carrying my
+# recommendation, and answered "yes, all three". The reasoning behind that
+# recommendation still stands and is why this is written down rather than
+# quietly changed: Ctrl+C interrupts, Ctrl+D can CLOSE a conversation outright,
+# and the operator runs two dozen he cannot relaunch. It was a decision made
+# with that in front of him. It is not one for a later session to reverse - or
+# to widen - without asking again.
+#
+# 🪤 A CHORD IS NOT A 🔑 AND NOT A CHARACTER. See SRCon::SendCtrl: a console
+# reader decides what it got from the virtual key, the character AND
+# dwControlKeyState together, so all three go or a TUI sees a plain letter.
 #
 # 🪤 IT GOES TO THE CONVERSATION BEING WATCHED, NOT THE ONE SELECTED. Those
 # are the same today and the panel is what has focus, so the row it belongs to
@@ -12081,6 +12090,22 @@ $ui.PaneCompact.Add_Click({ Invoke-Compact })
 $script:termKeys = @{
     'Return' = 0x0D; 'Enter' = 0x0D; 'Back' = 0x08; 'Tab' = 0x09; 'Escape' = 0x1B
     'Left' = 0x25; 'Up' = 0x26; 'Right' = 0x27; 'Down' = 0x28
+}
+# Vk is the letter's own virtual key; Ch is the control character it produces.
+# Both are sent, with the control bit - see the note above.
+$script:termChords = @{
+    'C' = @{ Vk = 0x43; Ch = 3;  What = 'interrupt' }
+    'D' = @{ Vk = 0x44; Ch = 4;  What = 'end of input' }
+    'Z' = @{ Vk = 0x5A; Ch = 26; What = 'suspend' }
+}
+
+function Send-SRTermChord { param([string]$Letter)
+    $r = Get-SRTermTarget
+    if (-not $r) { return $false }
+    $c = $script:termChords["$Letter"]
+    if (-not $c) { return $false }
+    try { $n = [SRCon]::SendCtrl([uint32]$r.A.Pid, [uint16]$c.Vk, [char][int]$c.Ch) } catch { return $false }
+    return ($n -gt 0)
 }
 
 function Get-SRTermTarget {
@@ -12134,10 +12159,21 @@ $ui.LivePane.Add_PreviewKeyDown({
         if ("$clip" -and (Send-SRTermText "$clip")) { $e.Handled = $true }
         return
     }
-    # 🪤 A MODIFIER MEANS A CHORD THIS DOES NOT SEND. Ctrl+arrow is not an
-    # arrow, and forwarding the bare key would send something the operator did
-    # not press. Left alone, so it does whatever it does in this window.
-    if ($ctrl) { return }
+    if ($ctrl) {
+        # The three the operator asked for, and only those.
+        $ch = $script:termChords["$($e.Key)"]
+        if ($ch) {
+            if (Send-SRTermChord "$($e.Key)") {
+                $e.Handled = $true
+                Set-Status ("sent Ctrl+{0} ({1}) to {2}" -f "$($e.Key)", $ch.What, (Get-Title $r.S $r.D).Text) 'ok'
+            }
+            return
+        }
+        # 🪤 EVERY OTHER MODIFIER COMBINATION IS LEFT ALONE. Ctrl+arrow is not
+        # an arrow, and forwarding the bare key would send something the
+        # operator did not press. It does whatever it does in this window.
+        return
+    }
     $vk = $script:termKeys["$($e.Key)"]
     if (-not $vk) { return }
     # 🪴 PAGE UP AND PAGE DOWN SCROLL THE VIEW, they do not go to the session.
@@ -12487,11 +12523,24 @@ $script:sweepAt = $null
 # is checked against c in the bench for exactly this reason: three numbers that
 # do not add up are one number that is a lie.
 #
-# 🪤 AN OVERRUNNING SWEEP IS STILL SKIPPED, NOT QUEUED - Start-VitalsSweep
-# returns at its first line while one is in flight. That guard is what makes any
-# interval safe; without it this number would be a promise the machine cannot
-# keep on a bad day.
-$SR_SweepEvery = 600       # ms between the START of one sweep and the next
+# 🔴 AND THEN THE OPERATOR ASKED FOR AS FAST AS IT CAN GO, having been shown
+# 600. So: 150, which is not a guess but what the pass now costs plus room.
+# Three things had to be true first, and each is measured above or beside:
+#
+#   1. the pass reads down a held-open pipe and starts NO process (63 ms)
+#   2. a screen that has not changed is not parsed again (steady state 66 ms)
+#   3. an overrunning sweep is SKIPPED, not queued
+#
+# The third is what makes this safe rather than reckless: at 150 ms the interval
+# stops being the thing that paces the board and the PASS becomes it, so on a
+# busy machine the cadence degrades to "as often as it can finish" instead of
+# stacking work. That is exactly the request, and it is self-limiting.
+#
+# 🪤 THE COST IS REAL AND IS NOT NOTHING. This reads 26 consoles roughly
+# seven times a second on a background thread. It was 600 ms before and 2.500 ms
+# in July; if the machine ever feels warm, this number is the first place to
+# look and the ONLY thing that has to change.
+$SR_SweepEvery = 150       # ms between the START of one sweep and the next
 
 # 🔑 A RUNSPACE THE SWEEP KEEPS - AND THE 42 ms IS THE SMALLER HALF OF WHY.
 # The sweep is the one job here that runs forever: every other off-thread lane
@@ -12520,13 +12569,42 @@ $script:sweepWarmRs = $null
 
 $script:SweepPrime = {
     . (Join-Path $SRHere '_common.ps1')
+    # 🔑 AND A READER THAT STAYS UP. The batch exe is ONE spawn for all 26
+    # consoles, which was the whole point of it - but a spawn is a spawn, and at
+    # a fast cadence it is the largest single thing a pass does. The held-open
+    # reader has none once it is running, and this runspace now lives long
+    # enough to hold one. Measured over 26 consoles: 63 ms down the pipe against
+    # 82 ms for the batch, and no process created per pass.
+    #
+    # 🪤 IT IS ASKED FOR, NEVER ASSUMED - see the note on Start-SRScreenServer.
+    # A runspace that does one read in its life must not start one, which is why
+    # the probe never does. This runspace does hundreds a minute.
+    $null = Start-SRScreenServer
     1
 }
 
 $script:SweepJob = {
     $out = @{}
     try {
-        $screens = Get-SRScreenTextMany -ProcessIds ([int[]]$SRSweep.Pids)
+        # 🔑 DOWN THE PIPE, ONE CONSOLE AT A TIME, WHICH IS FASTER THAN ONE
+        # SPAWN FOR ALL OF THEM. Counter-intuitive and measured: 63 ms against
+        # 82. The batch exists to avoid 26 spawns; the server avoids the 27th
+        # as well.
+        #
+        # 🪤 AND IT FALLS BACK. Get-SRScreenTextServed returns $null for
+        # anything it is not sure about - no exe, a broken pipe, a read past its
+        # budget - and a pass that quietly read nothing would clear the board.
+        # If the pipe produced nothing at all, the batch reader answers instead,
+        # exactly as it did before.
+        $screens = @{}
+        foreach ($sp in @($SRSweep.Pids)) {
+            $st = $null
+            try { $st = Get-SRScreenTextServed -ProcessId ([int]$sp) -TimeoutMs 250 } catch { }
+            if ($st) { $screens[[int]$sp] = $st }
+        }
+        if (-not $screens.Count) {
+            $screens = Get-SRScreenTextMany -ProcessIds ([int[]]$SRSweep.Pids)
+        }
         # 🔴 A SCREEN THAT HAS NOT CHANGED HAS NOT CHANGED ITS ANSWER, and the
         # parse is what the pass is made of: 26 screens through
         # Read-SRScreenVitals and Test-SRLiveMenu at about 7 ms each, ~183 ms of

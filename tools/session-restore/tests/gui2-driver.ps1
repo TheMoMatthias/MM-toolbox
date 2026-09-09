@@ -8822,10 +8822,10 @@ if (@($tmCap).Count -ne 10) { Fail ("the history cap did not hold: {0} lines" -f
 elseif ("$(@($tmCap)[-1])" -ne 'line 39') { Fail 'the history cap dropped the NEWEST lines rather than the oldest' }
 else { Pass 'the kept scrollback is capped, and it is the oldest that goes' }
 
-# 🔒 ONLY KEYS THIS TOOL ALREADY SENDS. Every forwarded key must be one some
-# other path here has already exercised against a real console. Ctrl+C, Ctrl+D
-# and Ctrl+Z can end a conversation that cannot be relaunched and no path here
-# has ever sent one - so they must not appear.
+# 🔒 THE FORWARDED SET IS A CLOSED LIST AND THIS IS WHERE IT IS CLOSED. Every
+# plain key must be one some other path here already sends and has exercised
+# against a real console. Anything wider than that list is a key the operator
+# did not agree to, arriving in a conversation he cannot relaunch.
 $tmProven = @(0x0D, 0x08, 0x09, 0x1B, 0x25, 0x26, 0x27, 0x28, 0x20)
 $tmBad = @()
 foreach ($tmK in $script:termKeys.Keys) {
@@ -8833,7 +8833,32 @@ foreach ($tmK in $script:termKeys.Keys) {
 }
 if ($tmBad.Count) {
     Fail ("the terminal forwards a key no other path here sends: {0}" -f ($tmBad -join ', '))
-} else { Pass ('the terminal forwards only the {0} keys this tool already sends' -f $script:termKeys.Count) }
+} else { Pass ('the terminal forwards only the {0} plain keys this tool already sends' -f $script:termKeys.Count) }
+
+# 🔒 AND THE CHORDS ARE EXACTLY THE THREE THAT WERE AUTHORISED. Added on the
+# operator's explicit instruction 2026-09-09, against a recommendation not to.
+# A fourth appearing here later would be a widening nobody asked for, so the
+# set is asserted as an equality rather than as a subset.
+$tmWantChords = @('C', 'D', 'Z')
+$tmHaveChords = @($script:termChords.Keys | Sort-Object)
+if (($tmHaveChords -join ',') -ne (($tmWantChords | Sort-Object) -join ',')) {
+    Fail ("the control chords are {0}; exactly C, D and Z were authorised" -f ($tmHaveChords -join ', '))
+} else { Pass 'the terminal forwards exactly the three control chords that were authorised' }
+# 🪤 A CHORD IS THREE FIELDS, NOT ONE. Sent as a bare virtual key a TUI reads
+# a plain letter; sent as a bare character a reader watching for the key sees
+# nothing. The control bit is what makes it a chord.
+$tmChSrc = "$((Get-Command Send-SRTermChord).ScriptBlock)"
+if ($tmChSrc -notmatch 'SendCtrl') {
+    Fail 'a control chord is sent as an ordinary key - the control bit never arrives'
+} else { Pass 'a control chord is sent with its key, its character and the control bit' }
+foreach ($tmCK in $tmWantChords) {
+    $tmCV = $script:termChords["$tmCK"]
+    $tmWantCh = @{ 'C' = 3; 'D' = 4; 'Z' = 26 }
+    if ([int]$tmCV.Ch -ne [int]$tmWantCh["$tmCK"]) {
+        Fail ("Ctrl+{0} carries character {1} where the console expects {2}" -f $tmCK, [int]$tmCV.Ch, [int]$tmWantCh["$tmCK"])
+    }
+}
+Pass 'each chord carries the control character its letter actually produces'
 $tmKdSrc = ''
 foreach ($tmH in @('Send-SRTermKey', 'Send-SRTermText', 'Get-SRTermTarget')) {
     if (-not (Get-Command $tmH -ErrorAction SilentlyContinue)) { Fail "the terminal has no $tmH" }
@@ -8932,9 +8957,16 @@ if (-not (Test-Path -LiteralPath $tmReplica)) {
                 Pass 'the terminal resolves the watched conversation as where keys go'
                 $tmSent = Send-SRTermText 'hello'
                 $tmSentKey = Send-SRTermKey 0x09      # TAB
+                # 🔴 AND A REAL CHORD, into a real console, because this is the
+                # part that cannot be reasoned about: whether the control bit
+                # survives the trip is a question about Windows, not about this
+                # code. The replica sets TreatControlCAsInput so it can READ the
+                # key rather than be killed by it.
+                $tmSentChord = Send-SRTermChord 'C'
                 $null = Send-SRTermKey 0x0D           # ENTER commits the replica
                 if (-not $tmSent) { Fail 'the terminal could not write characters into a real console' }
                 if (-not $tmSentKey) { Fail 'the terminal could not write a virtual key into a real console' }
+                if (-not $tmSentChord) { Fail 'the terminal could not write a control chord into a real console' }
                 $tmWait = [Diagnostics.Stopwatch]::StartNew()
                 while ($tmWait.Elapsed.TotalSeconds -lt 20 -and -not (Test-Path -LiteralPath $tmOut)) {
                     Start-Sleep -Milliseconds 150
@@ -8943,10 +8975,10 @@ if (-not (Test-Path -LiteralPath $tmReplica)) {
                     Fail 'the replica never wrote what it was sent - the keys did not arrive'
                 } else {
                     $tmGot = [System.IO.File]::ReadAllText($tmOut)
-                    if ("$tmGot" -ne 'hello<tab>') {
-                        Fail ("the console received '{0}' where 'hello<tab>' was typed" -f "$tmGot")
+                    if ("$tmGot" -ne 'hello<tab><ctrl-c>') {
+                        Fail ("the console received '{0}' where 'hello<tab><ctrl-c>' was typed" -f "$tmGot")
                     } else {
-                        Pass 'what the panel sends arrives in a real console as characters and as keys'
+                        Pass 'what the panel sends arrives in a real console as characters, keys and a control chord'
                     }
                 }
             }

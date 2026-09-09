@@ -39,6 +39,11 @@ $ErrorActionPreference = 'Stop'
 $sb = New-Object System.Text.StringBuilder
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 
+# A console turns Ctrl+C into a termination request unless it is told the
+# program wants to READ it. Without this the replica would die on the very key
+# it exists to observe, and the test would read "no output" as "not sent".
+try { [Console]::TreatControlCAsInput = $true } catch { }
+
 Write-Host 'term-replica: type into me'
 try {
     while ((Get-Date) -lt $deadline) {
@@ -46,6 +51,20 @@ try {
         $k = [Console]::ReadKey($true)
         if ($k.Key -eq [ConsoleKey]::Enter) { break }
         if ($k.Key -eq [ConsoleKey]::Escape) { $null = $sb.Append('<esc>'); break }
+        # The three chords, recorded as what they are rather than as the letter -
+        # a bare 'c' would prove nothing about the control bit having arrived.
+        #
+        # 🪤 `continue` INSIDE A switch LEAVES THE SWITCH, NOT THE LOOP. The
+        # first version of this used one and only worked by accident: the
+        # control characters are below 32, so the fall-through happened to
+        # append nothing. Written as a lookup and an explicit continue.
+        if ($k.Modifiers -band [ConsoleModifiers]::Control) {
+            $chordName = ''
+            if ("$($k.Key)" -eq 'C') { $chordName = '<ctrl-c>' }
+            elseif ("$($k.Key)" -eq 'D') { $chordName = '<ctrl-d>' }
+            elseif ("$($k.Key)" -eq 'Z') { $chordName = '<ctrl-z>' }
+            if ($chordName) { $null = $sb.Append($chordName); continue }
+        }
         if ($k.Key -eq [ConsoleKey]::Tab) { $null = $sb.Append('<tab>'); continue }
         if ($k.Key -eq [ConsoleKey]::DownArrow) { $null = $sb.Append('<down>'); continue }
         if ($k.Key -eq [ConsoleKey]::Backspace) {

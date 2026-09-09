@@ -237,6 +237,54 @@ if ($pbPids.Count -lt 1) {
     }
 }
 
+# =========================================================================
+PB-Say ''
+PB-Say '--- 2b. can the sweep stop spawning a process per pass? ---'
+# The batch reader is ONE child process for all 26 consoles, which was the whole
+# point of it. But a process spawn is ~100 ms of the machine's time whatever it
+# is spawned for, and at a fast cadence that is the dominant cost. The
+# held-open reader has no spawn at all once it is up - and the sweep runspace
+# now survives, so it can hold one.
+if ($pbPids.Count -ge 1) {
+    $pbArr2 = $pbPids.ToArray()
+    $pbSrvRs = $null
+    try {
+        $pbSrvRs = [runspacefactory]::CreateRunspace()
+        $pbSrvRs.ApartmentState = 'MTA'; $pbSrvRs.ThreadOptions = 'ReuseThread'; $pbSrvRs.Open()
+        $pbSrvRs.SessionStateProxy.SetVariable('SRHere', $here)
+        $pbSrvRs.SessionStateProxy.SetVariable('SRSweep', @{ Pids = $pbArr2 })
+        $p1 = [powershell]::Create(); $p1.Runspace = $pbSrvRs
+        $null = $p1.AddScript({ . (Join-Path $SRHere '_common.ps1'); $null = Start-SRScreenServer; 1 })
+        $null = $p1.Invoke(); $p1.Dispose()
+        $pbServed = PB-Ms {
+            $ps = [powershell]::Create(); $ps.Runspace = $pbSrvRs
+            $null = $ps.AddScript({
+                $out = @{}
+                foreach ($p in @($SRSweep.Pids)) {
+                    $t = Get-SRScreenTextServed -ProcessId ([int]$p) -TimeoutMs 1500
+                    if ($t) { $out[[int]$p] = $t }
+                }
+                $out.Count
+            })
+            $null = $ps.Invoke(); $ps.Dispose()
+        } 4
+        PB-Say ('  reading {0} consoles one at a time over the held-open pipe  {1,6:N0} ms' -f $pbArr2.Count, $pbServed)
+        PB-Say ('  the batch exe, one spawn for all of them                    {0,6:N0} ms' -f $pbRead)
+        if ($pbServed -lt $pbRead) {
+            PB-Say ('  VERDICT: the pipe wins by {0:N0} ms and spawns nothing.' -f ($pbRead - $pbServed))
+        } else {
+            PB-Say ('  VERDICT: the batch spawn still wins by {0:N0} ms.' -f ($pbServed - $pbRead))
+        }
+        $p2 = [powershell]::Create(); $p2.Runspace = $pbSrvRs
+        $null = $p2.AddScript({ try { Stop-SRScreenServer } catch { } })
+        $null = $p2.Invoke(); $p2.Dispose()
+    } catch {
+        PB-Say ('  could not measure the served sweep: {0}' -f $_.Exception.Message)
+    } finally {
+        try { if ($pbSrvRs) { $pbSrvRs.Close(); $pbSrvRs.Dispose() } } catch { }
+    }
+}
+
 # ===========================================================================
 PB-Say ''
 PB-Say '--- 3. the ground behind a pasted message ---'
