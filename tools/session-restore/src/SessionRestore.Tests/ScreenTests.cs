@@ -52,13 +52,16 @@ public sealed class ScreenTests
     {
         // A leaked temp degrades every later session on this machine, and this
         // path runs several times a second.
-        var before = Directory.Exists(Core.ToolPaths.State)
-            ? Directory.GetFiles(Core.ToolPaths.State, "screen-*.txt").Length
-            : 0;
+        //
+        // 🪤 IT ASSERTS ABOUT ITS OWN FILE. The first version counted files in
+        // the state directory before and after - which is SHARED, so it went red
+        // the moment another test read a screen at the same time. A test that
+        // reads an input it does not own is testing the machine it runs on.
+        var mine = Path.Combine(Core.ToolPaths.State,
+            "screen-test-" + Guid.NewGuid().ToString("N") + ".txt");
 
-        _ = ScreenReader.Read(0);
+        _ = ScreenReader.Read(0, back: 0, attributes: false, timeoutMs: 5000, outFile: mine);
 
-        var after = Directory.GetFiles(Core.ToolPaths.State, "screen-*.txt").Length;
-        Assert.Equal(before, after);
+        Assert.False(File.Exists(mine), "the answer file was left behind");
     }
 }

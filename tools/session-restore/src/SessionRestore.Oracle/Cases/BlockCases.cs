@@ -85,8 +85,11 @@ public static class BlockCases
             $b = @($b)
             $len = 0
             foreach ($y in $b) { $len += "$($y.Body)".Length }
+            $len = 0
+            try { $len = (Get-Item -LiteralPath $x.P).Length } catch { $len = -1 }
             $rows += [ordered]@{
                 id      = $x.Id
+                len     = $len
                 n       = $b.Count
                 kinds   = (($b | ForEach-Object { "$($_.Kind)" }) -join ',')
                 heads   = (($b | ForEach-Object { "$($_.Head)" }) -join ',')
@@ -95,18 +98,35 @@ public static class BlockCases
         }
         (@{ rows = $rows } | ConvertTo-Json -Compress -Depth 6)
         """,
-        Answer((id, path) =>
+        Answer((id, path, askedLen) =>
         {
+            // 🔴 A TRANSCRIPT GROWS WHILE IT IS BEING READ, and the reading
+            // window is a TAIL - so a conversation that gained one record
+            // between the two sides gives two correct answers about two
+            // different windows. Caught exactly that way: the C# list was the
+            // PowerShell's shifted by one, same length, one gained at the end
+            // and one lost at the start.
+            var now = Length(path);
+            if (askedLen >= 0 && now != askedLen)
+            {
+                return new JsonObject { ["id"] = id, ["len"] = -2, ["n"] = -2 };
+            }
+
             var b = TranscriptBlocks.Read(path);
             return new JsonObject
             {
                 ["id"] = id,
+                ["len"] = now,
                 ["n"] = b.Count,
                 ["kinds"] = string.Join(",", b.Select(x => KindName(x.Kind))),
                 ["heads"] = string.Join(",", b.Select(x => x.Head)),
                 ["bodyLen"] = b.Sum(x => x.Body.Length),
             };
-        }));
+        }))
+    {
+        Tolerate = d => d.EndsWith("C# \"-2\"", StringComparison.Ordinal),
+        ToleranceReason = "the conversation was written to between the two reads - a growing file, not a differing parser",
+    };
 
     /// <summary>
     /// Every field of every block, on a smaller set - so a difference the shape
@@ -125,6 +145,7 @@ public static class BlockCases
                 $body = "$($y.Body)"
                 $rows += [ordered]@{
                     id   = $x.Id
+                    len  = $(try { (Get-Item -LiteralPath $x.P).Length } catch { -1 })
                     kind = "$($y.Kind)"
                     head = "$($y.Head)"
                     meta = "$($y.Meta)"
@@ -191,7 +212,19 @@ public static class BlockCases
             .GroupBy(s => s.SessionId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.First().Jsonl!, StringComparer.Ordinal);
 
-    private static Func<string, string> Answer(Func<string, string, JsonObject> one) =>
+    private static long Length(string path)
+    {
+        try
+        {
+            return new FileInfo(path).Length;
+        }
+        catch (IOException)
+        {
+            return -1;
+        }
+    }
+
+    private static Func<string, string> Answer(Func<string, string, long, JsonObject> one) =>
         psOut =>
         {
             var asked = JsonNode.Parse(psOut)?["rows"]?.AsArray() ?? [];
@@ -200,8 +233,9 @@ public static class BlockCases
             foreach (var a in asked)
             {
                 var id = a?["id"]?.GetValue<string>() ?? string.Empty;
+                var askedLen = a?["len"]?.GetValue<long>() ?? -1;
                 rows.Add(byId.TryGetValue(id, out var path)
-                    ? one(id, path)
+                    ? one(id, path, askedLen)
                     : new JsonObject { ["id"] = id, ["n"] = -1 });
             }
 

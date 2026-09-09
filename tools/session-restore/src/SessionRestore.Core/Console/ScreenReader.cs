@@ -65,6 +65,19 @@ public static class ScreenReader
     /// '!' saying why not.
     /// </summary>
     public static string Read(uint pid, int back = 0, bool attributes = false, int timeoutMs = 5000)
+        => Read(pid, back, attributes, timeoutMs, outFile: null);
+
+    /// <summary>
+    /// The same read, into a named file.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 INTERNAL, AND IT EXISTS FOR ONE TEST. "Reading leaves no file behind"
+    /// was first written as a before-and-after count of the state directory -
+    /// which is shared, so it went red the moment another test read a screen at
+    /// the same time. A test that reads an input it does not own is testing the
+    /// machine it runs on. Naming the file lets it assert about ITS file.
+    /// </remarks>
+    internal static string Read(uint pid, int back, bool attributes, int timeoutMs, string? outFile)
     {
         var exe = Helper.Value;
         if (exe is null)
@@ -77,7 +90,7 @@ public static class ScreenReader
         // this machine, and this path runs several times a second.
         var dir = ToolPaths.State;
         Directory.CreateDirectory(dir);
-        var outFile = Path.Combine(dir,
+        outFile ??= Path.Combine(dir,
             "screen-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture) + ".txt");
 
         try

@@ -4,8 +4,8 @@ One pass, worked top to bottom. Every item has a **done-when** you can check
 without asking anybody — a command and its expected result, or an observable
 state. An item with no done-when is not an item.
 
-**Phases 0 and 1 are complete, and 2.1-2.4 with them.** Everything from 2.5 down
-is still to do. The PowerShell tool remains the daily driver and is untouched by any
+**Phases 0 and 1 are complete, and 2.1-2.4 and 2.5a with them.** Everything from
+2.5b down is still to do. The PowerShell tool remains the daily driver and is untouched by any
 of it.
 
 ---
@@ -121,7 +121,9 @@ against the PowerShell on the operator's real data.
 | 2.3b | **Transcripts: blocks** — `Get-SRTranscriptBlocks`, the reading model | same blocks, same order, same fields over a 40-conversation sample | ✅ 2 oracle cases + a defect found in the PowerShell |
 | 2.4a | **Console API: reading** — attach, read, detach | a live screen matches `Get-SRScreenText` character for character | ✅ 22 live screens, 1 oracle case |
 | 2.4b | **Console API: the pipe server, and WRITING** | a held-open helper matches the spawn-per-read; keys land in a REPLICA console this tool owns | ✅ 26 consoles in 25 ms; `hello<tab><ctrl-c>` in a real console |
-| 2.5 | **Sessions / agents** — `claude agents --json`, `wt.exe`, process tree | the agent map matches, including `busy` | — |
+| 2.5a | **The agent map** — `claude agents --json` | the map matches, including `busy` | ✅ 28 sessions, field by field |
+| 2.5b | **The sub-agent readers** — `Get-SRSubAgents`, `Get-SRLiveTasks`, `Get-SRAgentLastLine` | the same sub-agents and shells over every conversation with any | ⏸ not started |
+| 2.5c | **Launching and ending** — `wt.exe`, `taskkill`, the process tree | a launch plan matches; NOTHING is launched or killed to prove it | ⏸ not started |
 | 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | — |
 | 2.7 | **Registry WRITE** — last, behind the guards | refuses every case the PowerShell refuses; the stale check still fires; verified against a *copy*, never the live file | — |
 
@@ -335,6 +337,42 @@ one that drifts is the one nobody looks at.
 session already taught: two in flight would each read part of the other's answer,
 producing screens that are real, reproducible under load, and belong to the wrong
 session.
+
+### 2.5a as it turned out
+
+**28 of the operator's sessions compared field by field** - status, what each is
+waiting for, pid, kind, name, cwd and start time. Confirmed red by appending one
+character to every status.
+
+🪤 **The same moving-target discipline as a screen, milder.** A session goes from
+busy to idle while the comparison runs, so the PowerShell asks TWICE and only
+sessions whose every field was identical across both asks are compared. And the
+case refuses to be green having compared nothing: if claude were unreachable both
+sides would hand back an empty map and it would pass having established nothing.
+
+🔴 **2.5 was split into three.** The plan's done-when - "the agent map matches,
+including busy" - is met by 2.5a alone. What was bundled with it is not: the
+three sub-agent readers (2.5b, moved here from 2.3 because they answer *what is
+running* rather than what a transcript says), and the launch/kill path (2.5c),
+which must be ported without ever launching or ending anything to prove it.
+
+### A discipline that keeps recurring, written down once
+
+🔑 **EVERYTHING THIS TOOL READS IS MOVING.** A screen redraws, a transcript
+grows, a session changes its mind. Three comparisons have now needed the same
+shape, and it is the same shape each time:
+
+1. the PowerShell records **what state it read** (a second read, a file length,
+   a repeated ask);
+2. the C# answers about **that same state**, or says plainly that it could not;
+3. the difference that produces is **tolerated by name, narrowly, and printed
+   every time it is used**;
+4. and the case **fails if it compared nothing at all**.
+
+🪤 What must never happen - and was written once, and removed - is the C# side
+**echoing the PowerShell's answer back** when it cannot hold the target still.
+That turns a limitation into a pass and is the one thing the oracle's contract
+forbids outright.
 
 🔴 **2.7 is last on purpose.** Nothing writes until everything reads correctly.
 The guards are ported before the writer they guard, and they are ported as
