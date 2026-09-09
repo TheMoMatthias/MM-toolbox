@@ -1075,8 +1075,18 @@ function Get-Band { param($Row)
 # reason Test-QuietVerdict is one. Inside the collector it would only be
 # reachable through a completed screen read, and a suite that cannot reach it
 # writes three assertions that pass because nothing ran.
-function Test-SRTurnVerdict { param($Row, [int]$TurnSecs, [bool]$TurnDone)
+function Test-SRTurnVerdict { param($Row, [int]$TurnSecs, [bool]$TurnDone, [bool]$Compacting = $false)
     if (-not $Row) { return $false }
+    # 🪤 A COMPACTING SESSION IS WORKING, whatever its turn clock says. The
+    # clock on screen is the clock of the turn that ENDED - the compact is a new
+    # piece of work with its own timer - so a session told to compact would read
+    # "done" and drop out of WORKING while it was demonstrably busy.
+    if ($Compacting) {
+        if ("$($Row.Band)" -eq 'needs' -or "$($Row.Band)" -eq 'quiet') { return $false }
+        if ("$($Row.Band)" -eq 'working') { return $false }
+        $Row.Band = 'working'
+        return $true
+    }
     if ($TurnSecs -lt 0) { return $false }
     $band = "$($Row.Band)"
     if ($band -eq 'needs' -or $band -eq 'quiet') { return $false }
@@ -2262,7 +2272,13 @@ function Get-SRRowInputSig {
     $scrV = $script:rowScreen[$id]
     if ($scrV -and ($NowDate - $scrV.At).TotalSeconds -le $SR_RowScreenTTL) { $scr = $scrV }
     $marks = ''
-    if ($scr) { $marks = '{0},{1}' -f [int]$scr.Shells, [int]$scr.Agents }
+    if ($scr) {
+        # The compact per cent is in here because the row DRAWS it - see the
+        # said-line override in Build-Sessions. Without it the bar would freeze
+        # at whatever it read when something else happened to move the row.
+        $marks = '{0},{1},{2},{3}' -f [int]$scr.Shells, [int]$scr.Agents,
+                                      [int][bool]$scr.Compacting, [int]$scr.CompactPct
+    }
     # 🔑 THE BAR AS DRAWN, NOT THE TOKENS BEHIND IT. A live session's count
     # moves on every sweep; the bar is 34px wide, so quantising to the pixel is
     # what stops a row rebuilding once a second for a gauge that has not visibly
@@ -2523,6 +2539,14 @@ function Build-Sessions {
             $saidText = ''
             if ($r.Said -and "$($r.Said.Said)".Trim()) { $saidText = ("$($r.Said.Said)".Trim() -replace '\s+', ' ') }
             elseif ($r.Conv -and "$($r.Conv.Detail)") { $saidText = "$($r.Conv.Detail)" }
+            # 🔴 WHAT IT IS DOING BEATS WHAT IT LAST SAID. A compact takes a
+            # minute or two and writes nothing to the transcript until it
+            # finishes, so a row mid-compact otherwise shows a line from before
+            # it started - which reads as a session that has stopped. This is
+            # the one thing on a row that is more current than its own words.
+            if ($scr -and [bool]$scr.Compacting) {
+                $saidText = Get-SRCompactText -Pct ([int]$scr.CompactPct) -Secs ([int]$scr.CompactSecs)
+            }
             # What this conversation has out, from the two readers that can each
             # answer half of it. See the note beside the marks below.
             # 🔑 INLINED, for the reason WO-2 proved and WO-4/7 disproved:
@@ -3015,6 +3039,28 @@ function Test-SRQueueFresh {
 }
 
 
+# 🔑 ONE PLACE THE COMPACT PROGRESS IS WORDED. The row and the pane header both
+# say it, and two copies would drift the first time either was touched.
+#
+# 🪤 A SCREEN THAT DID NOT PRINT A PER CENT STILL SAYS "compacting". The
+# number appears a beat after the marker line does, and showing nothing for that
+# beat - or worse, showing "0%" - would be inventing a reading.
+$SR_CompactCells = 10
+function Get-SRCompactText { param([int]$Pct, [int]$Secs, [switch]$Bar)
+    $t = 'compacting'
+    if ($Bar) {
+        $n = 0
+        if ($Pct -ge 0) { $n = [int][Math]::Round($SR_CompactCells * ([Math]::Min(100, $Pct) / 100.0)) }
+        $t = $t + '  ' + ([string][char]0x2588 * $n) + ([string][char]0x2591 * ($SR_CompactCells - $n))
+    }
+    if ($Pct -ge 0) { $t = $t + ('  {0}%' -f [Math]::Min(100, $Pct)) }
+    if ($Secs -gt 0) {
+        if ($Secs -ge 60) { $t = $t + ('  {0}m {1}s' -f [int][Math]::Floor($Secs / 60), ($Secs % 60)) }
+        else { $t = $t + ('  {0}s' -f $Secs) }
+    }
+    return $t
+}
+
 function Get-CtxBrush { param([int]$Tokens)
     if ($Tokens -gt $SR_CtxBadTokens)  { return $Pal.Bad }
     if ($Tokens -gt $SR_CtxWarnTokens) { return $Pal.Warn }
@@ -3259,7 +3305,53 @@ $SR_GutterBase = 22.0
 # proportional face with a shorter x-height the same ratio reads packed. One
 # number, so every paragraph, every fold body and the measure that sizes the
 # column all move together.
-$SR_LeadFactor = 1.62
+#
+# 🔴 1.62 -> 1.45, AND THIS REVERSES THE LINE ABOVE, so here is the measurement
+# rather than a second opinion. Reported 2026-09-09: "it seems like there's at
+# least 1.5, if not two, distances of spacing" against the terminal. Measured,
+# both ends:
+#
+#   THE TERMINAL. Captured from a live Windows Terminal and measured off the
+#   pixels: 19,8 px between two lines of one paragraph at a ~17 px font, and
+#   37,5 px across a paragraph break - so 1,16, and a break is one blank line.
+#   1,16 is exactly Cascadia Mono's own LineSpacing, which is the whole story:
+#   a terminal adds NOTHING to the face's natural leading.
+#
+#   THIS PANE. Measured off the rendered FlowDocument by tests\spacing-bench.ps1,
+#   not computed from the settings: 26,5 px, which is 1,83 x its own font and
+#   1,57 x the terminal's density. He called it at "at least 1.5".
+#
+# 🪤 AND THE LEADING WAS ONLY PART OF IT - see $SR_ProsePad. Dropping the
+# per-line margin takes 26,5 to 23,5 on its own. 1,45 with that margin gone
+# measures 21,0 px, 1,25 x the terminal: tighter than a proportional face at its
+# natural 1,33 would allow to breathe on the full-width lines this pane now
+# draws, and a fifth off what was there.
+#
+# 🔑 AND IT IS A SETTING NOW, because this number has been wrong in both
+# directions and I am not the one reading it. See 'lineSpacing' in $SR_CfgMeta.
+$SR_LineSpacings = @{ tight = 1.33; normal = 1.45; relaxed = 1.62 }
+$SR_LeadFactor = 1.45
+try {
+    $ls0 = "$((Get-SRConfig).lineSpacing)".Trim().ToLower()
+    if ($ls0 -and $SR_LineSpacings.ContainsKey($ls0)) { $SR_LeadFactor = [double]$SR_LineSpacings[$ls0] }
+} catch { }
+# 🔴 AND THE OTHER HALF OF THE SPACING, WHICH IS NOT THE LEADING. Every source
+# line of a reply is its OWN Paragraph, and this was the margin above and below
+# each one - so it was added to the leading on EVERY line, not just between
+# turns, which is not what a margin between paragraphs is for.
+#
+# 🪤 ADJACENT MARGINS COLLAPSE, so it was worth 3 px and not 6. Arithmetic
+# said 6 - two paragraphs, 3 px each - and the rendered document said 3: WPF
+# takes the larger of two adjacent block margins rather than their sum. Measured
+# 26,5 px against 23,5 with it off. The wrong prediction is left written down
+# because it is the kind that survives review.
+#
+# 🔑 AND THE BLANK LINE STILL SEPARATES PARAGRAPHS WITHOUT IT. A blank source
+# line already becomes an empty Paragraph of full height, so a break measures
+# exactly 2,00 x the pitch with this at zero - which is precisely what the
+# terminal does (37,5 px against 19,8). The margin was not carrying the
+# paragraph break; the blank line was, and still is.
+$SR_ProsePad = 0.0
 $script:TypeBase = @{}
 foreach ($k in @('Micro', 'Caption', 'Body', 'Mono', 'Strong', 'Display', 'Pane')) {
     # 🪤 CAST, DO NOT TRUST THE LOOKUP. A missing key returns $null and would
@@ -3899,7 +3991,7 @@ function Add-ReadProse {
     # once per turn, to hold a list most turns never put anything in.
     $groundPs = $null
     if ($Ground) { $groundPs = [System.Collections.Generic.List[object]]::new() }
-    $groundPad = 3.0
+    $groundPad = $SR_ProsePad
     if ($Ground) { $groundPad = 0.0 }
     $lines = @((Remove-SRAnsi $Text) -replace "`r", '' -split "`n")
     $i = 0
@@ -4889,7 +4981,18 @@ function Update-LivePane {
     $ui.LiveText.Text = $body
     $who = ''
     try { $who = "$((Get-Title $r.S $r.D).Text)" } catch { $who = '' }
-    $ui.LiveHead.Text = ('COMPACTING' + $(if ($who) { '   ' + $who } else { '' }))
+    # 🔑 THE HEADER CARRIES THE BAR. This pane is what you are looking at while
+    # you wait, and it said COMPACTING and nothing else for the whole minute or
+    # two - no way to tell a compact that is nearly done from one that has
+    # wedged. The figures come off the same sweep every other row uses, so a
+    # session compacting in the background has them too.
+    $cScr = $null
+    try { $cScr = $script:rowScreen["$($r.Id)"] } catch { }
+    $cHead = 'COMPACTING'
+    if ($cScr -and [bool]$cScr.Compacting) {
+        $cHead = (Get-SRCompactText -Pct ([int]$cScr.CompactPct) -Secs ([int]$cScr.CompactSecs) -Bar).ToUpper()
+    }
+    $ui.LiveHead.Text = ($cHead + $(if ($who) { '   ' + $who } else { '' }))
     $ui.LivePane.Visibility = $V_Show
     $ui.PaneDoc.Visibility  = $V_Hide
     $ui.PaneEmpty.Visibility = $V_Hide
@@ -10928,6 +11031,16 @@ $script:SR_CfgMeta = @{
             @{ V = 'hidden'; L = 'hidden - prose only' }
         )
     }
+    'lineSpacing' = @{
+        Group = 'The reading pane'; Order = 3
+        Label = 'How far apart the lines of a reply sit'
+        Help  = 'Your terminal draws lines 1,16 times the font size apart. Normal is 1,45 here, because a proportional face needs more than a terminal one.'
+        Options = @(
+            @{ V = 'tight';   L = 'tight - as close as the face allows' },
+            @{ V = 'normal';  L = 'normal - a fifth more air than the terminal' },
+            @{ V = 'relaxed'; L = 'relaxed - what it was before 2026-09-09' }
+        )
+    }
     'readingWidth' = @{
         Group = 'The reading pane'; Order = 2
         Label = 'How wide a line of text runs'
@@ -11640,7 +11753,8 @@ $SR_RowScreenTTL = 45
 
 function Set-RowScreenSig {
     param([string]$Id, [int]$Shells, [int]$Agents, [string]$Effort = '', [int]$TurnSecs = -1, [bool]$TurnDone = $false,
-          [int]$CtxTokens = -1, [int]$CtxWindow = -1)
+          [int]$CtxTokens = -1, [int]$CtxWindow = -1,
+          [bool]$Compacting = $false, [int]$CompactPct = -1, [int]$CompactSecs = -1)
     if (-not $Id) { return $false }
     $was = $script:rowScreen[$Id]
     # Only the two MARKS decide whether the list needs redrawing; the clock and
@@ -11652,10 +11766,17 @@ function Set-RowScreenSig {
     # of what decides a redraw - the bar is repainted by the strip's own tick and
     # by the row build that any other change triggers. Redrawing every row
     # because a token count ticked would undo the whole point of the sweep.
+    # 🔑 COMPACTING IS A VISIBLE CHANGE, so unlike the clock and the context it
+    # DOES decide a redraw - a row that has started or finished compacting looks
+    # different, and the per cent is the one number worth watching tick.
+    if ((-not $was) -or ([bool]$was.Compacting -ne $Compacting) -or ([int]$was.CompactPct -ne $CompactPct)) {
+        $changed = $true
+    }
     $script:rowScreen[$Id] = @{
         At = (Get-Date); Shells = $Shells; Agents = $Agents
         Effort = "$Effort"; TurnSecs = $TurnSecs; TurnDone = $TurnDone
         CtxTokens = $CtxTokens; CtxWindow = $CtxWindow
+        Compacting = $Compacting; CompactPct = $CompactPct; CompactSecs = $CompactSecs
     }
     # Only ever a figure the session printed. See $script:ctxWindowTrue.
     if ($CtxWindow -gt 0) { $script:ctxWindowTrue[$Id] = [int]$CtxWindow }
@@ -11802,6 +11923,13 @@ $script:SweepJob = {
                 TurnDone = [bool]$v.TurnDone
                 CtxTokens = $(if ($v.SawCtx) { [int]$v.CtxTokens } else { -1 })
                 CtxWindow = $(if ($v.SawCtx) { [int]$v.CtxWindow } else { -1 })
+                # And whether it is compacting, with how far along. This is the
+                # only lane that reads every live screen, so it is the only
+                # place a compact on a session you are NOT looking at can be
+                # noticed at all.
+                Compacting  = [bool]$v.Compacting
+                CompactPct  = [int]$v.CompactPct
+                CompactSecs = [int]$v.CompactSecs
             }
         }
     } catch { }
@@ -11896,7 +12024,9 @@ function Complete-VitalsSweep {
         if (-not $got) { continue }
         if (Set-RowScreenSig -Id "$($row.Id)" -Shells ([int]$got.Shells) -Agents ([int]$got.Agents) `
                              -Effort "$($got.Effort)" -TurnSecs ([int]$got.TurnSecs) -TurnDone ([bool]$got.TurnDone) `
-                             -CtxTokens ([int]$got.CtxTokens) -CtxWindow ([int]$got.CtxWindow)) {
+                             -CtxTokens ([int]$got.CtxTokens) -CtxWindow ([int]$got.CtxWindow) `
+                             -Compacting ([bool]$got.Compacting) -CompactPct ([int]$got.CompactPct) `
+                             -CompactSecs ([int]$got.CompactSecs)) {
             $changed = $true
         }
 
@@ -11951,7 +12081,8 @@ function Complete-VitalsSweep {
         # moved into NEEDS YOU must not be moved straight back out by a spinner
         # on the same screen. Test-SRTurnVerdict refuses 'needs' outright, so
         # the ordering and the rule agree rather than one relying on the other.
-        if (Test-SRTurnVerdict -Row $live -TurnSecs ([int]$got.TurnSecs) -TurnDone ([bool]$got.TurnDone)) {
+        if (Test-SRTurnVerdict -Row $live -TurnSecs ([int]$got.TurnSecs) -TurnDone ([bool]$got.TurnDone) `
+                               -Compacting ([bool]$got.Compacting)) {
             $changed = $true
         }
     }

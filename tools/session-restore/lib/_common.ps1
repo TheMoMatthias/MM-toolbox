@@ -4691,6 +4691,9 @@ function Read-SRScreenVitals { param([string]$ScreenText)
         # What its own bar says about the context - the count AND the window,
         # both of which the transcript can only guess at.
         CtxTokens = -1; CtxWindow = -1; SawCtx = $false
+        # What a compact says about itself while it runs. -1 is "the screen did
+        # not say", which is not "nought per cent".
+        Compacting = $false; CompactPct = -1; CompactSecs = -1
     }
     if (-not $ScreenText) { return $v }
 
@@ -4796,6 +4799,51 @@ function Read-SRScreenVitals { param([string]$ScreenText)
     # "thinking" at all.
     $e = [regex]::Match($ScreenText, '(?i)\bwith\s+(\w+)\s+effort\b')
     if ($e.Success) { $v.Effort = $e.Groups[1].Value.ToLower(); $v.SawEffort = $true; $v.Ok = $true }
+
+    # =====================================================================
+    # A COMPACT PRINTS ITS OWN PROGRESS, AND NOTHING WAS READING IT.
+    #
+    # 🔴 THE TRANSCRIPT CANNOT ANSWER THIS. A compact writes its summary
+    # record at the END - that is already written down beside Test-SRCompacting
+    # - so for the whole minute or two it runs, the only thing on the machine
+    # that knows how far along it is, is the session's own screen:
+    #
+    #     * Compacting conversation... (1m 37s)
+    #       =============================== 66%
+    #
+    # Captured from a live session 2026-09-09.
+    #
+    # 🪤 THE PER CENT IS TAKEN FROM THE COMPACT'S OWN LINES, not from
+    # anywhere on the screen. The status line carries a context figure that also
+    # ends in a per cent - "804k/1.0M (80%)" - and a loose search finds that one
+    # on every session that is not compacting at all. So the marker is found
+    # first and the number is only looked for at or just below it.
+    $cIdx = -1
+    $cLines = @("$ScreenText" -split "`n")
+    for ($ci = 0; $ci -lt $cLines.Count; $ci++) {
+        if ($cLines[$ci] -match '(?i)\bcompacting\s+conversation\b') { $cIdx = $ci; break }
+    }
+    if ($cIdx -ge 0) {
+        $v.Compacting = $true
+        $v.Ok = $true
+        # The elapsed clock sits on the marker line, in the same shape the turn
+        # clock uses.
+        $cm = [regex]::Match($cLines[$cIdx], '\((?:(\d+)h\s+)?(?:(\d+)m\s+)?(\d+)s\)')
+        if ($cm.Success) {
+            $v.CompactSecs = ([int]$(if ($cm.Groups[1].Success) { $cm.Groups[1].Value } else { 0 }) * 3600) +
+                             ([int]$(if ($cm.Groups[2].Success) { $cm.Groups[2].Value } else { 0 }) * 60) +
+                             [int]$cm.Groups[3].Value
+        }
+        # The bar is drawn on the marker line or the two below it.
+        for ($cj = $cIdx; $cj -lt [Math]::Min($cLines.Count, $cIdx + 3); $cj++) {
+            $cp = [regex]::Match($cLines[$cj], '(\d{1,3})\s*%')
+            if ($cp.Success) {
+                $cv = [int]$cp.Groups[1].Value
+                if ($cv -ge 0 -and $cv -le 100) { $v.CompactPct = $cv }
+                break
+            }
+        }
+    }
 
     # =====================================================================
     # THE CONTEXT, OFF THE SESSION'S OWN BAR.
@@ -7976,6 +8024,53 @@ function Get-SRSkills {
             $seen[$k] = $true
             $out.Add($m)
         }
+    }
+
+    # 🔴 THE BUILT-IN COMMANDS ARE NOT FILES, so nothing above can ever find
+    # them. Reported: typing /compact offers nothing, so it has to be typed
+    # blind, escaped out of, and typed again - on the one command whose whole
+    # point is that you fire it without thinking about it.
+    #
+    # 🪤 A CURATED LIST, AND IT IS ALLOWED TO BE INCOMPLETE. There is no
+    # manifest to read - `claude` does not publish its slash commands anywhere
+    # this tool can reach - so this is written down rather than discovered. The
+    # cost of a missing one is that it is typed by hand, exactly as today; the
+    # cost of a WRONG one is a command that does nothing when picked, so
+    # everything here is one somebody has actually run.
+    #
+    # 🔑 DISK SKILLS WIN. These are added last and skip any name already seen,
+    # so a project skill called `review` keeps the name and its description.
+    foreach ($bi in @(
+        @{ N = 'compact';  D = 'Summarise this conversation and carry on with the summary as its context.' },
+        @{ N = 'clear';    D = 'Start a fresh conversation, keeping nothing from this one.' },
+        @{ N = 'context';  D = 'Show what is in the context window right now and what is taking the room.' },
+        @{ N = 'cost';     D = 'What this conversation has cost so far.' },
+        @{ N = 'model';    D = 'Switch which model answers.' },
+        @{ N = 'resume';   D = 'Reopen an earlier conversation.' },
+        @{ N = 'agents';   D = 'Manage the sub-agents available to this session.' },
+        @{ N = 'memory';   D = 'Edit the memory files this session loads.' },
+        @{ N = 'config';   D = 'Open the settings for this session.' },
+        @{ N = 'status';   D = 'Account, model, connection and versions.' },
+        @{ N = 'help';     D = 'The list of commands and what they do.' },
+        @{ N = 'init';     D = 'Write a CLAUDE.md for this repository.' },
+        @{ N = 'review';   D = 'Review a pull request or the current changes.' },
+        @{ N = 'export';   D = 'Write this conversation out to a file or the clipboard.' },
+        @{ N = 'usage';    D = 'Plan usage and limits.' },
+        @{ N = 'todos';    D = 'The task list this session is keeping.' },
+        @{ N = 'hooks';    D = 'Configure the hooks that run around tool calls.' },
+        @{ N = 'mcp';      D = 'MCP servers: what is connected and what it offers.' },
+        @{ N = 'doctor';   D = 'Check this installation for problems.' },
+        @{ N = 'bug';      D = 'Report a problem with Claude Code.' },
+        @{ N = 'vim';      D = 'Vim keybindings in the composer.' },
+        @{ N = 'login';    D = 'Sign in to a different account.' },
+        @{ N = 'logout';   D = 'Sign out of this account.' }
+    )) {
+        $k = "$($bi.N)".ToLower()
+        if ($seen.ContainsKey($k)) { continue }
+        $seen[$k] = $true
+        $out.Add([PSCustomObject]@{
+            Name = $bi.N; Description = $bi.D; Source = 'built-in'; Path = ''
+        })
     }
 
     $sorted = @($out | Sort-Object Name)
