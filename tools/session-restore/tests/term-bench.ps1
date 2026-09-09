@@ -103,6 +103,86 @@ foreach ($tbHz in @(60, 30, 20, 10)) {
 
 # =========================================================================
 TB-Say ''
+TB-Say '--- 2b. is there any colour in the buffer to read? ---'
+# 🔴 ASKED FOR, SO MEASURED RATHER THAN ASSUMED. Characters come back exactly;
+# colour lives in a separate plane and that plane is FOUR BITS while claude
+# paints 24-bit through VT. The question is not whether it is faithful - it
+# cannot be - but whether conhost's approximation carries ANY information. One
+# attribute value over the whole screen means the plane is empty and a colour
+# view is dead; several means the shape of the conversation is readable.
+$tbAt = $null
+try { $tbAt = Get-SRScreenAttrs -ProcessId $tbPid } catch { }
+if (-not $tbAt) {
+    TB-Say '  the attribute plane could not be read at all'
+} else {
+    $tbSeen = @{}
+    $tbCells = 0
+    foreach ($tbLn in @("$tbAt" -split "`n")) {
+        $tbLn = "$tbLn".Trim()
+        for ($i = 0; $i + 4 -le $tbLn.Length; $i += 4) {
+            $tbV = $tbLn.Substring($i, 4)
+            $tbCells++
+            if ($tbSeen.ContainsKey($tbV)) { $tbSeen[$tbV] = [int]$tbSeen[$tbV] + 1 }
+            else { $tbSeen[$tbV] = 1 }
+        }
+    }
+    TB-Say ('  {0} cells read, {1} distinct attribute value(s)' -f $tbCells, $tbSeen.Count)
+    foreach ($tbK in @($tbSeen.Keys | Sort-Object { -[int]$tbSeen[$_] } | Select-Object -First 8)) {
+        $tbHex = [Convert]::ToInt32($tbK, 16)
+        TB-Say ('    0x{0}  fg {1,2}  bg {2,2}   {3,7} cells' -f $tbK, ($tbHex -band 0x0F), (($tbHex -shr 4) -band 0x0F), $tbSeen[$tbK])
+    }
+    if ($tbSeen.Count -le 1) {
+        TB-Say '  VERDICT: ONE value over the whole screen. The plane carries nothing;'
+        TB-Say '           a colour view cannot be built on this reader.'
+    } else {
+        TB-Say ('  VERDICT: {0} distinct values - the plane carries something, and a' -f $tbSeen.Count)
+        TB-Say '           16-colour approximation of the screen is reachable.'
+    }
+}
+
+# =========================================================================
+TB-Say ''
+TB-Say '--- 2c. what colour costs per frame ---'
+# 🔴 THE CLAIM IS "a second read and a redraw", so it is measured rather than
+# asserted. Two numbers decide whether colour can run at the same 33 ms as the
+# plain path: the extra read, and how many INLINES a screen turns into - runs of
+# same-coloured cells, not cells.
+$tbAtRuns = New-Object System.Collections.Generic.List[double]
+for ($i = 0; $i -lt 10; $i++) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $null = Get-SRScreenTextServed -ProcessId $tbPid -Attrs
+    $sw.Stop()
+    $null = $tbAtRuns.Add($sw.Elapsed.TotalMilliseconds)
+}
+$tbAtMed = TB-Med $tbAtRuns.ToArray()
+TB-Say ('  the attribute plane, served      med {0,6:N1} ms  (the text was {1:N1})' -f $tbAtMed, $tbR)
+TB-Say ('  so a coloured frame reads        {0,6:N1} ms against {1:N1} plain' -f ($tbR + $tbAtMed), $tbR)
+
+$tbTxt2 = Get-SRScreenText -ProcessId $tbPid
+$tbAt2  = Get-SRScreenTextServed -ProcessId $tbPid -Attrs
+if ($tbTxt2 -and $tbAt2) {
+    $tbTl = @("$tbTxt2" -split "`n")
+    $tbAl = @("$tbAt2" -split "`n")
+    $tbRunN = 0; $tbCellN = 0
+    for ($i = 0; $i -lt [Math]::Min($tbTl.Count, $tbAl.Count); $i++) {
+        $t = "$($tbTl[$i])"; $a = "$($tbAl[$i])"
+        if (-not $t.Length) { continue }
+        $last = -1
+        for ($c = 0; $c -lt $t.Length; $c++) {
+            $tbCellN++
+            $v = 7
+            if (($c * 4) + 4 -le $a.Length) { try { $v = [Convert]::ToInt32($a.Substring($c * 4, 4), 16) } catch { } }
+            if ($v -ne $last) { $tbRunN++; $last = $v }
+        }
+    }
+    TB-Say ('  {0} cells collapse to {1} runs - {2:N1} cells a run' -f $tbCellN, $tbRunN, $(if ($tbRunN) { $tbCellN / $tbRunN } else { 0 }))
+    if ($tbRunN -gt 0) {
+        TB-Say ('  so a coloured frame builds about {0} inlines where the plain one sets one string' -f $tbRunN)
+    }
+}
+
+# =========================================================================
+TB-Say ''
 TB-Say '--- 3. what cannot be reached, whatever the frame rate ---'
 # 🔴 ReadConsoleOutputCharacterW RETURNS CHARACTERS. Colour lives in the
 # attribute plane, and the legacy attribute plane is FOUR BITS - claude paints

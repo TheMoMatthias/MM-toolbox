@@ -4188,6 +4188,48 @@ public static class SRConLite {
     [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetConsoleScreenBufferInfo(IntPtr h, out CSBI info);
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
     public static extern bool ReadConsoleOutputCharacterW(IntPtr h, [Out] char[] buf, uint len, uint coord, out uint got);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool ReadConsoleOutputAttribute(IntPtr h, [Out] ushort[] buf, uint len, uint coord, out uint got);
+
+    // 🔑 WHAT COLOUR THE BUFFER THINKS IT IS, which is not the same question as
+    // what the terminal draws. Characters come back exactly; colour lives in a
+    // separate plane, and that plane is FOUR BITS of foreground and four of
+    // background while claude paints 24-bit through VT sequences. So this can
+    // only ever return an approximation conhost computed on the way past - and
+    // whether that approximation carries any information at all is a question
+    // about this machine, not about the API. Hence a reader for it, and a
+    // measurement, before anything is built on top.
+    //
+    // One line per row, attributes as four hex digits each, so a caller can
+    // line them up against the characters from Rows().
+    public static string Attrs(uint pid, int back) {
+        FreeConsole();
+        if (!AttachConsole(pid)) { return "!attach " + Marshal.GetLastWin32Error(); }
+        try {
+            IntPtr h = CreateFileW("CONOUT$", 0x80000000u | 0x40000000u, 1u | 2u, IntPtr.Zero, 3u, 0u, IntPtr.Zero);
+            if (h == new IntPtr(-1)) return "!conout " + Marshal.GetLastWin32Error();
+            try {
+                CSBI info;
+                if (!GetConsoleScreenBufferInfo(h, out info)) return "!csbi " + Marshal.GetLastWin32Error();
+                int w = info.Size.X, rows = info.Size.Y;
+                if (w <= 0 || rows <= 0) return "!empty";
+                int top = info.Window.T < 0 ? 0 : info.Window.T;
+                int bot = info.Window.B >= rows ? rows - 1 : info.Window.B;
+                if (bot < top) { top = 0; bot = rows - 1; }
+                if (back > 0) { top = top - back; if (top < 0) top = 0; }
+                System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                ushort[] line = new ushort[w];
+                for (int y = top; y <= bot; y++) {
+                    uint got;
+                    uint at = ((uint)y << 16);
+                    if (!ReadConsoleOutputAttribute(h, line, (uint)w, at, out got)) continue;
+                    for (int x = 0; x < (int)got; x++) { sb.Append(line[x].ToString("x4")); }
+                    sb.Append((char)10);
+                }
+                return sb.ToString();
+            } finally { CloseHandle(h); }
+        } finally { FreeConsole(); }
+    }
 
     // The visible screen, which is what every caller but the watcher wants.
     public static string Screen(uint pid) { return Rows(pid, 0); }
@@ -4322,19 +4364,29 @@ public static class SRScreenMain {
                         if (line == "-quit") return 0;
                         uint one;
                         string got;
-                        // "<pid>" as before, or "<pid>:<back>" for scrollback.
-                        // A colon cannot occur in the old form, so an older
-                        // caller and a newer server still understand each other.
+                        // "<pid>" as before, "<pid>:<back>" for scrollback, and
+                        // "a<pid>" for the attribute plane instead of the text.
+                        // Neither prefix nor colon can occur in the old form, so
+                        // an older caller and a newer server still understand
+                        // each other.
                         int askBack = 0;
+                        bool wantAttrs = false;
                         string pidPart = line;
-                        int colon = line.IndexOf(':');
+                        if (pidPart.Length > 1 && (pidPart[0] == 'a' || pidPart[0] == 'A')) {
+                            wantAttrs = true;
+                            pidPart = pidPart.Substring(1);
+                        }
+                        int colon = pidPart.IndexOf(':');
                         if (colon > 0) {
-                            int.TryParse(line.Substring(colon + 1), out askBack);
-                            pidPart = line.Substring(0, colon);
+                            int.TryParse(pidPart.Substring(colon + 1), out askBack);
+                            pidPart = pidPart.Substring(0, colon);
                         }
                         if (!uint.TryParse(pidPart, out one)) { got = "!badpid"; }
                         else {
-                            try { got = SRConLite.Rows(one, askBack); }
+                            try {
+                                got = wantAttrs ? SRConLite.Attrs(one, askBack)
+                                                : SRConLite.Rows(one, askBack);
+                            }
                             catch (System.Exception e) { got = "!ex " + e.Message; }
                         }
                         // The reply is the text, then a sentinel line that cannot
@@ -4360,6 +4412,15 @@ public static class SRScreenMain {
             if (a.Length >= 3) { int.TryParse(a[2], out idle); }
             if (idle < 5000) idle = 5000;
             return Serve(a[1], idle);
+        }
+        // SRScreenMain -attrs <pid> <out> [back]
+        if (a.Length >= 3 && a[0] == "-attrs") {
+            uint ap;
+            if (!uint.TryParse(a[1], out ap)) return 2;
+            int aback = 0;
+            if (a.Length >= 4) { int.TryParse(a[3], out aback); }
+            System.IO.File.WriteAllText(a[2], SRConLite.Attrs(ap, aback), new System.Text.UTF8Encoding(false));
+            return 0;
         }
         if (a.Length >= 3 && a[0] == "-batch") {
             System.Text.StringBuilder all = new System.Text.StringBuilder();
@@ -4626,12 +4687,13 @@ function Connect-SRScreenServer {
 # drops the frame instead.
 function Get-SRScreenTextServed {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][int]$ProcessId, [int]$Back = 0, [int]$TimeoutMs = 0)
+    param([Parameter(Mandatory)][int]$ProcessId, [int]$Back = 0, [int]$TimeoutMs = 0, [switch]$Attrs)
     if (-not (Connect-SRScreenServer)) { return $null }
     if ($TimeoutMs -le 0) { $TimeoutMs = $SR_ScreenReadMs }
     try {
         $ask = [string]$ProcessId
         if ($Back -gt 0) { $ask = '{0}:{1}' -f $ProcessId, $Back }
+        if ($Attrs) { $ask = 'a' + $ask }
         $script:SR_ScreenWr.WriteLine($ask)
         $sb = New-Object System.Text.StringBuilder
         $stop = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
@@ -4659,6 +4721,32 @@ function Get-SRScreenTextServed {
         Stop-SRScreenServer
         return $null
     }
+}
+
+# The attribute plane for one console, one line of four-hex-digit values per
+# row. Spawns the reader - there is no served form, because nothing on a hot
+# path asks for this. See SRConLite.Attrs for what it can and cannot answer.
+function Get-SRScreenAttrs {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId, [int]$Back = 0)
+    if ($ProcessId -le 0) { return $null }
+    $exe = Get-SRScreenExe
+    if (-not $exe) { return $null }
+    $outE = Join-Path $SR_StateDir ('attrs-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = ('-attrs {0} "{1}" {2}' -f $ProcessId, $outE, [int]$Back)
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $ep = [System.Diagnostics.Process]::Start($psi)
+        if (-not $ep.WaitForExit(6000)) { try { $ep.Kill() } catch { }; return $null }
+        if (-not (Test-Path -LiteralPath $outE)) { return $null }
+        $t = [System.IO.File]::ReadAllText($outE)
+        if (-not $t -or $t.StartsWith('!')) { return $null }
+        return $t
+    } catch { return $null }
+    finally { Remove-Item -LiteralPath $outE -Force -ErrorAction SilentlyContinue }
 }
 
 # 🔑 -Back IS ROWS ABOVE THE VISIBLE TOP, and 0 - the default - is the old

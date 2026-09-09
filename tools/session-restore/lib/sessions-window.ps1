@@ -3237,6 +3237,14 @@ $SR_YouInks = @{
     'blue'   = 'In'
     'violet' = 'Tool'
 }
+# Colour in the terminal watcher. Default ON, because it was asked for; a
+# setting because it costs a second read and a rebuild of the pane's inlines per
+# frame, and somebody watching a very busy session may want the cheap one.
+$SR_TermColour = $true
+try {
+    $tc0 = "$((Get-SRConfig).terminalColour)".Trim().ToLower()
+    if ($tc0 -eq 'off' -or $tc0 -eq 'false') { $SR_TermColour = $false }
+} catch { }
 $SR_YouGround = 'neutral'
 $SR_YouInk    = 'normal'
 try {
@@ -5117,6 +5125,41 @@ $SR_TermReadMs   = 66
 # How much of what has scrolled past is kept, per conversation. 4.000 lines is
 # a long morning of output and about a megabyte.
 $SR_TermHistMax  = 4000
+# 🔴 SIXTEEN COLOURS, WHICH IS ALL THERE IS. Asked for, and measured before it
+# was built (tests\term-bench.ps1): the console keeps characters in one plane
+# and colour in ANOTHER, and that other plane is four bits of foreground and
+# four of background. claude paints 24-bit through VT sequences, so what comes
+# back is conhost's own nearest-legacy approximation of what it drew.
+#
+# The measurement is what decided this was worth building rather than the idea:
+# 3.600 cells of a live claude screen carried FOUR distinct values - 0x07
+# default, 0x08 dim, 0x0F bright, 0x02 green. That is not the palette, but it is
+# the STRUCTURE: what is secondary, what is emphasised, what succeeded. A view
+# with that reads far more like the session than a flat grey one.
+#
+# 🪤 IT IS AN APPROXIMATION AND MUST NEVER BE DESCRIBED AS THE COLOURS. The
+# orange this window uses for your own words is not what the terminal shows for
+# them; it is what conhost rounded that orange to. Anyone reading this view for
+# an exact shade is reading the wrong thing.
+#
+# Tuned for this window's near-black ground rather than taken from the console
+# defaults - 0x00 black on black would be invisible, and dark blue at #000080 is
+# unreadable on #0F0F11.
+$SR_TermPalette = @(
+    '#6B6F76', '#5A7FC0', '#5FA96B', '#4FA8A8', '#C46A6A', '#A97AC4', '#B99A5C', '#B8BCC4',
+    '#8A8F98', '#7FA8E8', '#84D18F', '#74D0D0', '#E88A8A', '#CB9FE8', '#E0C179', '#FFFFFF'
+)
+$script:termBrush = @{}
+function Get-SRTermBrush { param([int]$Attr)
+    $fg = $Attr -band 0x0F
+    $b = $script:termBrush[$fg]
+    if ($b) { return $b }
+    $c = [System.Windows.Media.ColorConverter]::ConvertFromString($SR_TermPalette[$fg])
+    $b = New-Object System.Windows.Media.SolidColorBrush $c
+    $b.Freeze()
+    $script:termBrush[$fg] = $b
+    return $b
+}
 $SR_CompactWatch = 420    # stop watching after seven minutes, whatever happened
 $script:compactSent = @{}
 $script:liveAt  = $null
@@ -5148,10 +5191,22 @@ $script:liveShownFor = ''
 $script:termHist = @{}
 $script:termAt   = $null
 
+# 🔑 A LINE MAY CARRY ITS COLOURS, and the merge does not care which. An entry
+# is either a bare string or an object with T (the text) and A (the attribute
+# plane for that row); the reconciliation compares T either way, so the colour
+# support did not need a second merge beside this one - which would have been
+# two implementations of the fiddly part and one of them untested.
+function Get-SRTermLineText { param($L)
+    if ($null -eq $L) { return '' }
+    if ($L -is [string]) { return $L }
+    try { if ($L.PSObject.Properties['T']) { return "$($L.T)" } } catch { }
+    return "$L"
+}
+
 function Merge-SRTermLines {
     param($Have, $Got, [int]$Max = 4000)
-    $out = New-Object System.Collections.Generic.List[string]
-    foreach ($h in $Have) { $null = $out.Add("$h") }
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($h in $Have) { $null = $out.Add($h) }
     $g = @($Got)
     if (-not $g.Count) { return $out }
     # 🪤 EVERY EXIT GOES PAST THE CAP. The first-read path used to return
@@ -5160,7 +5215,7 @@ function Merge-SRTermLines {
     # 40-line first read against a cap of 10.
     $best = 0
     if (-not $out.Count) {
-        foreach ($x in $g) { $null = $out.Add("$x") }
+        foreach ($x in $g) { $null = $out.Add($x) }
         while ($out.Count -gt $Max) { $out.RemoveAt(0) }
         return $out
     }
@@ -5169,14 +5224,14 @@ function Merge-SRTermLines {
         $ok = $true
         $anyInk = $false
         for ($i = 0; $i -lt $k; $i++) {
-            $a = "$($out[$out.Count - $k + $i])"
-            $b = "$($g[$i])"
+            $a = Get-SRTermLineText $out[$out.Count - $k + $i]
+            $b = Get-SRTermLineText $g[$i]
             if ($a -ne $b) { $ok = $false; break }
             if ($a.Trim()) { $anyInk = $true }
         }
         if ($ok -and $anyInk) { $best = $k; break }
     }
-    for ($i = $best; $i -lt $g.Count; $i++) { $null = $out.Add("$($g[$i])") }
+    for ($i = $best; $i -lt $g.Count; $i++) { $null = $out.Add($g[$i]) }
     while ($out.Count -gt $Max) { $out.RemoveAt(0) }
     return $out
 }
@@ -5334,9 +5389,23 @@ function Update-LivePane {
         $script:liveFor = $id
         $script:termAt  = $now
         $got = ''
+        $gotA = ''
         try {
             $got = Get-SRScreenText -ProcessId ([int]$r.A.Pid) -TimeoutMs $SR_TermReadMs -ServedOnly
         } catch { $got = '' }
+        # 🔑 THE COLOURS COME FROM A SECOND PLANE AND SO FROM A SECOND READ.
+        # The console keeps characters and attributes separately, and there is
+        # no combined form on this path - so colour costs one more served read
+        # per frame, measured at about the same 3,6 ms as the first.
+        #
+        # 🪤 AND A FAILED ATTRIBUTE READ IS NOT A FAILED FRAME. If the plane
+        # does not come back the text still draws, uncoloured; losing the words
+        # because the colours were unavailable would be the wrong way round.
+        if ($SR_TermColour -and "$got".Trim()) {
+            try {
+                $gotA = Get-SRScreenTextServed -ProcessId ([int]$r.A.Pid) -TimeoutMs $SR_TermReadMs -Attrs
+            } catch { $gotA = '' }
+        }
         # 🪤 KEEP THE LAST GOOD SCREEN. A read can miss - the budget is two
         # frames and the pipe can lose a race - and blanking the panel on a miss
         # makes the one thing you are watching flicker in and out.
@@ -5351,8 +5420,22 @@ function Update-LivePane {
             $vEnd = $vp.Count - 1
             while ($vEnd -ge 0 -and -not "$($vp[$vEnd])".Trim()) { $vEnd-- }
             if ($vEnd -ge 0) {
+                # A line is a bare string when there are no colours for it and a
+                # T/A pair when there are - see Get-SRTermLineText. The two mix
+                # freely in one history, which is what a read that lost its
+                # attribute plane for one frame leaves behind.
+                $vpA = @()
+                if ("$gotA".Trim()) { $vpA = @("$gotA" -replace "`r", '' -split "`n") }
+                $rows = New-Object System.Collections.Generic.List[object]
+                for ($vi = 0; $vi -le $vEnd; $vi++) {
+                    if ($vi -lt $vpA.Count -and "$($vpA[$vi])".Trim()) {
+                        $null = $rows.Add([PSCustomObject]@{ T = "$($vp[$vi])"; A = "$($vpA[$vi])" })
+                    } else {
+                        $null = $rows.Add("$($vp[$vi])")
+                    }
+                }
                 $script:termHist[$id] = Merge-SRTermLines -Have $script:termHist[$id] `
-                                                          -Got $vp[0..$vEnd] -Max $SR_TermHistMax
+                                                          -Got $rows.ToArray() -Max $SR_TermHistMax
             }
         }
     }
@@ -5364,6 +5447,11 @@ function Update-LivePane {
     } elseif ("$($script:liveTxt)".Trim()) {
         $lines = @("$($script:liveTxt)" -replace "`r", '' -split "`n")
     } else { $lines = @() }
+    $rowsAll = @($lines)
+    $lineText = New-Object System.Collections.Generic.List[string]
+    foreach ($ln0 in $rowsAll) { $null = $lineText.Add((Get-SRTermLineText $ln0)) }
+    $lines = $lineText.ToArray()
+    $start = 0; $end = -1
     if ($lines.Count) {
         # A console buffer is padded with blanks ABOVE what has been written and
         # BELOW where the cursor is, so both ends are trimmed - otherwise the
@@ -5371,7 +5459,6 @@ function Update-LivePane {
         # middle of a blank box.
         $end = $lines.Count - 1
         while ($end -ge 0 -and -not "$($lines[$end])".Trim()) { $end-- }
-        $start = 0
         while ($start -le $end -and -not "$($lines[$start])".Trim()) { $start++ }
         # 🔴 ALL OF IT, NOT THE LAST 26 LINES. Cutting to a window here is what
         # made the ScrollViewer around this TextBlock decoration: there was never
@@ -5401,7 +5488,70 @@ function Update-LivePane {
     }
     $sameConv = ($script:liveShownFor -eq $id)
     $script:liveShownFor = $id
-    $ui.LiveText.Text = $body
+    # 🔴 SIXTEEN COLOURS, DRAWN AS RUNS, OR ONE STRING. The plain path is one
+    # property assignment and is what this did for its whole life; the coloured
+    # one builds an inline per RUN of same-coloured cells, which is the expensive
+    # thing on this frame and the reason colour is a setting.
+    #
+    # 🔑 RUNS, NOT CELLS. A line of 200 characters is typically five or six
+    # runs - the console does not change colour every character - so this is
+    # tens of inlines a line rather than hundreds. Coalescing is what makes it
+    # affordable at all.
+    #
+    # 🪤 A LINE WITH NO ATTRIBUTE PLANE IS STILL DRAWN. It falls back to one
+    # run in the default colour rather than being skipped, which is what a frame
+    # that lost its second read leaves behind.
+    $painted = $false
+    if ($SR_TermColour -and $end -ge $start) {
+        try {
+            $ui.LiveText.Inlines.Clear()
+            $first = $true
+            for ($li = $start; $li -le $end; $li++) {
+                if (-not $first) { $null = $ui.LiveText.Inlines.Add((New-Object System.Windows.Documents.LineBreak)) }
+                $first = $false
+                $txt = "$($lines[$li])"
+                $att = ''
+                $row = $rowsAll[$li]
+                if ($row -and -not ($row -is [string])) {
+                    try { $att = "$($row.A)" } catch { $att = '' }
+                }
+                if (-not $att -or $txt.Length -eq 0) {
+                    if ($txt.Length) {
+                        $rn = New-Object System.Windows.Documents.Run $txt
+                        $null = $ui.LiveText.Inlines.Add($rn)
+                    }
+                    continue
+                }
+                # The attribute plane is four hex digits per cell, in the same
+                # column order as the characters.
+                $ci = 0
+                $runStart = 0
+                $runAttr = -1
+                while ($ci -lt $txt.Length) {
+                    $a = 7
+                    $off = $ci * 4
+                    if ($off + 4 -le $att.Length) {
+                        try { $a = [Convert]::ToInt32($att.Substring($off, 4), 16) } catch { $a = 7 }
+                    }
+                    if ($runAttr -lt 0) { $runAttr = $a }
+                    elseif ($a -ne $runAttr) {
+                        $rn = New-Object System.Windows.Documents.Run $txt.Substring($runStart, $ci - $runStart)
+                        $rn.Foreground = Get-SRTermBrush $runAttr
+                        $null = $ui.LiveText.Inlines.Add($rn)
+                        $runStart = $ci; $runAttr = $a
+                    }
+                    $ci++
+                }
+                if ($runStart -lt $txt.Length) {
+                    $rn = New-Object System.Windows.Documents.Run $txt.Substring($runStart)
+                    $rn.Foreground = Get-SRTermBrush $(if ($runAttr -ge 0) { $runAttr } else { 7 })
+                    $null = $ui.LiveText.Inlines.Add($rn)
+                }
+            }
+            $painted = $true
+        } catch { $painted = $false }
+    }
+    if (-not $painted) { $ui.LiveText.Text = $body }
     if ($sv) {
         try {
             $sv.UpdateLayout()
@@ -11503,6 +11653,15 @@ $script:SR_CfgMeta = @{
             @{ V = 'folded'; L = 'folded - the names and the count, not the contents' },
             @{ V = 'full';   L = 'full - every tool call in the transcript' },
             @{ V = 'hidden'; L = 'hidden - prose only' }
+        )
+    }
+    'terminalColour' = @{
+        Group = 'The reading pane'; Order = 6; Default = 'on'
+        Label = 'Colour when you watch a session''s terminal'
+        Help  = 'A sixteen-colour approximation, which is all the console buffer keeps - claude paints in 24-bit and what comes back is what Windows rounded that to. It costs a second screen read and a redraw of the panel per frame, so turn it off if you are watching something very busy.'
+        Options = @(
+            @{ V = 'on';  L = 'on - dim, bright and coloured text are distinguishable' },
+            @{ V = 'off'; L = 'off - one colour, and a cheaper frame' }
         )
     }
     'yourGround' = @{

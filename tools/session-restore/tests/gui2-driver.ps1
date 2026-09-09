@@ -8815,6 +8815,40 @@ if ((@($tmB2) -join '|') -notmatch 'a new line') {
     Fail ("a run of blank lines swallowed the line after it: '{0}'" -f (@($tmB2) -join '|'))
 } else { Pass 'a run of blank lines cannot anchor the overlap' }
 
+# 🔴 A LINE MAY CARRY ITS COLOURS, AND THE MERGE MUST NOT CARE. A kept line is
+# a bare string when the attribute plane did not come back for that frame and a
+# T/A pair when it did, and BOTH shapes land in one history. Reconciling on the
+# text is what lets colour reuse this merge rather than have a second one beside
+# it - two implementations of the fiddly part, one of them untested.
+$tmMixA = Merge-SRTermLines -Have @() -Got @(
+    [PSCustomObject]@{ T = 'coloured line'; A = '0007000700070007' }, 'plain line')
+$tmMixB = Merge-SRTermLines -Have $tmMixA -Got @('plain line', 'and a new one')
+if (@($tmMixB).Count -ne 3) {
+    Fail ("a history mixing coloured and plain lines merged to {0} lines, not 3" -f @($tmMixB).Count)
+} elseif ((Get-SRTermLineText @($tmMixB)[0]) -ne 'coloured line') {
+    Fail 'the merge lost the text of a line that carried colours'
+} elseif ($null -eq (@($tmMixB)[0]).A) {
+    Fail 'the merge kept the text of a coloured line but dropped its colours'
+} else { Pass 'coloured and plain lines reconcile in one history, colours intact' }
+
+# 🪤 SIXTEEN, AND EVERY ONE VISIBLE ON THIS GROUND. A palette entry that
+# resolves to black would render as nothing on a near-black pane, which reads as
+# missing output rather than as a colour.
+if (@($SR_TermPalette).Count -ne 16) {
+    Fail ("the terminal palette has {0} entries; the attribute plane indexes 16" -f @($SR_TermPalette).Count)
+} else {
+    $tmDark = @()
+    for ($tmI = 0; $tmI -lt 16; $tmI++) {
+        $tmB = Get-SRTermBrush $tmI
+        if (-not $tmB) { $tmDark += $tmI; continue }
+        $tmLum = (0.299 * $tmB.Color.R) + (0.587 * $tmB.Color.G) + (0.114 * $tmB.Color.B)
+        if ($tmLum -lt 40) { $tmDark += $tmI }
+    }
+    if ($tmDark.Count) {
+        Fail ("terminal colour(s) {0} are too dark to read on this ground" -f ($tmDark -join ', '))
+    } else { Pass 'all sixteen terminal colours resolve and are readable on the pane' }
+}
+
 # The history is bounded, or a morning of output is a morning of memory.
 $tmBig = @(); for ($i = 0; $i -lt 40; $i++) { $tmBig += "line $i" }
 $tmCap = Merge-SRTermLines -Have @() -Got $tmBig -Max 10

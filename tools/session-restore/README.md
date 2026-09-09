@@ -338,8 +338,11 @@ guessing which.
 
 Three honest limits, all of them the console API's rather than choices:
 
-- **It is monochrome.** The API returns characters; colour lives in a four-bit
-  attribute plane and claude paints in 24-bit over VT.
+- **Colour is an approximation, not the colours.** The API keeps characters in
+  one plane and colour in another, and that other plane is four bits — claude
+  paints 24-bit over VT, so what comes back is what Windows rounded it to.
+  Measured on a live screen: four distinct values, which is enough to tell dim
+  from normal from emphasised. `terminalColour: off` buys a cheaper frame.
 - **Scrolling covers what happened while you were watching.** Under ConPTY the
   console buffer *is* the visible screen — whatever scrolled off belongs to
   Windows Terminal and no console API can reach it. So the window keeps its own
@@ -387,7 +390,7 @@ What is in it, by group:
 |---|---|
 | What comes back at your next logon | `maxSessions`, `recencyDays`, `sessionWindowDays`, `launchGapMs`, `includeWorktrees`, and the three `autoTick*` keys |
 | What the lists show | `listDays`, `registryWindowDays`, `shelveSuggestDays`, `foldProjects`, `foldSessions`, `railBandsShut` |
-| The reading pane | `transcriptTools`, `readingWidth`, `lineSpacing`, `yourGround`, `yourInk` |
+| The reading pane | `transcriptTools`, `readingWidth`, `lineSpacing`, `yourGround`, `yourInk`, `terminalColour` |
 | How it looks | `zoom`, `textRendering` |
 | Where it looks for conversations | `excludePatterns` |
 | Other settings in this file | `oauthTokenUrl`, `panelScanMaxAgeSeconds` — nothing reads these any more; they are kept in the file so an older copy still finds what it expects |
