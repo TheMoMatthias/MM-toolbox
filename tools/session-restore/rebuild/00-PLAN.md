@@ -4,8 +4,8 @@ One pass, worked top to bottom. Every item has a **done-when** you can check
 without asking anybody — a command and its expected result, or an observable
 state. An item with no done-when is not an item.
 
-**Phases 0 and 1 are complete, and 2.1-2.3 with them.** Everything from 2.4 down
-is still to do. The PowerShell tool remains the daily driver and is untouched by any
+**Phases 0 and 1 are complete, and 2.1-2.3 and 2.4a with them.** Everything from
+2.4b down is still to do. The PowerShell tool remains the daily driver and is untouched by any
 of it.
 
 ---
@@ -119,7 +119,8 @@ against the PowerShell on the operator's real data.
 | 2.2 | **Registry read** — typed model of `sessions-registry.json` | same conversation count, ids and ticks as `Get-SRRegistry` on the real 1 MB file | ✅ 3 oracle cases, 558 sessions x 13 fields |
 | 2.3a | **Transcripts: last said** — the tail reader and the headline | same last-said text, pending tool and timestamp over every conversation on disk | ✅ 2 oracle cases, 546 transcripts |
 | 2.3b | **Transcripts: blocks** — `Get-SRTranscriptBlocks`, the reading model | same blocks, same order, same fields over a 40-conversation sample | ✅ 2 oracle cases + a defect found in the PowerShell |
-| 2.4 | **Console API** — one class, the 36 imports (`03-CONTRACTS.md`) | a live screen read matches `Get-SRScreenText` character for character, and the attribute plane matches too | — |
+| 2.4a | **Console API: reading** — attach, read, detach | a live screen matches `Get-SRScreenText` character for character | ✅ 22 live screens, 1 oracle case |
+| 2.4b | **Console API: the pipe server, and WRITING** | a held-open helper matches the spawn-per-read; keys land in a REPLICA console this tool owns | — |
 | 2.5 | **Sessions / agents** — `claude agents --json`, `wt.exe`, process tree | the agent map matches, including `busy` | — |
 | 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | — |
 | 2.7 | **Registry WRITE** — last, behind the guards | refuses every case the PowerShell refuses; the stale check still fires; verified against a *copy*, never the live file | — |
@@ -249,6 +250,45 @@ active, which is what the surface shows.
 alphabetically put `bodyLen` ahead of `kinds` and reported a body-length
 difference on a row whose block *sequence* was the thing worth looking at. Key
 order is still not a difference; it is just the right order to look in.
+
+### 2.4a as it turned out
+
+**22 of the operator's live sessions read character for character by both
+implementations.** One moved between the two sides and is reported as such.
+
+🔴 **NOTHING IN THE C# CAN TYPE INTO A SESSION YET, and that is deliberate rather
+than incidental.** `WriteConsoleInputW` is absent from `ConsoleApi`, from Core
+and from this phase; it arrives at **2.4b** with a replica console of its own to
+be proven against, the way `tests/term-replica.ps1` proves the PowerShell's.
+
+🔴 **The attaching happens in a helper process (`sr-screen`), never in the
+window.** A process can be attached to only one console at a time, and attaching
+hands it somebody else's - a UI process doing that would have its own standard
+handles and Ctrl+C behaviour redefined underneath it. The answer comes back
+through a FILE rather than stdout, which is the PowerShell's own measured
+lesson: a child that has just freed its console is not something to trust a
+redirected stream to.
+
+🪤 **A LIVE SCREEN MOVES, and that is a fact about the thing being read.** Both
+sides read twice - the PowerShell with a full second between, which is long
+enough to mean "idle" - and only screens that held still are compared. Three
+things came out of getting that right:
+
+- The first version handled "still for them, moving for us" by **echoing the
+  PowerShell's own text back**, which turns a limitation into a pass. That is
+  the one thing the oracle's contract forbids outright; it now says so in its
+  own words and the difference is reported.
+- The allowance is **named, narrow and printed every time it is used** - exactly
+  two difference shapes, and any other difference in any other field still
+  fails.
+- `JsonDiff` collects **every** difference now, not the first. A tolerance
+  applied to the first alone would let a forgiven row hide every real difference
+  behind it, silently widening into "ignore this case".
+
+🔴 **And it refuses to be green having checked nothing.** If every session
+happened to be working, the case would compare nothing and pass - so it emits a
+row saying so, and the run prints how many screens it actually held to a
+comparison.
 
 🔴 **2.7 is last on purpose.** Nothing writes until everything reads correctly.
 The guards are ported before the writer they guard, and they are ported as

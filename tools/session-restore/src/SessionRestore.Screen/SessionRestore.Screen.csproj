@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    sr-screen - the helper that attaches to another process's console and reads
+    it. Separate from the window on purpose and not for tidiness: attaching
+    hands THIS process somebody else's console, so a UI process that did it
+    would have its own standard handles and Ctrl+C behaviour redefined
+    underneath it.
+
+    🔴 IT ONLY READS. WriteConsoleInputW is not in this project, not in Core,
+    and not in this phase.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>SessionRestore.Screen</RootNamespace>
+    <AssemblyName>sr-screen</AssemblyName>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SessionRestore.Core\SessionRestore.Core.csproj" />
+  </ItemGroup>
+
+</Project>

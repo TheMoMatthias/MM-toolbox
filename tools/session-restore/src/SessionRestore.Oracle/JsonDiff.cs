@@ -24,6 +24,22 @@ public static class JsonDiff
     /// </summary>
     public static string? FirstDifference(string leftJson, string rightJson)
     {
+        var all = Differences(leftJson, rightJson, 1);
+        return all.Count > 0 ? all[0] : null;
+    }
+
+    /// <summary>
+    /// Up to <paramref name="max"/> structural differences.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 A CASE WITH A NAMED ALLOWANCE NEEDS ALL OF THEM, NOT THE FIRST. If a
+    /// tolerance were applied to the first difference only, a forgiven row would
+    /// hide every real difference behind it - the allowance would silently widen
+    /// into "ignore this case". Collecting them means a case passes only when
+    /// EVERY difference it has is one it named.
+    /// </remarks>
+    public static List<string> Differences(string leftJson, string rightJson, int max = 50)
+    {
         JsonNode? a, b;
         try
         {
@@ -31,7 +47,7 @@ public static class JsonDiff
         }
         catch (JsonException ex)
         {
-            return "the PowerShell side did not produce JSON: " + ex.Message;
+            return ["the PowerShell side did not produce JSON: " + ex.Message];
         }
 
         try
@@ -40,10 +56,12 @@ public static class JsonDiff
         }
         catch (JsonException ex)
         {
-            return "the C# side did not produce JSON: " + ex.Message;
+            return ["the C# side did not produce JSON: " + ex.Message];
         }
 
-        return Walk("$", a, b);
+        var found = new List<string>();
+        Walk("$", a, b, found, max);
+        return found;
     }
 
     private static JsonNode? Parse(string s)
@@ -54,16 +72,22 @@ public static class JsonDiff
         return t.Length == 0 ? null : JsonNode.Parse(t);
     }
 
-    private static string? Walk(string path, JsonNode? a, JsonNode? b)
+    private static void Walk(string path, JsonNode? a, JsonNode? b, List<string> found, int max)
     {
+        if (found.Count >= max)
+        {
+            return;
+        }
+
         if (a is null && b is null)
         {
-            return null;
+            return;
         }
 
         if (a is null || b is null)
         {
-            return path + ": one side is empty (" + Describe(a) + " vs " + Describe(b) + ")";
+            found.Add(path + ": one side is empty (" + Describe(a) + " vs " + Describe(b) + ")");
+            return;
         }
 
         if (a is JsonObject oa && b is JsonObject ob)
@@ -79,54 +103,49 @@ public static class JsonDiff
             {
                 if (!ob.TryGetPropertyValue(kv.Key, out var bv))
                 {
-                    return path + "." + kv.Key + ": present in PowerShell, missing in C#";
+                    found.Add(path + "." + kv.Key + ": present in PowerShell, missing in C#");
+                    continue;
                 }
 
-                var d = Walk(path + "." + kv.Key, kv.Value, bv);
-                if (d is not null)
-                {
-                    return d;
-                }
+                Walk(path + "." + kv.Key, kv.Value, bv, found, max);
             }
 
             foreach (var kv in ob)
             {
                 if (!oa.ContainsKey(kv.Key))
                 {
-                    return path + "." + kv.Key + ": present in C#, missing in PowerShell";
+                    found.Add(path + "." + kv.Key + ": present in C#, missing in PowerShell");
                 }
             }
 
-            return null;
+            return;
         }
 
         if (a is JsonArray aa && b is JsonArray ba)
         {
             if (aa.Count != ba.Count)
             {
-                return path + ": " + aa.Count.ToString(CultureInfo.InvariantCulture) + " item(s) in PowerShell, "
-                     + ba.Count.ToString(CultureInfo.InvariantCulture) + " in C#";
+                found.Add(path + ": " + aa.Count.ToString(CultureInfo.InvariantCulture) + " item(s) in PowerShell, "
+                     + ba.Count.ToString(CultureInfo.InvariantCulture) + " in C#");
+                return;
             }
 
-            for (var i = 0; i < aa.Count; i++)
+            for (var i = 0; i < aa.Count && found.Count < max; i++)
             {
-                var d = Walk(path + "[" + i.ToString(CultureInfo.InvariantCulture) + "]", aa[i], ba[i]);
-                if (d is not null)
-                {
-                    return d;
-                }
+                Walk(path + "[" + i.ToString(CultureInfo.InvariantCulture) + "]", aa[i], ba[i], found, max);
             }
 
-            return null;
+            return;
         }
 
         var sa = Scalar(a);
         var sb = Scalar(b);
         // 🪤 ORDINAL. A culture-sensitive compare is what made ("· x")
         // .StartsWith("⏵") return True and cost a day - see the ledger.
-        return string.Equals(sa, sb, StringComparison.Ordinal)
-            ? null
-            : path + ": PowerShell " + Quote(sa) + ", C# " + Quote(sb);
+        if (!string.Equals(sa, sb, StringComparison.Ordinal))
+        {
+            found.Add(path + ": PowerShell " + Quote(sa) + ", C# " + Quote(sb));
+        }
     }
 
     private static string Describe(JsonNode? n) => n is null ? "nothing" : n.GetType().Name;

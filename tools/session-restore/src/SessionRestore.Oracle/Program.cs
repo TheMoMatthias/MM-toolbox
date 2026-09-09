@@ -76,6 +76,7 @@ cases.AddRange(ConfigCases.All());
 cases.AddRange(RegistryCases.All());
 cases.AddRange(TranscriptCases.All());
 cases.AddRange(BlockCases.All());
+cases.AddRange(ScreenCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
@@ -109,9 +110,25 @@ foreach (var (c, expectAgree, meaning) in cases)
     {
         Ok(string.Format(CultureInfo.InvariantCulture, "{0,-42} {1}  [ps {2} ms, c# {3} ms]",
             c.Name, meaning, r.PsMs, r.CsMs));
+
+        // What a comparison against LIVE data actually managed to check. A green
+        // that covered two screens out of thirty is a different statement from
+        // one that covered thirty, and only one of them is worth having.
+        if (c.Name.StartsWith("console/", StringComparison.Ordinal))
+        {
+            Note("      " + ScreenCases.Coverage());
+        }
         if (!expectAgree && r.Difference is not null)
         {
             Note("      " + r.Difference);
+        }
+
+        if (r.Forgave is not null)
+        {
+            // Printed every time. An allowance nobody sees is an allowance
+            // nobody re-examines.
+            Note("      allowed: " + c.ToleranceReason);
+            Note("      " + r.Forgave);
         }
     }
     else

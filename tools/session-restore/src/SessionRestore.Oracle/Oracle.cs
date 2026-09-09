@@ -26,6 +26,26 @@ public sealed record OracleCase(
         : this(name, why, powerShell, _ => csharp())
     {
     }
+
+    /// <summary>
+    /// A difference this case is allowed to have, and why.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 A NAMED ALLOWANCE, NEVER A SILENT ONE. Some comparisons are against
+    /// something that MOVES - a live session's screen changes while it is being
+    /// read - and a harness with no way to say so has only two options, both
+    /// bad: report a working implementation as broken on any busy afternoon, or
+    /// quietly copy one side's answer to the other. The first gets the harness
+    /// switched off; the second is the one thing its contract forbids.
+    ///
+    /// 🪤 IT TAKES THE DIFFERENCE TEXT, so an allowance can only ever match a
+    /// SHAPE somebody wrote down. It cannot be "ignore failures in this case",
+    /// and every use of it prints what it forgave.
+    /// </remarks>
+    public Func<string, bool>? Tolerate { get; init; }
+
+    /// <summary>What the allowance is for, printed whenever it is used.</summary>
+    public string ToleranceReason { get; init; } = string.Empty;
 }
 
 /// <summary>What a comparison found.</summary>
@@ -36,6 +56,9 @@ public sealed record OracleResult(
     long PsMs,
     long CsMs)
 {
+    /// <summary>A difference this case's named allowance let through, if any.</summary>
+    public string? Forgave { get; init; }
+
     public bool Inconclusive => Difference is not null && Difference.StartsWith("could not run", StringComparison.Ordinal);
 }
 
@@ -92,8 +115,30 @@ public static class Oracle
         }
 
         sw.Stop();
-        var diff = JsonDiff.FirstDifference(ps.StdOut, cs);
-        return new OracleResult(c.Name, diff is null, diff, psMs, sw.ElapsedMilliseconds);
+
+        // 🔴 EVERY DIFFERENCE, NOT THE FIRST, because a case with a named
+        // allowance passes only when ALL of them are ones it named. Applying a
+        // tolerance to the first difference alone would let a forgiven row hide
+        // every real difference behind it.
+        var diffs = JsonDiff.Differences(ps.StdOut, cs);
+        if (diffs.Count == 0)
+        {
+            return new OracleResult(c.Name, true, null, psMs, sw.ElapsedMilliseconds);
+        }
+
+        if (c.Tolerate is not null && diffs.TrueForAll(d => c.Tolerate(d)))
+        {
+            return new OracleResult(c.Name, true, null, psMs, sw.ElapsedMilliseconds)
+            {
+                Forgave = diffs.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                          + " difference(s), first: " + diffs[0],
+            };
+        }
+
+        // Report the first one this case did NOT name, which is the one worth
+        // reading - not the first one overall.
+        var real = diffs.Find(d => c.Tolerate is null || !c.Tolerate(d)) ?? diffs[0];
+        return new OracleResult(c.Name, false, real, psMs, sw.ElapsedMilliseconds);
     }
 
     private static string Shorten(string s)

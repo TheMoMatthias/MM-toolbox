@@ -17,6 +17,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SessionRestore.Core\SessionRestore.Core.csproj" />
+    <!-- So sr-screen.exe lands beside the oracle: the console comparison runs it. -->
+    <ProjectReference Include="..\SessionRestore.Screen\SessionRestore.Screen.csproj" />
   </ItemGroup>
 
 </Project>
