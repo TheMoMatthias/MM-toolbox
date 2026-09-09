@@ -4,8 +4,9 @@ One pass, worked top to bottom. Every item has a **done-when** you can check
 without asking anybody — a command and its expected result, or an observable
 state. An item with no done-when is not an item.
 
-**Phases 0 and 1 are complete.** Everything from Phase 2 down is still to do.
-The PowerShell tool remains the daily driver and is untouched by any of it.
+**Phases 0 and 1 are complete, and 2.1 with them.** Everything from 2.2 down is
+still to do. The PowerShell tool remains the daily driver and is untouched by any
+of it.
 
 ---
 
@@ -112,15 +113,48 @@ comparison that merely timed out came back as an `ObjectDisposedException`.
 In dependency order. Each item ships with xUnit tests **and** a differential run
 against the PowerShell on the operator's real data.
 
-| | what | done-when |
-|---|---|---|
-| 2.1 | **Config** — the 25 settings, defaults, allowed values (`03-CONTRACTS.md`) | reads the operator's real config; round-trips it byte-identically; an untouched default is never written |
-| 2.2 | **Registry read** — typed model of `sessions-registry.json` | same conversation count, ids and ticks as `Get-SRRegistry` on the real 1 MB file |
-| 2.3 | **Transcripts** — `.jsonl` reader, turn folding | same turn count and same last-said text as the PowerShell, over every conversation on disk |
-| 2.4 | **Console API** — one class, the 36 imports (`03-CONTRACTS.md`) | a live screen read matches `Get-SRScreenText` character for character, and the attribute plane matches too |
-| 2.5 | **Sessions / agents** — `claude agents --json`, `wt.exe`, process tree | the agent map matches, including `busy` |
-| 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in |
-| 2.7 | **Registry WRITE** — last, behind the guards | refuses every case the PowerShell refuses; the stale check still fires; verified against a *copy*, never the live file |
+| | what | done-when | state |
+|---|---|---|---|
+| 2.1 | **Config** — the 25 settings, defaults, allowed values (`03-CONTRACTS.md`) | reads the operator's real config; every setting resolves to the same value; an untouched default is never written | ✅ 3 oracle cases, 13 tests |
+| 2.2 | **Registry read** — typed model of `sessions-registry.json` | same conversation count, ids and ticks as `Get-SRRegistry` on the real 1 MB file | — |
+| 2.3 | **Transcripts** — `.jsonl` reader, turn folding | same turn count and same last-said text as the PowerShell, over every conversation on disk | — |
+| 2.4 | **Console API** — one class, the 36 imports (`03-CONTRACTS.md`) | a live screen read matches `Get-SRScreenText` character for character, and the attribute plane matches too | — |
+| 2.5 | **Sessions / agents** — `claude agents --json`, `wt.exe`, process tree | the agent map matches, including `busy` | — |
+| 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | — |
+| 2.7 | **Registry WRITE** — last, behind the guards | refuses every case the PowerShell refuses; the stale check still fires; verified against a *copy*, never the live file | — |
+
+### 2.1 as it turned out
+
+**The done-when was written as "round-trips it byte-identically" and that was
+the wrong bar.** Matching PowerShell's `ConvertTo-Json -Depth 8` formatting
+character for character buys nothing — after cutover the C# owns the format, and
+both tools read JSON either way. What actually matters is that a write **keeps
+what it did not come to change**, so the done-when is that instead: every key
+survives a render, prose and commented-out keys included, and rendering with no
+changes adds nothing.
+
+🔴 **There were THREE places a default lived, not one.** `Get-SRConfigRead`'s
+table in `_common.ps1` (15 keys), `$SR_CfgMeta`'s `Default` in the window (7),
+and inline at the point of use (`$SR_TermColour = $true`, `$SR_YouGround =
+'neutral'`). Where two of them define the same key they **agree** — checked, so
+this was duplication rather than a live defect, but it is exactly the shape that
+becomes one. `SettingsCatalog.g.cs` is the single table, and it is **generated**
+from the PowerShell by `rebuild/tools/gen_settings.py` so it cannot drift while
+both exist.
+
+🪤 **The oracle earned itself on its first real comparison.** `railBandsShut`
+came back as `week,month,older` where the operator's file says `month,older` —
+the generator was reading choice lists from `Options` only, and this setting
+declares its values under `Flags`, so it arrived with none allowed. Two defects,
+and the second is the one that matters:
+
+- the generator now reads both lists;
+- **`Accepts` treated "no options declared" as "nothing is allowed"**, which
+  turned a gap in generated code into a *silent reset of a real setting*. It
+  reads the other way now — no declared options means nothing to check against,
+  because when this code is wrong the safe thing is to keep what the operator
+  wrote. The strictness moved into a test that fails if any Choice or Flags
+  setting declares no options, confirmed red by re-injecting the defect.
 
 🔴 **2.7 is last on purpose.** Nothing writes until everything reads correctly.
 The guards are ported before the writer they guard, and they are ported as

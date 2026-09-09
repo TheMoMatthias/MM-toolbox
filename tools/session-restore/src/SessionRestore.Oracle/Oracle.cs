@@ -3,11 +3,30 @@ using System.Diagnostics;
 namespace SessionRestore.Oracle;
 
 /// <summary>One side-by-side comparison of the old implementation and the new.</summary>
+/// <remarks>
+/// 🔑 THE C# SIDE IS HANDED THE POWERSHELL'S ANSWER, and that is not cheating -
+/// it is what lets a comparison ASK ABOUT THE SAME THINGS. Many of these
+/// questions are of the form "for these 434 conversations, do you agree?", and
+/// the list of 434 is the QUESTION, not the answer. A C# side that had to
+/// enumerate them itself would be testing two things at once and would report a
+/// difference in the enumeration as a difference in the answer.
+///
+/// 🪤 What it must never do is read the VALUES out of that string and hand them
+/// back. Every case here computes its own answers; the input is used to decide
+/// what to compute them about.
+/// </remarks>
 public sealed record OracleCase(
     string Name,
     string Why,
     string PowerShell,
-    Func<string> CSharp);
+    Func<string, string> CSharp)
+{
+    /// <summary>For a comparison that needs no input from the other side.</summary>
+    public OracleCase(string name, string why, string powerShell, Func<string> csharp)
+        : this(name, why, powerShell, _ => csharp())
+    {
+    }
+}
 
 /// <summary>What a comparison found.</summary>
 public sealed record OracleResult(
@@ -62,7 +81,7 @@ public static class Oracle
         string cs;
         try
         {
-            cs = c.CSharp() ?? string.Empty;
+            cs = c.CSharp(ps.StdOut) ?? string.Empty;
         }
 #pragma warning disable CA1031 // the whole job here is to REPORT a failure, not to propagate it
         catch (Exception ex)

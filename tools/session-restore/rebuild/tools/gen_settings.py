@@ -1,0 +1,200 @@
+# Generate the C# settings catalogue from the PowerShell's own tables.
+#
+# 🔴 THERE ARE THREE PLACES A DEFAULT LIVES IN THE POWERSHELL, and that is the
+# thing this collapses:
+#
+#   1. Get-SRConfigRead's table in lib/_common.ps1  - 15 keys, the FUNCTIONAL
+#      default, applied when the key is absent from the file
+#   2. $SR_CfgMeta's Default in lib/sessions-window.ps1 - 7 keys, the DISPLAY
+#      default, what the settings screen offers for a key nobody has set
+#   3. inline at the point of use - $SR_TermColour = $true, $SR_YouGround =
+#      'neutral', then overwritten from the config a few lines later
+#
+# Checked 2026-09-09: where (1) and (2) both define a key they AGREE on all
+# three, so this is duplication rather than a live defect - but it is exactly
+# the shape that becomes one. The rebuild has a single catalogue, and generating
+# it means it cannot drift from the PowerShell while both exist.
+#
+# 🪤 GENERATED ONCE PER CHANGE, NOT AT BUILD TIME. The output is committed and
+# read like any other source; at cutover the PowerShell goes away and this
+# script goes with it, leaving an ordinary C# file. A build step that reaches
+# into a 455 KB PowerShell script would outlive its reason to exist.
+#
+# Usage:  python rebuild/tools/gen_settings.py
+# Writes: src/SessionRestore.Core/Config/SettingsCatalog.g.cs
+import io, os, re, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
+OUT = os.path.join(ROOT, 'src', 'SessionRestore.Core', 'Config', 'SettingsCatalog.g.cs')
+
+
+def read(rel):
+    return io.open(os.path.join(ROOT, rel), encoding='utf-8').read()
+
+
+def functional_defaults():
+    """Get-SRConfigRead's table - the default the TOOL uses."""
+    src = read('lib/_common.ps1')
+    i = src.index('function Get-SRConfigRead')
+    j = src.index('\nfunction ', i + 10)
+    out = {}
+    for m in re.finditer(r"@\{\s*k\s*=\s*'([A-Za-z]\w*)'\s*;\s*v\s*=\s*([^;}]+)", src[i:j]):
+        out[m.group(1)] = m.group(2).strip()
+    return out
+
+
+def meta_table():
+    """$SR_CfgMeta - the same balanced-brace read extract_contracts.py uses."""
+    sys.path.insert(0, HERE)
+    import extract_contracts
+    return {s['key']: s for s in extract_contracts.settings()}
+
+
+CS_KIND = {
+    'bool': 'SettingKind.Toggle',
+    'int': 'SettingKind.Number',
+    'choice': 'SettingKind.Choice',
+    'flags': 'SettingKind.Flags',
+    'text': 'SettingKind.Text',
+    'list': 'SettingKind.List',
+    'map': 'SettingKind.Map',
+}
+
+# Shapes the PowerShell decides at runtime from the VALUE's type, which a typed
+# catalogue has to state up front. Taken from Get-SRCfgKind plus the live file.
+SHAPE = {
+    'autoTickLaneBudgets': 'map',
+    'excludePatterns': 'list',
+    'railBandsShut': 'flags',
+    'oauthTokenUrl': 'text',
+}
+
+
+def kind_of(key, meta, default):
+    if key in SHAPE:
+        return SHAPE[key]
+    if meta and meta.get('options'):
+        return 'choice'
+    if meta and meta.get('flags'):
+        return 'flags'
+    d = (default or '').strip()
+    if d in ('$true', '$false'):
+        return 'bool'
+    if re.fullmatch(r'-?\d+', d):
+        return 'int'
+    if meta and meta.get('range'):
+        return 'int'
+    return 'text'
+
+
+def cs_default(kind, raw):
+    if raw is None or raw == '':
+        return 'null'
+    v = raw.strip()
+    if kind == 'bool':
+        return 'true' if v in ('$true', 'true', 'True') else 'false'
+    if kind == 'int':
+        return v
+    return '"%s"' % v.strip("'\"").replace('\\', '\\\\').replace('"', '\\"')
+
+
+def esc(s):
+    return (s or '').replace('\\', '\\\\').replace('"', '\\"')
+
+
+def main():
+    fun = functional_defaults()
+    meta = meta_table()
+
+    keys = sorted(set(fun) | set(meta))
+    rows = []
+    for k in keys:
+        m = meta.get(k, {})
+        raw = fun.get(k) or m.get('default') or ''
+        kind = kind_of(k, m, raw)
+        lo = hi = 'null'
+        if m.get('range'):
+            a, b = m['range'].split('..')
+            lo = a if a != '?' else 'null'
+            hi = b if b != '?' else 'null'
+        # 🪤 A CHOICE LIST IS UNDER 'Options' AND A FLAG LIST UNDER 'Flags'.
+        # Reading only the first left railBandsShut with no allowed values at
+        # all, and the C# then rejected the operator's own 'month,older' and
+        # silently used the default. The oracle caught it on its first real
+        # comparison, which is exactly what it is for.
+        opts = [o.strip() for o in ((m.get('options') or m.get('flags') or '')).split(',') if o.strip()]
+        rows.append({
+            'key': k, 'group': m.get('group', ''), 'label': m.get('label', ''),
+            'help': m.get('help', ''), 'kind': kind, 'default': cs_default(kind, raw),
+            'min': lo, 'max': hi, 'options': opts,
+            'both': k in fun and bool(m.get('default')),
+            'source': 'both' if (k in fun and m.get('default')) else ('tool' if k in fun else 'screen'),
+        })
+
+    L = []
+    L.append('// <auto-generated>')
+    L.append('//   Generated by rebuild/tools/gen_settings.py from the PowerShell tool.')
+    L.append('//   Do not edit by hand while lib/_common.ps1 still exists - re-run the')
+    L.append('//   generator instead, or the two will disagree silently.')
+    L.append('// </auto-generated>')
+    L.append('')
+    # A file the compiler considers auto-generated is OUTSIDE the project's
+    # nullable context and has to opt in by name, or every '?' in it is an error.
+    L.append('#nullable enable')
+    L.append('')
+    L.append('namespace SessionRestore.Core.Config;')
+    L.append('')
+    L.append('/// <summary>Every setting the tool supports, with the ONE default it uses.</summary>')
+    L.append('/// <remarks>')
+    L.append('/// The PowerShell keeps this in three places - Get-SRConfigRead\'s table, the')
+    L.append('/// settings screen\'s $SR_CfgMeta, and inline at the point of use. Where two of')
+    L.append('/// them define the same key they agree (checked 2026-09-09), so collapsing them')
+    L.append('/// loses nothing; leaving them apart is what eventually makes them differ.')
+    L.append('/// </remarks>')
+    L.append('public static class SettingsCatalog')
+    L.append('{')
+    L.append('    /// <summary>The settings, in key order.</summary>')
+    L.append('    public static IReadOnlyList<SettingDef> All { get; } =')
+    L.append('    [')
+    for r in rows:
+        L.append('        new SettingDef(')
+        L.append('            Key: "%s",' % r['key'])
+        L.append('            Group: "%s",' % esc(r['group']))
+        L.append('            Label: "%s",' % esc(r['label']))
+        L.append('            Help: "%s",' % esc(r['help']))
+        L.append('            Kind: %s,' % CS_KIND[r['kind']])
+        L.append('            Default: %s,' % r['default'])
+        L.append('            Min: %s,' % r['min'])
+        L.append('            Max: %s,' % r['max'])
+        if r['options']:
+            L.append('            Options: [%s]),' % ', '.join('"%s"' % esc(o) for o in r['options']))
+        else:
+            L.append('            Options: null),')
+    L.append('    ];')
+    L.append('')
+    L.append('    private static readonly Dictionary<string, SettingDef> ByKeyMap =')
+    L.append('        All.ToDictionary(s => s.Key, StringComparer.Ordinal);')
+    L.append('')
+    L.append('    /// <summary>The definition for one key, or null if the tool has no such setting.</summary>')
+    L.append('    /// <remarks>Ordinal: a settings key is an identifier, never prose, and a')
+    L.append('    /// culture-sensitive compare on one of those is how this repo lost a day.</remarks>')
+    L.append('    public static SettingDef? Find(string key) =>')
+    L.append('        ByKeyMap.TryGetValue(key, out var d) ? d : null;')
+    L.append('}')
+    L.append('')
+
+    d = os.path.dirname(OUT)
+    if not os.path.isdir(d):
+        os.makedirs(d)
+    io.open(OUT, 'w', encoding='utf-8', newline='\r\n').write('\n'.join(L))
+
+    both = sum(1 for r in rows if r['source'] == 'both')
+    tool = sum(1 for r in rows if r['source'] == 'tool')
+    scr = sum(1 for r in rows if r['source'] == 'screen')
+    print('%d settings -> %s' % (len(rows), os.path.relpath(OUT, ROOT)))
+    print('  %d defaulted by the tool only, %d by the screen only, %d by both' % (tool, scr, both))
+
+
+if __name__ == '__main__':
+    main()

@@ -1,5 +1,6 @@
 using System.Globalization;
 using SessionRestore.Oracle;
+using SessionRestore.Oracle.Cases;
 
 // ---------------------------------------------------------------------------
 // sr-oracle - run the PowerShell domain and its C# replacement side by side.
@@ -69,6 +70,9 @@ var cases = new List<(OracleCase Case, bool ExpectAgree, string Meaning)>
      true,
      "the domain's own functions are present"),
 };
+
+// ---- phase 2: the domain, one item at a time ------------------------------
+cases.AddRange(ConfigCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
