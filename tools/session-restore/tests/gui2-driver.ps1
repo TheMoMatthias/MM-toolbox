@@ -9078,6 +9078,35 @@ foreach ($cfgPair in @(@{ K = 'listDays'; V = 7 }, @{ K = 'shelveSuggestDays'; V
 }
 Hide-Config
 
+# 🔴 A README THAT NAMES SETTINGS CAN GO STALE SILENTLY, and a wrong one is
+# worse than none - it is a claim somebody will act on. The settings section was
+# written 2026-09-09 and three of its rows were wrong on the day: textRendering
+# was filed under the reading pane, excludePatterns under the lists, and a
+# permission mode was listed that is not a config key at all. So the file is
+# checked against the table rather than trusted.
+$rdPath = Join-Path $SR_Root 'README.md'
+if (-not (Test-Path -LiteralPath $rdPath)) {
+    Note 'no README.md to check the settings table against'
+} else {
+    $rdTxt = [System.IO.File]::ReadAllText($rdPath)
+    $rdMiss = @()
+    foreach ($rdK in @($script:SR_CfgMeta.Keys)) {
+        if ($rdTxt -notmatch [regex]::Escape("$rdK")) { $rdMiss += "$rdK" }
+    }
+    if ($rdMiss.Count) {
+        Fail ("the README names none of these settings: {0}" -f (($rdMiss | Sort-Object) -join ', '))
+    } else { Pass 'the README names every setting the tool supports' }
+    # 🪤 AND THE GROUPS TOO, because a key in the right file under the wrong
+    # heading is exactly the error this check was written after.
+    $rdBadG = @()
+    foreach ($rdG in @($script:SR_CfgGroups)) {
+        if ($rdTxt -notmatch [regex]::Escape("$rdG")) { $rdBadG += "$rdG" }
+    }
+    if ($rdBadG.Count) {
+        Fail ("the README's settings table is missing {0} group(s): {1}" -f $rdBadG.Count, ($rdBadG -join '; '))
+    } else { Pass 'and every group heading the settings screen uses' }
+}
+
 Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }
 Write-Host 'the shipped window holds' -ForegroundColor Green

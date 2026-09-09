@@ -116,9 +116,9 @@ on screen rather than in `.state\restore.log`.
 every repo, in two views:
 
 - **Work surface** — the control surface: what is running or was, grouped by what it wants
-  from you (**Needs you** / **Working** / **Finished** / **Idle** / **Not running**), each row
-  carrying the one line that conversation last said. No ticks here; nothing on
-  this screen is about tomorrow morning.
+  from you (**Needs you** / **Something open** / **Working** / **Finished** / **Idle** /
+  **Not running**), each row carrying the one line that conversation last said. No
+  ticks here; nothing on this screen is about tomorrow morning.
 - **Session manager** — the relaunch surface: what comes back at logon. Every conversation
   from the last `listDays` (7), grouped by project, each group collapsible and its
   header carrying the count, how many are armed, and whether the project itself is
@@ -296,6 +296,122 @@ Both the restore and `-Launch` poll the process table afterwards and report
 started — **the tab's child is what fails**, which is how every tab in one repo
 could die on a quoting bug while the restore printed success and the scheduled task
 returned `0`. A session that never appears is now named, and the run exits non-zero.
+
+### Finished, and finished with something still open
+
+**A session that handed work back and named something outstanding is neither idle
+nor waiting on you**, and for a long time the board had nowhere to put it. It sits
+in **Something open**, second from the top — above Working, because a working
+session is not asking anything of you and this one is, quietly.
+
+It is decided by **structure, not by a model**: a question mark at the very end,
+an unticked checkbox, a heading that says OPEN or NEXT, a phrase that hands a
+decision back, or one that names something not started or still blocked. Five
+rules, all of them arguable, none of them a guess about tone.
+
+Two things it deliberately does not do. It reads **the last message only** — a task
+that was open an hour ago and has since been done would otherwise light the row
+forever. And it never outranks a question that is actually on screen: a live menu
+is **Needs you**, always.
+
+**Right-click → Call it finished** clears the flag when you know about it and are
+not doing it today. That is per MESSAGE, not per session: the flag comes back the
+moment that conversation says anything new, so it is a "seen it" rather than a way
+to hide a session from yourself.
+
+Measured over 26 live conversations when it was built: 21 hand-backs, of which 4
+named something open.
+
+### Watching a session's terminal
+
+Right-click a running conversation → **Watch its terminal**. The pane shows that
+session's own console, refreshed about thirty times a second, and **you can type
+into it** — characters, Enter, Backspace, Tab, Escape, the arrows, paste, and
+Ctrl+C / Ctrl+D / Ctrl+Z. Keystrokes are written into the session's own console
+input queue, the same one your keyboard writes to, so by the time claude reads one
+there is no way to tell it from typing at the terminal directly.
+
+The header names the conversation the keys are going to, and says **"click here to
+type"** when the panel does not hold the focus — because a panel that silently
+forwards keystrokes into one of two dozen live conversations must never leave you
+guessing which.
+
+Three honest limits, all of them the console API's rather than choices:
+
+- **It is monochrome.** The API returns characters; colour lives in a four-bit
+  attribute plane and claude paints in 24-bit over VT.
+- **Scrolling covers what happened while you were watching.** Under ConPTY the
+  console buffer *is* the visible screen — whatever scrolled off belongs to
+  Windows Terminal and no console API can reach it. So the window keeps its own
+  history from the moment you start watching, and that is what you scroll. It
+  follows the foot only while you are at the foot.
+- **Ctrl+D can close a conversation.** These three chords were added on request,
+  against a recommendation not to. They do exactly what they do in a terminal.
+
+Right-click again to stop. Nothing streams a terminal until you ask it to; the
+default while a session is compacting is the tool's own progress card, not the
+console.
+
+### Compacting
+
+A `/compact` writes **nothing** to the transcript until it finishes, so for the
+thirty to ninety seconds it runs there is nothing on disk to read. The window
+reads the session's screen instead: the row shows `compacting`, its 34px gauge
+becomes the **progress bar**, and the pane draws a card with the bar and the
+elapsed clock. `/compact` is in the command picker, so it can be chosen rather
+than typed blind.
+
+## Settings
+
+**Right-click any conversation → Settings…**, or the button on the work surface.
+The panel edits `session-restore.config.json` — the same file you could edit by
+hand, with every key labelled, explained, and validated before it is written.
+
+Four things about it worth knowing:
+
+- **It shows every setting the tool supports**, not only the keys your file
+  already contains. A setting added in a new build appears at its default,
+  and is **not written into your file unless you change it**.
+- **Nothing is saved if any value is bad.** Writing the good half and reporting
+  the rest would leave the file that decides what reopens half-applied, with no
+  way to tell which half.
+- **A setting over a fixed set is a dropdown, never a text box.** A text box over
+  three valid words is how `grayscal` gets into a config file.
+- The file's own documentation keys are not shown among the controls, and the
+  panel says how many it left out rather than quietly showing fewer keys than
+  the file holds.
+
+What is in it, by group:
+
+| group | settings |
+|---|---|
+| What comes back at your next logon | `maxSessions`, `recencyDays`, `sessionWindowDays`, `launchGapMs`, `includeWorktrees`, and the three `autoTick*` keys |
+| What the lists show | `listDays`, `registryWindowDays`, `shelveSuggestDays`, `foldProjects`, `foldSessions`, `railBandsShut` |
+| The reading pane | `transcriptTools`, `readingWidth`, `lineSpacing`, `yourGround`, `yourInk` |
+| How it looks | `zoom`, `textRendering` |
+| Where it looks for conversations | `excludePatterns` |
+| Other settings in this file | `oauthTokenUrl`, `panelScanMaxAgeSeconds` — nothing reads these any more; they are kept in the file so an older copy still finds what it expects |
+
+**The reading pane's typography is yours to set.** `lineSpacing` exists because
+that number has been wrong in both directions — raised in July on "too dense",
+lowered in September on "too much spacing". Measured against a real terminal
+capture: a terminal draws lines at **1.16×** its font size, and this pane draws a
+proportional face, which needs more. `normal` is 1.45.
+
+`yourGround` and `yourInk` are **separate**: a tinted surface behind your own
+messages, a colour for the words, or either on its own. Both off means your
+messages read exactly like everything else, which is a legitimate choice and the
+reason it is reachable.
+
+### The command picker
+
+Type `/` in the reply box and the picker lists what that conversation can run:
+the **skills** on disk for that project, and the **built-in slash commands** —
+`/compact`, `/clear`, `/context`, `/model`, `/resume`, `/agents`, `/memory` and
+sixteen more. The built-ins are a curated list rather than a discovered one,
+because they are not files and there is no manifest to read; it is allowed to be
+incomplete, and every entry is one somebody has run. A skill on disk wins a name
+collision with a built-in.
 
 ## Auto-logon
 
