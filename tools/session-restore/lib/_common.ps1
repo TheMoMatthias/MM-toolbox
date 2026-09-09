@@ -7383,7 +7383,13 @@ function Get-SRLastSaidPass {
         [int]$MaxRecords = 120
     )
 
-    $out = [PSCustomObject]@{ Said = ''; Pending = ''; PendingTool = ''; At = $null }
+    # 🔑 Full IS THE WHOLE LAST MESSAGE, and it is free. Said is deliberately
+    # ONE LINE - it is a column in a list - but a headline cannot answer "did it
+    # leave anything open", which is a question about the rest of the message.
+    # Measured over 26 live conversations: Said is 29-160 characters, never more
+    # than one line, and NOT ONE of them matched any open-item pattern. The text
+    # that would have matched was in the same $content the first line came from.
+    $out = [PSCustomObject]@{ Said = ''; Pending = ''; PendingTool = ''; At = $null; Full = '' }
     if (-not $JsonlPath -or -not (Test-Path -LiteralPath $JsonlPath)) { return $out }
 
     try {
@@ -7426,6 +7432,7 @@ function Get-SRLastSaidPass {
         if ($content -is [string]) {
             if ("$content".Trim()) {
                 $out.Said = (Get-SRFirstLine "$content")
+                $out.Full = (Get-SRSaidBody "$content")
                 if ($r.timestamp) { try { $out.At = [datetime]$r.timestamp } catch { } }
                 return $out
             }
@@ -7455,6 +7462,7 @@ function Get-SRLastSaidPass {
             }
             elseif ($b.type -eq 'text' -and "$($b.text)".Trim()) {
                 $out.Said = (Get-SRFirstLine "$($b.text)")
+                $out.Full = (Get-SRSaidBody "$($b.text)")
                 if ($r.timestamp) { try { $out.At = [datetime]$r.timestamp } catch { } }
                 return $out
             }
@@ -7479,6 +7487,74 @@ function Get-SRFirstLine {
         if (-not $t) { continue }
         if ($t.Length -gt $Max) { $t = $t.Substring(0, $Max - 3) + '...' }
         return $t
+    }
+    return ''
+}
+
+# The message as written, capped. Get-SRFirstLine's siblings strip markdown
+# because they are drawing one line in a column; this keeps the text intact,
+# because the thing reading it is looking for structure - a question mark, a
+# checkbox, a heading - and stripping is what would remove the evidence.
+#
+# 🪤 CAPPED, because a reply can be tens of thousands of characters and this
+# is held in memory for every live conversation. 4000 covers what a closing
+# message says about what is left; a wall of tool output beyond that is not
+# where "still open" is written.
+function Get-SRSaidBody {
+    param([string]$Text, [int]$Max = 4000)
+    $s = "$Text" -replace "`r", ''
+    if ($s.Length -gt $Max) { $s = $s.Substring($s.Length - $Max) }
+    return $s
+}
+
+# ===========================================================================
+# DID IT FINISH, OR DID IT FINISH AND LEAVE SOMETHING OPEN?
+#
+# 🔴 THE BOARD COULD NOT TELL THESE APART and they are different jobs for the
+# person reading it. A session that handed back a finished piece of work needs
+# nothing; a session that finished its turn and said "two things are still open"
+# or asked which way to go needs a minute of attention - and both sat in
+# FINISHED, or worse in IDLE.
+#
+# 🔑 NO MODEL, AND NOT A SENTIMENT GUESS EITHER. Every rule here is a
+# STRUCTURE a person actually types when they leave something open: a question
+# mark at the very end, an unticked checkbox, a heading that says OPEN or NEXT,
+# or one of a small set of phrases that hand a decision back. Structure is
+# cheap, deterministic, and can be argued with; "it sounds unfinished" is none
+# of those.
+#
+# 🪤 IT READS THE LAST MESSAGE ONLY. Not the conversation - a task that was
+# open an hour ago and has since been done would otherwise keep the row lit
+# forever, which is exactly the phantom-queue-mark defect this repo already
+# fixed once. What is open is what the last thing said is still open.
+#
+# 🪤 AND IT NEVER FIRES ON A QUESTION THAT IS ACTUALLY BEING ASKED. A live
+# menu on screen is NEEDS YOU and outranks this; see Test-SRTurnVerdict and
+# Get-Band. This band is for a session that has STOPPED with something owed.
+$SR_OpenItemRules = @(
+    @{ N = 'ends on a question';   R = '(?s)\?\s*$' }
+    @{ N = 'an unticked box';      R = '(?m)^\s*[-*]\s*\[\s\]' }
+    @{ N = 'names something open'; R = '(?i)\b(still (open|outstanding|to do)|remains? (open|outstanding)|not (yet )?(started|done|finished|landed)|still (missing|blocked)|blocked on|open (question|item|decision)s?|left to do|next step|to be done|needs? (your|a) (decision|answer|call|look))\b' }
+    @{ N = 'hands a decision back';R = '(?i)\b(let me know|tell me (if|whether|which|what)|shall i\b|should i\b|would you like|do you want|your call|up to you|say the word|if you.{0,3}d (rather|prefer))' }
+    @{ N = 'a heading for it';     R = '(?im)^\s{0,3}#{0,4}\s*(DECISIONS?|OPEN|OUTSTANDING|TODO|NEXT|STILL OPEN|REMAINING)\b\s*[:\-]' }
+)
+function Test-SROpenItems {
+    param([string]$Text)
+    $t = "$Text"
+    if (-not $t.Trim()) { return $false }
+    foreach ($rule in $SR_OpenItemRules) {
+        if ($t -match $rule.R) { return $true }
+    }
+    return $false
+}
+
+# Which rule fired, for the tooltip and for the suite. Empty when none did.
+function Get-SROpenItemReason {
+    param([string]$Text)
+    $t = "$Text"
+    if (-not $t.Trim()) { return '' }
+    foreach ($rule in $SR_OpenItemRules) {
+        if ($t -match $rule.R) { return "$($rule.N)" }
     }
     return ''
 }

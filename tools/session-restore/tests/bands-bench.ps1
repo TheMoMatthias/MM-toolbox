@@ -114,6 +114,55 @@ if ($bbSaid.Count) {
     BB-Say ('  how many carry more than one line: {0}' -f $multi)
 }
 
+# --- 2b. the shipped predicate, against the WHOLE last message ---------------
+# 🔴 THE HEADLINE COULD NEVER ANSWER THIS. Section 3 below runs the same shapes
+# against Said - one line, 29-160 characters - and scores zero on all 26. The
+# text that decides whether something was left open is the rest of the message,
+# which is what Said.Full now carries.
+BB-Say ''
+BB-Say '--- Test-SROpenItems, against the whole last message ---'
+$bbFull = New-Object System.Collections.Generic.List[object]
+foreach ($r in $bbRows) {
+    $f = ''
+    if ($r.Said) { $f = "$($r.Said.Full)" }
+    if (-not $f.Trim()) { continue }
+    $null = $bbFull.Add([PSCustomObject]@{
+        Id = "$($r.Id)"; Band = "$($r.Band)"; T = $f; Head = "$($r.Said.Said)"
+        Open = [bool](Test-SROpenItems -Text $f); Why = "$(Get-SROpenItemReason -Text $f)"
+    })
+}
+BB-Say ('  rows with a full last message : {0} of {1}' -f $bbFull.Count, $bbRows.Count)
+if ($bbFull.Count) {
+    $flens = @($bbFull | ForEach-Object { $_.T.Length } | Sort-Object)
+    BB-Say ('  its length, min/median/max    : {0} / {1} / {2} characters' -f `
+            $flens[0], $flens[[int][Math]::Floor($flens.Count / 2)], $flens[$flens.Count - 1])
+    $bbHit = @($bbFull | Where-Object { $_.Open })
+    BB-Say ('  left something open           : {0} of {1}  ({2:N1}%)' -f `
+            $bbHit.Count, $bbFull.Count, (100.0 * $bbHit.Count / $bbFull.Count))
+    BB-Say ''
+    BB-Say '  by rule:'
+    $byWhy = @{}
+    foreach ($x in $bbHit) { if (-not $byWhy.ContainsKey($x.Why)) { $byWhy[$x.Why] = 0 }; $byWhy[$x.Why]++ }
+    foreach ($k in @($byWhy.Keys | Sort-Object)) { BB-Say ('    {0,-24} {1}' -f $k, $byWhy[$k]) }
+    BB-Say ''
+    BB-Say '  CAUGHT - each of these should be worth a minute of attention:'
+    $n = 0
+    foreach ($x in $bbHit) {
+        if ($n -ge 6) { break }
+        BB-Say ('    [{0}] {1}' -f $x.Why, ($x.Head -replace '\s+', ' '))
+        $n++
+    }
+    BB-Say ''
+    BB-Say '  NOT CAUGHT - each of these should be genuinely done with:'
+    $n = 0
+    foreach ($x in $bbFull) {
+        if ($n -ge 6) { break }
+        if ($x.Open) { continue }
+        BB-Say ('    {0}' -f ($x.Head -replace '\s+', ' '))
+        $n++
+    }
+}
+
 # --- 3. the candidate detectors ---------------------------------------------
 # Each is deterministic, cheap, and reads only text the window already holds.
 BB-Say ''

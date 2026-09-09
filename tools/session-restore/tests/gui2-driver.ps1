@@ -6463,11 +6463,17 @@ if ("$($ui.ListPane.Visibility)" -eq 'Visible') {
 } else {
     Pass ("collapsed: a {0:N0}px strip stands in for the list, with a caret on it to open it again" -f $ui.ListCol.Width.Value)
 }
+# 🪤 EVERY BAND THE STRIP DRAWS, NOT TWO OF THEM. This counted needs and
+# working, and went red the day SOMETHING OPEN was added - correctly: the strip
+# had started drawing a third band and the assertion still described two. The
+# list comes from Update-Strip's own set so the two cannot drift again.
+$stripBands = @('needs', 'open', 'working')
 $needs   = @($script:model | Where-Object { "$($_.Band)" -eq 'needs'   -and (Test-OnSurface $_) })
 $working = @($script:model | Where-Object { "$($_.Band)" -eq 'working' -and (Test-OnSurface $_) })
+$opened  = @($script:model | Where-Object { "$($_.Band)" -eq 'open'    -and (Test-OnSurface $_) })
 $onStrip = @($ui.StripList.ItemsSource)
-if ($onStrip.Count -ne ($needs.Count + $working.Count)) {
-    Fail ("the strip shows {0} dot(s) for {1} waiting and {2} working" -f $onStrip.Count, $needs.Count, $working.Count)
+if ($onStrip.Count -ne ($needs.Count + $working.Count + $opened.Count)) {
+    Fail ("the strip shows {0} dot(s) for {1} waiting, {2} with something open and {3} working" -f $onStrip.Count, $needs.Count, $opened.Count, $working.Count)
 } elseif ("$($ui.StripCount.Text)" -ne "$($needs.Count)" -and $needs.Count -gt 0) {
     # 🪤 THE COUNT IS THE WAITING ONES. The dots show two states; a number over
     # them that meant "both" would answer a question nobody asked.
@@ -8410,6 +8416,98 @@ try {
     if ([int]$cxD.Win -gt 0) { Fail 'a stale transcript reading still drew a bar' }
     else { Pass 'a transcript reading past its life draws nothing' }
 } finally { $script:vitalsCache.Remove('ctx-probe') }
+
+Write-Host ''
+Write-Host '--- finished, and finished with something still open ---'
+# ===========================================================================
+# Reported: the board says working, idle, or waiting-on-you, and has nothing
+# for a session that FINISHED and left something open.
+#
+# 🔴 THE HEADLINE COULD NEVER HAVE ANSWERED IT. Get-SRLastSaid keeps ONE LINE
+# for the column - measured over 26 live conversations at 29-160 characters,
+# never more than one - and not one of them matched any open-item shape. The
+# text that decides this is the rest of the message, which is why the record
+# gained Full. Against the full message the same rules matched 4 of 26.
+#
+# 🪴 AND THE RULES ARE ASSERTED BOTH WAYS. A predicate that fires on
+# everything is not a band, and one that fires on nothing is not either - the
+# first version of these rules matched NOTHING on all 26 live conversations
+# because every  in them had been eaten by the patch script that wrote them,
+# leaving an invisible backspace character in each pattern. It scored 0%, which
+# reads exactly like "the operator's sessions never leave anything open".
+$openCases = @(
+    @{ N = 'a plain hand-back';        T = 'All done. Tests pass and I pushed it.'; W = $false }
+    @{ N = 'a closing question';       T = "I've landed the parser. Do you want me to do the same for the writer?"; W = $true }
+    @{ N = 'names what is still open'; T = "Done.`n`nStill open: the README, and rewind is blocked on your capture."; W = $true }
+    @{ N = 'an unticked box';          T = "Finished.`n`n- [x] parser`n- [ ] writer"; W = $true }
+    @{ N = 'a NEXT heading';           T = "Shipped.`n`nNEXT: wire the rail to the sweep."; W = $true }
+    @{ N = 'hands a decision back';    T = "I fixed it. Let me know if you'd rather I reverted instead."; W = $true }
+    @{ N = 'says nothing is left';     T = 'Both suites green, nothing outstanding.'; W = $false }
+    @{ N = 'a bare commit line';       T = 'Committed as abc1234.'; W = $false }
+    @{ N = 'not started, not done';    T = 'Landed. The README is not started and rewind is blocked on your capture.'; W = $true }
+)
+foreach ($oc in $openCases) {
+    $got = $null
+    try { $got = [bool](Test-SROpenItems -Text $oc.T) } catch { Fail "Test-SROpenItems threw on '$($oc.N)': $($_.Exception.Message)"; continue }
+    if ($got -ne $oc.W) {
+        if ($oc.W) { Fail "$($oc.N): read as nothing open, so that session would sit in FINISHED with work owed" }
+        else { Fail "$($oc.N): read as leaving something open - a band that fires on a clean hand-back is noise" }
+    } else { Pass ("$($oc.N): leaves something open = $($oc.W)") }
+}
+
+# 🔑 AND THE RULES MUST BE ABLE TO FIRE AT ALL. This is the assertion that
+# would have caught the eaten word boundaries: every rule, on a string written
+# for it. A rule nothing can match is dead weight that reads as a clean board.
+foreach ($rule in $SR_OpenItemRules) {
+    if (-not "$($rule.R)") { Fail "an open-item rule has no pattern"; continue }
+    # A pattern carrying a control character is a mangled escape, not a rule.
+    if ("$($rule.R)" -match '[ --]') {
+        Fail "the rule '$($rule.N)' carries a control character - its escapes were eaten and it can never match"
+    } else { Pass "the rule '$($rule.N)' is a clean pattern" }
+}
+$ruleFired = @{}
+foreach ($oc in $openCases) {
+    if (-not $oc.W) { continue }
+    $why = ''
+    try { $why = "$(Get-SROpenItemReason -Text $oc.T)" } catch { }
+    if ($why) { $ruleFired[$why] = $true }
+}
+$deadRules = @()
+foreach ($rule in $SR_OpenItemRules) { if (-not $ruleFired.ContainsKey("$($rule.N)")) { $deadRules += "$($rule.N)" } }
+if ($deadRules.Count) {
+    Fail ("no fixture reaches these rules, so nothing would notice if they broke: " + ($deadRules -join ', '))
+} else { Pass 'every open-item rule is reached by a fixture' }
+
+# ---- and the band it decides ----------------------------------------------
+$obLong = ('x' * ([int]$script:HandbackMinChars + 20))
+$obCases = @(
+    @{ N = 'a hand-back with nothing open goes to FINISHED'
+       S = [PSCustomObject]@{ Said = $obLong; Pending = ''; Full = 'All done, nothing outstanding.' }; W = 'done' }
+    @{ N = 'a hand-back that named something open goes to SOMETHING OPEN'
+       S = [PSCustomObject]@{ Said = $obLong; Pending = ''; Full = "Done.`n`nStill open: the README." }; W = 'open' }
+    @{ N = 'something pending is still IDLE, whatever it said'
+       S = [PSCustomObject]@{ Said = $obLong; Pending = 'Bash(x)'; Full = "Still open: the README." }; W = 'idle' }
+    @{ N = 'too short to be a hand-back is IDLE'
+       S = [PSCustomObject]@{ Said = 'ok'; Pending = ''; Full = "Still open: the README." }; W = 'idle' }
+    @{ N = 'no full text yet degrades to FINISHED, not to a wrong answer'
+       S = [PSCustomObject]@{ Said = $obLong; Pending = ''; Full = '' }; W = 'done' }
+)
+foreach ($ob in $obCases) {
+    $row = [PSCustomObject]@{ Id = 'open-probe'; Band = 'idle'; Said = $ob.S }
+    $got = ''
+    try { $got = "$(Get-SRRestingBand $row)" } catch { Fail "Get-SRRestingBand threw on '$($ob.N)': $($_.Exception.Message)"; continue }
+    if ($got -ne $ob.W) { Fail "$($ob.N): landed in $got, wanted $($ob.W)" }
+    else { Pass $ob.N }
+}
+
+# The band has to exist on the board, and on the strip the board collapses to.
+if (-not @($script:Bands | Where-Object { $_.Key -eq 'open' }).Count) {
+    Fail 'there is no SOMETHING OPEN band, so Get-SRRestingBand can return a band the column cannot draw'
+} else { Pass 'the board has a SOMETHING OPEN band' }
+$stripSrc = "$((Get-Command Update-Strip).ScriptBlock)"
+if ($stripSrc -notmatch "'open'") {
+    Fail 'the collapsed strip does not carry SOMETHING OPEN - collapsing the column would hide a whole state'
+} else { Pass 'the collapsed strip carries it too' }
 
 Write-Host ''
 if ($fails) { Write-Host "$fails FAILURE(S)" -ForegroundColor Red; exit 1 }

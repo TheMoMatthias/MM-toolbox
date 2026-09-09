@@ -570,7 +570,11 @@ function Update-Strip {
     # working accent, because "nothing is waiting on me" and "nothing is
     # happening at all" are different states and an empty rail said both.
     $items = New-Object System.Collections.Generic.List[object]
-    foreach ($band in @('needs', 'working')) {
+    # 🪤 'open' BELONGS HERE TOO. The strip is what the column collapses to,
+    # and a band that exists on one and not the other means collapsing the
+    # column silently hides a state - which is the one thing the strip's own
+    # note says it must never do.
+    foreach ($band in @('needs', 'open', 'working')) {
         $rows = @()
         try { $rows = @(Sort-SessionRows @($script:model | Where-Object { "$($_.Band)" -eq $band -and (Test-OnSurface $_) })) }
         catch { $rows = @() }
@@ -968,6 +972,12 @@ function Toggle-Tick {
 # because colour is the fast path and never the only path.
 $script:Bands = @(
     @{ Key = 'needs';   Label = 'NEEDS YOU';   Acc = 'AccNeeds' }
+    # 🔴 SECOND, AND THAT IS THE POINT OF IT. Reported: the board says working,
+    # idle, or waiting-on-you, and has nothing for a session that FINISHED and
+    # left something open - which is neither idle nor waiting, and is the state
+    # a lane is in most mornings. It sits above WORKING because a working
+    # session is not asking anything of you and this one is, quietly.
+    @{ Key = 'open';    Label = 'SOMETHING OPEN'; Acc = 'AccOpen' }
     @{ Key = 'working'; Label = 'WORKING';     Acc = 'AccWorking' }
     @{ Key = 'done';    Label = 'FINISHED';    Acc = 'AccDone' }
     @{ Key = 'idle';    Label = 'IDLE';        Acc = 'AccIdle' }
@@ -1013,7 +1023,18 @@ function Set-AskSeen { param([string]$Id, [bool]$Asking)
 function Get-SRRestingBand { param($Row)
     $sd = $Row.Said
     if ($sd -and -not "$($sd.Pending)".Trim() -and
-        "$($sd.Said)".Trim().Length -ge $script:HandbackMinChars) { return 'done' }
+        "$($sd.Said)".Trim().Length -ge $script:HandbackMinChars) {
+        # 🔑 AND WHETHER IT LEFT ANYTHING OPEN. Test-SROpenItems reads the WHOLE
+        # last message, not the one-line headline the column draws: measured over
+        # 26 live conversations, the headline matched none of the open-item
+        # shapes and the full message matched 4. The text was always there; the
+        # record threw it away.
+        #
+        # 🪤 Full IS EMPTY UNTIL A PROBE HAS READ IT, exactly as Said is, so
+        # this degrades to plain FINISHED rather than to a wrong answer.
+        if ($sd.PSObject.Properties['Full'] -and (Test-SROpenItems -Text "$($sd.Full)")) { return 'open' }
+        return 'done'
+    }
     return 'idle'
 }
 

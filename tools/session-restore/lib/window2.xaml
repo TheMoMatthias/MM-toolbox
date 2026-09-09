@@ -138,6 +138,10 @@
          edge bar and the unread dot all take these, so a band still reads
          without colour vision, in a screenshot, and in greyscale print. -->
     <SolidColorBrush x:Key="AccNeeds"   Color="#FFFFFF"/>
+    <!-- Between NEEDS YOU and WORKING on the same descending ramp, because
+         that is where it sits in urgency: it is not blocking you, and it is
+         not going to resolve itself either. -->
+    <SolidColorBrush x:Key="AccOpen"    Color="#C9CDD6"/>
     <SolidColorBrush x:Key="AccWorking" Color="#9EA2AC"/>
     <SolidColorBrush x:Key="AccDone"    Color="#71757E"/>
     <SolidColorBrush x:Key="AccIdle"    Color="#54575E"/>
