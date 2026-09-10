@@ -78,6 +78,7 @@ cases.AddRange(TranscriptCases.All());
 cases.AddRange(BlockCases.All());
 cases.AddRange(ScreenCases.All());
 cases.AddRange(AgentCases.All());
+cases.AddRange(SubAgentCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
@@ -124,6 +125,11 @@ foreach (var (c, expectAgree, meaning) in cases)
         {
             Note("      " + AgentCases.Compared.ToString(CultureInfo.InvariantCulture)
                  + " session(s) held still across both asks and were compared field by field");
+        }
+
+        if (c.Name.StartsWith("subagents/", StringComparison.Ordinal))
+        {
+            Note("      " + SubAgentCases.Coverage());
         }
         if (!expectAgree && r.Difference is not null)
         {

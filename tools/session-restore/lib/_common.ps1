@@ -6031,7 +6031,24 @@ function Get-SRAgentLastLine { param([string]$JsonlPath, [string]$AgentId, [int]
         foreach ($b in @($r.message.content)) {
             if (-not $b -or -not $b.type) { continue }
             if ($b.type -eq 'text' -and "$($b.text)".Trim()) {
-                return (("$($b.text)".Trim() -split "`n" | Where-Object { $_.Trim() })[0]).Trim()
+                # 🪤 ASSIGN FIRST, INDEX SECOND. This read
+                #     (... | Where-Object { $_.Trim() })[0]
+                # and a pipeline that yields exactly ONE line hands back a bare
+                # STRING rather than an array - so [0] indexed into the string
+                # and returned its first CHARACTER, and .Trim() on a
+                # [System.Char] throws. Every sub-agent whose last message is a
+                # single line hit it.
+                #
+                # 🔴 AND THE THROW WAS INVISIBLE. Its one caller wraps this in
+                # try/catch and falls back to 'starting', so a running agent
+                # that had said something showed "starting" for ever. Found by
+                # the C# rebuild's oracle, which called this over every
+                # sub-agent on the machine instead of over the ones that happen
+                # to be multi-line. Same family as the array-wrap trap already
+                # recorded in this repo - and the SHELL branch of that same
+                # caller does it correctly, twenty lines away.
+                $ln1 = @("$($b.text)".Trim() -split "`n" | Where-Object { $_.Trim() })
+                if ($ln1.Count) { return "$($ln1[0])".Trim() }
             }
             if ($b.type -eq 'tool_use') { return ('- ' + "$($b.name)") }
         }

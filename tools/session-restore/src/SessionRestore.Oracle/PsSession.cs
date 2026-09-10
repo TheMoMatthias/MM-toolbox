@@ -176,14 +176,37 @@ public sealed class PsSession : IDisposable
         sb.Append("Write-Output '").Append(endMark).AppendLine("'");
         Send(sb.ToString());
 
-        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromMinutes(5));
+        var limit = timeout ?? TimeSpan.FromMinutes(5);
+        var deadline = DateTime.UtcNow + limit;
         var body = new StringBuilder();
         var err = new StringBuilder();
         var where = 0; // 0 before OUT, 1 in OUT, 2 in ERR
 
         while (DateTime.UtcNow < deadline)
         {
-            var line = _proc.StandardOutput.ReadLine();
+            // 🔴 THE DEADLINE HAS TO BE ENFORCED ON THE READ, NOT BETWEEN READS.
+            // This was `_proc.StandardOutput.ReadLine()` with the clock checked
+            // in the loop condition - and ReadLine BLOCKS FOREVER, so a
+            // PowerShell that stopped answering hung the whole run with the
+            // timeout unable to fire. Observed: sr-oracle sat at 2 seconds of
+            // CPU for twenty minutes, holding its own output file empty and the
+            // build's DLL locked, and nothing said why.
+            //
+            // 🪤 A HANG IS THE WORST OUTCOME A HARNESS HAS. A red is a fact and a
+            // green is a claim; a hang is neither, and it takes the next build
+            // down with it.
+            var read = Task.Run(() => _proc.StandardOutput.ReadLine());
+            var left = deadline - DateTime.UtcNow;
+            if (left <= TimeSpan.Zero || !read.Wait(left))
+            {
+                Dispose();
+                return new PsRun(string.Empty,
+                    "the PowerShell side stopped answering after "
+                    + limit.TotalSeconds.ToString("N0", CultureInfo.InvariantCulture)
+                    + " s; the shared session was closed", -1);
+            }
+
+            var line = read.Result;
             if (line is null)
             {
                 return new PsRun(string.Empty, "the oracle's PowerShell session ended unexpectedly", -1);

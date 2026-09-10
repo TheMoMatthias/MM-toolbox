@@ -213,6 +213,39 @@ public sealed class BlockTests
         Assert.Equal("red\tcolumn\nnext", TranscriptText.RemoveAnsi(raw));
     }
 
+    [Fact]
+    public void A_record_bigger_than_the_reading_window_still_produces_blocks()
+    {
+        // 🔴 A TAIL CAN LAND ENTIRELY INSIDE ONE RECORD, AND THEN IT READS AS AN
+        // EMPTY CONVERSATION. Measured on a 180 MB transcript: records run to
+        // 916 KB against a median of 629 bytes, so whenever the newest record is
+        // bigger than the window, every line in it is a fragment, the
+        // whole-record filter keeps none of them, and the pane draws nothing.
+        // Intermittent by construction, which is why it was reported as
+        // "sometimes the tool does not show the conversation".
+        //
+        // 🔑 THIS IS A FIXTURE ON PURPOSE. It is the path the giant transcripts
+        // exercise, and proving it here - deterministically, in milliseconds -
+        // is what lets the live comparison drop them and stay fast.
+        var huge = new string('x', 40_000);
+        var path = Temp(
+            """{"type":"assistant","timestamp":"2026-09-10T10:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"the older answer"}]}}""",
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-09-10T10:00:01Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"" + huge + "\"}]}}");
+        try
+        {
+            // A window far smaller than that last record: every line in it is a
+            // fragment until the read widens.
+            var b = TranscriptBlocks.Read(path, maxRecords: 60, maxTailBytes: 4_096);
+
+            Assert.NotEmpty(b);
+            Assert.Contains(b, x => x.Kind == BlockKind.Said && x.Body.Length == huge.Length);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static string Temp(params string[] records)
     {
         var p = Path.Combine(Path.GetTempPath(), "sr-blk-" + Guid.NewGuid().ToString("N") + ".jsonl");

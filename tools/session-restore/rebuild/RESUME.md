@@ -1,9 +1,9 @@
 # Resume here
 
-**Written 2026-09-09, end of the first rebuild session. Everything is committed
-and pushed; the working tree is clean.**
+**Kept current. Last updated 2026-09-10. Everything is committed and pushed;
+the working tree holds only the operator's own live files.**
 
-Last commit: `51a7e12`. Branch `main`.
+Last commit: see `git log`. Branch `main`.
 
 ---
 
@@ -11,7 +11,7 @@ Last commit: `51a7e12`. Branch `main`.
 
 1. **`00-PLAN.md`** — where everything is. Every finished item has an "as it
    turned out" section under Phase 2 saying what it cost and what it found.
-2. **This file** — what to do first tomorrow.
+2. **This file** — what to do first, and where to pick up.
 3. **`05-ARCHITECTURE.md`** — only if a design question comes up.
 
 ---
@@ -25,30 +25,41 @@ Last commit: `51a7e12`. Branch `main`.
 | 2.1 | config | ✅ 25 settings, one catalogue |
 | 2.2 | registry read | ✅ 558 conversations × 13 fields |
 | 2.3a | last said | ✅ all 546 transcripts |
-| 2.3b | blocks | ✅ 40 conversations, every field |
+| 2.3b | blocks | ✅ 15 conversations, every field, + a widening fixture |
 | 2.4a | console read | ✅ 22 live screens, character for character |
 | 2.4b | console write + server | ✅ replica console; 26 consoles in 25 ms |
 | 2.5a | agent map | ✅ 28 sessions, field by field |
-| **2.5b** | **the three sub-agent readers** | ⏸ **start here** |
-| 2.5c | launching and ending | ⏸ |
+| 2.5b | the three sub-agent readers | ✅ 386 sub-agents, 326 last lines |
+| **2.5c** | **launching and ending** | ⏸ **start here** |
 | 2.6 | bands and titles | ⏸ |
 | 2.7 | registry WRITE | ⏸ last on purpose |
 | 3-6 | view models, view, parity, cutover | ⏸ |
 
-**100 xUnit tests, 17 oracle cases. Nothing in the C# has written to any live
+**123 xUnit tests, 20 oracle cases. Nothing in the C# has written to any live
 file, and nothing has typed into a conversation.**
 
 ---
 
-## Do this first tomorrow
+## Do this first
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File src\build.ps1 -Oracle
 ```
 
-That builds, runs 100 tests, then runs all 17 comparisons against the live
-PowerShell. **It should be all green.** It takes a few minutes, most of it the
+That builds, runs the tests, then runs every comparison against the live
+PowerShell. **It should be all green, in about 90 seconds** - most of that the
 console comparison waiting a second per session on purpose.
+
+🪤 **If it takes much longer than that, something is wrong with the HARNESS
+rather than the code.** That happened on 2026-09-10: a sample that had outgrown
+itself as the transcripts grew, a body being copied once per block, and a read
+whose deadline could never fire. All three are fixed and written up in
+`00-PLAN.md`; the shape of the lesson is that this check has to stay fast or it
+stops being run.
+
+🪤 **And you cannot build while it is running** - `sr-oracle` holds the Core DLL,
+so a build fails with "the file is locked by sr-oracle". Let it finish, or kill
+it.
 
 🪤 **If `console/screens` or `transcript/blocks-*` reports a difference, read the
 allowance line before believing it.** Those compare against things that move -
@@ -57,23 +68,18 @@ hard can legitimately forgive a row. A difference that is NOT forgiven is real.
 
 ---
 
-## 2.5b, which is where to start
+## 2.5c, which is where to start
 
-Port these three from `lib/_common.ps1`, in this order:
+The launch and end path: `wt.exe`, `taskkill`, and the process tree.
 
-| function | line | what it answers |
-|---|---|---|
-| `Get-SRSubAgentDir` | 5736 | where a conversation's sub-agents live |
-| `Get-SRSubAgents` | 5756 | which ones exist |
-| `Get-SRAgentLastLine` | 6001 | what one of them last said |
-| `Get-SRLiveTasks` | 6100 | which are still running, and which shells |
+🔴 **IT MUST BE PORTED WITHOUT EVER LAUNCHING OR ENDING ANYTHING TO PROVE IT.**
+The PowerShell suites do this by asking what a gesture WOULD do - `Get-TickedPlan`
+and `Get-LaunchBlock` return a plan rather than performing one - and the C# has
+to be shaped the same way: a plan is a value, and only one call turns a plan into
+processes. Compare the PLANS.
 
-🔑 They belong to 2.5 rather than 2.3 because they answer **what is running**,
-not what a transcript says — even though they read a transcript to do it.
-
-🪤 `Get-SRLiveTasks` reads over a **tail**, so it answers "what is running now"
-and NOT "what has ever run". The chip on screen means the former. Do not
-re-point it at the latter without changing what the chip says.
+After that: **2.6** (bands and titles - `Get-Band`, `Get-Title`, the surface
+predicate) and then **2.7**, the registry write, which is last on purpose.
 
 ---
 
@@ -112,13 +118,20 @@ through `src\build.ps1`, which gates the oracle behind a build that passed.
 
 ---
 
-## What was found in the shipped PowerShell today
+## What the rebuild has found in the SHIPPED PowerShell
 
-Both fixed, committed, and confirmed with gui2 and state both PASS:
+All fixed, committed, and confirmed with gui2 and state both PASS:
 
 1. **Escape never reached the terminal** — `PreviewKeyDown` tunnels, so the
    window's handler ran first, swallowed the key and moved the focus. Rewind was
    never broken; it was never being asked for. `/` and `l` were being eaten too.
-2. **Five kinds of block carried the previous record's timestamp** — found by
-   the rebuild's oracle, 36 ms out, which is a record boundary rather than a
-   rounding.
+2. **Five kinds of block carried the previous record's timestamp** — 36 ms out,
+   which is a record boundary rather than a rounding.
+3. **`Get-SRAgentLastLine` threw on every single-line answer** — `(pipeline)[0]`
+   on a pipeline that yielded one element indexed into a *string* and handed back
+   a `[System.Char]`. Its caller catches and falls back to `'starting'`, so a
+   running sub-agent that had said something showed **"starting" for ever**.
+
+🔑 **All three were found by running the old code over EVERYTHING** rather than
+over the cases that happen to be exercised. That is what the oracle is for, and
+it is the strongest argument for keeping the PowerShell alive until Phase 6.

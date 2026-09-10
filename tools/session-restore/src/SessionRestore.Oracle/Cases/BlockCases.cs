@@ -17,7 +17,28 @@ namespace SessionRestore.Oracle.Cases;
 public static class BlockCases
 {
     /// <summary>How many conversations the block comparison covers.</summary>
-    public const int Sample = 40;
+    public const int Sample = 15;
+
+    /// <summary>
+    /// The largest transcript this comparison will look at.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THE SAMPLE OUTGREW ITSELF. At 40 conversations with no size limit it
+    /// covered 474 MB and one 68 MB file, and the PowerShell side stopped
+    /// answering inside a five-minute deadline - measured 2026-09-10, having run
+    /// in 3,2 s the day before on the same code. Nothing changed but the data:
+    /// a day's work made several of the most recent transcripts enormous.
+    ///
+    /// 🔑 SIZE IS NOT WHERE THE PARSER DIFFERS - VARIETY IS. What the giants
+    /// exercise that the others do not is the WIDENING loop, and that is a
+    /// deterministic path better proven by a fixture whose newest record is
+    /// bigger than the window than by reading 68 MB through PowerShell. The
+    /// first-line case already splits this way: fixtures for the awkward shapes,
+    /// live data for what is actually there.
+    ///
+    /// 12 MB is above the p90 of 8 MB, so it keeps almost everything.
+    /// </remarks>
+    public const long MaxBytes = 12L * 1024 * 1024;
 
     private static readonly JsonSerializerOptions Compact = new()
     {
@@ -55,10 +76,14 @@ public static class BlockCases
             foreach ($s in @($d.sessions)) {
                 $p = "$($s.jsonl)"
                 if (-not $p -or -not (Test-Path -LiteralPath $p)) { continue }
-                $all += [PSCustomObject]@{ Id = "$($s.sessionId)"; P = $p; A = $s.lastActive }
+                $len = $(try { (Get-Item -LiteralPath $p).Length } catch { [long]::MaxValue })
+                $all += [PSCustomObject]@{ Id = "$($s.sessionId)"; P = $p; A = $s.lastActive; Bytes = $len }
             }
         }
-        $pick = @($all | Sort-Object -Property @{ E = { [datetime]$_.A } } -Descending | Select-Object -First {{take}})
+        $pick = @($all |
+            Where-Object { $_.Bytes -le {{MaxBytes}} } |
+            Sort-Object -Property @{ E = { [datetime]$_.A } } -Descending |
+            Select-Object -First {{take}})
         """;
 
     /// <summary>
@@ -85,11 +110,18 @@ public static class BlockCases
             $b = @($b)
             $len = 0
             foreach ($y in $b) { $len += "$($y.Body)".Length }
-            $len = 0
-            try { $len = (Get-Item -LiteralPath $x.P).Length } catch { $len = -1 }
+            # 🪤 NOT $len. That name is ALREADY the body-sum accumulator four
+            # lines up, so reusing it here overwrote the sum with the FILE SIZE
+            # and bodyLen came back as 11.718.403 against the C#'s 13.492 - a
+            # difference that looked like a parser disagreeing and was a name
+            # collision. Same family as the $ShellId and $args collisions this
+            # repo already records: a name that is already taken, in a language
+            # that will not warn you.
+            $fileLen = 0
+            try { $fileLen = (Get-Item -LiteralPath $x.P).Length } catch { $fileLen = -1 }
             $rows += [ordered]@{
                 id      = $x.Id
-                len     = $len
+                len     = $fileLen
                 n       = $b.Count
                 kinds   = (($b | ForEach-Object { "$($_.Kind)" }) -join ',')
                 heads   = (($b | ForEach-Object { "$($_.Head)" }) -join ',')
@@ -141,18 +173,26 @@ public static class BlockCases
         foreach ($x in $pick) {
             $b = Get-SRTranscriptBlocks -JsonlPath $x.P
             $b = @($b)
+            # 🪤 NEVER "$($y.Body)" HERE. That COPIES the body, and a body can be
+            # megabytes - so a case doing it once per block over fifteen
+            # conversations spent five minutes copying strings and was killed by
+            # its own deadline, while blocks-shape did the same reading in 2,2 s
+            # because it only ever asked for a Length. Body is already a string;
+            # index it in place.
+            $fileLen = $(try { (Get-Item -LiteralPath $x.P).Length } catch { -1 })
             foreach ($y in $b) {
-                $body = "$($y.Body)"
+                $bl = 0
+                if ($null -ne $y.Body) { $bl = $y.Body.Length }
                 $rows += [ordered]@{
                     id   = $x.Id
-                    len  = $(try { (Get-Item -LiteralPath $x.P).Length } catch { -1 })
+                    len  = $fileLen
                     kind = "$($y.Kind)"
                     head = "$($y.Head)"
                     meta = "$($y.Meta)"
                     when = $(if ($y.When) { ([datetime]$y.When).ToUniversalTime().Ticks } else { $null })
-                    len  = $body.Length
-                    head80 = $(if ($body.Length -gt 80) { $body.Substring(0, 80) } else { $body })
-                    tail80 = $(if ($body.Length -gt 80) { $body.Substring($body.Length - 80) } else { $body })
+                    blen = $bl
+                    head80 = $(if ($bl -gt 80) { $y.Body.Substring(0, 80) } elseif ($bl) { $y.Body } else { '' })
+                    tail80 = $(if ($bl -gt 80) { $y.Body.Substring($bl - 80) } elseif ($bl) { $y.Body } else { '' })
                 }
             }
         }
@@ -169,20 +209,50 @@ public static class BlockCases
             // for each - a count difference then shows up as a row count, which
             // is exactly what it is.
             var seen = new List<string>();
+            var lenById = new Dictionary<string, long>(StringComparer.Ordinal);
+            var rowsById = new Dictionary<string, int>(StringComparer.Ordinal);
             foreach (var a in asked)
             {
                 var id = a?["id"]?.GetValue<string>() ?? string.Empty;
                 if (!seen.Contains(id, StringComparer.Ordinal))
                 {
                     seen.Add(id);
+                    lenById[id] = a?["len"]?.GetValue<long>() ?? -1;
+                    rowsById[id] = 0;
                 }
+
+                rowsById[id]++;
             }
 
             foreach (var id in seen)
             {
                 if (!byId.TryGetValue(id, out var path))
                 {
-                    rows.Add(new JsonObject { ["id"] = id, ["kind"] = "(no such conversation here)" });
+                    rows.Add(new JsonObject { ["id"] = id, ["len"] = -1, ["kind"] = "(no such conversation here)" });
+                    continue;
+                }
+
+                // The same pinning the shape case uses: a conversation written to
+                // between the two reads gives two correct answers about two
+                // different windows.
+                var now = Length(path);
+                if (lenById[id] >= 0 && now != lenById[id])
+                {
+                    // 🪤 ONE MARKER PER ROW THE OTHER SIDE EMITTED, so the two
+                    // arrays stay the same length and a COUNT difference goes on
+                    // meaning what it says. A single marker row made 289 rows
+                    // face 290, and the only way to pass would have been a
+                    // tolerance for "the counts differ" - which would forgive a
+                    // genuine fifty-block disagreement just as happily.
+                    //
+                    // 🔑 HOW MANY ROWS is part of the QUESTION - which blocks are
+                    // we talking about - not part of the answer. What each row
+                    // SAYS is this side's own words.
+                    for (var k = 0; k < rowsById[id]; k++)
+                    {
+                        rows.Add(new JsonObject { ["id"] = id, ["len"] = -2, ["kind"] = "(grew)" });
+                    }
+
                     continue;
                 }
 
@@ -192,11 +262,12 @@ public static class BlockCases
                     rows.Add(new JsonObject
                     {
                         ["id"] = id,
+                        ["len"] = now,
                         ["kind"] = KindName(y.Kind),
                         ["head"] = y.Head,
                         ["meta"] = y.Meta,
                         ["when"] = y.When?.UtcTicks,
-                        ["len"] = body.Length,
+                        ["blen"] = body.Length,
                         ["head80"] = body.Length > 80 ? body[..80] : body,
                         ["tail80"] = body.Length > 80 ? body[^80..] : body,
                     });
@@ -204,7 +275,13 @@ public static class BlockCases
             }
 
             return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);
-        });
+        })
+    {
+        // Exactly the marker a grown conversation makes, and nothing else.
+        Tolerate = d => d.EndsWith("C# \"-2\"", StringComparison.Ordinal)
+                     || d.EndsWith("C# \"(grew)\"", StringComparison.Ordinal),
+        ToleranceReason = "the conversation was written to between the two reads - a growing file, not a differing parser",
+    };
 
     private static Dictionary<string, string> PathsById() =>
         Core.Registry.SessionRegistry.Read().AllSessions

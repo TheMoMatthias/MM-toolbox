@@ -4,8 +4,8 @@ One pass, worked top to bottom. Every item has a **done-when** you can check
 without asking anybody — a command and its expected result, or an observable
 state. An item with no done-when is not an item.
 
-**Phases 0 and 1 are complete, and 2.1-2.4 and 2.5a with them.** Everything from
-2.5b down is still to do. The PowerShell tool remains the daily driver and is untouched by any
+**Phases 0 and 1 are complete, and 2.1-2.4 and 2.5a-2.5b with them.** Everything
+from 2.5c down is still to do. The PowerShell tool remains the daily driver and is untouched by any
 of it.
 
 ---
@@ -122,7 +122,7 @@ against the PowerShell on the operator's real data.
 | 2.4a | **Console API: reading** — attach, read, detach | a live screen matches `Get-SRScreenText` character for character | ✅ 22 live screens, 1 oracle case |
 | 2.4b | **Console API: the pipe server, and WRITING** | a held-open helper matches the spawn-per-read; keys land in a REPLICA console this tool owns | ✅ 26 consoles in 25 ms; `hello<tab><ctrl-c>` in a real console |
 | 2.5a | **The agent map** — `claude agents --json` | the map matches, including `busy` | ✅ 28 sessions, field by field |
-| 2.5b | **The sub-agent readers** — `Get-SRSubAgents`, `Get-SRLiveTasks`, `Get-SRAgentLastLine` | the same sub-agents and shells over every conversation with any | ⏸ not started |
+| 2.5b | **The sub-agent readers** — `Get-SRSubAgents`, `Get-SRLiveTasks`, `Get-SRAgentLastLine` | the same sub-agents and shells over every conversation with any | ✅ 386 sub-agents, 326 last lines, 25 conversations |
 | 2.5c | **Launching and ending** — `wt.exe`, `taskkill`, the process tree | a launch plan matches; NOTHING is launched or killed to prove it | ⏸ not started |
 | 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | — |
 | 2.7 | **Registry WRITE** — last, behind the guards | refuses every case the PowerShell refuses; the stale check still fires; verified against a *copy*, never the live file | — |
@@ -373,6 +373,84 @@ shape, and it is the same shape each time:
 **echoing the PowerShell's answer back** when it cannot hold the target still.
 That turns a limitation into a pass and is the one thing the oracle's contract
 forbids outright.
+
+### 2.5b as it turned out — a THIRD live defect, and the same trap twice
+
+🔴 **`Get-SRAgentLastLine` THREW on every sub-agent whose last message was a
+single line**, and the throw was invisible.
+
+```powershell
+return (("$($b.text)".Trim() -split "`n" | Where-Object { $_.Trim() })[0]).Trim()
+```
+
+A pipeline that yields exactly ONE line hands back a bare **string**, not an
+array — so `[0]` indexed into the string, returned its first **character**, and
+`.Trim()` on a `[System.Char]` throws. That is the **array-wrap trap** this repo
+already has a note about, and the SHELL branch of the very same caller does it
+correctly twenty lines away.
+
+🪤 **The caller wraps it in `try/catch` and falls back to `'starting'`** — so a
+running sub-agent that had said something showed **"starting" for ever**. Nothing
+was logged and nothing looked wrong.
+
+**It was found because the oracle called it over every sub-agent on the
+machine** rather than over the ones that happen to be multi-line: 3 of the first
+3 it reached threw. Fixed by assigning first and indexing second; `state` and
+`gui2` both PASS after.
+
+**What the three cases cover:** 386 sub-agents (every conversation — the list is
+cheap, it reads small meta files and stats one transcript each), 326 last lines,
+and 25 conversations for what is still running.
+
+🪤 **`Live` is deliberately NOT compared.** It is a clock reading — "was this
+written to in the last three minutes" — so the two sides evaluate it seconds
+apart and an agent on the boundary legitimately differs. Everything it is
+*computed from* is compared instead: `HasTranscript` and the transcript's mtime.
+
+🔒 **And the agent id is pattern-checked before it becomes a filename.** It
+arrives from a transcript — data this tool does not write — and `..\..\something`
+is the difference between reading a sub-agent and reading whatever the caller was
+pointed at.
+
+### The health check went from a twenty-minute hang to 86 seconds
+
+The first run of a new day found nothing wrong with the code and three things
+wrong with the harness. Recorded because each would have gone on wasting a
+morning.
+
+🔴 **A HANG IS THE WORST OUTCOME A HARNESS HAS.** `PsSession` checked its
+deadline in the loop condition and then called `ReadLine()`, **which blocks for
+ever** - so a PowerShell that stopped answering hung the whole run with the
+timeout unable to fire. Observed: `sr-oracle` at two seconds of CPU for twenty
+minutes, its output file empty, holding the build's DLL locked, and nothing
+saying why. A red is a fact and a green is a claim; a hang is neither, and it
+takes the next build with it. The read now honours the deadline and reports
+which side went quiet.
+
+🔴 **THE BLOCK SAMPLE OUTGREW ITSELF.** 40 conversations with no size bound
+covered **474 MB** and one 68 MB file; it had run in 3,2 s the day before on the
+same code. Nothing changed but the data. Now 15 conversations under 12 MB
+(p90 is 8 MB) — and 🔑 **size is not where a parser differs, variety is.** What
+the giants exercise is the WIDENING loop, and that is a deterministic path
+better proven by a fixture whose newest record is bigger than the window. Same
+split the first-line case already uses.
+
+🪤 **`"$($y.Body)"` COPIES THE BODY**, and a body can be megabytes. The detail
+case did it once per block and spent five minutes copying strings, while the
+shape case did the same reading in 2,2 s because it only ever asked for a
+`.Length`.
+
+🪤 **`$len` WAS ALREADY TAKEN.** The file-length pin reused the name of the
+body-sum accumulator four lines above it, so `bodyLen` came back as **11.718.403**
+against the C#'s **13.492** — a difference that looked like a parser disagreeing
+and was a name collision. Same family as the `$ShellId` and `$args` collisions
+already recorded here.
+
+🪤 **And an allowance that was too broad.** A grown conversation made 289 rows
+face 290, and the tolerance written for it forgave *"the counts differ"* — which
+would forgive a genuine fifty-block disagreement just as happily. The C# emits
+one marker **per row the other side emitted** instead, so the arrays stay aligned
+and a count difference goes on meaning what it says.
 
 🔴 **2.7 is last on purpose.** Nothing writes until everything reads correctly.
 The guards are ported before the writer they guard, and they are ported as
