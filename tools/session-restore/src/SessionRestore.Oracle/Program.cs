@@ -146,6 +146,12 @@ foreach (var (c, expectAgree, meaning) in cases)
             Note("      " + LaunchCases.Coverage());
         }
 
+        if (c.Name.Equals("transcript/last-said", StringComparison.Ordinal))
+        {
+            Note("      " + TranscriptCases.Compared.ToString(CultureInfo.InvariantCulture)
+                 + " conversation(s) held still and were compared word for word");
+        }
+
         if (c.Name.Equals("bands/live", StringComparison.Ordinal))
         {
             Note("      " + BandCases.Coverage());

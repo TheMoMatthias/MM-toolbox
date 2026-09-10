@@ -6,10 +6,9 @@ state. An item with no done-when is not an item.
 
 **PHASE 2 IS COMPLETE.** Phases 0 and 1, and every item from 2.1 to 2.7.
 
-🔴 **PHASE 3 HAS HIT ITS OWN GATE AND IS STOPPED THERE ON PURPOSE.** 3.1 is done
-and proven; **3.2 does NOT clear 16 ms**, the reason is measured and understood,
-and the fix is a design choice that has not been agreed. See "3.2 as it turned
-out" below. Nothing further in Phase 3 or 4 should be built until it is settled. The PowerShell tool remains the daily driver and is untouched by any
+✅ **3.1 AND 3.2 ARE DONE.** A search keystroke is **2,1 ms** with a real frame,
+against 512 ms in the PowerShell. Two whole-list gestures - cycling the sort and
+toggling only-live - are still one frame over, and are recorded below as 3.5. The PowerShell tool remains the daily driver and is untouched by any
 of it.
 
 ---
@@ -687,79 +686,82 @@ ledger. Re-deriving them costs the same days again.
 | | what | done-when |
 |---|---|---|
 | 3.1 | `ConversationVm` with `INotifyPropertyChanged`, bound once | changing one property repaints one row and does not rebuild the list | ✅ 5 of 6 checks; the source collection is never rebuilt |
-| 3.2 | `ICollectionView` for sort, filter and search | `tests/rebuild-bench.ps1`'s equivalent measures a keystroke **< 16 ms** with a frame | 🔴 **NOT CLEARED** - 14,9/17,4/15,1 ms over three runs, and `clear the project` is over every time |
+| 3.2 | `ICollectionView` for sort, filter and search | `tests/rebuild-bench.ps1`'s equivalent measures a keystroke **< 16 ms** with a frame | ✅ **2,1 ms**, live filtering, no Reset |
 | 3.3 | The bands as grouping, not as constructed heading rows | a conversation moving band does not rebuild the column |
 | 3.4 | The background loops replacing the 11 timers | the cadences in `01-CAPABILITIES.md` are preserved, with their measured values |
+| 3.5 | The two whole-list gestures | cycling the sort and toggling only-live land inside a frame too | ⏸ 21 / 19 ms - see below |
 
 🔴 **3.2 is the item this whole rebuild is justified by.** If it does not land
 under 16 ms, stop and find out why before building any more of the view.
 
 
-### 3.1 and 3.2 as they turned out - the gate did its job
+### 3.1 and 3.2 as they turned out - the gate did its job twice
 
-`Sessions2.exe --bench` runs both. It shows a window at **-32000**, unfocusable
-and not hit-testable, drains to **ContextIdle** (the dispatcher processes Render
-and Loaded above it, so returning means the frame is drawn), asserts a real
-**PresentationSource**, and closes. It reads the registry and nothing else - no
-transcripts, no console, no `claude agents`, and no writer is reachable from it.
+`Sessions2.exe --bench --repeats 40` runs both and writes
+`%TEMP%\sr-keystroke-bench.txt`. Exit 0 means every gesture landed inside a frame
+AND every binding check passed. It shows a window at **-32000**, unfocusable and
+not hit-testable, drains to **ContextIdle** (the dispatcher processes Render and
+Loaded above it, so returning means the frame is drawn), asserts a real
+**PresentationSource**, and closes. It reads the registry and nothing else.
 
-**3.1 is done.** Rows are bound once: a refresh over an unchanged model, three
-keystrokes, and two sort changes each add and remove **nothing**; one property
-change repaints exactly that row; and - the check that stops the others passing
-by doing nothing - a conversation that really leaves IS removed.
+✅ **3.2 IS CLEARED: a search keystroke is 2,1 ms**, against **512 ms** in the
+PowerShell - and the view reports `428 x Remove, 428 x Add` with **no Reset**.
 
-🔴 **3.2 IS NOT CLEARED, AND THE MEASUREMENT SAYS SO PLAINLY.** Three runs of
-40 repeats, 428 conversations bound and drawn, real frames:
+| gesture | before (PowerShell) | ICollectionView.Refresh | live filtering |
+|---|---|---|---|
+| **search keystroke** | 512 | 14,9 / 17,4 / 15,1 | **2,1** |
+| clear the search | - | 12,3 | 10,6 |
+| pick a project | 452 | 4,4 | 9,7 |
+| clear the project | - | **19,1 over** | 13,6 |
+| cycle the sort | 98 | 14,5 | **21,2 over** |
+| only-live on and off | - | 5,3 | **19,3 over** |
 
-| gesture | run 1 | run 2 | run 3 | |
-|---|---|---|---|---|
-| search keystroke | 14,86 | **17,43** | 15,05 | straddles the frame |
-| clear the search | 12,30 | 15,80 | 13,43 | inside |
-| pick a project | 4,96 | 4,39 | 3,97 | inside |
-| **clear the project** | **19,13** | **16,89** | **18,54** | **over every time** |
-| cycle the sort | 14,46 | 14,39 | 15,96 | inside, close |
-| only-live on and off | 5,32 | 4,51 | 5,48 | inside, and it filters to nothing |
+🔴 **THE FIRST ATTEMPT LOOKED CLOSE AND WAS THE WRONG SHAPE.**
+`ListCollectionView.Refresh()` - which is what changing a `Filter` predicate
+comes to - raises **Reset**, and a Reset makes WPF drop and rebuild every
+realised container. So the per-row rebuild the whole design exists to remove was
+still happening, relocated from PowerShell into WPF. The fix is to stop changing
+the predicate: the filter now reads one bool off the row, `IsLiveFiltering` is on
+with `Matches` named in `LiveFilteringProperties`, and a gesture writes that bool
+on every row. The writes that change nothing raise nothing.
 
-That is **41x better than the PowerShell's 512 ms** and still not the 16,7 ms the
-plan asks for. An earlier single run read 12,58 ms; three runs is what turned
-that into the truth. [[feedback-measure-a-control]]
+🪤 **AND THE CHECKS LIED TWICE BEFORE THEY TOLD THE TRUTH. Both are worth
+knowing:**
 
-🔴 **AND THE CAUSE IS MEASURED, NOT GUESSED: THE VIEW ANSWERS EVERY GESTURE
-WITH A RESET.** The check that found it watches `ICollectionView` rather than the
-source collection, and reports `Reset,Reset,Reset,Reset` for two keystrokes and
-two sort changes.
+1. **They watched the wrong collection.** Four checks passed while every gesture
+   was Resetting, because they watched the `ObservableCollection` - which
+   genuinely is never rebuilt. **A ListBox does not bind to the source, it binds
+   to the VIEW.**
+2. **Then "no Reset" passed because the view had stopped filtering.** With live
+   filtering wired up the check reported *"the view raised nothing"* and the
+   keystroke fell to 2 ms - both because **the filter was not running at all**.
+   Two things were needed to see it: a check that the filter still filters
+   (`428 -> 0 -> 428`), and a **dispatcher pump before counting** - WPF applies
+   live shaping through the dispatcher, so a count taken on the next line reads
+   the previous set. The bench never saw it because `Measure` drains between the
+   gesture and the count.
 
-🪤 **THE FIRST FOUR CHECKS ALL PASSED WHILE THIS WAS TRUE**, because they
-watched the `ObservableCollection` - which genuinely is never rebuilt. But a
-ListBox does not bind to the source, it binds to the VIEW, and
-`ListCollectionView.Refresh()` raises `Reset`, which makes WPF **drop and rebuild
-every realised container**. 🔑 So the per-row rebuild the whole design exists to
-remove was still happening - just relocated from PowerShell into WPF, where the
-source-collection checks could not see it.
+🔑 **The lesson is the session's own, arriving again: a green is not evidence
+until it has been seen to go red, and "it got faster" is not evidence that it got
+faster at the right thing.** 2 ms was the cost of doing nothing, and only an
+independent question - *does it still filter?* - could tell the two apart.
 
-### What would clear it - a design choice, not yet agreed
+### 3.5 - the two gestures still over a frame
 
-Changing `Filter` or calling `Refresh()` on a `ListCollectionView` ALWAYS resets;
-there is no flag that makes that incremental. So one of:
+Cycling the sort (**21 ms**) and toggling only-live (**19 ms**) are both cases
+where **every row changes state at once**, and that is precisely where live
+filtering is the wrong trade: 428 individual Add/Remove notifications cost more
+than the single Reset they replaced.
 
-1. **Live filtering.** Keep the predicate constant and give each row a `Matches`
-   property, with `IsLiveFiltering` and `LiveFilteringProperties`. The view then
-   raises Add/Remove per row instead of Reset. 🪤 But it costs a property write
-   on every one of 428 rows per keystroke, which may simply move the cost.
-2. **Maintain the visible collection directly.** Compute the delta per keystroke
-   and apply Adds and Removes to an `ObservableCollection` the control binds to.
-   Typing narrows monotonically, so the usual case is Removes only - and the
-   common case is cheap by construction. More code, and the sort has to be
-   maintained too.
-3. **Accept ~15 ms and re-aim the target.** Every gesture is already 30-40x
-   faster than today, and the two that are over are the *widening* direction -
-   clearing a filter - which is the one gesture where a frame of latency is least
-   noticeable.
+- **The sort still Resets** - changing `SortDescriptions` resets whatever
+  `IsLiveSorting` says, and the binding check reports it as its own line rather
+  than folding it in with the filter.
+- **only-live 428 <-> 0** is the full-swap case by construction.
 
-🔴 **This is a replaced design rather than a defect, so it is not being chosen
-unilaterally.** The plan says to stop at this gate and find out why; the why is
-now measured, and the choice belongs to the operator.
-
+Neither is on the typing path, and both were 98 ms and worse before. Left as
+3.5 rather than chased now: the honest options are a Reset *chosen deliberately*
+for whole-list changes, or virtualization tuning, and neither should be guessed
+at.
 
 ---
 ## Phase 4 — the view

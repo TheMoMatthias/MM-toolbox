@@ -38,6 +38,7 @@ public sealed class ConversationVm : INotifyPropertyChanged
     private string _said = string.Empty;
     private string _age = string.Empty;
     private bool _live;
+    private bool _matches = true;
     private bool _enabled;
     private bool _pinned;
 
@@ -80,6 +81,30 @@ public sealed class ConversationVm : INotifyPropertyChanged
     /// four strings 434 times per character typed.
     /// </summary>
     public string SearchText { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// Whether this row passes the current filter.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THE FILTER IS A PROPERTY ON THE ROW, NOT A PREDICATE ON THE VIEW,
+    /// and that is the whole point of it. Changing a `ListCollectionView`'s
+    /// `Filter` - or calling `Refresh()` - raises **Reset**, and a Reset makes
+    /// WPF drop and rebuild every realised container. Measured: that alone kept
+    /// a keystroke at 15 ms and put "clear the project" over a frame every time.
+    ///
+    /// 🔑 With `IsLiveFiltering` on and this property named in
+    /// `LiveFilteringProperties`, the view watches it and raises **Add and Remove
+    /// for the rows that actually moved**. The containers that stay, stay.
+    ///
+    /// 🪤 SO THE SETTER MUST BE A NO-OP WHEN NOTHING CHANGED. Typing narrows,
+    /// so most rows hold the same answer from one keystroke to the next, and it
+    /// is <see cref="Set{T}"/> returning false for those that keeps this cheap.
+    /// </remarks>
+    public bool Matches
+    {
+        get => _matches;
+        set => Set(ref _matches, value);
+    }
 
     public string Title
     {

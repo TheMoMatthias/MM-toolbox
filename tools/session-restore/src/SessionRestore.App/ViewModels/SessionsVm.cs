@@ -45,10 +45,25 @@ public sealed class SessionsVm : INotifyPropertyChanged
 
     public SessionsVm()
     {
-        View = new ListCollectionView(_rows)
+        // 🔴 THE PREDICATE NEVER CHANGES AFTER THIS LINE. It reads one bool off
+        // the row, and the ROW is what a gesture updates - so the view raises Add
+        // and Remove for what moved instead of Reset for everything.
+        var view = new ListCollectionView(_rows)
         {
-            Filter = o => Matches(o as ConversationVm),
+            Filter = o => o is ConversationVm r && r.Matches,
         };
+
+        // 🪤 IsLiveFiltering IS NOT ENOUGH ON ITS OWN. Without the property
+        // NAMED in LiveFilteringProperties the view has nothing to watch, stays
+        // silent when Matches changes, and the column quietly stops updating -
+        // which looks like a filter that does not work rather than like a missing
+        // registration.
+        view.IsLiveFiltering = true;
+        view.LiveFilteringProperties.Add(nameof(ConversationVm.Matches));
+        view.IsLiveSorting = true;
+
+        View = view;
+        _view = view;
         ApplySort();
     }
 
@@ -56,6 +71,8 @@ public sealed class SessionsVm : INotifyPropertyChanged
 
     /// <summary>What the column binds to. Never replaced.</summary>
     public ICollectionView View { get; }
+
+    private readonly ListCollectionView _view;
 
     /// <summary>Every conversation on the surface, ordered as the model gave them.</summary>
     public IReadOnlyList<ConversationVm> Rows => _rows;
@@ -75,7 +92,7 @@ public sealed class SessionsVm : INotifyPropertyChanged
             if (Set(ref _search, value ?? string.Empty))
             {
                 _needle = _search.Trim().ToLowerInvariant();
-                View.Refresh();
+                Reselect();
             }
         }
     }
@@ -88,7 +105,7 @@ public sealed class SessionsVm : INotifyPropertyChanged
         {
             if (Set(ref _project, value ?? string.Empty))
             {
-                View.Refresh();
+                Reselect();
             }
         }
     }
@@ -100,7 +117,7 @@ public sealed class SessionsVm : INotifyPropertyChanged
         {
             if (Set(ref _onlyLive, value))
             {
-                View.Refresh();
+                Reselect();
             }
         }
     }
@@ -174,7 +191,32 @@ public sealed class SessionsVm : INotifyPropertyChanged
             }
         }
 
-        View.Refresh();
+        Reselect();
+    }
+
+    /// <summary>
+    /// Re-decides which rows pass, and lets live filtering move the ones that
+    /// changed.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THIS IS O(n) BOOLEAN WRITES AND DELIBERATELY SO. It touches all 428
+    /// rows, but the ones whose answer is unchanged raise nothing - and typing
+    /// narrows, so most rows keep their answer. What it replaces is a Reset,
+    /// which costs a container rebuild for every row on screen whether anything
+    /// moved or not.
+    ///
+    /// 🪤 DeferRefresh AROUND THE WHOLE PASS, or the view reacts to each row
+    /// in turn and re-sorts between them.
+    /// </remarks>
+    private void Reselect()
+    {
+        using (_view.DeferRefresh())
+        {
+            foreach (var r in _rows)
+            {
+                r.Matches = Passes(r);
+            }
+        }
     }
 
     /// <summary>
@@ -182,13 +224,8 @@ public sealed class SessionsVm : INotifyPropertyChanged
     /// computed when the model changed, so this is string and boolean work over
     /// 434 items - no file, no clock, no allocation per row.
     /// </summary>
-    private bool Matches(ConversationVm? r)
+    private bool Passes(ConversationVm r)
     {
-        if (r is null)
-        {
-            return false;
-        }
-
         if (_onlyLive && !r.Live)
         {
             return false;
@@ -211,7 +248,7 @@ public sealed class SessionsVm : INotifyPropertyChanged
     /// </summary>
     private void ApplySort()
     {
-        using (View.DeferRefresh())
+        using (_view.DeferRefresh())
         {
             View.SortDescriptions.Clear();
             switch (_sort)

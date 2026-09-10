@@ -34,7 +34,8 @@ Last commit: see `git log`. Branch `main`.
 | 2.6 | bands and titles | ✅ 428 banded, every route proven |
 | 2.7 | registry WRITE | ✅ 562 written and read back; live file never opened |
 | 3.1 | rows bound once | ✅ proven: no rebuild of the source |
-| **3.2** | **a keystroke under 16 ms** | 🔴 **NOT CLEARED - decide first** |
+| 3.2 | a keystroke under 16 ms | ✅ **2,1 ms**, live filtering, no Reset |
+| **3.3** | **bands as grouping** | ⏸ **start here** |
 | 4-6 | the view, parity, cutover | ⏸ |
 
 **218 xUnit tests, 41 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
@@ -70,39 +71,57 @@ allowance line before believing it.** Those compare against things that move -
 a screen redraws, a transcript grows - and a run where the operator was working
 hard can legitimately forgive a row. A difference that is NOT forgiven is real.
 
+
+🪤 **AND A CASE THAT REDS ONCE AND PASSES TWICE IS ALMOST CERTAINLY THE
+OPERATOR WORKING, NOT A DEFECT.** Several cases read things that move while ~30
+conversations are live. Each has a named allowance, and the shape they all need
+is the same - so when one goes red intermittently, check these before anything
+else:
+
+1. **Does the "it moved" marker fill EVERY field the PowerShell emitted?** A
+   partly-marked row reports its remaining fields as *"present in PowerShell,
+   missing in C#"*, and those lines match no allowance. This has now bitten
+   `launch/processes`, `subagents/live-tasks` and `transcript/last-said`.
+2. **Is the allowance checked line by line**, rather than with `EndsWith` on the
+   whole difference text?
+3. **Does the case still fail if nothing was compared?**
+
+🔴 `transcript/blocks-detail` was seen red once and green twice on
+2026-09-10 and is **still open**: its sample is the 15 newest conversations,
+which are precisely the ones being written to. Reproduce it by running the oracle
+while working, then apply the three checks above.
+
 ---
 
-## 🔴 START HERE: 3.2 DID NOT CLEAR THE GATE, AND IT NEEDS A DECISION
+## 3.3, which is where to start
 
-Run it yourself - it takes about a minute and writes
-`%TEMP%\sr-keystroke-bench.txt`:
+Phase 2 is complete and **3.1 and 3.2 are done**: a search keystroke is **2,1 ms**
+with a real frame, against **512 ms** in the PowerShell.
 
 ```
 src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --bench --repeats 40
 ```
 
-Exit code 0 means every gesture landed inside a frame AND every binding check
-passed. It currently exits non-zero.
+Exit 0 means every gesture landed inside a frame AND every binding check passed.
+**It currently exits 12** - which is honest: one binding check is a known
+`FAIL` (the sort still Resets) and two whole-list gestures are one frame over.
+Those are **plan item 3.5**, not regressions.
 
-**Where it got to:** a search keystroke costs **14,9 / 17,4 / 15,1 ms** over
-three runs against **512 ms** in the PowerShell - 30 to 40 times faster, and
-still not the 16,7 ms the plan asks for. `clear the project` is over in all three
-runs (19,1 / 16,9 / 18,5).
+Next is **3.3, the bands as grouping** rather than as constructed heading rows.
 
-🔴 **THE CAUSE IS MEASURED: the view answers every gesture with a `Reset`**,
-which makes WPF drop and rebuild every realised container. The per-row rebuild
-the design exists to remove is still happening - relocated from PowerShell into
-WPF. 🪤 Four binding checks passed while this was true because they watched the
-`ObservableCollection`; a ListBox binds to the VIEW, not the source.
+### 🔴 Two things about the bench that cost hours, so read them before touching it
 
-**Three ways forward, and the choice is the operator's** - it is a replaced
-design, not a defect. They are written out in `00-PLAN.md` under "3.1 and 3.2 as
-they turned out": live filtering, maintaining the visible collection directly, or
-accepting ~15 ms and re-aiming the target.
+1. **The checks must watch the VIEW, and the view must be BOUND.** A
+   `ListCollectionView` only subscribes to its items while something is using it,
+   so an unbound one silently never filters. Four checks passed against the
+   source `ObservableCollection` while every gesture was Resetting.
+2. **Pump the dispatcher before counting.** WPF applies live shaping through the
+   dispatcher, so a count on the next line reads the previous set - which looked
+   exactly like a filter that had stopped working, and made a 2 ms keystroke look
+   like a win when it was the cost of doing nothing.
 
-🔴 **Nothing further in Phase 3 or Phase 4 should be built until that is
-settled.** Everything above this line is domain code that survives whichever way
-it goes; everything below it is view code that does not.
+🔑 **"It got faster" is not evidence that it got faster at the right thing.**
+Only an independent question - *does it still filter?* - told those apart.
 
 ---
 

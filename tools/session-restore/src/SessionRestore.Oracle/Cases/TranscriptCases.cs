@@ -44,8 +44,14 @@ public static class TranscriptCases
                 if (-not $p -or -not (Test-Path -LiteralPath $p)) { continue }
                 $v = Get-SRLastSaid -JsonlPath $p
                 $full = "$($v.Full)"
+                # 🔴 THE LENGTH OF THE FILE THAT WAS READ, so the other side can
+                # say whether it read the same one. This case had no allowance at
+                # all and went red whenever a conversation spoke mid-run - which
+                # on this machine means whenever the operator is working.
+                $len = $(try { (Get-Item -LiteralPath $p).Length } catch { -1 })
                 $rows += [ordered]@{
                     id          = "$($s.sessionId)"
+                    len         = [long]$len
                     said        = "$($v.Said)"
                     pending     = "$($v.Pending)"
                     pendingTool = "$($v.PendingTool)"
@@ -78,7 +84,21 @@ public static class TranscriptCases
                 {
                     // Say so rather than skipping: a row this side cannot even
                     // find is a difference, not an absence.
-                    rows.Add(new JsonObject { ["id"] = id, ["said"] = "(no such conversation here)" });
+                    rows.Add(Marked(id, "(no such conversation here)"));
+                    continue;
+                }
+
+                // 🔴 A CONVERSATION THAT SPOKE BETWEEN THE TWO READS IS NOT A
+                // DEFECT, and this case had no way to say so - it went red on
+                // $.rows[281].said with two perfectly good last lines from two
+                // different moments. The marker goes in EVERY field the other
+                // side emitted, or the unmarked ones report "present in
+                // PowerShell, missing in C#" and match no allowance.
+                var askedLen = a?["len"]?.GetValue<long>() ?? -1;
+                var nowLen = Length(path);
+                if (askedLen >= 0 && nowLen != askedLen)
+                {
+                    rows.Add(Marked(id, Grew));
                     continue;
                 }
 
@@ -87,6 +107,7 @@ public static class TranscriptCases
                 rows.Add(new JsonObject
                 {
                     ["id"] = id,
+                    ["len"] = nowLen,
                     ["said"] = v.Said,
                     ["pending"] = v.Pending,
                     ["pendingTool"] = v.PendingTool,
@@ -95,10 +116,61 @@ public static class TranscriptCases
                     ["fullHead"] = full.Length > 60 ? full[..60] : full,
                     ["fullTail"] = full.Length > 60 ? full[^60..] : full,
                 });
+                Compared++;
+            }
+
+            // 🔴 AND FAIL IF NOTHING WAS COMPARED. A run where every transcript
+            // grew would otherwise agree about nothing at all and print green.
+            if (Compared == 0)
+            {
+                rows.Add(new JsonObject { ["id"] = "(nothing was compared)" });
             }
 
             return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);
-        });
+        })
+    {
+        Tolerate = d => d.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
+                         .All(x => x.Contains(Grew, StringComparison.Ordinal)),
+        ToleranceReason = "the conversation said something between the two reads - a growing file, not a differing reader",
+    };
+
+    /// <summary>How many conversations held still and were really compared.</summary>
+    public static int Compared { get; private set; }
+
+    private const string Grew = "(it spoke between the two reads)";
+
+    /// <summary>
+    /// A row this side could not answer for, with the reason in every field the
+    /// PowerShell emitted.
+    /// </summary>
+    private static JsonObject Marked(string id, string why) => new()
+    {
+        ["id"] = id,
+        ["len"] = why,
+        ["said"] = why,
+        ["pending"] = why,
+        ["pendingTool"] = why,
+        ["at"] = why,
+        ["fullLen"] = why,
+        ["fullHead"] = why,
+        ["fullTail"] = why,
+    };
+
+    private static long Length(string path)
+    {
+        try
+        {
+            return new FileInfo(path).Length;
+        }
+        catch (IOException)
+        {
+            return -1;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return -1;
+        }
+    }
 
     /// <summary>
     /// The headline rules, on the shapes that actually break them.
