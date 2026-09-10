@@ -4,8 +4,8 @@ One pass, worked top to bottom. Every item has a **done-when** you can check
 without asking anybody — a command and its expected result, or an observable
 state. An item with no done-when is not an item.
 
-**Phases 0 and 1 are complete, and 2.1-2.4 and 2.5a-2.5b with them.** Everything
-from 2.5c down is still to do. The PowerShell tool remains the daily driver and is untouched by any
+**Phases 0 and 1 are complete, and 2.1-2.4 and 2.5a-2.5c with them.** Everything
+from 2.6 down is still to do. The PowerShell tool remains the daily driver and is untouched by any
 of it.
 
 ---
@@ -123,8 +123,8 @@ against the PowerShell on the operator's real data.
 | 2.4b | **Console API: the pipe server, and WRITING** | a held-open helper matches the spawn-per-read; keys land in a REPLICA console this tool owns | ✅ 26 consoles in 25 ms; `hello<tab><ctrl-c>` in a real console |
 | 2.5a | **The agent map** — `claude agents --json` | the map matches, including `busy` | ✅ 28 sessions, field by field |
 | 2.5b | **The sub-agent readers** — `Get-SRSubAgents`, `Get-SRLiveTasks`, `Get-SRAgentLastLine` | the same sub-agents and shells over every conversation with any | ✅ 386 sub-agents, 326 last lines, 25 conversations |
-| 2.5c | **Launching and ending** — `wt.exe`, `taskkill`, the process tree | a launch plan matches; NOTHING is launched or killed to prove it | ⏸ not started |
-| 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | — |
+| 2.5c | **Launching and ending** — `wt.exe`, `taskkill`, the process tree | a launch plan matches; NOTHING is launched or killed to prove it | ✅ 10 cases, 428 conversations planned over, 0 launched |
+| 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | ⏸ **start here** |
 | 2.7 | **Registry WRITE** — last, behind the guards | refuses every case the PowerShell refuses; the stale check still fires; verified against a *copy*, never the live file | — |
 
 ### 2.1 as it turned out
@@ -411,6 +411,87 @@ apart and an agent on the boundary legitimately differs. Everything it is
 arrives from a transcript — data this tool does not write — and `..\..\something`
 is the difference between reading a sub-agent and reading whatever the caller was
 pointed at.
+
+
+### 2.5c as it turned out - the launch path, and two more live defects
+
+**Ten oracle cases, 428 conversations planned over, four boot scripts compared
+byte for byte, and nothing launched, ended or typed into.** 161 xUnit tests.
+
+🔑 **THE SHAPE IS THE WHOLE POINT, AND THE POWERSHELL HAD TO BE SPLIT TO GET IT.**
+`Start-SRSession` built the wt.exe command line and then handed it to
+`Start-Process` in one function, so the piece whose defects are invisible until a
+tab dies was reachable only by launching something. It is now
+`Get-SRLaunchCommandLine`, which returns the string, and `Start-SRSession`, which
+is the only caller that turns it into a process - a pure extraction, no behaviour
+change, and the reason the quoting is now compared over every real project path
+on the machine. The C# mirrors it exactly: `CommandLine`, `BootScript`,
+`LaunchPlan` and `EndPlans` are values, and **there is no method in the assembly
+that starts or ends anything.**
+
+🔑 **AND TWO OF THE CASES RUN THE WINDOW'S OWN SOURCE.** `Get-LaunchBlock` and
+`Get-TickedPlan` live in `sessions-window.ps1`, which the oracle must not load.
+Their source is spliced out by name and defined in the oracle's session - the
+shipped body, over the real registry, without the window around it. A failed
+splice leaves the function undefined and the case reports "could not run", which
+is the third state, never a pass.
+
+**Two more live defects in the shipped PowerShell, both found by comparing bytes
+rather than behaviour:**
+
+🔴 **4. The boot script the tool writes contained nine bytes of mojibake.**
+`lib/_common.ps1` is UTF-8 with no BOM, this machine's ANSI codepage is 1252
+(measured), and PowerShell 5.1 therefore read the 🔴 inside the boot-script
+here-string as the four Latin-1 characters its UTF-8 bytes happen to be. Written
+back out as UTF-8 those became nine bytes, in a comment, in a file the operator
+opens when a launch goes wrong. Found as `1.677 bytes against 1.672`. The
+template is pure ASCII now.
+
+🔴 **5. The settings label was going to the WINDOW mojibaked.** The same trap,
+but this one is a *displayed* string: `Get-SRSessionArgsLabel` joined with a
+literal middot, so the row would have read `max  Â·  plan`. It is built from
+`[char]0x00B7` now. A scan of the other two `.ps1` files found **zero** non-ASCII
+string literals, so this was the single leak - the rule had been followed
+everywhere else.
+
+🔴 **AND THE ONE THAT MATTERS MOST HERE: "WRITTEN IS NOT WORKING."**
+`launch/settings` walked all 560 conversations, every one agreed, and a
+deliberate break to the `--model` branch **did not turn it red** - because *not
+one session in the live registry has a `prefs` object at all*. A comparison over
+live data proves only the paths live data reaches, and here that was exactly one:
+the default. So the DATA SOURCE was substituted rather than the check weakened -
+`launch/settings-shapes` carries 22 shapes covering every setting the sheet can
+produce, and five separate breaks were each seen to go red through it.
+
+🪤 **Three harness traps, all of which cost a run:**
+- **A here-string cannot be indented.** PowerShell needs a closing `'@` in column
+  1 and a C# raw string literal indents everything it holds, so the shell sat
+  waiting for input and the case came back 300 s later. (That it came back at all
+  is yesterday's read-deadline fix earning its keep.)
+- **`` `u{1} `` is PowerShell 6+.** 5.1 emitted it literally. It had been in the
+  older settings case all along and never mattered, because every row's flag list
+  was empty - the same blindness as the defect above.
+- **The array-wrap trap, from the other side.** `blocked = ,(...)` - the leading
+  comma is for a `return`, where it stops an array being unrolled; in an
+  *assignment* it simply wraps, and 26 blocked rows read as "1 item in PowerShell,
+  26 in C#".
+
+🪤 **One named difference kept rather than hidden:** PowerShell 5.1's
+`Sort-Object` is not stable (`-Stable` arrived in PowerShell 6) and LINQ's
+`OrderByDescending` is, so two conversations sharing a `lastActive` to the tick
+can come back swapped. The allowance forgives an ORDER difference inside `fresh`
+or `restart` only - and the case emits the sorted SETS alongside, so a membership
+change lands somewhere nothing forgives. Without that the allowance would have
+forgiven a conversation being *replaced* as readily as two being swapped, since
+one changed member shifts every index after it.
+
+🪤 **And one deliberate non-change.** PowerShell's `-contains` is
+case-insensitive, so `effort: "High"` clears the validation and reaches claude as
+`High` - a guard narrower than it reads, since the accepted values are lowercase.
+The C# was made to match rather than tightened: the settings sheet only ever
+writes an exact value, so it is unreachable in practice, and an Ordinal test
+would have been a behaviour change smuggled into a port.
+
 
 ### The health check went from a twenty-minute hang to 86 seconds
 

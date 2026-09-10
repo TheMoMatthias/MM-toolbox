@@ -79,6 +79,7 @@ cases.AddRange(BlockCases.All());
 cases.AddRange(ScreenCases.All());
 cases.AddRange(AgentCases.All());
 cases.AddRange(SubAgentCases.All());
+cases.AddRange(LaunchCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
@@ -131,6 +132,12 @@ foreach (var (c, expectAgree, meaning) in cases)
         {
             Note("      " + SubAgentCases.Coverage());
         }
+
+        if (c.Name.Equals("launch/ticked", StringComparison.Ordinal))
+        {
+            Note("      " + LaunchCases.Coverage());
+        }
+
         if (!expectAgree && r.Difference is not null)
         {
             Note("      " + r.Difference);

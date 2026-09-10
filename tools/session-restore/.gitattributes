@@ -1,0 +1,20 @@
+# 🔴 THE LINE ENDINGS OF THESE SCRIPTS ARE PART OF WHAT THE TOOL PRODUCES, so
+# they are pinned rather than left to whatever a checkout decides.
+#
+# lib/_common.ps1 holds the boot script as a here-string, and a here-string
+# carries its FILE's line endings into every conversation that is opened. This
+# repo is committed with LF and `core.autocrlf` is true, which means the blobs
+# are LF and a FRESH CLONE would check them out as CRLF - so the same source
+# would write a different boot script on another machine, and the byte-for-byte
+# comparison in `rebuild` (plan item 2.5c, `launch/boot-script`) would go red on
+# a machine where nothing was wrong.
+#
+# 🪤 This is not cosmetic and it is not about diffs. The operator works across
+# machines, and "it passes here" was the only thing holding that case up.
+*.ps1 text eol=lf
+*.psm1 text eol=lf
+
+# The same reasoning for the C# that mirrors it: `BootScript` pins its own
+# newlines with an explicit join, but nothing else should drift underneath the
+# tests that read these files.
+*.cs text eol=lf

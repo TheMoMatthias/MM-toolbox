@@ -30,13 +30,14 @@ Last commit: see `git log`. Branch `main`.
 | 2.4b | console write + server | ✅ replica console; 26 consoles in 25 ms |
 | 2.5a | agent map | ✅ 28 sessions, field by field |
 | 2.5b | the three sub-agent readers | ✅ 386 sub-agents, 326 last lines |
-| **2.5c** | **launching and ending** | ⏸ **start here** |
-| 2.6 | bands and titles | ⏸ |
+| 2.5c | launching and ending | ✅ 428 planned over, 0 launched |
+| **2.6** | **bands and titles** | ⏸ **start here** |
 | 2.7 | registry WRITE | ⏸ last on purpose |
 | 3-6 | view models, view, parity, cutover | ⏸ |
 
-**123 xUnit tests, 20 oracle cases. Nothing in the C# has written to any live
-file, and nothing has typed into a conversation.**
+**161 xUnit tests, 30 oracle cases. Nothing in the C# has written to any live
+file, nothing has typed into a conversation, and nothing has launched or ended
+one - the Launch namespace has no method that could.**
 
 ---
 
@@ -47,8 +48,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File src\build.ps1 -Oracle
 ```
 
 That builds, runs the tests, then runs every comparison against the live
-PowerShell. **It should be all green, in about 90 seconds** - most of that the
-console comparison waiting a second per session on purpose.
+PowerShell. **It should be all green, in about 70 seconds of oracle** - most of
+that the console comparison waiting a second per session on purpose, plus the
+11 s `transcript/last-said` walk over every transcript on the machine.
 
 🪤 **If it takes much longer than that, something is wrong with the HARNESS
 rather than the code.** That happened on 2026-09-10: a sample that had outgrown
@@ -68,18 +70,43 @@ hard can legitimately forgive a row. A difference that is NOT forgiven is real.
 
 ---
 
-## 2.5c, which is where to start
+## 2.6, which is where to start
 
-The launch and end path: `wt.exe`, `taskkill`, and the process tree.
+Bands and titles: `Get-Band`, `Get-Title`, and the surface predicate. Every
+conversation has to land in the same band the PowerShell puts it in, and the
+title has to come out identical for all 558 - the shapes that bite are worktrees
+named after the conversation inside them and 27 projects whose leaf names
+collide.
 
-🔴 **IT MUST BE PORTED WITHOUT EVER LAUNCHING OR ENDING ANYTHING TO PROVE IT.**
-The PowerShell suites do this by asking what a gesture WOULD do - `Get-TickedPlan`
-and `Get-LaunchBlock` return a plan rather than performing one - and the C# has
-to be shaped the same way: a plan is a value, and only one call turns a plan into
-processes. Compare the PLANS.
+Both live in `sessions-window.ps1`, so they are reached the same way 2.5c
+reached `Get-LaunchBlock`: **splice the function's own source out by name and
+define it in the oracle's session.** See `LaunchCases.PlanPreamble` - it is four
+lines, and it runs the shipped body rather than a copy of it. 🪤 A `foreach`
+body shares its caller's scope and a *function* does not, so the
+`Invoke-Expression` has to sit in the loop, not in a helper.
 
-After that: **2.6** (bands and titles - `Get-Band`, `Get-Title`, the surface
-predicate) and then **2.7**, the registry write, which is last on purpose.
+After that: **2.7**, the registry write, which is last on purpose.
+
+---
+
+## 2.5c is done, and this is the part worth knowing
+
+🔑 **A PLAN IS A VALUE; ONE CALL TURNS IT INTO PROCESSES.** To get that shape the
+PowerShell was split: `Get-SRLaunchCommandLine` returns the wt.exe command line
+and `Start-SRSession` is the only thing that hands it to a process. Nothing about
+either behaviour changed - but the quoting that once killed every AlgoTrader tab
+is now compared over every real project path on the machine, without opening a
+conversation to do it. **`SessionRestore.Core.Launch` has no method that starts
+or ends anything at all**, and that absence is the guard until Phase 4.
+
+🔴 **AND THE LESSON THAT GENERALISES: A GREEN OVER LIVE DATA PROVES ONLY THE PATHS
+LIVE DATA REACHES.** `launch/settings` walked all 560 conversations, agreed
+everywhere, and did not go red when the `--model` branch was deliberately broken
+- because **no session in the registry has a `prefs` object at all**. The fix was
+to substitute the data source, not to weaken the check: `launch/settings-shapes`
+carries 22 shapes and each branch was seen to go red through it. **Any future
+item should ask what fraction of its own branches the live data actually
+exercises before trusting its green.**
 
 ---
 
@@ -131,6 +158,14 @@ All fixed, committed, and confirmed with gui2 and state both PASS:
    on a pipeline that yielded one element indexed into a *string* and handed back
    a `[System.Char]`. Its caller catches and falls back to `'starting'`, so a
    running sub-agent that had said something showed **"starting" for ever**.
+4. **The boot script the tool writes carried nine bytes of mojibake.** This file
+   is UTF-8 with no BOM and the machine's ANSI codepage is 1252 (measured), so
+   PowerShell 5.1 read the 🔴 inside the boot-script here-string as four
+   Latin-1 characters. Found as a five-byte length difference.
+5. **The settings label was going to the window mojibaked** — the same trap on a
+   *displayed* string: a literal middot in `Get-SRSessionArgsLabel`, so a row
+   would have read `max  Â·  plan`. 🔑 A scan found **zero** other non-ASCII
+   string literals across the three `.ps1` files, so this was the single leak.
 
 🔑 **All three were found by running the old code over EVERYTHING** rather than
 over the cases that happen to be exercised. That is what the oracle is for, and
