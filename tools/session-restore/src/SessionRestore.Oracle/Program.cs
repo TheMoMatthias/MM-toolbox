@@ -88,6 +88,7 @@ cases.AddRange(BandCases.All());
 // bypass - and the read-back case removes the directory in a finally.
 WriteCases.PrepareCopy();
 cases.AddRange(WriteCases.All());
+cases.AddRange(CadenceCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");

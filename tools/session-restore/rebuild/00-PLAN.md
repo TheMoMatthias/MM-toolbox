@@ -688,7 +688,7 @@ ledger. Re-deriving them costs the same days again.
 | 3.1 | `ConversationVm` with `INotifyPropertyChanged`, bound once | changing one property repaints one row and does not rebuild the list | ✅ 5 of 6 checks; the source collection is never rebuilt |
 | 3.2 | `ICollectionView` for sort, filter and search | `tests/rebuild-bench.ps1`'s equivalent measures a keystroke **< 16 ms** with a frame | ✅ **2,1 ms**, live filtering, no Reset |
 | 3.3 | The bands as grouping, not as constructed heading rows | a conversation moving band does not rebuild the column | ✅ `1 x Move, 1 x Add, 1 x Remove`, no Reset, landed in its new heading |
-| 3.4 | The background loops replacing the 11 timers | the cadences in `01-CAPABILITIES.md` are preserved, with their measured values |
+| 3.4 | The background loops replacing the 11 timers | the cadences in `01-CAPABILITIES.md` are preserved, with their measured values | ✅ 12 cadences, drift-checked against the window's own source |
 | 3.5 | The two whole-list gestures | cycling the sort and toggling only-live land inside a frame too | ⏸ only-live is inside now; **the sort is still 21 ms** - deferred to 4.1 |
 
 🔴 **3.2 is the item this whole rebuild is justified by.** If it does not land
@@ -788,6 +788,46 @@ Carried to **4.1** with the sort.
 🪤 **Every number above was taken at 35-65% CPU with 29 live conversations,**
 and one worst-case read 684 ms. The absolute figures are not trustworthy; the
 13 -> 70 jump is, because it held at all three load levels.
+
+### 3.4 as it turned out - the cadences are values, and drift is caught
+
+✅ **Twelve cadences in one place, compared against the shipped window's own
+source.** `loops/cadences` reads every `$script:*Timer.Interval` out of
+sessions-window.ps1, resolves the three that are named constants
+(`FastSeconds`, `LiveSeconds`, `AskPollFastMs`), and diffs them against
+`Core/Cadences.cs`. Changing `Fast` from 6 s to 7 s turns it red.
+
+🔑 **It is a DRIFT check, not a port check, and that is the only kind
+available** - the timers are created at window scope in a file the oracle must
+not load. What it catches is not a crash: it is a rebuild that quietly feels
+different from the tool it replaces, in a way nobody can point at. The failure
+mode these numbers protect against was reported in exactly those words - *"I have
+to click a different session to see whether this one is still going."*
+
+🪤 **THE FIRST *RESOLVABLE* ASSIGNMENT, NOT THE FIRST ONE.** `askTimer` has
+its interval re-set at runtime from `$(if ($slow ...))`, and that assignment
+appears **earlier in the file** than the one that creates it - so taking the
+first textual match reported "could not resolve" for a timer whose cadence is a
+plain constant twelve thousand lines further down.
+
+🪤 **AND A COMPARISON KEYED ON THE POWERSHELL'S ROWS CANNOT CATCH A MISSING
+NAME** - a timer absent from both sides agrees perfectly. `CadenceTests` asserts
+the table holds all twelve by name, which is the half the oracle structurally
+cannot do.
+
+**`BackgroundPass` replaces a DispatcherTimer**, and the three things it keeps
+that a naive port would lose:
+
+- 🔴 **The work is not on the UI thread.** Every one of the window's eleven
+  timers ticks on the dispatcher, so a 508 ms model pass happens *between frames*
+  and is felt as a stutter rather than seen as a delay. Here the reading is on
+  the thread pool and only the finished answer is marshalled back.
+- 🪤 **A tick never overlaps itself.** A DispatcherTimer cannot re-enter, so
+  the PowerShell had that for free and a port loses it silently. The interval is
+  the gap BETWEEN passes, not the period.
+- 🪤 **A failing pass does not kill the loop.** An unobserved exception in an
+  async loop stops it and says nothing - the tool would keep drawing a board that
+  had stopped updating, which is indistinguishable from a quiet machine.
 
 ### 3.5 - tried, measured, reverted, and one gesture deferred
 
