@@ -60,6 +60,14 @@ public sealed class SessionsVm : INotifyPropertyChanged
         // registration.
         view.IsLiveFiltering = true;
         view.LiveFilteringProperties.Add(nameof(ConversationVm.Matches));
+
+        // 🔴 IsLiveSorting STAYS ON, AND IT IS LOAD-BEARING. Turning it off was
+        // tried as a fix for the 21 ms sort cycle and bought nothing measurable -
+        // but it WOULD have cost something real: a conversation whose lastActive
+        // moves on a background refresh has to rise to the top of a recent-first
+        // list, and with live sorting off it would sit where it was until
+        // something else re-sorted. A change that buys nothing and risks that is
+        // not a trade, it is a regression waiting for a quiet week.
         view.IsLiveSorting = true;
 
         View = view;
@@ -207,6 +215,20 @@ public sealed class SessionsVm : INotifyPropertyChanged
     ///
     /// 🪤 DeferRefresh AROUND THE WHOLE PASS, or the view reacts to each row
     /// in turn and re-sorts between them.
+    /// </remarks>
+    /// <summary>
+    /// Re-decides which rows pass, and lets live filtering move the ones that
+    /// changed.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 "ONE RESET WHEN MOST ROWS MOVE" WAS TRIED HERE AND WAS WORSE, which
+    /// is worth writing down because it is the obvious idea. Live filtering is
+    /// the wrong trade for a whole-list swap in principle - 428 notifications
+    /// against one Reset - so the plan was to count the movers and switch. But
+    /// the only lever for it is toggling `IsLiveFiltering`, and toggling that
+    /// makes the view rebuild its own tracking over every item: a search
+    /// keystroke went **2,1 ms -> 25 ms** and clearing the search **10 -> 38 ms**.
+    /// Reverted. The whole-list gestures keep their per-row notifications.
     /// </remarks>
     private void Reselect()
     {

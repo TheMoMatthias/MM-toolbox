@@ -689,7 +689,7 @@ ledger. Re-deriving them costs the same days again.
 | 3.2 | `ICollectionView` for sort, filter and search | `tests/rebuild-bench.ps1`'s equivalent measures a keystroke **< 16 ms** with a frame | ✅ **2,1 ms**, live filtering, no Reset |
 | 3.3 | The bands as grouping, not as constructed heading rows | a conversation moving band does not rebuild the column |
 | 3.4 | The background loops replacing the 11 timers | the cadences in `01-CAPABILITIES.md` are preserved, with their measured values |
-| 3.5 | The two whole-list gestures | cycling the sort and toggling only-live land inside a frame too | ⏸ 21 / 19 ms - see below |
+| 3.5 | The two whole-list gestures | cycling the sort and toggling only-live land inside a frame too | ⏸ only-live is inside now; **the sort is still 21 ms** - deferred to 4.1 |
 
 🔴 **3.2 is the item this whole rebuild is justified by.** If it does not land
 under 16 ms, stop and find out why before building any more of the view.
@@ -746,22 +746,42 @@ until it has been seen to go red, and "it got faster" is not evidence that it go
 faster at the right thing.** 2 ms was the cost of doing nothing, and only an
 independent question - *does it still filter?* - could tell the two apart.
 
-### 3.5 - the two gestures still over a frame
+### 3.5 - tried, measured, reverted, and one gesture deferred
 
-Cycling the sort (**21 ms**) and toggling only-live (**19 ms**) are both cases
-where **every row changes state at once**, and that is precisely where live
-filtering is the wrong trade: 428 individual Add/Remove notifications cost more
-than the single Reset they replaced.
+🔴 **"ONE RESET WHEN MOST ROWS MOVE" IS THE OBVIOUS IDEA AND IT IS WORSE.**
+Live filtering IS the wrong trade for a whole-list swap in principle - 428
+notifications against one Reset - so the fix was to count the movers and switch
+above a threshold. The only lever for that is toggling `IsLiveFiltering`, and
+toggling it makes the view **rebuild its own tracking over every item**:
 
-- **The sort still Resets** - changing `SortDescriptions` resets whatever
-  `IsLiveSorting` says, and the binding check reports it as its own line rather
-  than folding it in with the filter.
-- **only-live 428 <-> 0** is the full-swap case by construction.
+| gesture | live filtering | with the toggle |
+|---|---|---|
+| search keystroke | 2,1 | **25,5** |
+| clear the search | 10,6 | **38,9** |
 
-Neither is on the typing path, and both were 98 ms and worse before. Left as
-3.5 rather than chased now: the honest options are a Reset *chosen deliberately*
-for whole-list changes, or virtualization tuning, and neither should be guessed
-at.
+Reverted. Written into `SessionsVm.Reselect`'s own comment so the next reader
+does not re-derive it.
+
+🪤 **AND `IsLiveSorting = false` WAS THE SECOND ATTEMPT, ALSO REVERTED.** It
+bought nothing measurable on the sort (21,2 -> 22,5, inside the noise) and it
+would have cost something real: a conversation whose `lastActive` moves on a
+background refresh has to rise to the top of a recent-first list, and with live
+sorting off it would sit where it was until something else re-sorted.
+
+**Where it landed:** toggling only-live is now **inside a frame** (15,6 ms).
+**Cycling the sort is still 21 ms** and is deferred to **4.1**: changing
+`SortDescriptions` Resets whatever else is true, so its cost is a Reset plus a
+re-layout of 428 items - and the lever for that is container recycling and a
+fixed row height, which cannot be tuned honestly until the real row template
+exists. Chasing it against a placeholder `DisplayMemberPath` would be tuning the
+wrong thing.
+
+🪤 **A NOTE ON EVERY NUMBER IN THIS SECTION: the machine was at 35-49% CPU.**
+At that load the spread on a 16,7 ms boundary is around plus or minus a half, and
+two runs of the same build differed by 10 ms on one gesture. The 2,1 ms keystroke
+was measured on a quiet machine; 3,6-4,0 ms is the same build under load. Only
+differences of the 2 -> 25 ms kind were treated as real.
+[[feedback-measure-a-control]]
 
 ---
 ## Phase 4 — the view
