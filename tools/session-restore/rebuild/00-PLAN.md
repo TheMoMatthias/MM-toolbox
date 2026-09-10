@@ -4,8 +4,8 @@ One pass, worked top to bottom. Every item has a **done-when** you can check
 without asking anybody — a command and its expected result, or an observable
 state. An item with no done-when is not an item.
 
-**Phases 0 and 1 are complete, and 2.1-2.4 and 2.5a-2.5c with them.** Everything
-from 2.6 down is still to do. The PowerShell tool remains the daily driver and is untouched by any
+**Phases 0 and 1 are complete, and 2.1-2.4, 2.5a-2.5c and 2.6 with them.** Only
+2.7 is left in Phase 2. The PowerShell tool remains the daily driver and is untouched by any
 of it.
 
 ---
@@ -124,8 +124,8 @@ against the PowerShell on the operator's real data.
 | 2.5a | **The agent map** — `claude agents --json` | the map matches, including `busy` | ✅ 28 sessions, field by field |
 | 2.5b | **The sub-agent readers** — `Get-SRSubAgents`, `Get-SRLiveTasks`, `Get-SRAgentLastLine` | the same sub-agents and shells over every conversation with any | ✅ 386 sub-agents, 326 last lines, 25 conversations |
 | 2.5c | **Launching and ending** — `wt.exe`, `taskkill`, the process tree | a launch plan matches; NOTHING is launched or killed to prove it | ✅ 10 cases, 428 conversations planned over, 0 launched |
-| 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | ⏸ **start here** |
-| 2.7 | **Registry WRITE** — last, behind the guards | refuses every case the PowerShell refuses; the stale check still fires; verified against a *copy*, never the live file | — |
+| 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | ✅ 7 cases, 428 banded, every route proven |
+| 2.7 | **Registry WRITE** — last, behind the guards | refuses every case the PowerShell refuses; the stale check still fires; verified against a *copy*, never the live file | ⏸ **start here** |
 
 ### 2.1 as it turned out
 
@@ -491,6 +491,67 @@ case-insensitive, so `effort: "High"` clears the validation and reaches claude a
 The C# was made to match rather than tightened: the settings sheet only ever
 writes an exact value, so it is unreachable in practice, and an Ordinal test
 would have been a behaviour change smuggled into a port.
+
+
+
+### 2.6 as it turned out - and the coverage question asked FIRST this time
+
+**Seven oracle cases, 428 conversations banded, 201 xUnit tests.** The whole row
+layer: `Titles`, `OpenItems`, `SessionState`, `Bands`, `RailCuts`, `Surface`.
+
+🔑 **THE 2.5c LESSON WAS APPLIED BEFORE IT COULD BITE.** `bands/live` walks
+every conversation, and the spread is **399 quiet, 18 done, 3 idle, 3 working,
+3 needs, 2 open** - so almost the whole case is one band reached by three
+different routes, and most of `Get-Band` is untouched by it. `bands/shapes`
+carries 16 synthetic agent reports covering every route in, and **ten separate
+breaks were each seen to go red**, one per branch.
+
+🪤 **TWO OF THOSE TEN DID NOT GO RED FIRST TIME, AND NEITHER WAS A CODE
+PROBLEM:**
+
+- **The "coldest conversation" the surface case selected is LIVE.** A running
+  session whose registry `lastActive` was never updated is the oldest row on the
+  machine - so `Test-OnSurface` returned on its first line and the
+  pinned-because-selected clause, the entire point of the case, was never
+  reached. Breaking that clause stayed green. The pick is now the coldest row
+  **nothing is running**, and it throws if no such row exists rather than
+  quietly testing nothing.
+- **The quiet exclusion had no route into it.** A stuck row returns quiet from
+  `Get-Band`'s FIRST line, before the ask-seen override is reached, so it proves
+  nothing about it. Only an *unrecognised status* falls through the switch to
+  quiet and then meets the override. That shape was missing and is now there.
+
+🔴 **A live semantic difference: PowerShell's casts ROUND, they do not
+truncate.** `[long]($Delta / 10000000)` and `[int]($s / 60)` are
+`Convert.ToInt64/ToInt32`, which round half to **even** - so 3m31s reads "4m",
+and 90 seconds minus one tick becomes 90 whole seconds, then 1,5 minutes, then
+**"2m"**. C# integer division truncates, which is the conventional reading of an
+age and disagreed at every half-unit boundary. Found at 89,9999999 s, where the
+two sides said "2m" and "now". 🔑 It matters more than a label: `Get-AgeLabel`
+also feeds the change-detection fingerprint, so a port that truncated would have
+made the row and its own repaint test disagree about whether an age had moved.
+Ported faithfully, with the reasoning written where the next reader will want to
+"fix" it.
+
+🪤 **And two defects in my own harness, found because 2.6's full run went
+red on a case I had not touched.** `subagents/live-tasks` was **intermittently**
+red - the worst state a check can be in, because it teaches people to re-run:
+
+- its "the file grew" marker filled two fields of a six-field row, so the other
+  four reported "present in PowerShell, missing in C#" and matched no allowance.
+  The same mistake `launch/processes` had already been fixed for: **one marker
+  per field the other side emitted.**
+- its allowance was `d.EndsWith("C# \"-2\"")` on the WHOLE difference text - so
+  it inspected a single line and forgave all of them. That is the
+  tolerance-on-the-first-difference mistake seen from the other end. It is
+  line-wise now, and the case reports **23 compared, not 25**, when two
+  conversations grew.
+
+🔑 **`Resolve-SRSessionState` is called with `-Conv $null`, and that is not a
+simplification - it is what `Update-Model` does.** The transcript state reader is
+not on the band path at all, so the corroboration test reduces to "is there a
+pid". Porting the `Conv` branch would have been porting a caller that does not
+exist.
 
 
 ### The health check went from a twenty-minute hang to 86 seconds

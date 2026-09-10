@@ -253,16 +253,23 @@ public static class SubAgentCases
                 var of = a?["of"]?.GetValue<string>() ?? string.Empty;
                 var askedLen = a?["len"]?.GetValue<long>() ?? -1;
 
+                // 🔴 A MARKER GOES IN EVERY FIELD THE OTHER SIDE EMITTED, not
+                // just the first two. A partly-marked row reports its remaining
+                // fields as "present in PowerShell, missing in C#", and those
+                // lines carry nothing an allowance can match on - so this case
+                // went red intermittently, whenever a conversation happened to be
+                // written to mid-run AND had a task in it. Exactly the mistake
+                // the launch cases had already been fixed for.
                 if (!byId.TryGetValue(of, out var path))
                 {
-                    rows.Add(new JsonObject { ["of"] = of, ["len"] = -1, ["n"] = -1 });
+                    rows.Add(Marker(of, "(no such conversation here)"));
                     continue;
                 }
 
                 var now = Length(path);
                 if (askedLen >= 0 && now != askedLen)
                 {
-                    rows.Add(new JsonObject { ["of"] = of, ["len"] = -2, ["n"] = -2 });
+                    rows.Add(Marker(of, "(grew between the two reads)"));
                     continue;
                 }
 
@@ -279,15 +286,24 @@ public static class SubAgentCases
                 LiveTasksSeen++;
             }
 
+            // 🔴 AND FAIL IF NOTHING WAS COMPARED. A run where every
+            // conversation grew would otherwise agree about nothing at all and
+            // print green. This row matches no allowance on purpose.
             if (LiveTasksSeen == 0)
             {
-                rows.Add(new JsonObject { ["of"] = "(nothing)", ["n"] = -3 });
+                rows.Add(new JsonObject { ["of"] = "(nothing was compared)", ["n"] = -3 });
             }
 
             return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);
         })
     {
-        Tolerate = d => d.EndsWith("C# \"-2\"", StringComparison.Ordinal),
+        // 🪤 EVERY LINE, NOT THE LAST ONE. This was `d.EndsWith(...)` on the
+        // WHOLE difference text - so it inspected a single line and forgave all
+        // of them, which is the "tolerance on the first difference only" mistake
+        // seen from the other end. A case passes only when EVERY difference it
+        // has is one it named.
+        Tolerate = d => d.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
+                         .All(x => x.Contains("(grew between the two reads)", StringComparison.Ordinal)),
         ToleranceReason = "the conversation was written to between the two reads - a growing file, not a differing reader",
     };
 
@@ -301,6 +317,20 @@ public static class SubAgentCases
     public static string Coverage() => string.Format(System.Globalization.CultureInfo.InvariantCulture,
         "{0} sub-agent(s), {1} last line(s), {2} conversation(s) for what is running",
         AgentsSeen, LastLinesSeen, LiveTasksSeen);
+
+    /// <summary>
+    /// A row this side could not answer for, with the reason in EVERY field the
+    /// PowerShell emitted - so an allowance can match the whole row.
+    /// </summary>
+    private static JsonObject Marker(string of, string why) => new()
+    {
+        ["of"] = of,
+        ["len"] = why,
+        ["n"] = why,
+        ["ids"] = why,
+        ["kinds"] = why,
+        ["cmds"] = why,
+    };
 
     private static long Length(string path)
     {

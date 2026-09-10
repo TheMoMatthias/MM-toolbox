@@ -31,11 +31,11 @@ Last commit: see `git log`. Branch `main`.
 | 2.5a | agent map | ✅ 28 sessions, field by field |
 | 2.5b | the three sub-agent readers | ✅ 386 sub-agents, 326 last lines |
 | 2.5c | launching and ending | ✅ 428 planned over, 0 launched |
-| **2.6** | **bands and titles** | ⏸ **start here** |
-| 2.7 | registry WRITE | ⏸ last on purpose |
+| 2.6 | bands and titles | ✅ 428 banded, every route proven |
+| **2.7** | **registry WRITE** | ⏸ **start here** - last on purpose |
 | 3-6 | view models, view, parity, cutover | ⏸ |
 
-**161 xUnit tests, 30 oracle cases. Nothing in the C# has written to any live
+**201 xUnit tests, 37 oracle cases. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 
@@ -70,43 +70,66 @@ hard can legitimately forgive a row. A difference that is NOT forgiven is real.
 
 ---
 
-## 2.6, which is where to start
+## 2.7, which is where to start - and it is the one that can lose work
 
-Bands and titles: `Get-Band`, `Get-Title`, and the surface predicate. Every
-conversation has to land in the same band the PowerShell puts it in, and the
-title has to come out identical for all 558 - the shapes that bite are worktrees
-named after the conversation inside them and 27 projects whose leaf names
-collide.
+The registry WRITE. It is last on purpose.
 
-Both live in `sessions-window.ps1`, so they are reached the same way 2.5c
-reached `Get-LaunchBlock`: **splice the function's own source out by name and
-define it in the oracle's session.** See `LaunchCases.PlanPreamble` - it is four
-lines, and it runs the shipped body rather than a copy of it. 🪤 A `foreach`
-body shares its caller's scope and a *function* does not, so the
-`Invoke-Expression` has to sit in the loop, not in a helper.
+🔴 **A REGISTRY-OVERWRITE BUG IN THIS REPO'S HISTORY COST 210 CONVERSATIONS.**
+That is why `sessions-registry.json` has never been written by any of this C#,
+and why the absence of a writer has been the guard so far. The guards in the
+PowerShell - the stale-stamp check, the refusal to write a registry that shrank,
+the atomic replace - are the whole point of the item, and each has to come across
+as a TYPE rather than as an `if` somebody can forget.
 
-After that: **2.7**, the registry write, which is last on purpose.
+**How to verify it without risking anything:**
+- 🔴 **Never against the live file.** Copy it, write to the copy, diff.
+- The PowerShell's own refusals are the specification: find every path in
+  `Save-SRRegistry` that declines, and prove the C# declines on the same input.
+- 🔑 **And ask the coverage question first**, the way 2.6 did: how many of
+  those refusal paths can the live registry actually reach? Almost none - a
+  refusal fires on a corrupted or stale file, and the real one is neither. So the
+  shapes have to be built. See `launch/settings-shapes` and `bands/shapes` for
+  the pattern.
+
+After 2.7, Phase 2 is done and **Phase 3.2 is the gate**: a keystroke has to land
+under 16 ms with a real frame, via `ICollectionView`. If that does not land, stop
+and find out why before building more view.
 
 ---
 
-## 2.5c is done, and this is the part worth knowing
+## What 2.5c and 2.6 established, beyond their own items
 
-🔑 **A PLAN IS A VALUE; ONE CALL TURNS IT INTO PROCESSES.** To get that shape the
-PowerShell was split: `Get-SRLaunchCommandLine` returns the wt.exe command line
-and `Start-SRSession` is the only thing that hands it to a process. Nothing about
-either behaviour changed - but the quoting that once killed every AlgoTrader tab
-is now compared over every real project path on the machine, without opening a
-conversation to do it. **`SessionRestore.Core.Launch` has no method that starts
-or ends anything at all**, and that absence is the guard until Phase 4.
+🔑 **1. A PLAN IS A VALUE; ONE CALL TURNS IT INTO PROCESSES.** The PowerShell
+was split to get that shape - `Get-SRLaunchCommandLine` returns the wt.exe
+command line, `Start-SRSession` is the only thing that hands it to a process.
+**`SessionRestore.Core.Launch` has no method that starts or ends anything at
+all**, and that absence is the guard until Phase 4.
 
-🔴 **AND THE LESSON THAT GENERALISES: A GREEN OVER LIVE DATA PROVES ONLY THE PATHS
-LIVE DATA REACHES.** `launch/settings` walked all 560 conversations, agreed
-everywhere, and did not go red when the `--model` branch was deliberately broken
-- because **no session in the registry has a `prefs` object at all**. The fix was
-to substitute the data source, not to weaken the check: `launch/settings-shapes`
-carries 22 shapes and each branch was seen to go red through it. **Any future
-item should ask what fraction of its own branches the live data actually
-exercises before trusting its green.**
+🔴 **2. A GREEN OVER LIVE DATA PROVES ONLY THE PATHS LIVE DATA REACHES - AND
+THIS IS NOW THE FIRST QUESTION TO ASK OF ANY CASE.** Three separate times:
+
+| the case | it agreed over | and yet |
+|---|---|---|
+| `launch/settings` | all 560 conversations | **no session has a `prefs` object at all** - every row was the default path, and breaking `--model` stayed green |
+| `bands/live` | all 428 | 399 are *quiet*, reached three different ways; most of `Get-Band` was untouched |
+| `bands/on-surface` | all 560, twice | the "coldest" row it picked is **live**, so the clause under test was never reached |
+
+The fix is always the same and it is never "widen the check": **substitute the
+data source**, with the shapes spelled identically on both sides, and then break
+each branch and watch it go red. `launch/settings-shapes` and `bands/shapes` are
+the pattern.
+
+🪤 **3. A MARKER GOES IN EVERY FIELD THE OTHER SIDE EMITTED.** A row this
+side cannot answer for must carry its reason in *all* of the other side's fields,
+or the unmarked ones report "present in PowerShell, missing in C#" and match no
+allowance. This bit twice - `launch/processes` and then `subagents/live-tasks`,
+where it made the case **intermittently** red, which is worse than red because it
+teaches you to re-run.
+
+🪤 **4. AN ALLOWANCE IS CHECKED LINE BY LINE.** `subagents/live-tasks` used
+`EndsWith` on the whole difference text, so it inspected one line and forgave all
+of them. Every allowance now splits the text and requires that EVERY line be one
+it named.
 
 ---
 
@@ -166,6 +189,12 @@ All fixed, committed, and confirmed with gui2 and state both PASS:
    *displayed* string: a literal middot in `Get-SRSessionArgsLabel`, so a row
    would have read `max  Â·  plan`. 🔑 A scan found **zero** other non-ASCII
    string literals across the three `.ps1` files, so this was the single leak.
+
+🔴 **And one live SEMANTIC difference, ported rather than "fixed":**
+PowerShell's `[int]` / `[long]` casts round half to **even**, so `Get-AgeLabel`
+reads 3m31s as **"4m"** and 90 s minus a tick as **"2m"**. C# integer division
+truncates and disagreed at every half-unit boundary. It feeds the repaint
+fingerprint as well as the label, so the two had to match.
 
 🔑 **All three were found by running the old code over EVERYTHING** rather than
 over the cases that happen to be exercised. That is what the oracle is for, and
