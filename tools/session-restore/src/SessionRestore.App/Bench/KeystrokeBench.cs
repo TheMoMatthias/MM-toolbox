@@ -63,6 +63,14 @@ public static class KeystrokeBench
             DisplayMemberPath = nameof(ConversationVm.Title),
             IsHitTestVisible = false,
         };
+
+        // 🔴 GROUPING TURNS WPF VIRTUALIZATION OFF UNLESS THIS IS SET, and that
+        // is not a tuning knob - it is the difference between realising ~30
+        // containers and realising all 428. Adding the band grouping without it
+        // took `clear the search` from 13 ms to 87. It is opt-in for backwards
+        // compatibility, and it is the single least discoverable line in the
+        // whole view layer.
+        VirtualizingPanel.SetIsVirtualizingWhenGrouping(list, true);
         var window = new Window
         {
             Content = list,

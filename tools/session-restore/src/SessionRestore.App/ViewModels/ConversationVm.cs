@@ -35,6 +35,8 @@ public sealed class ConversationVm : INotifyPropertyChanged
     private bool _derivedTitle;
     private string _lane = string.Empty;
     private string _band = Bands.Quiet;
+    private int _bandOrder = Bands.OrderOf(Bands.Quiet);
+    private string _bandLabel = Bands.LabelOf(Bands.Quiet);
     private string _said = string.Empty;
     private string _age = string.Empty;
     private bool _live;
@@ -125,10 +127,43 @@ public sealed class ConversationVm : INotifyPropertyChanged
         private set => Set(ref _lane, value);
     }
 
+    /// <summary>
+    /// Which band this conversation is in. 🔴 The column GROUPS on this, so
+    /// setting it moves the row between headings - it is not just a colour.
+    /// </summary>
     public string Band
     {
         get => _band;
-        private set => Set(ref _band, value);
+        private set
+        {
+            if (Set(ref _band, value))
+            {
+                BandOrder = Bands.OrderOf(value);
+                BandLabel = Bands.LabelOf(value);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Where the band sits in the column.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 THE COLUMN SORTS ON THIS AND GROUPS ON <see cref="Band"/>, and the
+    /// two have to move together. A view forms groups in the order its items
+    /// arrive, so sorting by the label instead would head the column FINISHED,
+    /// IDLE, NEEDS YOU - alphabetical, and meaningless.
+    /// </remarks>
+    public int BandOrder
+    {
+        get => _bandOrder;
+        private set => Set(ref _bandOrder, value);
+    }
+
+    /// <summary>The heading text, so the group header binds to a row rather than a converter.</summary>
+    public string BandLabel
+    {
+        get => _bandLabel;
+        private set => Set(ref _bandLabel, value);
     }
 
     /// <summary>The one-line headline. Empty until a probe has read it.</summary>

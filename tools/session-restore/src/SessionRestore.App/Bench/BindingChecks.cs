@@ -1,5 +1,6 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Windows.Data;
 using SessionRestore.App.ViewModels;
 using SessionRestore.Core.Registry;
 
@@ -48,6 +49,7 @@ public static class BindingChecks
             ItemsSource = vm.View,
             IsHitTestVisible = false,
         };
+        System.Windows.Controls.VirtualizingPanel.SetIsVirtualizingWhenGrouping(list, true);
         var window = new System.Windows.Window
         {
             Content = list,
@@ -173,7 +175,59 @@ public static class BindingChecks
                 !afterSort.Contains("Reset", StringComparer.Ordinal),
                 Summarise(afterSort)));
 
-            // 6. A row that genuinely leaves the model is removed - the check that
+            // 6. PLAN ITEM 3.3's DONE-WHEN: a conversation moving band must not
+            //    rebuild the column. The bands are a real grouping, so this is
+            //    live grouping moving one row between two headings.
+            if (vm.Rows.Count > 0)
+            {
+                var mover = vm.Rows[0];
+                var wasBand = mover.Band;
+                var groupsBefore = vm.View.Groups?.Count ?? -1;
+
+                actions.Clear();
+                ((INotifyCollectionChanged)vm.View).CollectionChanged += OnView;
+                // 🔴 THROUGH THE MODEL, NOT BY POKING THE PROPERTY. Band is set
+                // by Refresh from the agent report, which is how it moves in
+                // life - a test that assigned it directly would prove the view
+                // reacts to something the tool never does.
+                mover.Refresh(
+                    new SessionRestore.Core.Sessions.AgentStatus(
+                        mover.Id, "busy", string.Empty, false, 4242, "interactive", string.Empty, string.Empty, null),
+                    null,
+                    DateTime.Now.Ticks);
+                var after = Showing(window, vm);
+                ((INotifyCollectionChanged)vm.View).CollectionChanged -= OnView;
+
+                // 🔴 IT HAS TO LAND IN THE NEW GROUP, not merely fail to reset.
+                // The first version asked only "no Reset, and something is still
+                // on screen", and it passed with `groups 1 -> 1` - the row had not
+                // moved anywhere. A check that cannot tell a regroup from a
+                // no-op is not checking the done-when.
+                var landed = false;
+                foreach (var g in vm.View.Groups?.OfType<CollectionViewGroup>() ?? [])
+                {
+                    if (string.Equals(g.Name as string, mover.BandLabel, StringComparison.Ordinal)
+                        && g.Items.Contains(mover))
+                    {
+                        landed = true;
+                    }
+                }
+
+                checks.Add(new Check(
+                    "a conversation MOVING BAND lands in its new heading, without a rebuild",
+                    !string.Equals(mover.Band, wasBand, StringComparison.Ordinal)
+                        && !actions.Contains("Reset", StringComparer.Ordinal)
+                        && landed,
+                    wasBand + " -> " + mover.Band + ", " + Summarise(actions)
+                        + ", groups " + groupsBefore + " -> " + (vm.View.Groups?.Count ?? -1)
+                        + ", landed: " + landed));
+
+                // Put it back, so the checks that follow see the model as it is.
+                mover.Refresh(null, null, DateTime.Now.Ticks);
+                Showing(window, vm);
+            }
+
+            // 7. A row that genuinely leaves the model is removed - the check that
             //    stops #1 from passing by doing nothing at all.
             structural = 0;
             vm.Sync(model.Skip(1).Select(m => (m.Id, m.S, m.D)));

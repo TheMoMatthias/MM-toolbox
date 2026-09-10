@@ -25,6 +25,65 @@ public static class Bands
     /// </summary>
     public const int HandbackMinChars = 40;
 
+    /// <summary>One band, as the column heads it.</summary>
+    public sealed record BandDef(string Key, string Label, int Order);
+
+    /// <summary>
+    /// The six bands in the order they appear.
+    /// </summary>
+    /// <remarks>
+    /// 🔑 EVERY ONE HAS AN ACCENT AND A LABEL, because colour is the fast path
+    /// and never the only path.
+    ///
+    /// 🔴 SOMETHING OPEN IS SECOND, AND THAT IS THE POINT OF IT. Reported: the
+    /// board said working, idle, or waiting-on-you, and had nothing for a session
+    /// that FINISHED and left something open - which is neither idle nor waiting,
+    /// and is the state a lane is in most mornings. It sits above WORKING because
+    /// a working session is not asking anything of you and this one is, quietly.
+    ///
+    /// 🪤 THE ORDER IS A NUMBER, NOT THE LABEL'S ALPHABET. A view groups in
+    /// the order its items arrive, so the rows are sorted by <c>Order</c> before
+    /// they are grouped - otherwise WPF would head the column FINISHED, IDLE,
+    /// NEEDS YOU, which is alphabetical and meaningless.
+    /// </remarks>
+    public static readonly IReadOnlyList<BandDef> Ordered =
+    [
+        new(Needs, "NEEDS YOU", 0),
+        new(Open, "SOMETHING OPEN", 1),
+        new(Working, "WORKING", 2),
+        new(Done, "FINISHED", 3),
+        new(Idle, "IDLE", 4),
+        new(Quiet, "NOT RUNNING", 5),
+    ];
+
+    /// <summary>Where this band sits in the column. An unknown one sorts last.</summary>
+    public static int OrderOf(string? band)
+    {
+        for (var i = 0; i < Ordered.Count; i++)
+        {
+            if (string.Equals(Ordered[i].Key, band, StringComparison.Ordinal))
+            {
+                return Ordered[i].Order;
+            }
+        }
+
+        return Ordered.Count;
+    }
+
+    /// <summary>The heading a band is drawn with.</summary>
+    public static string LabelOf(string? band)
+    {
+        foreach (var b in Ordered)
+        {
+            if (string.Equals(b.Key, band, StringComparison.Ordinal))
+            {
+                return b.Label;
+            }
+        }
+
+        return (band ?? string.Empty).ToUpperInvariant();
+    }
+
     /// <summary>
     /// A conversation that is running and at its prompt: has it finished, or has
     /// it left something open?

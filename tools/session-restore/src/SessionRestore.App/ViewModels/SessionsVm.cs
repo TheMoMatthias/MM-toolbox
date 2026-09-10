@@ -61,6 +61,23 @@ public sealed class SessionsVm : INotifyPropertyChanged
         view.IsLiveFiltering = true;
         view.LiveFilteringProperties.Add(nameof(ConversationVm.Matches));
 
+        // 🔴 PLAN ITEM 3.3 - THE BANDS ARE A GROUPING, NOT CONSTRUCTED ROWS.
+        // The PowerShell builds a heading as a FAKE LIST ITEM carrying every
+        // session property present-but-switched-off, because a heading and a row
+        // share one DataTemplate and a binding to a property that is not on the
+        // object is a silent trace error and an empty cell. That whole class of
+        // problem disappears with a real group: the header has its own template
+        // and never pretends to be a row.
+        //
+        // 🪤 AND LIVE GROUPING IS WHAT MAKES IT WORTH HAVING. Without it, a
+        // conversation whose band changes on a background refresh does not move
+        // until something re-groups - and re-grouping is a Reset, which rebuilds
+        // the column. With it, the row moves between two headings and nothing
+        // else is touched.
+        view.GroupDescriptions.Add(new PropertyGroupDescription(nameof(ConversationVm.BandLabel)));
+        view.IsLiveGrouping = true;
+        view.LiveGroupingProperties.Add(nameof(ConversationVm.BandLabel));
+
         // 🔴 IsLiveSorting STAYS ON, AND IT IS LOAD-BEARING. Turning it off was
         // tried as a fix for the 21 ms sort cycle and bought nothing measurable -
         // but it WOULD have cost something real: a conversation whose lastActive
@@ -273,13 +290,25 @@ public sealed class SessionsVm : INotifyPropertyChanged
         using (_view.DeferRefresh())
         {
             View.SortDescriptions.Clear();
+
+            // 🔴 THE BAND ORDER SORTS FIRST, ALWAYS, whatever the column is
+            // sorted by inside a band. A view forms its groups in the order the
+            // items arrive, so this is what puts NEEDS YOU at the top and NOT
+            // RUNNING at the bottom - the order is a fact about the board, not a
+            // preference the sort control gets to change.
+            View.SortDescriptions.Add(
+                new SortDescription(nameof(ConversationVm.BandOrder), ListSortDirection.Ascending));
+
             switch (_sort)
             {
                 case SessionSort.Name:
                     View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.Title), ListSortDirection.Ascending));
                     break;
                 case SessionSort.Band:
-                    View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.Band), ListSortDirection.Ascending));
+                    // 🪤 NOTHING EXTRA. Sorting by band was a sort option while
+                    // the bands were built by hand; now that they are the grouping
+                    // it is already the outermost key, and adding it again would
+                    // be a second comparison that can never change an order.
                     View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.LastActiveTicks), ListSortDirection.Descending));
                     break;
                 default:

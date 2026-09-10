@@ -687,7 +687,7 @@ ledger. Re-deriving them costs the same days again.
 |---|---|---|
 | 3.1 | `ConversationVm` with `INotifyPropertyChanged`, bound once | changing one property repaints one row and does not rebuild the list | ✅ 5 of 6 checks; the source collection is never rebuilt |
 | 3.2 | `ICollectionView` for sort, filter and search | `tests/rebuild-bench.ps1`'s equivalent measures a keystroke **< 16 ms** with a frame | ✅ **2,1 ms**, live filtering, no Reset |
-| 3.3 | The bands as grouping, not as constructed heading rows | a conversation moving band does not rebuild the column |
+| 3.3 | The bands as grouping, not as constructed heading rows | a conversation moving band does not rebuild the column | ✅ `1 x Move, 1 x Add, 1 x Remove`, no Reset, landed in its new heading |
 | 3.4 | The background loops replacing the 11 timers | the cadences in `01-CAPABILITIES.md` are preserved, with their measured values |
 | 3.5 | The two whole-list gestures | cycling the sort and toggling only-live land inside a frame too | ⏸ only-live is inside now; **the sort is still 21 ms** - deferred to 4.1 |
 
@@ -745,6 +745,49 @@ knowing:**
 until it has been seen to go red, and "it got faster" is not evidence that it got
 faster at the right thing.** 2 ms was the cost of doing nothing, and only an
 independent question - *does it still filter?* - could tell the two apart.
+
+### 3.3 as it turned out - done, and it costs on the widening gestures
+
+✅ **THE DONE-WHEN IS MET AND PROVEN.** A conversation moving band reports
+`quiet -> working, 1 x Move, 1 x Add, 1 x Remove, groups 1 -> 2, landed: True` -
+one row between two headings, **no Reset**, and it is really in the new group.
+
+The bands are a real `GroupDescription` with `IsLiveGrouping`. What that removes
+is the PowerShell's heading-as-fake-list-item: a heading there carries **every
+session property present-but-switched-off**, because a heading and a row share
+one DataTemplate and a binding to a property that is not on the object is a
+silent trace error and an empty cell. A real group header has its own template
+and never has to pretend.
+
+🪤 **THE ORDER IS A NUMBER, NOT THE LABEL'S ALPHABET.** A view forms groups in
+the order its items arrive, so `BandOrder` sorts first, always, whatever the
+column is sorted by inside a band. Without it the column heads FINISHED, IDLE,
+NEEDS YOU.
+
+🪤 **AND THE CHECK PASSED ONCE WHILE NOTHING REGROUPED.** Its first version
+asked only "no Reset, and something is still on screen" - which is true of a row
+that never moved, and it reported `groups 1 -> 1` while saying **ok**. It now
+asserts the mover is *in* the group named after its new band. Third time this
+session that a check had to be told what it was actually for.
+
+🔴 **THE COST: grouping takes the whole-list WIDENING gestures well over a
+frame.** Clearing a search went from ~13 ms to 70-115; clearing a project from
+~14 to ~65; only-live from ~15 to ~65-83. Typing is unaffected (it narrows).
+
+🪤 **`VirtualizingPanel.IsVirtualizingWhenGrouping` WAS TRIED AND DID NOT MOVE
+IT.** Grouping does turn WPF virtualization off by default and it *is* the least
+discoverable line in the view layer - it stays on for that reason - but it is not
+what is costing here.
+
+🔴 **This is where the tuning stops until 4.1, deliberately.** The bench binds
+a placeholder `ListBox` with `DisplayMemberPath` and **no `GroupStyle` at all**,
+so WPF is building group containers with no template to build them from. Tuning
+that is tuning the wrong thing, for exactly the reason already written under 3.5.
+Carried to **4.1** with the sort.
+
+🪤 **Every number above was taken at 35-65% CPU with 29 live conversations,**
+and one worst-case read 684 ms. The absolute figures are not trustworthy; the
+13 -> 70 jump is, because it held at all three load levels.
 
 ### 3.5 - tried, measured, reverted, and one gesture deferred
 
