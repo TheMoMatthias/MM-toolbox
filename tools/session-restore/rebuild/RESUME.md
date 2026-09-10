@@ -33,7 +33,8 @@ Last commit: see `git log`. Branch `main`.
 | 2.5c | launching and ending | ✅ 428 planned over, 0 launched |
 | 2.6 | bands and titles | ✅ 428 banded, every route proven |
 | 2.7 | registry WRITE | ✅ 562 written and read back; live file never opened |
-| **3** | **view models** | ⏸ **start here** - 3.2 gates the rest |
+| 3.1 | rows bound once | ✅ proven: no rebuild of the source |
+| **3.2** | **a keystroke under 16 ms** | 🔴 **NOT CLEARED - decide first** |
 | 4-6 | the view, parity, cutover | ⏸ |
 
 **218 xUnit tests, 41 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
@@ -71,21 +72,37 @@ hard can legitimately forgive a row. A difference that is NOT forgiven is real.
 
 ---
 
-## Phase 3, which is where to start - and 3.2 is a GATE
+## 🔴 START HERE: 3.2 DID NOT CLEAR THE GATE, AND IT NEEDS A DECISION
 
-Phase 2 is done: every domain reader and the one writer are ported and compared
-against the shipped PowerShell on real data.
+Run it yourself - it takes about a minute and writes
+`%TEMP%\sr-keystroke-bench.txt`:
 
-**Phase 3 is the view models,** and the item that matters is **3.2: a keystroke
-must land under 16 ms with a real frame**, via `ICollectionView`. That is not a
-nice-to-have - it is the whole reason for the rebuild. The measurements say a
-search keystroke costs **512 ms median** today, and **81% of it is constructing
-and drawing 32 rows**, about a millisecond each. Binding rows once and letting
-sort/filter/search be native collection-view operations is what removes it.
+```
+src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --bench --repeats 40
+```
 
-🔴 **IF 3.2 DOES NOT LAND, STOP AND FIND OUT WHY BEFORE BUILDING MORE VIEW.**
-Everything above it is domain code that would survive a change of plan;
-everything below it is view code that would not.
+Exit code 0 means every gesture landed inside a frame AND every binding check
+passed. It currently exits non-zero.
+
+**Where it got to:** a search keystroke costs **14,9 / 17,4 / 15,1 ms** over
+three runs against **512 ms** in the PowerShell - 30 to 40 times faster, and
+still not the 16,7 ms the plan asks for. `clear the project` is over in all three
+runs (19,1 / 16,9 / 18,5).
+
+🔴 **THE CAUSE IS MEASURED: the view answers every gesture with a `Reset`**,
+which makes WPF drop and rebuild every realised container. The per-row rebuild
+the design exists to remove is still happening - relocated from PowerShell into
+WPF. 🪤 Four binding checks passed while this was true because they watched the
+`ObservableCollection`; a ListBox binds to the VIEW, not the source.
+
+**Three ways forward, and the choice is the operator's** - it is a replaced
+design, not a defect. They are written out in `00-PLAN.md` under "3.1 and 3.2 as
+they turned out": live filtering, maintaining the visible collection directly, or
+accepting ~15 ms and re-aiming the target.
+
+🔴 **Nothing further in Phase 3 or Phase 4 should be built until that is
+settled.** Everything above this line is domain code that survives whichever way
+it goes; everything below it is view code that does not.
 
 ---
 
