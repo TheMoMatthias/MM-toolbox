@@ -35,10 +35,13 @@ Last commit: see `git log`. Branch `main`.
 | 2.7 | registry WRITE | ✅ 562 written and read back; live file never opened |
 | 3.1 | rows bound once | ✅ proven: no rebuild of the source |
 | 3.2 | a keystroke under 16 ms | ✅ **2,1 ms**, live filtering, no Reset |
-| **3.3** | **bands as grouping** | ⏸ **start here** |
+| 3.3 | bands as grouping | ✅ one row Moves between headings, no Reset |
+| 3.4 | the background loops | ✅ 12 cadences, drift-checked |
+| 3.5 | the whole-list gestures | ⏸ carried to 4.1 |
+| **4** | **the view** | ⏸ **start here** |
 | 4-6 | the view, parity, cutover | ⏸ |
 
-**218 xUnit tests, 41 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
+**221 xUnit tests, 42 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 
@@ -93,35 +96,69 @@ while working, then apply the three checks above.
 
 ---
 
-## 3.3, which is where to start
+## Phase 4, which is where to start - and 4.1 inherits two measurements
 
-Phase 2 is complete and **3.1 and 3.2 are done**: a search keystroke is **2,1 ms**
-with a real frame, against **512 ms** in the PowerShell.
+**Phases 0-3 are done.** A search keystroke is **2,1 ms** with a real frame,
+against **512 ms** in the PowerShell.
 
 ```
-src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --bench --repeats 40
+src\SessionRestore.Appin\Release
+et8.0-windows\Sessions2.exe --bench --repeats 40
 ```
 
 Exit 0 means every gesture landed inside a frame AND every binding check passed.
-**It currently exits 12** - which is honest: one binding check is a known
-`FAIL` (the sort still Resets) and two whole-list gestures are one frame over.
-Those are **plan item 3.5**, not regressions.
+**It exits non-zero today, honestly** - see 3.5 below.
 
-Next is **3.3, the bands as grouping** rather than as constructed heading rows.
+**4.1 is the XAML port**, and it arrives carrying two things that were
+deliberately not chased:
 
-### 🔴 Two things about the bench that cost hours, so read them before touching it
+| what | measured | why it waited |
+|---|---|---|
+| cycling the sort | ~21 ms | `SortDescriptions` Reset, then re-layout of 428 rows |
+| clearing a search / project / only-live | 65-115 ms | grouping, on a whole-list **widen** |
 
-1. **The checks must watch the VIEW, and the view must be BOUND.** A
-   `ListCollectionView` only subscribes to its items while something is using it,
-   so an unbound one silently never filters. Four checks passed against the
-   source `ObservableCollection` while every gesture was Resetting.
-2. **Pump the dispatcher before counting.** WPF applies live shaping through the
-   dispatcher, so a count on the next line reads the previous set - which looked
-   exactly like a filter that had stopped working, and made a 2 ms keystroke look
-   like a win when it was the cost of doing nothing.
+🔴 **BOTH ARE VIRTUALIZATION QUESTIONS AND NEITHER CAN BE ANSWERED HONESTLY
+YET.** The bench binds a placeholder `ListBox` with `DisplayMemberPath` and **no
+`GroupStyle` at all**, so WPF is building group containers with nothing to build
+them from. Tuning container recycling and row height against that is tuning the
+wrong thing. `VirtualizingPanel.IsVirtualizingWhenGrouping` is already on - it is
+the least discoverable line in the view layer, since grouping turns
+virtualization off by default - and it was **not** what was costing.
 
-🔑 **"It got faster" is not evidence that it got faster at the right thing.**
-Only an independent question - *does it still filter?* - told those apart.
+🪤 **AND EVERY NUMBER ABOVE WAS TAKEN AT 35-65% CPU with 29 live
+conversations**, one worst-case reading 684 ms. Re-measure on a quiet machine
+before believing any absolute figure; only the 13 -> 70 kind of jump survived all
+three load levels.
+
+---
+
+## What Phase 3 established
+
+🔴 **1. TWO "OBVIOUS" FIXES WERE TRIED AND BOTH WERE WORSE.** Written down so
+they are not re-derived:
+
+- **"One Reset when most rows move"** is right in principle - 428 notifications
+  against one Reset - but the only lever is toggling `IsLiveFiltering`, which
+  makes the view rebuild its own tracking over every item: a keystroke went
+  **2,1 -> 25,5 ms**.
+- **`IsLiveSorting = false`** bought nothing measurable and would have cost
+  something real: a conversation whose `lastActive` moves on a background refresh
+  has to rise to the top of a recent-first list.
+
+🔴 **2. A CHECK HAD TO BE TOLD WHAT IT WAS FOR, THREE TIMES.** Each passed
+while the thing it named was untrue:
+
+| the check | passed because |
+|---|---|
+| "no rebuild on a gesture" | it watched the `ObservableCollection`; a ListBox binds to the **VIEW** |
+| "the VIEW does not Reset" | the view had **stopped filtering entirely** |
+| "a conversation moving band does not rebuild" | the row **had not moved** - `groups 1 -> 1` |
+
+🔑 **The pattern in all three: the check asked what must NOT happen and never
+asked whether the thing itself still worked.** The questions that broke them open
+were `428 -> 0 -> 428` and *did it land in the new group* - and both needed a
+**dispatcher pump before counting**, because WPF applies live shaping through the
+dispatcher and a count on the next line reads the previous set.
 
 ---
 
