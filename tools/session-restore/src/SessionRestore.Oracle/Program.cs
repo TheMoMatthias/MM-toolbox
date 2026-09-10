@@ -82,6 +82,13 @@ cases.AddRange(SubAgentCases.All());
 cases.AddRange(LaunchCases.All());
 cases.AddRange(BandCases.All());
 
+// 🔴 2.7 WRITES ITS SCRATCH COPY BEFORE ANY CASE RUNS, because the oracle runs
+// the PowerShell side FIRST and write/read-back asks it to open that file. It
+// goes through RegistryTarget.ForCopy like every other caller - there is no
+// bypass - and the read-back case removes the directory in a finally.
+WriteCases.PrepareCopy();
+cases.AddRange(WriteCases.All());
+
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
 Note("tool root: " + PowerShellRunner.ToolRoot);
@@ -142,6 +149,11 @@ foreach (var (c, expectAgree, meaning) in cases)
         if (c.Name.Equals("bands/live", StringComparison.Ordinal))
         {
             Note("      " + BandCases.Coverage());
+        }
+
+        if (c.Name.Equals("write/read-back", StringComparison.Ordinal))
+        {
+            Note("      " + WriteCases.Coverage());
         }
 
         if (!expectAgree && r.Difference is not null)

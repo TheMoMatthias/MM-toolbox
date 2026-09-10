@@ -32,10 +32,11 @@ Last commit: see `git log`. Branch `main`.
 | 2.5b | the three sub-agent readers | ✅ 386 sub-agents, 326 last lines |
 | 2.5c | launching and ending | ✅ 428 planned over, 0 launched |
 | 2.6 | bands and titles | ✅ 428 banded, every route proven |
-| **2.7** | **registry WRITE** | ⏸ **start here** - last on purpose |
-| 3-6 | view models, view, parity, cutover | ⏸ |
+| 2.7 | registry WRITE | ✅ 562 written and read back; live file never opened |
+| **3** | **view models** | ⏸ **start here** - 3.2 gates the rest |
+| 4-6 | the view, parity, cutover | ⏸ |
 
-**201 xUnit tests, 37 oracle cases. Nothing in the C# has written to any live
+**218 xUnit tests, 41 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 
@@ -70,34 +71,46 @@ hard can legitimately forgive a row. A difference that is NOT forgiven is real.
 
 ---
 
-## 2.7, which is where to start - and it is the one that can lose work
+## Phase 3, which is where to start - and 3.2 is a GATE
 
-The registry WRITE. It is last on purpose.
+Phase 2 is done: every domain reader and the one writer are ported and compared
+against the shipped PowerShell on real data.
 
-🔴 **A REGISTRY-OVERWRITE BUG IN THIS REPO'S HISTORY COST 210 CONVERSATIONS.**
-That is why `sessions-registry.json` has never been written by any of this C#,
-and why the absence of a writer has been the guard so far. The guards in the
-PowerShell - the stale-stamp check, the refusal to write a registry that shrank,
-the atomic replace - are the whole point of the item, and each has to come across
-as a TYPE rather than as an `if` somebody can forget.
+**Phase 3 is the view models,** and the item that matters is **3.2: a keystroke
+must land under 16 ms with a real frame**, via `ICollectionView`. That is not a
+nice-to-have - it is the whole reason for the rebuild. The measurements say a
+search keystroke costs **512 ms median** today, and **81% of it is constructing
+and drawing 32 rows**, about a millisecond each. Binding rows once and letting
+sort/filter/search be native collection-view operations is what removes it.
 
-**How to verify it without risking anything:**
-- 🔴 **Never against the live file.** Copy it, write to the copy, diff.
-- The PowerShell's own refusals are the specification: find every path in
-  `Save-SRRegistry` that declines, and prove the C# declines on the same input.
-- 🔑 **And ask the coverage question first**, the way 2.6 did: how many of
-  those refusal paths can the live registry actually reach? Almost none - a
-  refusal fires on a corrupted or stale file, and the real one is neither. So the
-  shapes have to be built. See `launch/settings-shapes` and `bands/shapes` for
-  the pattern.
-
-After 2.7, Phase 2 is done and **Phase 3.2 is the gate**: a keystroke has to land
-under 16 ms with a real frame, via `ICollectionView`. If that does not land, stop
-and find out why before building more view.
+🔴 **IF 3.2 DOES NOT LAND, STOP AND FIND OUT WHY BEFORE BUILDING MORE VIEW.**
+Everything above it is domain code that would survive a change of plan;
+everything below it is view code that would not.
 
 ---
 
-## What 2.5c and 2.6 established, beyond their own items
+## Phase 2 is complete - what it cost and what it found
+
+**41 oracle cases, 218 xUnit tests.** Nothing in the C# has written to any live
+file, typed into a conversation, or launched or ended one.
+
+**Five live defects found in the shipped PowerShell**, all fixed, all with gui2
+and state passing afterwards - see `00-PLAN.md` for each. The pattern in all five
+is the same: they were found by running the old code over **everything**, rather
+than over the cases that happen to be exercised.
+
+**Three behaviour-preserving splits of the shipped tool**, each turning an act
+into a value so it could be compared without being performed:
+
+| what | was | is now |
+|---|---|---|
+| the wt.exe command line | inside `Start-SRSession`, reachable only by launching | `Get-SRLaunchCommandLine`, a string |
+| the registry stale check | inside `Save-SRRegistry`, which is FENCED | `Get-SRSaveRefusal`, a sentence |
+| the launch plan | already a value (`Get-TickedPlan`) | unchanged, and the C# matches its shape |
+
+---
+
+## What Phase 2 established, beyond its own items
 
 🔑 **1. A PLAN IS A VALUE; ONE CALL TURNS IT INTO PROCESSES.** The PowerShell
 was split to get that shape - `Get-SRLaunchCommandLine` returns the wt.exe
@@ -130,6 +143,21 @@ teaches you to re-run.
 `EndsWith` on the whole difference text, so it inspected one line and forgave all
 of them. Every allowance now splits the text and requires that EVERY line be one
 it named.
+
+🔴 **5. AN ALLOWANCE THAT COVERS THE ONLY FIELD IS AN OFF SWITCH.**
+`write/stamp` had one field and forgave any difference in it, so it could not go
+red at all. Ask of every tolerance: *what is left that could still fail?* If the
+answer is nothing, the case is decoration.
+
+🔴 **6. A ROUND-TRIP INSIDE ONE IMPLEMENTATION PROVES NOTHING ABOUT A FIELD
+BOTH HALVES DROP.** `write/read-back` re-read the file it had just written, so a
+lossy writer and a matching reader agreed with each other perfectly. Compare
+**intent against the other tool's reader**, not output against your own.
+
+🔴 **7. AN ASSERTION ONLY ONE SIDE MAKES IS NOT COMPARED.** It arrives as
+"present in C#, missing in PowerShell" and gets swallowed by the allowance
+covering exactly that shape. Make both sides answer the same question a different
+way.
 
 ---
 

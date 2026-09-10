@@ -4,8 +4,8 @@ One pass, worked top to bottom. Every item has a **done-when** you can check
 without asking anybody — a command and its expected result, or an observable
 state. An item with no done-when is not an item.
 
-**Phases 0 and 1 are complete, and 2.1-2.4, 2.5a-2.5c and 2.6 with them.** Only
-2.7 is left in Phase 2. The PowerShell tool remains the daily driver and is untouched by any
+**PHASE 2 IS COMPLETE.** Phases 0 and 1, and every item from 2.1 to 2.7.
+Phase 3 - the view models - is next, and item 3.2 gates the rest of it. The PowerShell tool remains the daily driver and is untouched by any
 of it.
 
 ---
@@ -125,7 +125,7 @@ against the PowerShell on the operator's real data.
 | 2.5b | **The sub-agent readers** — `Get-SRSubAgents`, `Get-SRLiveTasks`, `Get-SRAgentLastLine` | the same sub-agents and shells over every conversation with any | ✅ 386 sub-agents, 326 last lines, 25 conversations |
 | 2.5c | **Launching and ending** — `wt.exe`, `taskkill`, the process tree | a launch plan matches; NOTHING is launched or killed to prove it | ✅ 10 cases, 428 conversations planned over, 0 launched |
 | 2.6 | **Bands and titles** — `Get-Band`, `Get-Title`, the surface predicate | every conversation lands in the same band as the PowerShell puts it in | ✅ 7 cases, 428 banded, every route proven |
-| 2.7 | **Registry WRITE** — last, behind the guards | refuses every case the PowerShell refuses; the stale check still fires; verified against a *copy*, never the live file | ⏸ **start here** |
+| 2.7 | **Registry WRITE** — last, behind the guards | refuses every case the PowerShell refuses; the stale check still fires; verified against a *copy*, never the live file | ✅ 4 cases, 562 conversations through a real write, the live file never opened |
 
 ### 2.1 as it turned out
 
@@ -552,6 +552,78 @@ simplification - it is what `Update-Model` does.** The transcript state reader i
 not on the band path at all, so the corroboration test reduces to "is there a
 pid". Porting the `Conv` branch would have been porting a caller that does not
 exist.
+
+
+
+### 2.7 as it turned out - the item that could lose work
+
+**Four oracle cases (41 in total), 218 xUnit tests, 562 conversations written by
+the C# and read back by the shipped PowerShell.** The live registry and the live
+config were sha256'd before and after the whole run and are **byte-identical**.
+
+🔴 **THE DIFFICULTY OF THIS ITEM IS THAT THE THING TO VERIFY IS FENCED.**
+`Save-SRRegistry` is on the oracle's fence - it is one of the calls that cost 210
+conversations - and un-fencing it to make a comparison possible is exactly the
+"loosening a write guard to make a test pass" this repo has a standing rule
+against. So the PowerShell was split instead: the stale check is now
+`Get-SRSaveRefusal`, which takes four values and returns a sentence, and
+`Save-SRRegistry` calls it. **The guard is compared; the act stays fenced.** Same
+move as 2.5c, for the same reason.
+
+🔴 **THREE STRUCTURAL GUARDS, NONE OF THEM REMEMBERED:**
+
+1. **`RegistryTarget` - the live file cannot be NAMED.** `ForCopy` is the only
+   factory, it refuses the registry and the config by resolved full path, and
+   there is deliberately **no `Live()` factory, not even an internal one** - an
+   internal one is reachable from the test assembly, and "a test that CAN reach
+   live state WILL destroy it" is written down here because it already happened.
+   Phase 6 adds exactly one.
+2. **`SaveDecision` - the stale check is a value**, with four outcomes, three of
+   them refusals told apart on purpose because the operator can act on each
+   differently.
+3. **Write beside, then replace, and REPORT the failure.** `SaveResult.Written`
+   is false when an error was recorded, and the stamp is **not** refreshed on a
+   failed write.
+
+🪤 **THREE OF THE SIX CASES COULD NOT GO RED WHEN FIRST WRITTEN, AND EACH
+FAILED FOR A DIFFERENT STRUCTURAL REASON. This is the most useful thing in the
+item:**
+
+- **`write/stamp` had one field and an allowance that forgave it.** A total
+  tolerance is not an allowance, it is an off switch: a deliberate break from
+  `LastWriteTimeUtc` to `LastWriteTime` sailed straight through. Now the
+  PowerShell stamps the file **twice**; if those agree the file held still and
+  this side's answer is compared exactly, and only a file that moved mid-run is
+  forgiven.
+- **`write/read-back` re-read the file it had just written.** So both sides were
+  reading the same possibly-lossy file and agreeing about the loss - dropping
+  `[JsonExtensionData]` from `RegistrySession`, the exact bug that would destroy
+  `prefs`, left it **green**. It now compares **what the C# meant to write**
+  against **what the shipped PowerShell reader found**, which is the only
+  arrangement where a dropped field has nowhere to hide.
+- **`write/refuses-the-live-file` asserted into the void.** Its verdicts existed
+  only on the C# side, so they showed up as "present in C#, missing in
+  PowerShell" and were swallowed by the tolerance covering exactly that. Both
+  sides now answer the SAME question - "does this path name a live file" - one by
+  resolving the path, the other by asking its guard, row for row, with **no
+  allowance at all**.
+
+🔑 **AND THE BYTES ARE DELIBERATELY NOT COMPARED.** The two JSON writers
+indent, escape and format numbers differently and none of it is data. What has to
+survive is every FIELD of every conversation, including the ones this build does
+not model - so the round-trip carries two synthetic conversations holding a
+`prefs` object and a key called `somethingFromTheFuture`, because **no session in
+the live registry has any prefs at all** and the column would otherwise be
+proving nothing.
+
+🔴 **One divergence, named and kept:** two stamps differing only in case.
+PowerShell's `-ne` on strings is case-insensitive, so it calls them equal and
+**allows the save**; the C# compares ordinally and refuses. It cannot occur - a
+stamp is `length|ticks|SHA256HEX` from one function - so it is out of the shared
+shapes rather than covered by an allowance, and pinned in a unit test instead.
+**This side is deliberately the stricter of the two**: writing a knowingly weaker
+guard to match a quirk that cannot fire is the wrong trade on the check that
+protects 210 conversations.
 
 
 ### The health check went from a twenty-minute hang to 86 seconds

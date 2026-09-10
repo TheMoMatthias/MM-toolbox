@@ -1259,6 +1259,60 @@ function Invoke-SRWithRegistryLock {
     }
 }
 
+# 🔑 THE STALE CHECK IS A VALUE, AND ONLY Save-SRRegistry ACTS ON IT. Split out
+# of Save-SRRegistry unchanged, for the same reason the wt.exe command line was
+# split out of Start-SRSession: this is a guard that cost 210 conversations to
+# learn, and it was reachable only by attempting the very write it exists to
+# refuse. Now it can be asked - by the suites, and by the C# rebuild's oracle -
+# without a byte being written anywhere.
+#
+# Returns $null to permit, or the sentence to show the operator.
+function Get-SRSaveRefusal {
+    param(
+        # What this session saw when it read the file. Empty means it never read
+        # one, so there is nothing to be stale against.
+        [string]$ReadStamp,
+        # What Get-SRRegistryStamp says NOW - taken inside the lock by the caller.
+        [string]$NowStamp,
+        # 🔴 ASKED SEPARATELY, NOT INFERRED FROM AN EMPTY STAMP. Empty is also
+        # what a failed read returns, and the two must be treated oppositely.
+        [bool]$FileExists,
+        [switch]$Force
+    )
+    if ($Force -or -not $ReadStamp) { return $null }
+    # 🔴 A CHECK THAT CANNOT TELL MUST NOT PERMIT. This used to be
+    # `if ($now -and $now -ne $stamp)`, so an EMPTY $now fell straight through
+    # and the save went ahead - and empty is exactly what Get-SRRegistryStamp
+    # returns when it cannot see the file. Having a stamp at all means this
+    # window read a registry, so failing to stamp one now is not evidence that
+    # nothing has changed; it is evidence that the question could not be
+    # answered.
+    #
+    # The one case where empty really does mean "nothing to clobber" is a file
+    # that is genuinely gone, and that is asked separately rather than inferred
+    # from the same silence.
+    if (-not $NowStamp) {
+        if ($FileExists) {
+            return ("the registry is on disk but could not be read to check whether it " +
+                    "changed, so this save was refused rather than risk overwriting " +
+                    "another window's ticks. Try again in a moment.")
+        }
+        return $null
+    }
+    if ($NowStamp -eq 'unhashed') {
+        return ("the registry could not be read to check whether it changed - " +
+                "something else has it open. This save was refused rather than " +
+                "risk overwriting another window's ticks. Try again in a moment.")
+    }
+    if ($NowStamp -ne $ReadStamp) {
+        return ("the registry changed on disk since this window read it - " +
+                "another Sessions window (or a scan) has saved. Saving now would " +
+                "discard those changes. Close the other window, or press Rescan " +
+                "to pick them up, then save again.")
+    }
+    return $null
+}
+
 function Save-SRRegistry {
     param(
         [Parameter(Mandatory)]$Registry,
@@ -1270,37 +1324,14 @@ function Save-SRRegistry {
         # Inside the lock, so nobody can slip a write between the check and the
         # replace. A null stamp means this session has never read the file -
         # there is nothing to be stale against, so it writes.
+        #
+        # 🪤 THE OUTER CONDITION IS KEPT so the stamp is not computed on the paths
+        # that do not need it: hashing the file is ~2 ms, and -Force exists
+        # precisely for the caller who has already decided.
         if (-not $Force -and $script:SR_RegStamp) {
-            $now = Get-SRRegistryStamp
-            # 🔴 A CHECK THAT CANNOT TELL MUST NOT PERMIT. This used to be
-            # `if ($now -and $now -ne $stamp)`, so an EMPTY $now fell straight
-            # through and the save went ahead - and empty is exactly what
-            # Get-SRRegistryStamp returns when it cannot see the file. Having a
-            # stamp at all means this window read a registry, so failing to
-            # stamp one now is not evidence that nothing has changed; it is
-            # evidence that the question could not be answered.
-            #
-            # The one case where empty really does mean "nothing to clobber" is
-            # a file that is genuinely gone, and that is asked separately rather
-            # than inferred from the same silence.
-            if (-not $now) {
-                if (Test-Path -LiteralPath $SR_RegistryPath) {
-                    throw ("the registry is on disk but could not be read to check whether it " +
-                           "changed, so this save was refused rather than risk overwriting " +
-                           "another window's ticks. Try again in a moment.")
-                }
-            }
-            elseif ($now -eq 'unhashed') {
-                throw ("the registry could not be read to check whether it changed - " +
-                       "something else has it open. This save was refused rather than " +
-                       "risk overwriting another window's ticks. Try again in a moment.")
-            }
-            elseif ($now -ne $script:SR_RegStamp) {
-                throw ("the registry changed on disk since this window read it - " +
-                       "another Sessions window (or a scan) has saved. Saving now would " +
-                       "discard those changes. Close the other window, or press Rescan " +
-                       "to pick them up, then save again.")
-            }
+            $why = Get-SRSaveRefusal -ReadStamp $script:SR_RegStamp -NowStamp (Get-SRRegistryStamp) `
+                       -FileExists ([bool](Test-Path -LiteralPath $SR_RegistryPath))
+            if ($why) { throw $why }
         }
         $Registry.lastScan = (Get-Date).ToString('o')
         # Write beside the target then replace: a half-written registry would lose
