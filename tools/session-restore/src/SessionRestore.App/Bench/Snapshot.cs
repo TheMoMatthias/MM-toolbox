@@ -17,15 +17,43 @@ namespace SessionRestore.App.Bench;
 /// shipped one does. This is the cheapest honest way to find out, and it uses the
 /// same off-screen showing as the bench: -32000, not activated, not hit-testable.
 ///
-/// 🔴 READ-ONLY: the registry, nothing else. No probe, no transcripts, no
-/// handler - every row is non-live, which is why they all band as NOT RUNNING.
+/// 🔴 READ-ONLY: the registry and the queue tails of warm transcripts, nothing
+/// else. No probe, no console, no handler - every row is non-live, which is why
+/// they all band as NOT RUNNING.
 /// </remarks>
 public static class Snapshot
 {
-    public static void SessionColumn(string pngPath)
+    /// <param name="fakeQueue">Give the newest conversation a synthetic queue - two of
+    /// yours, one from the machine - so the mark can be LOOKED at even when nothing
+    /// on this machine is waiting. Nothing is written; the queue exists only in memory.</param>
+    public static void SessionColumn(string pngPath, bool fakeQueue = false)
     {
+        // The queues of the conversations the surface will show, so a mark that
+        // exists on this machine is drawn. Read-only: a 4 MB tail per transcript.
+        var model = KeystrokeBench.Model();
+        var queues = new Dictionary<string, Core.Transcripts.QueueState>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (id, s, _) in model)
+        {
+            if (Core.Rows.Titles.Warm(s) && !string.IsNullOrEmpty(s.Jsonl))
+            {
+                queues[id] = Core.Transcripts.Waiting.Read(s.Jsonl);
+            }
+        }
+
+        if (fakeQueue && model.Count > 0)
+        {
+            var newest = model.OrderByDescending(m => m.S.LastActive).First();
+            var now = DateTime.Now;
+            queues[newest.Id] = new Core.Transcripts.QueueState(
+            [
+                new("<task-notification>x</task-notification>", "x", now.AddMinutes(-1), false),
+                new("please check the logs", "please check the logs", now.AddMinutes(-4), true),
+                new("and then the build", "and then the build", now.AddMinutes(-2), true),
+            ], 2, 1, true, now);
+        }
+
         var vm = new SessionsVm();
-        vm.Sync(KeystrokeBench.Model());
+        vm.Sync(model, queues: queues);
 
         var w = new SessionsWindow
         {

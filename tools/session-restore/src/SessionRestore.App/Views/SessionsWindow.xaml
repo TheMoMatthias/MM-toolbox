@@ -208,6 +208,9 @@
          difference. Hue reinforced it; now it does not. -->
     <SolidColorBrush x:Key="HueIn"    Color="#8FA8C8"/>   <!-- came in  - claude speaking -->
     <SolidColorBrush x:Key="HueOut"   Color="#D97757"/>   <!-- went out - you speaking -->
+    <!-- PORT 4.1: the queue mark's hue - amber when your own words wait, grey when
+         it is only the machine. Declared after both brushes it names. -->
+    <v:BoolBrush x:Key="QueueHue" WhenTrue="{StaticResource HueOut}" WhenFalse="{StaticResource TextLow}"/>
     <!-- 🔴 DIMMER THAN TextMid, ON PURPOSE, NOW THAT SHAPE CARRIES NOTHING.
          With one glyph for every kind, the ONLY thing separating Claude
          speaking from the machine working is this value against TextMid
@@ -1122,9 +1125,9 @@
                               VerticalAlignment="Center" Margin="10,0,0,0"
                               ToolTip="{Binding QTip}">
                     <TextBlock Text="&#187;" Style="{StaticResource Meta}"
-                               Foreground="{Binding QBrush}" VerticalAlignment="Center"/>
+                               Foreground="{Binding QMine, Converter={StaticResource QueueHue}}" VerticalAlignment="Center"/>
                     <TextBlock Text="{Binding QText}" Style="{StaticResource Meta}"
-                               Foreground="{Binding QBrush}" VerticalAlignment="Center"
+                               Foreground="{Binding QMine, Converter={StaticResource QueueHue}}" VerticalAlignment="Center"
                                Margin="3,0,0,0"/>
                   </StackPanel>
                 </StackPanel>

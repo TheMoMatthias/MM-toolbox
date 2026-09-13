@@ -49,6 +49,10 @@ public sealed class ConversationVm : INotifyPropertyChanged
     private FontWeight _nameWeight = FontWeights.Normal;
     private FontStyle _nameStyle = FontStyles.Normal;
     private double _barOpacity = 0.25;
+    private Visibility _qVis = Visibility.Collapsed;
+    private string _qText = string.Empty;
+    private string _qTip = string.Empty;
+    private bool _qMine;
 
     public ConversationVm(string id, RegistrySession session, RegistryDirectory directory)
     {
@@ -177,6 +181,34 @@ public sealed class ConversationVm : INotifyPropertyChanged
     // resolver, the compact text and the status-line counts are PowerShell-only
     // so far, and each gets an oracle case before it gets a value here.
 
+    // ---- the queue mark: plan item 4.1 (2b), oracle-checked as queue/* ----
+
+    /// <summary>The » mark - something is waiting behind this conversation's turn.</summary>
+    public Visibility QVis
+    {
+        get => _qVis;
+        private set => Set(ref _qVis, value);
+    }
+
+    public string QText
+    {
+        get => _qText;
+        private set => Set(ref _qText, value);
+    }
+
+    public string QTip
+    {
+        get => _qTip;
+        private set => Set(ref _qTip, value);
+    }
+
+    /// <summary>Whether what is waiting includes your own words. The markup picks the hue.</summary>
+    public bool QMine
+    {
+        get => _qMine;
+        private set => Set(ref _qMine, value);
+    }
+
     public Visibility AgentVis { get; private set; } = Visibility.Collapsed;
 
     public string AgentText { get; private set; } = string.Empty;
@@ -185,13 +217,6 @@ public sealed class ConversationVm : INotifyPropertyChanged
 
     public string ShellText { get; private set; } = string.Empty;
 
-    public Visibility QVis { get; private set; } = Visibility.Collapsed;
-
-    public string QText { get; private set; } = string.Empty;
-
-    public string QTip { get; private set; } = string.Empty;
-
-    public Brush? QBrush { get; private set; }
 
     public Visibility CtxVis { get; private set; } = Visibility.Collapsed;
 
@@ -313,7 +338,8 @@ public sealed class ConversationVm : INotifyPropertyChanged
     /// <param name="nowTicks">One reading of the clock for the whole pass. 🪤 Per
     /// row it cost 22,3 ms of a 193 ms pass, and compared each row against a
     /// slightly different "now", which is not what an age means.</param>
-    public void Refresh(AgentStatus? agent, SaidResult? said, long nowTicks)
+    /// <param name="queue">What is queued behind its turn, when the pass read it.</param>
+    public void Refresh(AgentStatus? agent, SaidResult? said, long nowTicks, QueueState? queue = null)
     {
         var t = Titles.Of(Session, Directory);
         Title = t.Text;
@@ -328,6 +354,12 @@ public sealed class ConversationVm : INotifyPropertyChanged
         var state = SessionState.Of(agent);
         Band = Bands.Of(state, said);
         Said = Headline.Of(said?.Said, state.Detail);
+
+        var mark = QueueMark.Of(queue, nowTicks > 0 ? new DateTime(nowTicks, DateTimeKind.Local) : DateTime.Now);
+        QVis = mark.Visible ? Visibility.Visible : Visibility.Collapsed;
+        QText = mark.Text;
+        QTip = mark.Tip;
+        QMine = mark.Mine;
 
         _enabled = Session.Enabled;
         _pinned = Session.Pinned;

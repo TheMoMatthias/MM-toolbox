@@ -38,11 +38,11 @@ Last commit: see `git log`. Branch `main`.
 | 3.3 | bands as grouping | ✅ one row Moves between headings, no Reset |
 | 3.4 | the background loops | ✅ 12 cadences, drift-checked |
 | 3.5 | the whole-list gestures | ⏸ carried to 4.1 |
-| 4.1 | the XAML port | 🟡 window opens, 164/164; the column is real; row decorations (2b) next |
+| 4.1 | the XAML port | 🟡 window opens, 164/164; the column is real; queue mark done; ctx/compact/counts next |
 | **4.2-4.5** | **handlers, keys, pane, animation** | ⏸ |
 | 4-6 | the view, parity, cutover | ⏸ |
 
-**229 xUnit tests, 42 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
+**229 xUnit tests, 46 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 
@@ -65,6 +65,12 @@ itself as the transcripts grew, a body being copied once per block, and a read
 whose deadline could never fire. All three are fixed and written up in
 `00-PLAN.md`; the shape of the lesson is that this check has to stay fast or it
 stops being run.
+
+🔴 **A case that "stopped answering after 300 s" may never have RUN.** The
+antivirus's script scan refuses some shapes (base64 decoded and written to disk
+did it) and that arrives as a parser error on stderr. `PsSession` now fails fast
+on that, but for anything else the stdin parser will not finish, set
+`SR_ORACLE_DUMP=<dir>` and read the script exactly as it was sent.
 
 🪤 **And you cannot build while it is running** - `sr-oracle` holds the Core DLL,
 so a build fails with "the file is locked by sr-oracle". Let it finish, or kill

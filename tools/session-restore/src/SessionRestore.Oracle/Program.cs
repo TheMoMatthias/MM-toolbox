@@ -89,6 +89,7 @@ cases.AddRange(BandCases.All());
 WriteCases.PrepareCopy();
 cases.AddRange(WriteCases.All());
 cases.AddRange(CadenceCases.All());
+cases.AddRange(QueueCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
@@ -129,6 +130,11 @@ foreach (var (c, expectAgree, meaning) in cases)
         if (c.Name.StartsWith("console/", StringComparison.Ordinal))
         {
             Note("      " + ScreenCases.Coverage());
+        }
+
+        if (c.Name.Equals("queue/read-live", StringComparison.Ordinal))
+        {
+            Note("      " + QueueCases.Coverage());
         }
 
         if (c.Name.StartsWith("agents/", StringComparison.Ordinal))

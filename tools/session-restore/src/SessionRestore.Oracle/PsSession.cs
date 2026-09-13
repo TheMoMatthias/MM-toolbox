@@ -43,15 +43,35 @@ public sealed class PsSession : IDisposable
     private int _seq;
     private bool _disposed;
 
-    private static readonly Lazy<PsSession> Shared = new(() =>
-    {
-        var s = new PsSession();
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => s.Dispose();
-        return s;
-    });
+    private static readonly object SharedGate = new();
+    private static PsSession? _shared;
 
     /// <summary>The session every comparison shares.</summary>
-    public static PsSession Instance => Shared.Value;
+    /// <remarks>
+    /// 🔴 A CLOSED SESSION IS REPLACED, NOT HANDED OUT AGAIN. A case that stops
+    /// answering has its session closed - rightly, since it may be mid-statement
+    /// - and this used to be a Lazy that returned the same disposed object to
+    /// every case after it. One hung case then crashed the whole run with
+    /// ObjectDisposedException, so the cases that would have passed never ran
+    /// and the report said nothing about them. Seen 2026-09-13.
+    /// </remarks>
+    public static PsSession Instance
+    {
+        get
+        {
+            lock (SharedGate)
+            {
+                if (_shared is null || _shared._disposed)
+                {
+                    var s = new PsSession();
+                    AppDomain.CurrentDomain.ProcessExit += (_, _) => s.Dispose();
+                    _shared = s;
+                }
+
+                return _shared;
+            }
+        }
+    }
 
     public PsSession()
     {
@@ -174,6 +194,20 @@ public sealed class PsSession : IDisposable
         sb.Append("Write-Output '").Append(errMark).AppendLine("'");
         sb.AppendLine("Write-Output $__e");
         sb.Append("Write-Output '").Append(endMark).AppendLine("'");
+
+        // 🔑 SR_ORACLE_DUMP=<dir> WRITES EVERY SCRIPT AS SENT, for the one failure
+        // this harness cannot describe from inside: a script the stdin parser
+        // never finishes. It waits for more input, the deadline fires, and all
+        // that is left to report is "stopped answering". The file shows what the
+        // parser was actually given - including joins that glued a `}` to the
+        // next statement, which is what the first 300 s hang here turned out to be.
+        var dump = Environment.GetEnvironmentVariable("SR_ORACLE_DUMP");
+        if (!string.IsNullOrEmpty(dump))
+        {
+            Directory.CreateDirectory(dump);
+            File.WriteAllText(Path.Combine(dump, "script-" + id + ".ps1"), sb.ToString());
+        }
+
         Send(sb.ToString());
 
         var limit = timeout ?? TimeSpan.FromMinutes(5);
@@ -196,14 +230,39 @@ public sealed class PsSession : IDisposable
             // green is a claim; a hang is neither, and it takes the next build
             // down with it.
             var read = Task.Run(() => _proc.StandardOutput.ReadLine());
-            var left = deadline - DateTime.UtcNow;
-            if (left <= TimeSpan.Zero || !read.Wait(left))
+            while (!read.Wait(TimeSpan.FromMilliseconds(250)))
             {
-                Dispose();
-                return new PsRun(string.Empty,
-                    "the PowerShell side stopped answering after "
-                    + limit.TotalSeconds.ToString("N0", CultureInfo.InvariantCulture)
-                    + " s; the shared session was closed", -1);
+                // 🔴 A SCRIPT THE PARSER REJECTED NEVER PRINTS ITS END MARK, so
+                // without this it waits out the whole deadline and reports only
+                // "stopped answering". Measured 2026-09-13: the antivirus's
+                // script scan refused a case that decoded base64 and wrote the
+                // bytes to disk - a dropper's shape - and the run sat for 300 s
+                // with the one line that explained it already on stderr.
+                string rejected;
+                lock (_gate)
+                {
+                    var s = _stderr.ToString();
+                    rejected = s.Contains("ParserError", StringComparison.Ordinal)
+                               || s.Contains("ScriptContainedMaliciousContent", StringComparison.Ordinal)
+                        ? s.Trim()
+                        : string.Empty;
+                }
+
+                if (rejected.Length > 0)
+                {
+                    Dispose();
+                    return new PsRun(string.Empty,
+                        "PowerShell refused the script before running it: " + rejected, -1);
+                }
+
+                if (DateTime.UtcNow >= deadline)
+                {
+                    Dispose();
+                    return new PsRun(string.Empty,
+                        "the PowerShell side stopped answering after "
+                        + limit.TotalSeconds.ToString("N0", CultureInfo.InvariantCulture)
+                        + " s; the shared session was closed", -1);
+                }
             }
 
             var line = read.Result;

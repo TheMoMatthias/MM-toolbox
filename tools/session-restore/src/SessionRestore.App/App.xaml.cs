@@ -35,7 +35,8 @@ public partial class App : Application
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             var png = e.Args[renderAt + 1];
-            Dispatcher.BeginInvoke(new Action(() => RunRender(png)), DispatcherPriority.ApplicationIdle);
+            var fake = Array.Exists(e.Args, a => string.Equals(a, "--fake-queue", StringComparison.OrdinalIgnoreCase));
+            Dispatcher.BeginInvoke(new Action(() => RunRender(png, fake)), DispatcherPriority.ApplicationIdle);
             return;
         }
 
@@ -70,12 +71,12 @@ public partial class App : Application
         Dispatcher.BeginInvoke(new Action(() => RunBench(repeats)), DispatcherPriority.ApplicationIdle);
     }
 
-    private void RunRender(string png)
+    private void RunRender(string png, bool fakeQueue)
     {
         var code = 0;
         try
         {
-            Bench.Snapshot.SessionColumn(png);
+            Bench.Snapshot.SessionColumn(png, fakeQueue);
         }
 #pragma warning disable CA1031 // a render must report a failure, not vanish with it
         catch (Exception ex)

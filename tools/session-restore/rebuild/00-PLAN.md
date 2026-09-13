@@ -932,11 +932,38 @@ that document, not retyped.
 - The band-move check had to move a row that is **on screen**: `Rows[0]` became
   a hidden cold row and reported `landed: False` about something nobody sees.
 
+### 4.1 (2b-1) - the queue mark, and the antivirus in the harness
+
+- **`Core.Transcripts.Waiting`** ports `Get-SRQueue` + `Test-SRQueueFresh`;
+  **`Core.Rows.QueueMark`** ports the per-row block of `Build-Sessions`. Four
+  oracle cases: `queue/read-shapes` (14 synthetic transcripts, one per rule),
+  `queue/read-live` (60 newest, pinned), `queue/fresh` (every boundary), and
+  `queue/mark` - which **splices the block out of `Build-Sessions` by its first
+  and last lines** and runs it, because it is inline and has no function to call.
+  **Eight deliberate breaks, eight caught**; two of them also reddened the live
+  case, so real transcripts reach hop-chain and popAll.
+- 🔴 **Three comparisons the PowerShell makes case-insensitively without looking
+  like comparisons**: `-ne 'queue-operation'`, the `switch` on the operation, and
+  `-eq` matching a remove to its enqueue. Ported as such.
+- 🔴 **THE ANTIVIRUS REFUSED A CASE, AND THE HARNESS REPORTED A 300 s HANG.** The
+  first `read-shapes` shipped fixtures as base64 that PowerShell decoded and wrote
+  to disk - a dropper's shape - and the script scan blocked it as a parser error
+  on stderr. The end marker never printed, so the session waited out its deadline
+  and said only "stopped answering". Found by `SR_ORACLE_DUMP=<dir>` (new: writes
+  every script as sent) and replaying the dump through stdin. Fixtures are now
+  plain string expressions; **`PsSession` fails fast on a parser error or an AV
+  block**; and **a closed shared session is replaced** - one hung case used to
+  crash the rest of the run with `ObjectDisposedException`.
+- 🪤 A join of two script fragments glued `}` to the next statement (`}$dir =`)
+  - a raw string literal has no trailing newline. Every join now adds one.
+- The row binds `QVis`/`QText`/`QTip` and `QMine` through a `BoolBrush`
+  (`HueOut`/`TextLow`); `--render <png> --fake-queue` drew `» 2` in amber.
+
 🔴 **Still open in 4.1:**
 
 | what | why it waits | trigger |
 |---|---|---|
-| **2b: the row decorations** - queue mark, context bar, compact progress, sub-agent and shell counts | their readers (`Get-SRQueue` + freshness, `Get-SRRowCtx`, `Get-CtxBrush`, `Get-SRCompactText`, the status-line counts) are PowerShell-only; each needs an oracle case before its property stops being present-and-off | next 4.1 tranche |
+| **2b-2..: context bar, compact progress, sub-agent and shell counts** | their readers (`Get-SRRowCtx` + the vitals cache, `Get-CtxBrush`, `Get-SRCompactText`, the status-line parse behind `Set-RowScreenSig`) are PowerShell-only; each needs an oracle case before its property stops being present-and-off | next 4.1 tranche |
 | **the band pick** (`BandBg`, "only this") | 🪤 it cannot be a filter: the shipped column keeps EVERY heading when one band is picked, and a filtered-out group has no header | 4.2, with the handler |
 | **3.5's two measurements, against the real template** | the run on 2026-09-13 was at **99% CPU** (a game plus other sessions' python), so the ported window reading 5-10x the placeholder is not evidence of anything yet | a quiet machine: `--bench --repeats 40` |
 
