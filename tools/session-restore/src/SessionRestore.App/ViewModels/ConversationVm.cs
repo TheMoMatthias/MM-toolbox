@@ -53,6 +53,14 @@ public sealed class ConversationVm : INotifyPropertyChanged
     private string _qText = string.Empty;
     private string _qTip = string.Empty;
     private bool _qMine;
+    private Visibility _agentVis = Visibility.Collapsed;
+    private string _agentText = string.Empty;
+    private Visibility _shellVis = Visibility.Collapsed;
+    private string _shellText = string.Empty;
+    private Visibility _ctxVis = Visibility.Collapsed;
+    private double _ctxWidth;
+    private string _ctxTip = string.Empty;
+    private ContextHue _ctxHue;
 
     public ConversationVm(string id, RegistrySession session, RegistryDirectory directory)
     {
@@ -209,22 +217,64 @@ public sealed class ConversationVm : INotifyPropertyChanged
         private set => Set(ref _qMine, value);
     }
 
-    public Visibility AgentVis { get; private set; } = Visibility.Collapsed;
+    // ---- the marks and the context bar: plan item 4.1 (2b-2), oracle-checked
+    // as row/decorations against Build-Sessions' own lines ----
 
-    public string AgentText { get; private set; } = string.Empty;
+    /// <summary>The round mark: sub-agents out right now.</summary>
+    public Visibility AgentVis
+    {
+        get => _agentVis;
+        private set => Set(ref _agentVis, value);
+    }
 
-    public Visibility ShellVis { get; private set; } = Visibility.Collapsed;
+    /// <summary>The count beside it - only past one, since the mark already says one.</summary>
+    public string AgentText
+    {
+        get => _agentText;
+        private set => Set(ref _agentText, value);
+    }
 
-    public string ShellText { get; private set; } = string.Empty;
+    /// <summary>The square mark: background shells still running.</summary>
+    public Visibility ShellVis
+    {
+        get => _shellVis;
+        private set => Set(ref _shellVis, value);
+    }
 
+    public string ShellText
+    {
+        get => _shellText;
+        private set => Set(ref _shellText, value);
+    }
 
-    public Visibility CtxVis { get; private set; } = Visibility.Collapsed;
+    /// <summary>
+    /// The context bar - drawn whenever the context is KNOWN, which is not the
+    /// same as whenever it is non-zero.
+    /// </summary>
+    public Visibility CtxVis
+    {
+        get => _ctxVis;
+        private set => Set(ref _ctxVis, value);
+    }
 
-    public double CtxWidth { get; private set; }
+    public double CtxWidth
+    {
+        get => _ctxWidth;
+        private set => Set(ref _ctxWidth, value);
+    }
 
-    public string CtxTip { get; private set; } = string.Empty;
+    public string CtxTip
+    {
+        get => _ctxTip;
+        private set => Set(ref _ctxTip, value);
+    }
 
-    public Brush? CtxBrush { get; private set; }
+    /// <summary>Green, amber, red on the token count - or the compact's hue. The markup picks the brush.</summary>
+    public ContextHue CtxHue
+    {
+        get => _ctxHue;
+        private set => Set(ref _ctxHue, value);
+    }
 
     public string Lane
     {
@@ -338,8 +388,8 @@ public sealed class ConversationVm : INotifyPropertyChanged
     /// <param name="nowTicks">One reading of the clock for the whole pass. 🪤 Per
     /// row it cost 22,3 ms of a 193 ms pass, and compared each row against a
     /// slightly different "now", which is not what an age means.</param>
-    /// <param name="queue">What is queued behind its turn, when the pass read it.</param>
-    public void Refresh(AgentStatus? agent, SaidResult? said, long nowTicks, QueueState? queue = null)
+    /// <param name="extras">What the background readers filed for it - queue, screen, sub-agents, context - when they have.</param>
+    public void Refresh(AgentStatus? agent, SaidResult? said, long nowTicks, RowExtras? extras = null)
     {
         var t = Titles.Of(Session, Directory);
         Title = t.Text;
@@ -353,9 +403,20 @@ public sealed class ConversationVm : INotifyPropertyChanged
         Warm = Titles.Warm(Session, nowTicks > 0 ? new DateTime(nowTicks, DateTimeKind.Local) : null);
         var state = SessionState.Of(agent);
         Band = Bands.Of(state, said);
-        Said = Headline.Of(said?.Said, state.Detail);
+        var now = nowTicks > 0 ? new DateTime(nowTicks, DateTimeKind.Local) : DateTime.Now;
+        var decor = RowDecor.Of(said?.Said, state.Detail, extras?.Screen, extras?.LiveSubAgents ?? 0,
+                                extras?.Context, Session.Jsonl, extras?.WindowSeen, now);
+        Said = decor.Said;
+        AgentVis = decor.AgentVisible ? Visibility.Visible : Visibility.Collapsed;
+        AgentText = decor.AgentText;
+        ShellVis = decor.ShellVisible ? Visibility.Visible : Visibility.Collapsed;
+        ShellText = decor.ShellText;
+        CtxVis = decor.CtxVisible ? Visibility.Visible : Visibility.Collapsed;
+        CtxWidth = decor.CtxWidth;
+        CtxTip = decor.CtxTip;
+        CtxHue = decor.CtxHue;
 
-        var mark = QueueMark.Of(queue, nowTicks > 0 ? new DateTime(nowTicks, DateTimeKind.Local) : DateTime.Now);
+        var mark = QueueMark.Of(extras?.Queue, now);
         QVis = mark.Visible ? Visibility.Visible : Visibility.Collapsed;
         QText = mark.Text;
         QTip = mark.Tip;

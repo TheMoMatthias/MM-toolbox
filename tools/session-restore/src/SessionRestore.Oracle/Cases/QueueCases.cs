@@ -108,29 +108,6 @@ public static class QueueCases
         new("empty-file", []),
     ];
 
-    /// <summary>A PowerShell expression for <paramref name="text"/>, exact to the character.</summary>
-    private static string PsLiteral(string text)
-    {
-        var sb = new StringBuilder("('");
-        foreach (var ch in text)
-        {
-            if (ch == '\'')
-            {
-                sb.Append("''");
-            }
-            else if (ch >= ' ' && ch <= '~')
-            {
-                sb.Append(ch);
-            }
-            else
-            {
-                sb.Append(CultureInfo.InvariantCulture, $"' + [string][char]0x{(int)ch:X4} + '");
-            }
-        }
-
-        return sb.Append("')").ToString();
-    }
-
     private static byte[] Bytes(Shape s) =>
         s.Lines.Length == 0 ? [] : Encoding.UTF8.GetBytes(string.Join("\n", s.Lines) + "\n");
 
@@ -145,7 +122,7 @@ public static class QueueCases
         foreach (var s in Shapes)
         {
             spec.Append(CultureInfo.InvariantCulture, $"@{{ n = '{s.Name}'; t = {s.MaxTail}; l = @(");
-            spec.Append(string.Join(", ", s.Lines.Select(PsLiteral)));
+            spec.Append(string.Join(", ", s.Lines.Select(PsText.Literal)));
             spec.Append(") },\n");
         }
 

@@ -231,6 +231,10 @@
          HueAsk, which already means "a question is waiting on you" - a bar that
          borrowed it would have said that on every healthy session. -->
     <SolidColorBrush x:Key="HueOk"    Color="#7FB98A"/>
+    <!-- PORT 4.1: the context bar's hue - Get-CtxBrush's green, amber, red, and
+         the question hue while a compact borrows the bar for its progress. -->
+    <v:ContextHueBrush x:Key="CtxHueBrush" Ok="{StaticResource HueOk}" Warn="{StaticResource HueWarn}"
+                       Bad="{StaticResource HueBad}" Compacting="{StaticResource HueAsk}"/>
 
     <SolidColorBrush x:Key="HueOutWash"  Color="#D97757" Opacity="0.13"/>
     <SolidColorBrush x:Key="HueToolWash" Color="#6F6A61" Opacity="0.15"/>
@@ -1138,7 +1142,7 @@
                         VerticalAlignment="Center" Margin="10,0,0,0"
                         ToolTip="{Binding CtxTip}">
                   <Border Height="4" CornerRadius="2" HorizontalAlignment="Left"
-                          Width="{Binding CtxWidth}" Background="{Binding CtxBrush}"/>
+                          Width="{Binding CtxWidth}" Background="{Binding CtxHue, Converter={StaticResource CtxHueBrush}}"/>
                 </Border>
 
                 <TextBlock Grid.Column="4" Text="{Binding Age}" Style="{StaticResource Meta}"

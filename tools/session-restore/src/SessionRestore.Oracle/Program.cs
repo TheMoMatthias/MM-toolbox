@@ -90,6 +90,9 @@ WriteCases.PrepareCopy();
 cases.AddRange(WriteCases.All());
 cases.AddRange(CadenceCases.All());
 cases.AddRange(QueueCases.All());
+cases.AddRange(VitalsCases.All());
+cases.AddRange(ContextCases.All());
+cases.AddRange(RowDecorCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
@@ -130,6 +133,16 @@ foreach (var (c, expectAgree, meaning) in cases)
         if (c.Name.StartsWith("console/", StringComparison.Ordinal))
         {
             Note("      " + ScreenCases.Coverage());
+        }
+
+        if (c.Name.Equals("context/live", StringComparison.Ordinal))
+        {
+            Note("      " + ContextCases.LiveCompared.ToString(CultureInfo.InvariantCulture) + " conversation(s) held still and were compared");
+        }
+
+        if (c.Name.Equals("vitals/live", StringComparison.Ordinal))
+        {
+            Note("      " + VitalsCases.LiveCompared.ToString(CultureInfo.InvariantCulture) + " live screen(s) parsed by both");
         }
 
         if (c.Name.Equals("queue/read-live", StringComparison.Ordinal))

@@ -959,11 +959,39 @@ that document, not retyped.
 - The row binds `QVis`/`QText`/`QTip` and `QMine` through a `BoolBrush`
   (`HueOut`/`TextLow`); `--render <png> --fake-queue` drew `» 2` in amber.
 
-🔴 **Still open in 4.1:**
+### 4.1 (2b-2) - every mark the row draws, against the shipped row loop
 
-| what | why it waits | trigger |
+- **`Core.Console.ScreenVitals`** ports `Read-SRScreenVitals` (30 screens in
+  `vitals/shapes`, 12 breaks caught, plus `vitals/live`, which hands the C# the
+  PowerShell's screen text - the question, not the answer - because a screen
+  redraws between two reads).
+- **`Core.Transcripts.ContextUse`** ports the model/tokens/window part of
+  `Get-SRSessionVitals` (15 shapes, 10 breaks caught, 60 live).
+- **`Core.Rows.RowDecor`** ports the rest of the row: the said line with the
+  compact override, the shell and sub-agent marks, `Get-SRRowCtx` with both
+  TTLs and the printed-window rule, `Get-CtxBrush`, `Get-SRCompactText`.
+  **`row/decorations` splices two regions out of `Build-Sessions` and runs
+  them** - one ends inside the hashtable literal that builds the row object - over
+  24 specs; 9 breaks caught.
+- 🪤 **`ToString("R")` IS NOT THE SAME ON BOTH RUNTIMES.** .NET Framework prints
+  17 digits, .NET 8 the shortest round-trip, so an identical `6.8000000000000007`
+  read as a difference. Doubles are compared as their bits.
+- 🪤 A shape that could not fail: the context tail case gave both records a
+  model, and the last one wins either way - a break that removed the tail limit
+  stayed green until the model was put only on the record outside the tail.
+- `--render --fake-queue` draws a row with every mark at once; the real rows
+  show their transcript context bars.
+
+🔴 **4.1 IS DONE BY ITS DONE-WHEN** (the window opens; 164/164 controls, by name
+and kind) **and the sessions column is fully bound.** 🔑 The other surfaces - the
+rail's tiles, the manage list, the strip, the pane, the question card, the
+settings and cast panels - get their bindings WITH their handlers in 4.2, one
+surface at a time: a binding with nothing to drive it cannot be checked, and a
+data flow built before its handler is guessed at twice.
+
+| still open | why it waits | trigger |
 |---|---|---|
-| **2b-2..: context bar, compact progress, sub-agent and shell counts** | their readers (`Get-SRRowCtx` + the vitals cache, `Get-CtxBrush`, `Get-SRCompactText`, the status-line parse behind `Set-RowScreenSig`) are PowerShell-only; each needs an oracle case before its property stops being present-and-off | next 4.1 tranche |
+| sub-agent rows under the selected conversation (`SubAgentRowTpl`) | they appear on SELECTION, which is a handler | 4.2, `SessionList` selection |
 | **the band pick** (`BandBg`, "only this") | 🪤 it cannot be a filter: the shipped column keeps EVERY heading when one band is picked, and a filtered-out group has no header | 4.2, with the handler |
 | **3.5's two measurements, against the real template** | the run on 2026-09-13 was at **99% CPU** (a game plus other sessions' python), so the ported window reading 5-10x the placeholder is not evidence of anything yet | a quiet machine: `--bench --repeats 40` |
 

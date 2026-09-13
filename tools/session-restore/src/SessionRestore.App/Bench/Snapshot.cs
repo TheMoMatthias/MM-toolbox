@@ -31,12 +31,18 @@ public static class Snapshot
         // The queues of the conversations the surface will show, so a mark that
         // exists on this machine is drawn. Read-only: a 4 MB tail per transcript.
         var model = KeystrokeBench.Model();
-        var queues = new Dictionary<string, Core.Transcripts.QueueState>(StringComparer.OrdinalIgnoreCase);
+        var queues = new Dictionary<string, RowExtras>(StringComparer.OrdinalIgnoreCase);
         foreach (var (id, s, _) in model)
         {
             if (Core.Rows.Titles.Warm(s) && !string.IsNullOrEmpty(s.Jsonl))
             {
-                queues[id] = Core.Transcripts.Waiting.Read(s.Jsonl);
+                var use = Core.Transcripts.ContextUse.Read(s.Jsonl);
+                queues[id] = new RowExtras(
+                    Core.Transcripts.Waiting.Read(s.Jsonl),
+                    null,
+                    0,
+                    use.Ok ? new Core.Rows.CachedContext(use.Tokens, use.Window, s.Jsonl, DateTime.Now) : null,
+                    null);
             }
         }
 
@@ -44,16 +50,23 @@ public static class Snapshot
         {
             var newest = model.OrderByDescending(m => m.S.LastActive).First();
             var now = DateTime.Now;
-            queues[newest.Id] = new Core.Transcripts.QueueState(
-            [
-                new("<task-notification>x</task-notification>", "x", now.AddMinutes(-1), false),
-                new("please check the logs", "please check the logs", now.AddMinutes(-4), true),
-                new("and then the build", "and then the build", now.AddMinutes(-2), true),
-            ], 2, 1, true, now);
+            // A queue, a shell, two sub-agents and a compact two-thirds through -
+            // every mark the row can draw, on one row.
+            queues[newest.Id] = new RowExtras(
+                new Core.Transcripts.QueueState(
+                [
+                    new("<task-notification>x</task-notification>", "x", now.AddMinutes(-1), false),
+                    new("please check the logs", "please check the logs", now.AddMinutes(-4), true),
+                    new("and then the build", "and then the build", now.AddMinutes(-2), true),
+                ], 2, 1, true, now),
+                new Core.Rows.RowScreen(1, 2, -1, -1, true, 66, 97, now),
+                0,
+                null,
+                null);
         }
 
         var vm = new SessionsVm();
-        vm.Sync(model, queues: queues);
+        vm.Sync(model, extras: queues);
 
         var w = new SessionsWindow
         {

@@ -202,7 +202,7 @@ public sealed class SessionsVm : INotifyPropertyChanged
         IReadOnlyDictionary<string, AgentStatus>? agents = null,
         IReadOnlyDictionary<string, SaidResult>? said = null,
         long nowTicks = 0,
-        IReadOnlyDictionary<string, QueueState>? queues = null)
+        IReadOnlyDictionary<string, RowExtras>? extras = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         if (nowTicks <= 0)
@@ -216,16 +216,16 @@ public sealed class SessionsVm : INotifyPropertyChanged
             seen.Add(id);
             var a = agents is not null && agents.TryGetValue(id, out var av) ? av : null;
             var s = said is not null && said.TryGetValue(id, out var sv) ? sv : null;
-            var q = queues is not null && queues.TryGetValue(id, out var qv) ? qv : null;
+            var x = extras is not null && extras.TryGetValue(id, out var xv) ? xv : null;
 
             if (_byId.TryGetValue(id, out var row))
             {
-                row.Refresh(a, s, nowTicks, q);
+                row.Refresh(a, s, nowTicks, x);
                 continue;
             }
 
             row = new ConversationVm(id, session, directory);
-            row.Refresh(a, s, nowTicks, q);
+            row.Refresh(a, s, nowTicks, x);
             _byId[id] = row;
             _rows.Add(row);
         }
