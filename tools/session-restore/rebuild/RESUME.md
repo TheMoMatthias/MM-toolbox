@@ -1,6 +1,6 @@
 # Resume here
 
-**Kept current. Last updated 2026-09-10. Everything is committed and pushed;
+**Kept current. Last updated 2026-09-13. Everything is committed and pushed;
 the working tree holds only the operator's own live files.**
 
 Last commit: see `git log`. Branch `main`.
@@ -81,18 +81,37 @@ conversations are live. Each has a named allowance, and the shape they all need
 is the same - so when one goes red intermittently, check these before anything
 else:
 
-1. **Does the "it moved" marker fill EVERY field the PowerShell emitted?** A
-   partly-marked row reports its remaining fields as *"present in PowerShell,
-   missing in C#"*, and those lines match no allowance. This has now bitten
-   `launch/processes`, `subagents/live-tasks` and `transcript/last-said`.
-2. **Is the allowance checked line by line**, rather than with `EndsWith` on the
-   whole difference text?
-3. **Does the case still fail if nothing was compared?**
+1. **Is the marker built with `Moving.Mark` from the PowerShell's own row?**
+   A hand-kept field list misses a field, and a partly-marked row reports the
+   rest as *"present in PowerShell, missing in C#"*. It bit `launch/processes`,
+   `subagents/live-tasks`, `transcript/last-said` and `transcript/blocks-*`.
+   `Moving.Mark` also keeps a PowerShell `null` as null - a marker there renders
+   as *"one side is empty"*, which carries no marker text.
+2. **Is the allowance `Moving.IsMarked(d, why)`** - *this* difference's C# value
+   is exactly the marker? 🔴 **NOT "every line contains it".** The harness already
+   hands a case one difference at a time, so splitting on `\n` cut a multi-line
+   transcript body in half and reported a genuinely grown conversation as real.
+   The earlier "check line by line" advice here was built on a wrong premise.
+3. **Is the length pinned BEFORE the PowerShell's read and on BOTH sides of the
+   C#'s?** Taken after, a record landing mid-read pairs the longer length with
+   the shorter answer, and nothing is left to forgive it.
+4. **Does the case still fail if nothing was compared?**
 
-🔴 `transcript/blocks-detail` was seen red once and green twice on
-2026-09-10 and is **still open**: its sample is the 15 newest conversations,
-which are precisely the ones being written to. Reproduce it by running the oracle
-while working, then apply the three checks above.
+🔴 **AND AN ALLOWANCE MEANS AN UNCAPPED DIFF.** `JsonDiff` stopped at 50, so one
+grown conversation filled all 50 with forgivable rows and a deliberate corruption
+further down printed **green**. `Oracle.cs` now walks every difference whenever a
+case has a `Tolerate`.
+
+✅ `transcript/blocks-detail` - red once, green twice on 2026-09-10 - is
+**closed** (2026-09-13): all four above were wrong in it, and every one was
+proven by a break that went red and a grown row that stayed green.
+
+🪤 **`console/screens` went red the same day for a reason no code changed:** the
+Claude **desktop app** was running, and `Get-Process -Name claude` matches its
+eleven console-less processes. PowerShell says "could not read" as `$null`, the
+C# as `!attach 6` - two readers agreeing, compared raw. Both now say
+`(unreadable)`, the desktop app is filtered out, and one `explorer` row keeps the
+unreadable path reachable on purpose.
 
 ---
 
@@ -102,8 +121,7 @@ while working, then apply the three checks above.
 against **512 ms** in the PowerShell.
 
 ```
-src\SessionRestore.Appin\Release
-et8.0-windows\Sessions2.exe --bench --repeats 40
+src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --bench --repeats 40
 ```
 
 Exit 0 means every gesture landed inside a frame AND every binding check passed.

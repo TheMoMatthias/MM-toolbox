@@ -42,13 +42,15 @@ public static class TranscriptCases
             foreach ($s in @($d.sessions)) {
                 $p = "$($s.jsonl)"
                 if (-not $p -or -not (Test-Path -LiteralPath $p)) { continue }
-                $v = Get-SRLastSaid -JsonlPath $p
-                $full = "$($v.Full)"
                 # 🔴 THE LENGTH OF THE FILE THAT WAS READ, so the other side can
                 # say whether it read the same one. This case had no allowance at
                 # all and went red whenever a conversation spoke mid-run - which
                 # on this machine means whenever the operator is working.
+                # 🪤 TAKEN BEFORE THE READ: after it, a record landing mid-read
+                # paired the longer length with the shorter answer.
                 $len = $(try { (Get-Item -LiteralPath $p).Length } catch { -1 })
+                $v = Get-SRLastSaid -JsonlPath $p
+                $full = "$($v.Full)"
                 $rows += [ordered]@{
                     id          = "$($s.sessionId)"
                     len         = [long]$len
@@ -84,7 +86,7 @@ public static class TranscriptCases
                 {
                     // Say so rather than skipping: a row this side cannot even
                     // find is a difference, not an absence.
-                    rows.Add(Marked(id, "(no such conversation here)"));
+                    rows.Add(Moving.Mark(a, "id", "(no such conversation here)"));
                     continue;
                 }
 
@@ -98,11 +100,19 @@ public static class TranscriptCases
                 var nowLen = Length(path);
                 if (askedLen >= 0 && nowLen != askedLen)
                 {
-                    rows.Add(Marked(id, Grew));
+                    rows.Add(Moving.Mark(a, "id", Grew));
                     continue;
                 }
 
                 var v = LastSaid.Read(path);
+
+                // 🪤 AND AGAIN AFTER THE READ, or a record landing between the
+                // check and the read answers about a longer file than was asked.
+                if (Length(path) != askedLen)
+                {
+                    rows.Add(Moving.Mark(a, "id", Grew));
+                    continue;
+                }
                 var full = v.Full;
                 rows.Add(new JsonObject
                 {
@@ -129,8 +139,7 @@ public static class TranscriptCases
             return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);
         })
     {
-        Tolerate = d => d.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
-                         .All(x => x.Contains(Grew, StringComparison.Ordinal)),
+        Tolerate = d => Moving.IsMarked(d, Grew),
         ToleranceReason = "the conversation said something between the two reads - a growing file, not a differing reader",
     };
 
@@ -138,23 +147,6 @@ public static class TranscriptCases
     public static int Compared { get; private set; }
 
     private const string Grew = "(it spoke between the two reads)";
-
-    /// <summary>
-    /// A row this side could not answer for, with the reason in every field the
-    /// PowerShell emitted.
-    /// </summary>
-    private static JsonObject Marked(string id, string why) => new()
-    {
-        ["id"] = id,
-        ["len"] = why,
-        ["said"] = why,
-        ["pending"] = why,
-        ["pendingTool"] = why,
-        ["at"] = why,
-        ["fullLen"] = why,
-        ["fullHead"] = why,
-        ["fullTail"] = why,
-    };
 
     private static long Length(string path)
     {

@@ -228,9 +228,10 @@ public static class SubAgentCases
         $pick = @($all | Sort-Object -Property @{ E = { [datetime]$_.A } } -Descending | Select-Object -First {{LiveTaskSample}})
         $rows = @()
         foreach ($x in $pick) {
+            # 🪤 THE LENGTH BEFORE THE READ, never after.
+            $len = $(try { (Get-Item -LiteralPath $x.P).Length } catch { -1 })
             $t = Get-SRLiveTasks -JsonlPath $x.P
             $t = @($t)
-            $len = $(try { (Get-Item -LiteralPath $x.P).Length } catch { -1 })
             $rows += [ordered]@{
                 of    = $x.Id
                 len   = $len
@@ -262,18 +263,24 @@ public static class SubAgentCases
                 // the launch cases had already been fixed for.
                 if (!byId.TryGetValue(of, out var path))
                 {
-                    rows.Add(Marker(of, "(no such conversation here)"));
+                    rows.Add(Moving.Mark(a, "of", "(no such conversation here)"));
                     continue;
                 }
 
                 var now = Length(path);
                 if (askedLen >= 0 && now != askedLen)
                 {
-                    rows.Add(Marker(of, "(grew between the two reads)"));
+                    rows.Add(Moving.Mark(a, "of", "(grew between the two reads)"));
                     continue;
                 }
 
                 var t = LiveTasks.Read(path);
+                if (Length(path) != askedLen)
+                {
+                    rows.Add(Moving.Mark(a, "of", "(grew between the two reads)"));
+                    continue;
+                }
+
                 rows.Add(new JsonObject
                 {
                     ["of"] = of,
@@ -297,13 +304,8 @@ public static class SubAgentCases
             return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);
         })
     {
-        // 🪤 EVERY LINE, NOT THE LAST ONE. This was `d.EndsWith(...)` on the
-        // WHOLE difference text - so it inspected a single line and forgave all
-        // of them, which is the "tolerance on the first difference only" mistake
-        // seen from the other end. A case passes only when EVERY difference it
-        // has is one it named.
-        Tolerate = d => d.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
-                         .All(x => x.Contains("(grew between the two reads)", StringComparison.Ordinal)),
+        // 🪤 THE C# VALUE OF THIS ONE DIFFERENCE IS THE MARKER - see Moving.
+        Tolerate = d => Moving.IsMarked(d, "(grew between the two reads)"),
         ToleranceReason = "the conversation was written to between the two reads - a growing file, not a differing reader",
     };
 
@@ -317,20 +319,6 @@ public static class SubAgentCases
     public static string Coverage() => string.Format(System.Globalization.CultureInfo.InvariantCulture,
         "{0} sub-agent(s), {1} last line(s), {2} conversation(s) for what is running",
         AgentsSeen, LastLinesSeen, LiveTasksSeen);
-
-    /// <summary>
-    /// A row this side could not answer for, with the reason in EVERY field the
-    /// PowerShell emitted - so an allowance can match the whole row.
-    /// </summary>
-    private static JsonObject Marker(string of, string why) => new()
-    {
-        ["of"] = of,
-        ["len"] = why,
-        ["n"] = why,
-        ["ids"] = why,
-        ["kinds"] = why,
-        ["cmds"] = why,
-    };
 
     private static long Length(string path)
     {

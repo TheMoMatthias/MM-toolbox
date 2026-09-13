@@ -37,6 +37,9 @@ public static class JsonDiff
     /// hide every real difference behind it - the allowance would silently widen
     /// into "ignore this case". Collecting them means a case passes only when
     /// EVERY difference it has is one it named.
+    ///
+    /// 🪤 WHICH IS WHY A CASE WITH AN ALLOWANCE MUST NOT PASS A CAP. Fifty
+    /// forgiven differences and a real fifty-first reads as "all forgiven".
     /// </remarks>
     public static List<string> Differences(string leftJson, string rightJson, int max = 50)
     {

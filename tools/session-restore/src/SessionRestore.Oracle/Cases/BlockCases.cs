@@ -106,6 +106,12 @@ public static class BlockCases
             # holding the whole array - and PowerShell's member enumeration then
             # makes $b[0].Kind read as every kind at once, which looks like a
             # parser difference and is not.
+            # 🔴 THE LENGTH IS TAKEN BEFORE THE PARSE, never after. Taken after,
+            # a record landing mid-parse let this side report the LONGER length
+            # for the SHORTER read, and the C# - seeing the same length - parsed
+            # one record more and disagreed with nothing to forgive it.
+            $fileLen = 0
+            try { $fileLen = (Get-Item -LiteralPath $x.P).Length } catch { $fileLen = -1 }
             $b = Get-SRTranscriptBlocks -JsonlPath $x.P
             $b = @($b)
             $len = 0
@@ -117,8 +123,6 @@ public static class BlockCases
             # collision. Same family as the $ShellId and $args collisions this
             # repo already records: a name that is already taken, in a language
             # that will not warn you.
-            $fileLen = 0
-            try { $fileLen = (Get-Item -LiteralPath $x.P).Length } catch { $fileLen = -1 }
             $rows += [ordered]@{
                 id      = $x.Id
                 len     = $fileLen
@@ -130,7 +134,7 @@ public static class BlockCases
         }
         (@{ rows = $rows } | ConvertTo-Json -Compress -Depth 6)
         """,
-        Answer((id, path, askedLen) =>
+        Answer((id, path, askedLen, ps) =>
         {
             // 🔴 A TRANSCRIPT GROWS WHILE IT IS BEING READ, and the reading
             // window is a TAIL - so a conversation that gained one record
@@ -139,12 +143,22 @@ public static class BlockCases
             // PowerShell's shifted by one, same length, one gained at the end
             // and one lost at the start.
             var now = Length(path);
-            if (askedLen >= 0 && now != askedLen)
+            if (askedLen < 0 || now != askedLen)
             {
-                return new JsonObject { ["id"] = id, ["len"] = -2, ["n"] = -2 };
+                return Moving.Mark(ps, "id", Grew);
             }
 
             var b = TranscriptBlocks.Read(path);
+
+            // 🪤 AND PINNED ON BOTH SIDES OF THE READ. A record landing between
+            // the length check and the parse gave this side a longer tail than
+            // the one it had just claimed to be answering about.
+            if (Length(path) != askedLen)
+            {
+                return Moving.Mark(ps, "id", Grew);
+            }
+
+            ShapeCompared++;
             return new JsonObject
             {
                 ["id"] = id,
@@ -154,9 +168,9 @@ public static class BlockCases
                 ["heads"] = string.Join(",", b.Select(x => x.Head)),
                 ["bodyLen"] = b.Sum(x => x.Body.Length),
             };
-        }))
+        }, () => ShapeCompared))
     {
-        Tolerate = d => d.EndsWith("C# \"-2\"", StringComparison.Ordinal),
+        Tolerate = d => Moving.IsMarked(d, Grew),
         ToleranceReason = "the conversation was written to between the two reads - a growing file, not a differing parser",
     };
 
@@ -171,6 +185,8 @@ public static class BlockCases
 
         $rows = @()
         foreach ($x in $pick) {
+            # 🔴 THE LENGTH BEFORE THE PARSE, as in the shape case.
+            $fileLen = $(try { (Get-Item -LiteralPath $x.P).Length } catch { -1 })
             $b = Get-SRTranscriptBlocks -JsonlPath $x.P
             $b = @($b)
             # 🪤 NEVER "$($y.Body)" HERE. That COPIES the body, and a body can be
@@ -179,7 +195,6 @@ public static class BlockCases
             # its own deadline, while blocks-shape did the same reading in 2,2 s
             # because it only ever asked for a Length. Body is already a string;
             # index it in place.
-            $fileLen = $(try { (Get-Item -LiteralPath $x.P).Length } catch { -1 })
             foreach ($y in $b) {
                 $bl = 0
                 if ($null -ne $y.Body) { $bl = $y.Body.Length }
@@ -210,7 +225,7 @@ public static class BlockCases
             // is exactly what it is.
             var seen = new List<string>();
             var lenById = new Dictionary<string, long>(StringComparer.Ordinal);
-            var rowsById = new Dictionary<string, int>(StringComparer.Ordinal);
+            var rowsById = new Dictionary<string, List<JsonNode?>>(StringComparer.Ordinal);
             foreach (var a in asked)
             {
                 var id = a?["id"]?.GetValue<string>() ?? string.Empty;
@@ -218,10 +233,10 @@ public static class BlockCases
                 {
                     seen.Add(id);
                     lenById[id] = a?["len"]?.GetValue<long>() ?? -1;
-                    rowsById[id] = 0;
+                    rowsById[id] = [];
                 }
 
-                rowsById[id]++;
+                rowsById[id].Add(a);
             }
 
             foreach (var id in seen)
@@ -236,7 +251,10 @@ public static class BlockCases
                 // between the two reads gives two correct answers about two
                 // different windows.
                 var now = Length(path);
-                if (lenById[id] >= 0 && now != lenById[id])
+                var read = now == lenById[id] && lenById[id] >= 0 ? TranscriptBlocks.Read(path) : null;
+
+                // 🪤 PINNED ON BOTH SIDES OF THE READ, as in the shape case.
+                if (read is null || Length(path) != lenById[id])
                 {
                     // 🪤 ONE MARKER PER ROW THE OTHER SIDE EMITTED, so the two
                     // arrays stay the same length and a COUNT difference goes on
@@ -248,15 +266,22 @@ public static class BlockCases
                     // 🔑 HOW MANY ROWS is part of the QUESTION - which blocks are
                     // we talking about - not part of the answer. What each row
                     // SAYS is this side's own words.
-                    for (var k = 0; k < rowsById[id]; k++)
+                    //
+                    // 🔴 AND THE MARKER GOES IN EVERY FIELD THE POWERSHELL
+                    // EMITTED. It filled three of nine, so a grown conversation
+                    // reported head, meta, when and the rest as "present in
+                    // PowerShell, missing in C#" - which matched no allowance, and
+                    // made this case red once and green twice.
+                    foreach (var ps in rowsById[id])
                     {
-                        rows.Add(new JsonObject { ["id"] = id, ["len"] = -2, ["kind"] = "(grew)" });
+                        rows.Add(Moving.Mark(ps, "id", Grew));
                     }
 
                     continue;
                 }
 
-                foreach (var y in TranscriptBlocks.Read(path))
+                DetailCompared++;
+                foreach (var y in read)
                 {
                     var body = y.Body;
                     rows.Add(new JsonObject
@@ -274,14 +299,27 @@ public static class BlockCases
                 }
             }
 
+            // 🔴 AND FAIL IF NOTHING WAS COMPARED. Fifteen conversations that all
+            // grew would otherwise agree about nothing and print green.
+            if (DetailCompared == 0)
+            {
+                rows.Add(new JsonObject { ["id"] = "(nothing was compared)" });
+            }
+
             return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);
         })
     {
-        // Exactly the marker a grown conversation makes, and nothing else.
-        Tolerate = d => d.EndsWith("C# \"-2\"", StringComparison.Ordinal)
-                     || d.EndsWith("C# \"(grew)\"", StringComparison.Ordinal),
+        Tolerate = d => Moving.IsMarked(d, Grew),
         ToleranceReason = "the conversation was written to between the two reads - a growing file, not a differing parser",
     };
+
+    /// <summary>How many conversations held still and were compared, per case.</summary>
+    public static int ShapeCompared { get; private set; }
+
+    /// <inheritdoc cref="ShapeCompared"/>
+    public static int DetailCompared { get; private set; }
+
+    private const string Grew = "(it was written to between the two reads)";
 
     private static Dictionary<string, string> PathsById() =>
         Core.Registry.SessionRegistry.Read().AllSessions
@@ -301,7 +339,7 @@ public static class BlockCases
         }
     }
 
-    private static Func<string, string> Answer(Func<string, string, long, JsonObject> one) =>
+    private static Func<string, string> Answer(Func<string, string, long, JsonNode?, JsonObject> one, Func<int> compared) =>
         psOut =>
         {
             var asked = JsonNode.Parse(psOut)?["rows"]?.AsArray() ?? [];
@@ -312,8 +350,13 @@ public static class BlockCases
                 var id = a?["id"]?.GetValue<string>() ?? string.Empty;
                 var askedLen = a?["len"]?.GetValue<long>() ?? -1;
                 rows.Add(byId.TryGetValue(id, out var path)
-                    ? one(id, path, askedLen)
+                    ? one(id, path, askedLen, a)
                     : new JsonObject { ["id"] = id, ["n"] = -1 });
+            }
+
+            if (compared() == 0)
+            {
+                rows.Add(new JsonObject { ["id"] = "(nothing was compared)" });
             }
 
             return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);

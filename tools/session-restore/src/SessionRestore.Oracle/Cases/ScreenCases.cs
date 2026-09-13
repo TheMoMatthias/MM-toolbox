@@ -39,7 +39,19 @@ public static class ScreenCases
         """
         # Two reads a moment apart. A screen that changed between them was
         # moving, and neither side can be held to it.
-        $procs = @(Get-Process -Name claude -ErrorAction SilentlyContinue | Select-Object -First 30)
+        #
+        # 🪤 NOT THE DESKTOP APP. `-Name claude` also matches the Claude desktop
+        # app's own processes, which have no console - eleven of fourteen on
+        # 2026-09-13, filling the sample with things that are not sessions.
+        $procs = @(Get-Process -Name claude -ErrorAction SilentlyContinue |
+            Where-Object { "$($_.Path)" -notlike '*\WindowsApps\*' } |
+            Select-Object -First 30)
+        # 🔴 AND ONE PROCESS THAT HAS NO CONSOLE AT ALL, on purpose. "Could not
+        # read" is a path live data reaches only by accident - the desktop app
+        # reached it on 2026-09-13 and nothing had before - so breaking either
+        # side's handling of it stayed green. Explorer never has a console; the
+        # attach fails inside the disposable helper and touches nothing else.
+        $procs += @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Select-Object -First 1)
         $rows = @()
         foreach ($p in $procs) {
             $a = ''
@@ -50,12 +62,17 @@ public static class ScreenCases
             # looks; 220 ms was not a long enough gap to mean anything.
             Start-Sleep -Milliseconds 1000
             try { $b = Get-SRScreenText -ProcessId $p.Id } catch { $b = '!threw' }
+            # 🔴 $null IS "COULD NOT READ", and it is said in words. The C#
+            # reader says the same thing as "!reason"; comparing the raw values
+            # made a console-less process read as "" against "!attach 6" - two
+            # readers agreeing, reported as a difference.
+            $unreadable = ($null -eq $a -and $null -eq $b)
             $stable = ($a -eq $b)
             $rows += [ordered]@{
                 pid    = $p.Id
                 stable = $stable
-                lines  = $(if ($stable) { @("$b" -split "`n").Count } else { -1 })
-                text   = $(if ($stable) { "$b" } else { '(moving)' })
+                lines  = $(if ($unreadable) { 0 } elseif ($stable) { @("$b" -split "`n").Count } else { -1 })
+                text   = $(if ($unreadable) { '(unreadable)' } elseif ($stable) { "$b" } else { '(moving)' })
             }
         }
         (@{ rows = $rows } | ConvertTo-Json -Compress -Depth 5)
@@ -79,6 +96,13 @@ public static class ScreenCases
                 }
 
                 var (text, stable) = ScreenReader.ReadStable(pid);
+
+                // The reader's own "could not read", in the words both sides use.
+                if (stable && text.StartsWith('!'))
+                {
+                    rows.Add(new JsonObject { ["pid"] = (int)pid, ["stable"] = true, ["lines"] = 0, ["text"] = "(unreadable)" });
+                    continue;
+                }
 
                 // 🔴 THIS SIDE NEVER ECHOES THE OTHER SIDE'S ANSWER. A first
                 // version handled "still for them, moving for us" by copying

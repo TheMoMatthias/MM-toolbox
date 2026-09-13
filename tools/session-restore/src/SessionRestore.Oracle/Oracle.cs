@@ -120,7 +120,15 @@ public static class Oracle
         // allowance passes only when ALL of them are ones it named. Applying a
         // tolerance to the first difference alone would let a forgiven row hide
         // every real difference behind it.
-        var diffs = JsonDiff.Differences(ps.StdOut, cs);
+        //
+        // 🔴 AND UNCAPPED WHEN THERE IS AN ALLOWANCE. The walk stopped at fifty,
+        // so a conversation that grew - eight marked fields a block, a few
+        // hundred blocks - filled all fifty with forgivable differences, and a
+        // corrupted field further down was never reached. The case printed
+        // green over a deliberate break. Measured 2026-09-13 on
+        // transcript/blocks-detail; the cap stays only where nothing is forgiven
+        // and the first difference is all that is reported anyway.
+        var diffs = JsonDiff.Differences(ps.StdOut, cs, c.Tolerate is null ? 50 : int.MaxValue);
         if (diffs.Count == 0)
         {
             return new OracleResult(c.Name, true, null, psMs, sw.ElapsedMilliseconds);
