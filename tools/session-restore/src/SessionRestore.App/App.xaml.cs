@@ -18,6 +18,16 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         ArgumentNullException.ThrowIfNull(e);
+
+        // Plan item 4.1: build the ported window with no data and report whether
+        // every named control is there. The same off-screen showing as the bench.
+        if (Array.Exists(e.Args, a => string.Equals(a, "--surface", StringComparison.OrdinalIgnoreCase)))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Dispatcher.BeginInvoke(new Action(RunSurface), DispatcherPriority.ApplicationIdle);
+            return;
+        }
+
         var wanted = Array.Exists(e.Args, a =>
             string.Equals(a, "--bench", StringComparison.OrdinalIgnoreCase));
         if (!wanted)
@@ -47,6 +57,35 @@ public partial class App : Application
         // both times as a process that sat there until it was killed. Queue it
         // and let the loop start first.
         Dispatcher.BeginInvoke(new Action(() => RunBench(repeats)), DispatcherPriority.ApplicationIdle);
+    }
+
+    private void RunSurface()
+    {
+        int failures;
+        string report;
+        try
+        {
+            var r = SurfaceCheck.Run();
+            report = SurfaceCheck.Report(r);
+            failures = r.Failures;
+        }
+#pragma warning disable CA1031 // the check must report a failure, not vanish with it
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            report = "the surface check threw: " + ex.GetType().Name + ": " + ex.Message
+                     + Environment.NewLine + ex.StackTrace;
+            failures = 1000;
+        }
+
+        try
+        {
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "sr-surface-check.txt"), report);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+
+        Shutdown(failures);
     }
 
     private void RunBench(int repeats)

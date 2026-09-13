@@ -1,0 +1,2784 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        x:Class="SessionRestore.App.Views.SessionsWindow"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        xmlns:sys="clr-namespace:System;assembly=mscorlib"
+        Title="Claude sessions"
+        Width="1480" Height="980" MinWidth="620" MinHeight="420"
+        WindowStartupLocation="CenterScreen"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="Grayscale"
+        Background="#08080A">
+
+  <!-- 🔴 WHY THE TEXT LOOKED "PROGRAMMATIC".
+       Three settings, and two of them were fighting the fonts:
+
+         TextRenderingMode was ClearType. ClearType is SUBPIXEL antialiasing -
+         it tints the edge of every stem red or blue to buy horizontal
+         resolution. On white it disappears; on a #0F1013 ground it is visible
+         colour fringing on every glyph, and that fringe is what reads as a
+         utility program rather than a designed surface. Grayscale antialiasing
+         is what modern dark UI uses, and what a phone renders.
+
+         SnapsToDevicePixels forced glyph edges onto whole pixels, which is
+         right for a 1px border and wrong for letterforms: it is what makes type
+         look hand-drawn on a grid. UseLayoutRounding stays, so the hairlines
+         are still crisp; the text is no longer nailed to the grid.
+
+         TextFormattingMode is DISPLAY, and it used to be Ideal. The reasoning
+         for Ideal was sound and is kept here because it is still true at large
+         sizes: Display snaps advance widths to whole pixels and throws away the
+         optical spacing a variable UI face exists to provide.
+
+         🔴 AND IT DOES NOT SAY "Segoe UI Variable" ANY MORE, BECAUSE THE WINDOW
+         HAS NEVER RUN ON IT. The three FontFamily entries below name Segoe, and
+         Install-SRTypeface REPLACES all three with MANROPE at runtime before the
+         window is shown - so every comment in this file that reasoned about
+         Segoe's metrics was reasoning about a face that is not on screen. That
+         is not a cosmetic slip: type decisions were made from it, including
+         sizing the machine text to the terminal, and the two faces have
+         different x-heights (Manrope 0.540 em, Segoe 0.500, Cascadia 0.518).
+         Measure the face that is RUNNING.
+
+         What that reasoning missed is the size this pane actually runs at. Ideal
+         positions glyphs at SUB-PIXEL advances, so at 12px body text the gaps
+         between characters land on different fractions of a pixel and the
+         spacing reads as irregular - reported directly, in those words, after
+         the prose was taken down to 12. Optical spacing is worth having on a
+         28px display face; on 12px running text it buys nothing you can see and
+         costs the evenness you can.
+
+         🪤 This is a DIFFERENT setting from TextRenderingMode above, and only
+         one of the two can be judged from a screenshot. Formatting mode changes
+         advance widths, which a capture shows faithfully. Rendering mode is
+         subpixel colour, and CONTEXT.md records that the test renderer always
+         composites greyscale - so a captured 'cleartype' sample is greyscale
+         wearing a label. That one has to be flipped and looked at.
+       ================================================== -->
+
+  <!-- ================== THE FRAME ==================
+       NO OS TITLE BAR, but still a real window.
+
+       🔴 WindowChrome, NOT WindowStyle=None. WindowStyle="None" alone throws
+       away the frame AND everything the frame did: Aero Snap, edge resize,
+       maximise-to-work-area, and the drop shadow. WindowChrome removes only the
+       painted caption and lets Windows keep managing the rest, so dragging to
+       an edge still snaps and the borders still resize.
+
+       🔴 CaptionHeight IS THE HEADER PLUS THE INSET (46 + 14 = 60). The app is
+       a card floating 14px inside the window, so the header no longer starts at
+       the window's top edge - and the ground around the card should drag it too,
+       which the same number gives for free.
+
+       🔴 CaptionHeight MATCHES THE HEADER, and that is what makes this behave
+       like a window. It was 0, which told Windows "there is no caption here" -
+       so the only way to move the window was the app calling DragMove itself,
+       and with it you lose everything Windows does with a caption: drag, snap to
+       an edge, aero-shake, Win+arrow, double-click to maximise, and the system
+       menu on right-click or Alt+Space. The window could be maximised and closed
+       (those are our own buttons) but NOT MOVED, which is exactly what was
+       reported.
+
+       Every interactive control sitting in that strip opts back OUT with
+       WindowChrome.IsHitTestVisibleInChrome="True" - without it Windows treats
+       the click as a caption drag and the control never sees it. Anything on the
+       strip WITHOUT that attribute is draggable surface, which is why the title
+       text is not marked.
+
+       GlassFrameThickness="0" keeps the DWM glass out of a dark window;
+       UseAeroCaptionButtons="False" stops Windows drawing its own.
+       ============================================== -->
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="60"
+                        ResizeBorderThickness="6"
+                        CornerRadius="0"
+                        GlassFrameThickness="0"
+                        UseAeroCaptionButtons="False"/>
+  </shell:WindowChrome.WindowChrome>
+
+  <Window.Resources>
+
+    <!-- ================== PALETTE ==================
+         Colour is allowed here for the first time, and it carries exactly one
+         meaning: WHAT A CONVERSATION NEEDS FROM YOU. Every accent is twinned
+         with a glyph and a band heading, so the screen still reads correctly in
+         a screenshot, on a monochrome display, or to somebody who cannot tell
+         these hues apart. Colour is the fast path; it is never the only path.
+         ============================================ -->
+    <!-- 🔴 THERE IS NO HUE IN THIS WINDOW, AND THAT IS THE WHOLE IDEA.
+         Colour used to mean four things at once - needs you, focus, primary,
+         danger - so it meant none of them. White is now the only emphasis there
+         is, and it is spent in exactly two ways, which do not compete because
+         they are different KINDS of thing:
+           as a STATE   white type and a lit edge, and only a conversation
+                        waiting on you earns it
+           as a SURFACE a filled white control - the one action a panel is for
+         Everything else is a step down the grey ladder. That is why a single lit
+         card reads across the room.
+
+         The ladder is the LUMINANCE ladder: on a near-black ground, shadow does
+         nothing and only lightness separates one surface from another. The steps
+         are ~8 points, where the old palette's four surfaces sat within six
+         points of EACH OTHER and read as one flat plane. -->
+    <SolidColorBrush x:Key="Ink"       Color="#08080A"/>   <!-- L0 the ground, around the window -->
+    <SolidColorBrush x:Key="Panel"     Color="#0F0F11"/>   <!-- L1 the window itself -->
+    <SolidColorBrush x:Key="PanelHi"   Color="#16161A"/>   <!-- L2 a raised surface -->
+    <SolidColorBrush x:Key="Rail"      Color="#0D0D0F"/>   <!-- L1- the sunken rail -->
+    <SolidColorBrush x:Key="Sheet"     Color="#1B1B20"/>   <!-- L3 sheets and dialogs -->
+    <SolidColorBrush x:Key="Hairline"  Color="#24242A"/>
+    <SolidColorBrush x:Key="HairSoft"  Color="#191920"/>
+
+    <SolidColorBrush x:Key="TextMax"   Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="TextHigh"  Color="#E4E6EB"/>
+    <SolidColorBrush x:Key="TextMid"   Color="#9A9DA6"/>
+    <SolidColorBrush x:Key="TextLow"   Color="#6C6F78"/>
+
+    <!-- The bands. They are LUMINANCE STEPS, not colours: needs-you is pure
+         white and everything else recedes from it. The band heading, the row's
+         edge bar and the unread dot all take these, so a band still reads
+         without colour vision, in a screenshot, and in greyscale print. -->
+    <SolidColorBrush x:Key="AccNeeds"   Color="#FFFFFF"/>
+    <!-- Between NEEDS YOU and WORKING on the same descending ramp, because
+         that is where it sits in urgency: it is not blocking you, and it is
+         not going to resolve itself either. -->
+    <SolidColorBrush x:Key="AccOpen"    Color="#C9CDD6"/>
+    <SolidColorBrush x:Key="AccWorking" Color="#9EA2AC"/>
+    <SolidColorBrush x:Key="AccDone"    Color="#71757E"/>
+    <SolidColorBrush x:Key="AccIdle"    Color="#54575E"/>
+    <SolidColorBrush x:Key="AccQuiet"   Color="#3A3D43"/>
+    <!-- Focus is a neutral ring. It used to be the same clay as needs-you, so
+         the keyboard's position and a demand for your attention were the same
+         signal. -->
+    <SolidColorBrush x:Key="Focus"      Color="#8E939D"/>
+
+    <!-- ================== THE HUES ==================
+         The monochrome rule above is AMENDED, not abandoned. Hue now carries
+         exactly two things - WHO SPOKE and WHICH PROJECT - and nothing else.
+         State stays a luminance step, so a band still reads in greyscale, in a
+         screenshot and without colour vision; losing hue costs you the speaker
+         label's colour and nothing that decides what needs attention.
+
+         🪤 These do NOT compete with the band accents, because they never
+         appear in the same place: bands live in the rail and the list, hues
+         live inside the reading pane and on the project tiles.
+         ============================================== -->
+    <!-- 🔴 ONE RULE PER HUE, AND THE OLD SET HAD NONE. Reported as "I do not
+         like the colouring, it feels like a random colouring" - and the reason
+         it feels that way is structural rather than a matter of taste. Seven
+         saturated hues at the same chroma were carrying THREE UNRELATED
+         QUESTIONS in one channel: who is speaking (blue/orange), what kind of
+         machinery ran (violet/green/teal), and how it went (green/amber/red).
+         No rule can be inferred from a channel that answers three questions,
+         so the eye reads it as noise.
+
+         🪤 TWO PAIRS WERE ALSO INDISTINGUISHABLE. #FFB86B "you" against
+         #FFD166 "a message from another session" is about 25 degrees of hue;
+         #5EEAD4 "a question waiting on you" against #5FD68A "a background
+         shell" is about the same. Two of those four meanings are the ones you
+         most need to catch at a glance.
+
+         Now each hue answers exactly one question, and the set is warmed to
+         Claude's own clay rather than the neon pastels:
+
+           HueOut  #D97757  YOU. Claude clay. Your turns also carry a ground.
+           HueIn   #8FA8C8  ANOTHER SESSION speaking. Claude itself is PLAIN -
+                            the reply is the default voice and needs no hue.
+           HueTool #8A8578  THE MACHINE, all of it - runs, shells, sub-agents,
+                            hooks, notices, file lists, thinking. The GLYPH
+                            says which; the hue only says "not a person".
+           HueAsk  #5EC8B7  SOMETHING IS WAITING ON YOU. The one bright accent
+                            in the window, spent on nothing else.
+           HueBad  #E2687E  IT FAILED. Pushed to magenta so it cannot be read
+                            as the clay of your own turns.
+           HueWarn #D9B45F  a caution in the chrome.
+           HueOk   #7FB98A  a healthy state in the chrome.
+
+         🪤 THE COST, STATED: a run of Reads and a run that spawned a sub-agent
+         are now the same colour. That is deliberate - the marker table already
+         gives them different SHAPES (filled square against an at-sign) and the
+         note there records that shape, not hue, was always meant to carry the
+         difference. Hue reinforced it; now it does not. -->
+    <SolidColorBrush x:Key="HueIn"    Color="#8FA8C8"/>   <!-- came in  - claude speaking -->
+    <SolidColorBrush x:Key="HueOut"   Color="#D97757"/>   <!-- went out - you speaking -->
+    <!-- 🔴 DIMMER THAN TextMid, ON PURPOSE, NOW THAT SHAPE CARRIES NOTHING.
+         With one glyph for every kind, the ONLY thing separating Claude
+         speaking from the machine working is this value against TextMid
+         #9A9DA6 - and #8A8578 was within a few points of it, so the two read
+         as one grey. The machine is meant to be quieter than the reply, not
+         beside it. -->
+    <SolidColorBrush x:Key="HueTool"  Color="#6F6A61"/>   <!-- the machinery between them -->
+    <SolidColorBrush x:Key="HueBad"   Color="#E2687E"/>   <!-- a call that failed -->
+    <SolidColorBrush x:Key="HueAsk"   Color="#5EC8B7"/>   <!-- a question waiting on you -->
+    <SolidColorBrush x:Key="HueWarn"  Color="#D9B45F"/>
+    <!-- A LINK, AND ITS OWN HUE. Every other colour in this pane already means
+         something - HueIn is claude speaking, HueAsk is a question waiting,
+         HueOk is a state that is fine - so a link drawn in one of those would be
+         a second meaning on a colour that already had one. This is the only blue
+         that says "pressable" and nothing else. -->
+    <SolidColorBrush x:Key="HueLink"  Color="#7FA6E8"/>
+    <!-- A context window with room left. Its own green rather than the teal
+         HueAsk, which already means "a question is waiting on you" - a bar that
+         borrowed it would have said that on every healthy session. -->
+    <SolidColorBrush x:Key="HueOk"    Color="#7FB98A"/>
+
+    <SolidColorBrush x:Key="HueOutWash"  Color="#D97757" Opacity="0.13"/>
+    <SolidColorBrush x:Key="HueToolWash" Color="#6F6A61" Opacity="0.15"/>
+    <SolidColorBrush x:Key="CtxTrack"    Color="#000000" Opacity="0.38"/>
+    <SolidColorBrush x:Key="HueAskWash"  Color="#5EC8B7" Opacity="0.10"/>
+    <SolidColorBrush x:Key="HueAskFilm"  Color="#5EC8B7" Opacity="0.05"/>
+    <SolidColorBrush x:Key="HueAskEdge"  Color="#5EC8B7" Opacity="0.34"/>
+
+    <!-- The bevel: a dark outer stroke with a light inner highlight, so a
+         surface looks lit from above rather than outlined. One pair, used by
+         every raised thing in the window. -->
+    <SolidColorBrush x:Key="BevelDark"  Color="#000000" Opacity="0.45"/>
+    <SolidColorBrush x:Key="BevelLit"   Color="#FFFFFF" Opacity="0.09"/>
+    <SolidColorBrush x:Key="EdgeLit"    Color="#FFFFFF" Opacity="0.14"/>
+    <SolidColorBrush x:Key="GlassLo"    Color="#FFFFFF" Opacity="0.035"/>
+    <SolidColorBrush x:Key="GlassMid"   Color="#FFFFFF" Opacity="0.055"/>
+    <SolidColorBrush x:Key="GlassHi"    Color="#FFFFFF" Opacity="0.075"/>
+
+    <SolidColorBrush x:Key="SelBg"     Color="#232329"/>
+    <SolidColorBrush x:Key="HoverBg"   Color="#17171C"/>
+
+    <!-- ================== TYPE ==================
+         SEGOE UI VARIABLE, AND WHY IT IS THREE FAMILIES.
+         It is Windows 11's own optically-sized family and the direct counterpart
+         to SF Pro and Roboto - which is what "make it look like Apple or Google"
+         actually means on this platform. Optical sizing means the letterforms
+         are DRAWN differently per size rather than scaled: Small has open
+         spacing and sturdy strokes so 11px captions stay legible, Display is
+         tightly spaced so headings do not look gappy. Using one face at every
+         size is precisely what made this window read as utilitarian.
+
+           Small    <= 12px   captions, overlines, meta
+           Text     13-17px   everything you read
+           Display  >= 18px   the window title and headings
+
+         Each falls back to plain Segoe UI, so a machine without the variable
+         family degrades to what this file used before rather than to Arial.
+
+         🔴 EVERY REFERENCE TO THESE FOUR KEYS IS A DynamicResource, AND THAT IS
+         NOT A STYLE PREFERENCE. Install-SRTypeface swaps the shipped Manrope in
+         by REPLACING these entries at runtime, after this file has been parsed.
+         A {StaticResource FontText} inside a Setter is resolved while the
+         dictionary is being built, so it captures the FontFamily object that is
+         here NOW and never looks at the key again: the swap then changed the
+         key and not one single Style, and the whole window carried on rendering
+         Segoe. It looked convincing from a screenshot, and the font test passed,
+         because the test asked the KEY what it resolved to rather than asking a
+         Style what it was drawn with - and the transcript, which resolves its
+         face in script after the swap, really was on Manrope. DynamicResource
+         keeps the reference live, so replacing the entry reaches all 15 styles.
+         The gui2 suite now asserts this from a realised TextBlock.
+         ========================================== -->
+    <!-- 🔴 FIVE FACES WERE ON SCREEN WHERE THIS FILE DECLARED TWO. Measured over
+         450,467 characters of 24 real transcripts: the gutter dot U+25CF is in
+         NEITHER declared face and was being drawn by Arial; the fold carets by
+         Segoe UI Emoji; the running-shell square by Segoe UI; the thin space
+         between every letter of every tracked label by Arial again. None of it
+         was tofu - WPF picked something reasonable each time - but nothing on
+         that list was chosen, and a marker rendered by a font nobody picked is
+         the literal definition of "not unified".
+
+         🪤 THE SYMBOL FACES GO LAST, so they catch only what the text faces
+         lack. Measured against the alternative: 0 of 6 emoji bases gain width
+         under the declaration, so it cannot open a gap after one.
+
+         🪤 AND IT IS ALSO THE ONLY FIX FOR THE TWO REAL BOXES. 🪤 U+1FAA4 and
+         🪶 U+1FAB6 measure exactly Manrope's .notdef - 29.60 x 30.80 at 40px,
+         calibrated against three unassigned codepoints - while the installed
+         Segoe UI Emoji 1.60 HAS both. WPF's automatic fallback does not reach
+         them; an explicitly declared family does. -->
+    <FontFamily x:Key="FontSmall">Segoe UI Variable Small, Segoe UI, Segoe UI Emoji, Segoe UI Symbol</FontFamily>
+    <FontFamily x:Key="FontText">Segoe UI Variable Text, Segoe UI, Segoe UI Emoji, Segoe UI Symbol</FontFamily>
+    <FontFamily x:Key="FontDisplay">Segoe UI Variable Display, Segoe UI, Segoe UI Emoji, Segoe UI Symbol</FontFamily>
+    <FontFamily x:Key="FontMono">Cascadia Mono, Consolas, Courier New, Segoe UI Emoji, Segoe UI Symbol</FontFamily>
+
+    <!-- ================== THE TYPE SCALE - SIX SIZES, AND THAT IS ALL ==========
+         🔴 THE CLAIM ABOVE ("one scale, every size comes from it") WAS FALSE
+         WHEN IT WAS WRITTEN AND STAYED FALSE. Counted: EIGHT sizes in this file's
+         styles (11, 12, 13, 13.5, 14, 15, 17, 20), another eight inline on
+         individual elements (10, 11, 12, 13, 13.5, 14, 17), and eight more in
+         the document builder (9, 9.5, 10.5, 11.5, 12, 12.5, 13.5) - about
+         SIXTEEN distinct sizes, many of them half a pixel apart. Half a pixel is
+         too small to read as hierarchy and just big enough to read as a mistake,
+         which is exactly what was reported: "not uniform in size ... it looks
+         very weird". A scale you have to maintain by hand is not a scale.
+         These six ARE the scale now, they are Doubles rather than literals, and
+         every FontSize in this file and in the builder points at one of them.
+
+         🔑 MONO IS SIZED BY X-HEIGHT, NOT BY ITS NOMINAL NUMBER. Measured on
+         this machine: Manrope's x-height is 0.540 em, Cascadia Mono's is 0.518.
+         So the same nominal size draws Cascadia visibly SMALLER, and matching
+         the terminal's nominal 16px drew it 28% LARGER than the prose beside it
+         (8.28px of x-height against 6.48px) - the single biggest reason the
+         voices looked like different documents. 12.5 against a 12 body puts the
+         two x-heights within a tenth of a pixel of each other. If either face
+         ever changes, this number is derived and must be recomputed, not nudged.
+
+         🪤 THESE ARE OVERWRITTEN AT RUNTIME BY THE ZOOM, so they must be
+         DynamicResource at every use site. A StaticResource here captures the
+         12 below and never looks again - the same trap the FontFamily comment
+         above records, and it would make the zoom silently do nothing.
+         ======================================================================= -->
+    <sys:Double x:Key="SzMicro">9.5</sys:Double>
+    <sys:Double x:Key="SzCaption">11</sys:Double>
+    <sys:Double x:Key="SzBody">12</sys:Double>
+    <sys:Double x:Key="SzMono">12.5</sys:Double>
+    <sys:Double x:Key="SzStrong">14</sys:Double>
+    <sys:Double x:Key="SzDisplay">17</sys:Double>
+
+    <!-- ================== AND ONE SIZE FOR THE TRANSCRIPT ====================
+         🔴 THE READING PANE IS OFF THE SCALE ON PURPOSE, and it is the only
+         thing in this file that is. The scale above sizes the CHROME, where a
+         hierarchy is the point: a heading outranks a row, a row outranks its
+         caption. A transcript has no such hierarchy. It is one column of
+         things that were said, and drawing a tool name at 10, its argument at
+         12.5, a notice caption at 9.5 and prose at 12 made twelve sizes out of
+         one conversation - reported, twice, as "not unified in size".
+
+         So every category of message is drawn at SzPane, in FontPane, full
+         stop. No step for labels, none for code, none for tool output. What
+         separates a label from prose is its hue and its uppercase, which is
+         what a terminal uses too and is enough.
+
+         🪤 THE ZOOM STILL MOVES IT. This is one number, not a fixed one -
+         Set-SRTypeScale multiplies it like every other step, so the pane zoom
+         keeps working. "One size" means one size AT A GIVEN ZOOM. -->
+    <sys:Double x:Key="SzPane">13</sys:Double>
+    <!-- The transcript's face. IBM Plex Mono ships with the tool (lib\fonts\,
+         SIL OFL) and is loaded privately at startup; the stack behind it is
+         what draws if the file is ever missing. Humanist rather than
+         terminal-drawn, which is the whole reason it is not Cascadia. -->
+    <FontFamily x:Key="FontPane">IBM Plex Mono, Cascadia Mono, Consolas, Courier New, Segoe UI Emoji, Segoe UI Symbol</FontFamily>
+    <!-- There is no FontUi alias any more. It existed as a bridge during the
+         rebuild and became the way two styles quietly stayed off the scale -
+         the buttons and the surface switch were still at 12px while everything
+         else moved to 13.5. Three families, one scale, no aliases. -->
+
+    <!-- 🔴 THE WINDOW'S OWN DEFAULT, so anything built in CODE inherits it too.
+         The option buttons under a question, the cast rows and the manager menu
+         are all created in PowerShell with no style of their own; without this
+         they fall back to WPF's default, which is 12px Segoe UI - the one thing
+         on screen that would still look like a different application. -->
+    <Style TargetType="{x:Type Window}">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+    </Style>
+    <!-- ================== RIGHT-CLICK, AND HINTS ==================
+         🔴 SETTING THE FONT ON THESE WAS NEVER ENOUGH. A ContextMenu with no
+         TEMPLATE keeps the operating system's own chrome: a white slab with a
+         blue highlight and a 3D border, thrown up in the middle of a black
+         window the moment you right-click a session. Same for ToolTip - a pale
+         yellow-white box with a hairline. They are the last two surfaces in the
+         tool still drawn by Windows rather than by this file, and they are
+         reached constantly. Templated here, on the same tokens as everything
+         else, so the design holds all the way through.
+         ============================================================ -->
+    <Style TargetType="{x:Type ContextMenu}">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+      <Setter Property="Padding" Value="0,6,0,6"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="{x:Type ContextMenu}">
+            <Border x:Name="shell" Background="{StaticResource Sheet}" CornerRadius="10"
+                    BorderBrush="{StaticResource EdgeLit}" BorderThickness="1"
+                    Padding="{TemplateBinding Padding}" MinWidth="210"
+                    SnapsToDevicePixels="True">
+              <Border.Effect>
+                <DropShadowEffect BlurRadius="28" ShadowDepth="6" Opacity="0.62" Color="#000000"/>
+              </Border.Effect>
+              <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="{x:Type MenuItem}">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="{x:Type MenuItem}">
+            <Border x:Name="b" Background="Transparent" CornerRadius="7"
+                    Margin="6,1,6,1" Padding="12,8,12,8" SnapsToDevicePixels="True">
+              <ContentPresenter ContentSource="Header" RecognizesAccessKey="True"
+                                VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsHighlighted" Value="True">
+                <Setter TargetName="b" Property="Background" Value="{StaticResource SelBg}"/>
+                <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
+              </Trigger>
+              <!-- A separator is written as a header-less item in the script; it
+                   must not look like something you can press. -->
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="{x:Type Separator}">
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="{x:Type Separator}">
+            <Border Height="1" Margin="12,5,12,5" Background="{StaticResource Hairline}"/>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="{x:Type ToolTip}">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="{x:Type ToolTip}">
+            <Border Background="{StaticResource Sheet}" CornerRadius="8"
+                    BorderBrush="{StaticResource EdgeLit}" BorderThickness="1"
+                    Padding="11,7,11,8" MaxWidth="380" SnapsToDevicePixels="True">
+              <Border.Effect>
+                <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.5" Color="#000000"/>
+              </Border.Effect>
+              <ContentPresenter/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ONE SCALE, and every size in the window comes from it. The old file had
+         fourteen inline FontSize values between 10.5 and 12.5, which is not a
+         scale, it is fourteen decisions. -->
+    <Style x:Key="Display" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{DynamicResource FontDisplay}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzDisplay}"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
+    </Style>
+    <Style x:Key="H1" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzStrong}"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
+    </Style>
+    <!-- An overline, not a heading: small, spaced out, quiet. The letter spacing
+         is what stops an all-caps run reading as shouting. -->
+    <Style x:Key="Caption" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{DynamicResource FontSmall}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzCaption}"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
+      <!-- 🪤 THE ONE PLACE Ideal HAD A SECOND REASON, and it is worth naming
+           because it is not the same reason as the window-wide setting. These
+           captions are TRACKED - Get-TrackedText builds them by joining each
+           character with a THIN SPACE (U+2009), about 1.9px at this size - and
+           Ideal kept that fractional advance intact. Display snaps it to 2px.
+           Checked in a render at 9.5px: the tracking survives, because a thin
+           space rounding 1.9 -> 2.0 is a tenth of a pixel per gap and the
+           letters were never on the grid to begin with. Consistency wins; if a
+           caption ever looks wrong, this is the line to suspect. -->
+      <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+    </Style>
+    <Style x:Key="Body" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+    </Style>
+    <Style x:Key="Dim" TargetType="TextBlock" BasedOn="{StaticResource Body}">
+      <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+    </Style>
+    <Style x:Key="Meta" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{DynamicResource FontSmall}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzCaption}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextLow}"/>
+    </Style>
+
+    <!-- ================== SCROLLBAR ==================
+         Thin, dark, and out of the way. A default WPF scrollbar is the single
+         loudest thing on a dark surface. -->
+    <Style TargetType="ScrollBar">
+      <Setter Property="Width" Value="9"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ScrollBar">
+            <Grid Background="Transparent">
+              <Track x:Name="PART_Track" IsDirectionReversed="True">
+                <Track.Thumb>
+                  <Thumb>
+                    <Thumb.Template>
+                      <ControlTemplate TargetType="Thumb">
+                        <Border CornerRadius="4" Margin="2,0,2,0" Background="#33383F"/>
+                      </ControlTemplate>
+                    </Thumb.Template>
+                  </Thumb>
+                </Track.Thumb>
+                <Track.IncreaseRepeatButton>
+                  <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" Focusable="False"/>
+                </Track.IncreaseRepeatButton>
+                <Track.DecreaseRepeatButton>
+                  <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" Focusable="False"/>
+                </Track.DecreaseRepeatButton>
+              </Track>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ================== DROPDOWN ==================
+         WPF's stock ComboBox is Windows-95 grey with a 3D bevel, which on a dark
+         surface is the loudest thing on the screen. Retemplated to match the
+         buttons; the popup is retemplated too, or the LIST stays grey even when
+         the box does not. -->
+    <Style x:Key="DropItem" TargetType="ComboBoxItem">
+      <Setter Property="Padding" Value="10,7,10,7"/>
+      <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBoxItem">
+            <Border x:Name="b" Background="Transparent" Padding="{TemplateBinding Padding}">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsHighlighted" Value="True">
+                <Setter TargetName="b" Property="Background" Value="{StaticResource SelBg}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="Drop" TargetType="ComboBox">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+      <Setter Property="Height" Value="32"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="ItemContainerStyle" Value="{StaticResource DropItem}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBox">
+            <Grid>
+              <ToggleButton x:Name="tb" Focusable="False" ClickMode="Press"
+                            IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                <ToggleButton.Template>
+                  <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="bb" CornerRadius="7" Background="{StaticResource Ink}"
+                            BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <ContentPresenter Grid.Column="0" Margin="11,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" Text="&#xE70D;" FontFamily="Segoe MDL2 Assets"
+                                   FontSize="{DynamicResource SzMicro}" Foreground="{StaticResource TextLow}"
+                                   VerticalAlignment="Center" Margin="8,0,11,0"/>
+                      </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                      <Trigger Property="IsMouseOver" Value="True">
+                        <Setter TargetName="bb" Property="BorderBrush" Value="{StaticResource TextLow}"/>
+                      </Trigger>
+                    </ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </ToggleButton.Template>
+              </ToggleButton>
+              <ContentPresenter Content="{TemplateBinding SelectionBoxItem}"
+                                Margin="11,0,30,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+              <Popup IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom"
+                     AllowsTransparency="True" PopupAnimation="Fade" Focusable="False">
+                <Border Background="{StaticResource PanelHi}" CornerRadius="8" Margin="0,4,0,0"
+                        BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                        MinWidth="{TemplateBinding ActualWidth}" MaxHeight="280">
+                  <Border.Effect>
+                    <DropShadowEffect BlurRadius="18" ShadowDepth="4" Opacity="0.5" Color="#000000"/>
+                  </Border.Effect>
+                  <ScrollViewer><ItemsPresenter/></ScrollViewer>
+                </Border>
+              </Popup>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ================== CHECKBOX ==================
+         A filled square, matching the manager's tick: one shape for "this is on"
+         everywhere in the window. -->
+    <Style x:Key="Check" TargetType="CheckBox">
+      <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <StackPanel Orientation="Horizontal" Background="Transparent">
+              <Border Width="15" Height="15" CornerRadius="3" VerticalAlignment="Center"
+                      BorderBrush="#3A3F47" BorderThickness="1.4" Margin="0,0,9,0">
+                <Border x:Name="fill" Background="{StaticResource TextMax}" CornerRadius="1.5"
+                        Margin="2" Visibility="Collapsed"/>
+              </Border>
+              <ContentPresenter VerticalAlignment="Center"/>
+            </StackPanel>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="fill" Property="Visibility" Value="Visible"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ================== CAPTION BUTTONS ==================
+         46x46 hit targets, flush to the top-right corner with no margin, so the
+         maximised window keeps the Fitts's-law corner the OS gave up. Segoe MDL2
+         Assets is the shell's own icon font and is present on every Windows 10
+         and 11 machine. -->
+    <Style x:Key="CaptionBtn" TargetType="Button">
+      <Setter Property="Width" Value="46"/>
+      <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzCaption}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="#23262C"/>
+                <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="CaptionBtnClose" TargetType="Button" BasedOn="{StaticResource CaptionBtn}">
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="Transparent">
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="#C42B1C"/>
+                <Setter Property="Foreground" Value="#FFFFFF"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ================== BUTTONS ================== -->
+    <Style x:Key="Btn" TargetType="Button">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+      <Setter Property="Padding" Value="11,6,11,6"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" CornerRadius="6" Background="{StaticResource PanelHi}"
+                    BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                    Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="#23262C"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Focus}"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.4"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- 🪤 ITS OWN STYLE, NOT A SMALLER Btn. Btn is also the top bar's New
+         session / Rescan / Send to many and the footer's Save, which are
+         primary actions and should not shrink with these. These six sit under
+         a title as secondary controls: same shape, one step quieter. -->
+    <Style x:Key="BtnSlim" TargetType="Button" BasedOn="{StaticResource Btn}">
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
+      <Setter Property="Padding" Value="9,3,9,4"/>
+    </Style>
+
+    <!-- An answer to a question, not a control on a toolbar. It is a full-width
+         row carrying a label and the reasoning under it, so it needs a taller
+         ground, a left alignment and room for two lines of type - and it sits
+         INSIDE the question panel, so its ground is a step up from that panel
+         rather than the window's raised surface. -->
+    <Style x:Key="BtnOption" TargetType="Button">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
+      <Setter Property="Padding" Value="15,11,15,12"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" CornerRadius="11" Background="{StaticResource GlassMid}"
+                    BorderBrush="Transparent" BorderThickness="1"
+                    Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+              <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="{StaticResource GlassHi}"/>
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource HueAskEdge}"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource HueAsk}"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.4"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style x:Key="BtnPrimary" TargetType="Button" BasedOn="{StaticResource Btn}">
+      <Setter Property="Foreground" Value="#141518"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" CornerRadius="6" Background="{StaticResource AccNeeds}"
+                    Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Opacity" Value="0.9"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.35"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- The surface switch. Two segments, and the CHECKED one is filled: the
+         two surfaces differ by shape, so the switch has to say plainly which
+         shape you are looking at. -->
+    <Style x:Key="Seg" TargetType="RadioButton">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMid}"/>
+      <Setter Property="Padding" Value="13,6,13,6"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RadioButton">
+            <Border x:Name="b" CornerRadius="5" Background="Transparent"
+                    Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="b" Property="Background" Value="{StaticResource SelBg}"/>
+                <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource TextHigh}"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Focus}"/>
+                <Setter TargetName="b" Property="BorderThickness" Value="1"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ================== SEARCH BOX ================== -->
+    <Style x:Key="Search" TargetType="TextBox">
+      <Setter Property="FontFamily" Value="{DynamicResource FontText}"/>
+      <Setter Property="FontSize" Value="{DynamicResource SzBody}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMax}"/>
+      <Setter Property="CaretBrush" Value="{StaticResource AccNeeds}"/>
+      <Setter Property="Padding" Value="12,0,12,0"/>
+      <Setter Property="Height" Value="30"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Border x:Name="b" CornerRadius="8" Background="{StaticResource Ink}"
+                    BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+              <Grid>
+                <!-- THE PLACEHOLDER. An empty rounded rectangle says nothing
+                     about what it is for; the search box read as decoration.
+                     🔴 THE TEXT COMES FROM THE BOX'S OWN Tag, never from this
+                     style: the composer uses this same style, and a hard-coded
+                     string put "Search conversations..." inside the box you type
+                     replies into. Shown only while empty, and not hit-testable so
+                     it can never eat a click meant for the field beneath. -->
+                <TextBlock x:Name="ph"
+                           Text="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=Tag}"
+                           FontFamily="{DynamicResource FontText}" FontSize="{DynamicResource SzBody}"
+                           Foreground="{StaticResource TextLow}" IsHitTestVisible="False"
+                           VerticalAlignment="Center" Margin="{TemplateBinding Padding}"
+                           Visibility="Collapsed"/>
+                <!-- Padding applied ONCE - see the note in the Composer style
+                     below. Here it put the typed text 12px right of the
+                     placeholder it replaces; invisible in daily use only
+                     because the placeholder vanishes on the first keystroke. -->
+                <ScrollViewer x:Name="PART_ContentHost" Margin="0"
+                              VerticalAlignment="Center"/>
+              </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="Text" Value="">
+                <Setter TargetName="ph" Property="Visibility" Value="Visible"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Focus}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ================== THE COMPOSER ==================
+         🔴 A BOX YOU TYPE A REPLY INTO IS NOT A SEARCH BOX, and sharing the
+         Search style is what made it unusable. Search pins Height="30" and
+         centres PART_ContentHost, so the composer was physically incapable of
+         growing: with AcceptsReturn="False" and no wrapping, everything past
+         one line's width scrolled out of sight to the left. Reported as "the
+         text is cut off and I cannot see my full reply".
+
+         So this is Search's look with the three properties that made it a
+         single line reversed: no fixed Height (MinHeight instead), a content
+         host that stretches rather than centres, and wrapping on. It grows
+         with what you type and only starts scrolling at MaxHeight, so what is
+         on screen is always the END of what you wrote - the part you are
+         still typing.
+
+         🪤 MaxHeight, not unbounded. The composer sits in an Auto row at the
+         foot of the pane, and a box that grows without limit would push the
+         transcript off the top of the window on a long message. 168px is
+         about seven lines; past that it scrolls. -->
+    <Style x:Key="Composer" TargetType="TextBox" BasedOn="{StaticResource Search}">
+      <Setter Property="Height" Value="NaN"/>
+      <Setter Property="MinHeight" Value="30"/>
+      <Setter Property="MaxHeight" Value="168"/>
+      <Setter Property="Padding" Value="12,6,12,7"/>
+      <Setter Property="VerticalContentAlignment" Value="Top"/>
+      <Setter Property="AcceptsReturn" Value="True"/>
+      <Setter Property="TextWrapping" Value="Wrap"/>
+      <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Border x:Name="b" CornerRadius="8" Background="{StaticResource Ink}"
+                    BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+              <Grid>
+                <TextBlock x:Name="ph"
+                           Text="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=Tag}"
+                           FontFamily="{DynamicResource FontText}" FontSize="{DynamicResource SzBody}"
+                           Foreground="{StaticResource TextLow}" IsHitTestVisible="False"
+                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Top" Margin="{TemplateBinding Padding}"
+                           Visibility="Collapsed"/>
+                <!-- 🔴 THE PADDING IS APPLIED ONCE, HERE, BY THE TEXTBOX ITSELF.
+                     Measured: with Margin="{TemplateBinding Padding}" on this
+                     ScrollViewer the caret sat at (26.4, 13.6) against a
+                     placeholder at (12.8, 7.2) - almost exactly one padding out
+                     in each axis, because the inset was applied twice: once as
+                     this margin and again by the TextBox's own text view, which
+                     honours Padding regardless. Reported as "the cursor when
+                     nothing is entered is misaligned with the background
+                     message". No margin here; the placeholder takes the same
+                     Padding by TemplateBinding so the two cannot drift apart
+                     again if it is ever retuned. -->
+                <ScrollViewer x:Name="PART_ContentHost" Margin="0"
+                              VerticalAlignment="Stretch"/>
+              </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="Text" Value="">
+                <Setter TargetName="ph" Property="Visibility" Value="Visible"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Focus}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ================== LIST BASE ==================
+         Virtualizing and recycling on purpose: the sessions column can hold
+         every conversation in the registry, and a ListBox that realises 214
+         two-line rows is a visible stall on every rebuild. -->
+    <Style x:Key="Plain" TargetType="ListBox">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+      <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
+      <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/>
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="KeyboardNavigation.DirectionalNavigation" Value="Contained"/>
+    </Style>
+
+    <Style x:Key="PlainItem" TargetType="ListBoxItem">
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="b" Background="Transparent" Padding="{TemplateBinding Padding}">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="{StaticResource HoverBg}"/>
+              </Trigger>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="b" Property="Background" Value="{StaticResource SelBg}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+
+    <!-- ================== THE SESSION ROW ==================
+         TWO LINES, because the one thing that makes this list scannable is what
+         each conversation last SAID, and a 336px column cannot hold that on the
+         same line as a name. Line one is identity and age; line two is the last
+         thing it said, ellipsised.
+
+         The band accent appears as a 3px bar down the left of a row and as a dot
+         beside the name - never as the only signal. The band HEADING above it
+         says the same thing in words, so the grouping survives without colour.
+
+         Visibility is a property ON THE ROW OBJECT rather than a converter:
+         PowerShell can set System.Windows.Visibility directly and it binds with
+         no extra type in the way.
+         ==================================================== -->
+    <DataTemplate x:Key="SessionRowTpl">
+      <Grid>
+        <!-- the band heading -->
+        <Border Visibility="{Binding BandVis}" Padding="12,10,12,8" Margin="6,8,6,0"
+                CornerRadius="8" Background="{Binding BandBg}" Cursor="Hand"
+                ToolTip="Show only these - click again for all of them">
+          <StackPanel Orientation="Horizontal">
+            <Border Width="3" Height="13" CornerRadius="2" Background="{Binding Accent}"
+                    VerticalAlignment="Center" Margin="0,0,9,0"/>
+            <TextBlock Text="{Binding BandLabel}" Style="{StaticResource Caption}"
+                       Foreground="{Binding Accent}" VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding BandCount}" Style="{StaticResource Caption}"
+                       FontWeight="Normal" Margin="9,0,0,0" VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding BandHint}" Style="{StaticResource Meta}"
+                       Margin="10,0,0,0" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Border>
+
+        <!-- a conversation
+             🔴 TWO MARKS, EARNED. The list was asked to get LESS dense, so
+             neither of these is on a row that has nothing to say: the context
+             bar appears once a conversation is past half its window, and the
+             sub-agent pill only while one is actually out. On a quiet morning
+             this row is exactly what it was before, which is the point - a
+             signal that is always on has spent density and bought nothing. -->
+        <Border Visibility="{Binding RowVis}" Padding="0,12,14,13">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="3"/>
+              <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Border Grid.Column="0" Background="{Binding Accent}" Opacity="{Binding BarOpacity}"/>
+            <StackPanel Grid.Column="1" Margin="15,0,0,0">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Ellipse Grid.Column="0" Width="6" Height="6" Fill="{Binding Accent}"
+                         Visibility="{Binding DotVis}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock Grid.Column="1" Text="{Binding Name}" Style="{StaticResource Body}"
+                           FontWeight="{Binding NameWeight}" FontStyle="{Binding NameStyle}"
+                           Foreground="{StaticResource TextMax}" TextTrimming="CharacterEllipsis"/>
+
+                <!-- 🔴 WHAT THIS SESSION HAS OUT, in two shapes that are never
+                     the same shape. A sub-agent is a ROUND amber dot: another
+                     mind working on your behalf. A background shell is a SQUARE
+                     violet mark: machinery still running. A session can have
+                     both, so they are two marks and never one total - and the
+                     shape, not the hue, is what carries it, so a greyscale
+                     screenshot and a colour-blind reader both still see two
+                     different things. -->
+                <!-- 🪤 THE MARK, NOT A PILL AROUND THE MARK. Each of these was
+                     a rounded tinted capsule holding a 5px shape and a number -
+                     three pieces of chrome to say a thing one shape already
+                     says. On a row whose whole job is to be scanned that reads
+                     as a badge competing with the name. The shape carries it
+                     alone now, at the size it can actually be seen at, with the
+                     count beside it only when there is more than one. -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                  <StackPanel Orientation="Horizontal" Visibility="{Binding AgentVis}"
+                              VerticalAlignment="Center" Margin="10,0,0,0"
+                              ToolTip="Sub-agents this conversation has out">
+                    <Ellipse Width="7" Height="7" Fill="{StaticResource HueOut}"
+                             VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding AgentText}" Style="{StaticResource Meta}"
+                               Foreground="{StaticResource HueOut}" VerticalAlignment="Center"
+                               Margin="4,0,0,0"/>
+                  </StackPanel>
+                  <StackPanel Orientation="Horizontal" Visibility="{Binding ShellVis}"
+                              VerticalAlignment="Center" Margin="10,0,0,0"
+                              ToolTip="Background commands this conversation still has running">
+                    <Rectangle Width="7" Height="7" Fill="{StaticResource HueTool}"
+                               VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding ShellText}" Style="{StaticResource Meta}"
+                               Foreground="{StaticResource HueTool}" VerticalAlignment="Center"
+                               Margin="4,0,0,0"/>
+                  </StackPanel>
+                  <!-- 🔴 WHAT IS WAITING BEHIND THE TURN IT IS ON. A third
+                       shape, for the same reason the two above are two: this
+                       is not a sub-agent and not a shell, it is your own words
+                       not yet read. The guillemet is not a new invention - the
+                       reading pane has used it for queued input since it was
+                       written, so the two surfaces say the same thing with the
+                       same glyph.
+                       🪤 NO PILL. See the note above: a tinted capsule around a
+                       count was removed from this row once already for reading
+                       as a badge competing with the name, and adding one back
+                       here would undo that for the sake of consistency with a
+                       mockup rather than with this row.
+                       🔴 AND IT GOES GREY WHEN THE QUEUE IS NOT YOURS. Measured
+                       on this machine: of everything queued across 432
+                       transcripts, 1,356 were cross-session messages and 1,107
+                       task notifications against 144 lines a person typed - so
+                       a mark that lit up for all of it would be lit almost
+                       always and mean nothing. Amber says YOUR words are
+                       waiting; grey says the machine is talking to itself. -->
+                  <StackPanel Orientation="Horizontal" Visibility="{Binding QVis}"
+                              VerticalAlignment="Center" Margin="10,0,0,0"
+                              ToolTip="{Binding QTip}">
+                    <TextBlock Text="&#187;" Style="{StaticResource Meta}"
+                               Foreground="{Binding QBrush}" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding QText}" Style="{StaticResource Meta}"
+                               Foreground="{Binding QBrush}" VerticalAlignment="Center"
+                               Margin="3,0,0,0"/>
+                  </StackPanel>
+                </StackPanel>
+
+                <!-- how full its context is, once that is worth knowing -->
+                <Border Grid.Column="3" Visibility="{Binding CtxVis}" Width="34" Height="4"
+                        CornerRadius="2" Background="{StaticResource CtxTrack}"
+                        VerticalAlignment="Center" Margin="10,0,0,0"
+                        ToolTip="{Binding CtxTip}">
+                  <Border Height="4" CornerRadius="2" HorizontalAlignment="Left"
+                          Width="{Binding CtxWidth}" Background="{Binding CtxBrush}"/>
+                </Border>
+
+                <TextBlock Grid.Column="4" Text="{Binding Age}" Style="{StaticResource Meta}"
+                           Margin="10,0,0,0" VerticalAlignment="Center"/>
+              </Grid>
+              <!-- The last thing it said. Given its own leading rather than the
+                   default, because at 13px with none it sat hard against the
+                   name above it and the two read as one block of text. -->
+              <TextBlock Text="{Binding Said}" Style="{StaticResource Dim}"
+                         TextTrimming="CharacterEllipsis" Margin="0,5,0,0"
+                         LineHeight="17" LineStackingStrategy="BlockLineHeight"/>
+            </StackPanel>
+          </Grid>
+        </Border>
+
+        <!-- ================== A SUB-AGENT ==================
+             🔑 A sub-agent is a CONVERSATION, and it is selectable like any
+             other. Claude Code writes each one its own transcript beside the
+             parent, so opening one is the same act as opening a session - which
+             is why this row goes in this list rather than into a panel of its
+             own. Measured 2026-08-31: 329 of 374 sub-agents on this machine
+             have a full transcript on disk.
+
+             It is INDENTED and it is QUIET. The list is scanned for what needs
+             you, and a sub-agent never does - it belongs to the session above
+             it. So: no accent bar, no unread dot, no context bar; an @ in the
+             agent hue, the name, what it was asked to do, and how long ago it
+             last wrote.
+
+             🪤 SubVis, not AgentVis. `AgentVis` already exists on this template
+             and means something else entirely - the amber dot counting agents a
+             SESSION has out. Two properties one letter apart, on one template,
+             would have been a silent empty cell the first time they were
+             confused. -->
+        <Border Visibility="{Binding SubVis}" Padding="0,7,14,8" Cursor="Hand"
+                ToolTip="{Binding SubTip}">
+          <Grid Margin="34,0,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="&#x0040;" FontFamily="{DynamicResource FontMono}"
+                       FontSize="{DynamicResource SzCaption}" Foreground="{StaticResource HueAsk}"
+                       Opacity="{Binding SubOpacity}"
+                       VerticalAlignment="Top" Margin="0,1,9,0"/>
+            <StackPanel Grid.Column="1">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="{Binding SubName}" Style="{StaticResource Body}"
+                           FontSize="{DynamicResource SzBody}" Foreground="{StaticResource TextHigh}"
+                           Opacity="{Binding SubOpacity}"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding SubTag}" Style="{StaticResource Meta}"
+                           Foreground="{StaticResource TextLow}" Margin="9,0,0,0"
+                           VerticalAlignment="Center"/>
+              </StackPanel>
+              <TextBlock Text="{Binding SubDesc}" Style="{StaticResource Dim}"
+                         FontSize="{DynamicResource SzBody}" TextTrimming="CharacterEllipsis" Margin="0,3,0,0"
+                         LineHeight="16" LineStackingStrategy="BlockLineHeight"/>
+            </StackPanel>
+            <TextBlock Grid.Column="2" Text="{Binding SubAge}" Style="{StaticResource Meta}"
+                       Margin="10,0,0,0" VerticalAlignment="Center"/>
+          </Grid>
+        </Border>
+      </Grid>
+    </DataTemplate>
+
+    <!-- The rail row: a project, its conversation count, and whether it is the
+         one currently filtering. It FILTERS - it is never the grouping. -->
+    <!-- ================== A PROJECT TILE ==================
+         This was a one-line text row - a name and a number - and at 29
+         projects it read as a directory listing rather than as the place you
+         choose where to look next. A tile has room for the thing that actually
+         decides that: what is happening INSIDE the project. "13" is the same
+         number whether all 13 are asleep or one is waiting on you.
+
+         🔴 THE ONLY HUE IN THE WINDOW IS THE 3px BAR, and that is the whole
+         concession. Grey carries STATE, hue carries IDENTITY, and they never
+         swap jobs: the bar says WHICH project, the greys say how it is doing.
+         A tinted surface would put the accent in competition with the white
+         that means NEEDS YOU, which is the one thing in this window that must
+         never have to compete for attention.
+         ================================================== -->
+    <DataTemplate x:Key="RailRowTpl">
+      <Grid>
+      <!-- an age band heading: TODAY / THIS WEEK / THIS MONTH / OLDER.
+           🪤 THE CARET IS THE AFFORDANCE, not the highlight the sessions
+           column uses. That one FILTERS and stays lit while it is on; this one
+           FOLDS, and a fold has a direction - a caret says which way the next
+           click goes, where a lit background would only say "this is the one
+           you pressed" about a band that is now empty on screen. -->
+      <Border Visibility="{Binding BandVis}" Padding="12,10,12,6" Margin="6,8,6,0"
+              CornerRadius="8" Background="Transparent" Cursor="Hand"
+              ToolTip="Fold this group of projects away - click again to bring it back">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock Text="{Binding BandCaret}" Style="{StaticResource Meta}"
+                     VerticalAlignment="Center" Margin="0,0,8,0"/>
+          <TextBlock Text="{Binding BandLabel}" Style="{StaticResource Caption}"
+                     VerticalAlignment="Center"/>
+          <TextBlock Text="{Binding BandCount}" Style="{StaticResource Caption}"
+                     FontWeight="Normal" Foreground="{StaticResource TextLow}"
+                     Margin="9,0,0,0" VerticalAlignment="Center"/>
+        </StackPanel>
+      </Border>
+
+      <!-- 🪤 THE SAME RHYTHM THE SESSION ROWS WERE GIVEN. The tile was tuned
+           when it was the only two-line thing in the window; beside the rows'
+           new spacing it read tight, and a rail that is denser than the list it
+           filters gets the emphasis backwards. Nothing here changes what a tile
+           SAYS - only how much air it says it in. -->
+      <Border Visibility="{Binding RowVis}" ToolTip="{Binding Tip}"
+              Margin="8,4,8,4" CornerRadius="9" Background="{Binding PickBg}"
+              BorderBrush="{Binding PickEdge}" BorderThickness="1"
+              Padding="0,11,12,12" SnapsToDevicePixels="True">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+
+          <!-- the identity mark -->
+          <Border Grid.Column="0" Grid.RowSpan="2" Width="4" CornerRadius="2"
+                  Margin="11,1,13,1" Background="{Binding Accent}"
+                  Opacity="{Binding AccentOpacity}"/>
+
+          <TextBlock Grid.Column="1" Grid.Row="0" Text="{Binding Label}"
+                     Style="{StaticResource Body}" Foreground="{Binding Fg}"
+                     FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+          <!-- The dot repeats what the word says, for the one state worth
+               finding without reading: a project with something waiting. -->
+          <Border Grid.Column="2" Grid.Row="0" Width="6" Height="6" CornerRadius="3"
+                  VerticalAlignment="Center" Margin="8,0,0,0"
+                  Visibility="{Binding NeedsVis}"
+                  Background="{StaticResource AccNeeds}"/>
+          <!-- What is happening inside. Given its own leading and a real gap
+               from the name: at 2px the two lines read as one wrapped title
+               rather than as a name and its state. -->
+          <TextBlock Grid.Column="1" Grid.Row="1"
+                     Text="{Binding State}" Style="{StaticResource Meta}"
+                     Margin="0,4,0,0" LineHeight="15" LineStackingStrategy="BlockLineHeight"
+                     TextTrimming="CharacterEllipsis"/>
+          <!-- ============== NO CONTROLS ON THE TILE ==============
+               🔴 TWO PRESSABLE LABELS LIVED HERE AND THE OPERATOR ASKED FOR
+               THEM BACK OFF IT. They were a deliberate trade when they went on -
+               the density cost was put to him and he took it - and having used
+               them he reversed it: a switch he sets once a month should not be
+               on screen thirty-five times. The rail is tuned to say less per
+               tile (the context bar on a session row is hidden below half a
+               window for exactly this reason), and both controls now live in
+               the project's own settings panel, on right-click.
+
+               🪤 THE TILE STILL SAYS WHAT IS TRUE OF THE PROJECT. What moved is
+               the CONTROL, not the state: a project switched off for logon is
+               named in the state line beside the counts, because the whole
+               reason it is a setting worth having is that you can see it took
+               effect. A switch you cannot find is a nuisance; a state you
+               cannot see is a defect. ============================== -->
+        </Grid>
+      </Border>
+      </Grid>
+    </DataTemplate>
+
+
+    <!-- ================== THE MANAGER ROW ==================
+         A FULL WIDTH TABLE, and that is the point: the session manager differs
+         from the work surface by SHAPE, so the two can never be mistaken for one
+         another - in a screenshot, on a monochrome screen, or by a reader who
+         cannot tell the accents apart.
+
+         The LOGON tick is the first column and fenced off by a rule, because it
+         is the one control on this screen that decides tomorrow morning. It is a
+         checkbox and it never launches anything.
+         ===================================================== -->
+    <DataTemplate x:Key="ManageRowTpl">
+      <Grid>
+        <!-- a project header -->
+        <Border Visibility="{Binding ProjVis}" Padding="0,12,20,10" Background="{StaticResource Panel}"
+                Cursor="Hand">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="86"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="{Binding Caret}" Style="{StaticResource Meta}"
+                       HorizontalAlignment="Right" Margin="0,0,10,0"/>
+            <TextBlock Grid.Column="1" Text="{Binding Label}" Style="{StaticResource Body}"
+                       FontWeight="SemiBold" Foreground="{StaticResource TextMax}"
+                       TextTrimming="CharacterEllipsis"/>
+            <TextBlock Grid.Column="2" Text="{Binding Meta}" Style="{StaticResource Meta}"/>
+          </Grid>
+        </Border>
+
+        <!-- a conversation -->
+        <Border Visibility="{Binding ConvVis}" Padding="0,8,20,8">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="86"/>
+              <ColumnDefinition Width="260"/>
+              <ColumnDefinition Width="180"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <!-- Named so the click handler can tell "clicked the box" from
+                 "clicked the row". A wider transparent hit area than the 15px
+                 mark, because a checkbox you have to aim at is a checkbox that
+                 reads as broken. -->
+            <Border Grid.Column="0" x:Name="TickBox" Background="Transparent" Cursor="Hand"
+                    ToolTip="Click to tick - a ticked conversation reopens at your next logon">
+              <Border Width="15" Height="15" CornerRadius="3" HorizontalAlignment="Center"
+                      VerticalAlignment="Center" BorderBrush="#3A3F47" BorderThickness="1.4"
+                      Background="{Binding TickBg}"/>
+            </Border>
+            <TextBlock Grid.Column="1" Text="{Binding Name}" Style="{StaticResource Body}"
+                       FontStyle="{Binding NameStyle}" VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis" Margin="14,0,10,0"/>
+            <TextBlock Grid.Column="2" Text="{Binding Lane}" Style="{StaticResource Meta}"
+                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0"/>
+            <TextBlock Grid.Column="3" Text="{Binding Said}" Style="{StaticResource Dim}"
+                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+            <TextBlock Grid.Column="4" Text="{Binding Age}" Style="{StaticResource Meta}"
+                       VerticalAlignment="Center" Margin="10,0,0,0"/>
+          </Grid>
+        </Border>
+      </Grid>
+    </DataTemplate>
+
+  </Window.Resources>
+
+  <!-- =========================================================================
+       THE SHELL — an INSET CARD, not a maximised rectangle.
+       The window's own background is the ground; the app is a rounded card
+       floating on it with the ground visible around every edge. That gap is the
+       single change that makes this read as a designed object rather than a
+       window that happens to be dark, and it costs 14px per side.
+
+       Four rows inside it: title bar, surface switch, the body, status.
+       The BODY is where the two surfaces differ:
+         work surface    tiles | sessions | output pane
+         session manager one full-width table
+       Only one of the two is ever visible.
+
+       🪤 THE CARD IS CLIPPED, so its rounded corners actually cut the content.
+       Without the clip the corners are painted but children square them off
+       again, which looks like a rendering bug rather than a radius.
+       ========================================================================= -->
+  <Border x:Name="Shell" Margin="14" CornerRadius="18" Background="{StaticResource Panel}"
+          BorderBrush="{StaticResource EdgeLit}" BorderThickness="1"
+          SnapsToDevicePixels="True">
+    <Border.Effect>
+      <DropShadowEffect BlurRadius="46" ShadowDepth="14" Opacity="0.62" Color="#000000"/>
+    </Border.Effect>
+    <Border.Clip>
+      <RectangleGeometry x:Name="ShellClip" RadiusX="17" RadiusY="17" Rect="0,0,1452,952"/>
+    </Border.Clip>
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <!-- ========== 0. title - the app's OWN caption ==========
+         This strip IS the title bar. Dragging it moves the window (DragMove,
+         wired in the script); double-clicking it maximises. Everything
+         interactive on it carries IsHitTestVisibleInChrome so the chrome does
+         not eat the click first. -->
+    <Border x:Name="TitleBar" Grid.Row="0" Background="{StaticResource Panel}"
+            BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="20,0,0,0"
+            Height="46">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <!-- 🔴 STAR, NOT Auto. An Auto column grows to whatever its content
+               wants, so the left group could push the search column below the
+               search box's own MinWidth - and a box narrower than its MinWidth is
+               still DRAWN at MinWidth, over its neighbours. Star makes the title
+               group the thing that yields, which is what its internal trimming is
+               there for. -->
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <!-- 🔴 A GRID, NOT A StackPanel, AND THE ZOOM IS WHY. A horizontal
+             StackPanel gives every child its full desired width and never
+             clips, so this group simply GREW past its star column and was drawn
+             on top of the search box - the same overlap the MinWidth comment
+             below records, arriving from the other side. It was latent while
+             every size was fixed; at 150% the text is half again as wide and it
+             happens on the first press of the button.
+             Auto | * | Auto: the title and the bridge note keep their size, and
+             the count - the one part that is a nicety rather than a warning -
+             is the thing that gives way. -->
+        <Grid Grid.Column="0" VerticalAlignment="Center">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <TextBlock Grid.Column="0" Text="Claude sessions" Style="{StaticResource Display}" VerticalAlignment="Center"/>
+          <TextBlock Grid.Column="1" x:Name="LiveCount" Style="{StaticResource Dim}" Margin="16,1,8,0"
+                     TextTrimming="CharacterEllipsis"
+                     VerticalAlignment="Center" Text=""/>
+          <!-- 🔴 WHY REMOTE CONTROL HAS GONE QUIET, said out loud. Claude Code
+               counts consecutive bridge failures and stops trying on the
+               seventh; while that holds, sessions run perfectly and simply do
+               not register, so the phone shows nothing and it reads as being
+               signed out. Invisible until now - which is why signing in every
+               morning appeared to fix it. Read-only: this tool does not own
+               ~/.claude.json and does not write it.
+               🪤 ON THE LEFT, WITH THE OTHER GLOBAL FACT. It sat in the
+               right-hand group first and OVERLAPPED THE SEARCH BOX: Search
+               carries MinWidth 380 and centres itself in a star column, so it
+               spills over its neighbour the moment that group grows. This is
+               also simply where it belongs - it describes the machine, not the
+               buttons. -->
+          <TextBlock Grid.Column="2" x:Name="BridgeNote" Style="{StaticResource Meta}" Margin="0,1,0,0"
+                     VerticalAlignment="Center" Visibility="Collapsed"
+                     TextTrimming="CharacterEllipsis"
+                     ToolTip="Remote Control registration health, read from Claude Code's own state"/>
+        </Grid>
+        <!-- 🪤 MinWidth WAS 380 AND THAT IS WHAT OVERLAPPED THE HEADER. Centred
+             in a star column, a box whose MinWidth exceeds the space the column
+             was actually given still renders at MinWidth, and spills over BOTH
+             sides - so the moment either group beside it grew, the search box
+             was drawn on top of them. That is the header overlap reported
+             twice, and it was latent until something was added beside it. 260
+             lets the column genuinely shrink; MaxWidth keeps it generous when
+             there is room. -->
+        <!-- 🔴 Stretch, NOT Center - THAT IS THE ACTUAL FIX, and lowering the
+             MinWidth to 260 only moved the threshold. A CENTRED element asks
+             for its MinWidth and, when the column is narrower than that, is
+             drawn at MinWidth anyway, spilling equally over BOTH neighbours. A
+             STRETCHED one is given exactly the column, so it cannot overflow at
+             any size; MaxWidth still keeps it centred and generous when there
+             is room, which is the look this had before. Measured by the header
+             assertion in gui2 at 150%, where the centred box overlapped the
+             clock and the bridge note by 84px each. -->
+        <TextBox x:Name="Search" Grid.Column="1" Style="{StaticResource Search}"
+                 Tag="Search conversations, projects, worktrees"
+                 MaxWidth="560" MinWidth="0" HorizontalAlignment="Stretch" Margin="12,0,12,0"
+                 shell:WindowChrome.IsHitTestVisibleInChrome="True"
+                 ToolTip="Find by title, id, worktree or project. Press / from anywhere."/>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"
+                    shell:WindowChrome.IsHitTestVisibleInChrome="True" Margin="0,0,10,0">
+          <TextBlock x:Name="Stamp" Style="{StaticResource Meta}" Margin="0,0,14,0" VerticalAlignment="Center"/>
+          <Button x:Name="NewSession" Content="New session" Style="{StaticResource BtnPrimary}" Margin="0,0,8,0"
+                  ToolTip="Start a fresh conversation (Ctrl+N)"/>
+          <!-- 🔑 SIGN IN, THEN BRING THE SESSIONS BACK. A running claude reads
+               the login token AT STARTUP, so signing in does not reach anything
+               already open - which is why re-logging in was always followed by
+               relaunching everything by hand. One button does both. -->
+          <Button x:Name="SignIn" Content="Sign in" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                  ToolTip="Open a terminal to sign in, then relaunch the ticked conversations onto the new login"/>
+          <Button x:Name="Rescan" Content="Rescan" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
+          <!-- 🔴 THE FILE THAT DECIDES WHAT COMES BACK AT LOGON, EDITABLE HERE
+               INSTEAD OF IN NOTEPAD. Every setting this window has was reachable
+               only by hand-editing session-restore.config.json, which is the one
+               file where a typo is not noticed until the next morning when the
+               wrong things reopen - or nothing does. -->
+          <Button x:Name="CfgBtn" Content="Settings" Style="{StaticResource Btn}"
+                  ToolTip="Edit session-restore's own configuration"/>
+        </StackPanel>
+
+        <!-- The window buttons. Close goes red on hover the way every Windows
+             app does; the other two lighten. Symbols are Segoe MDL2 glyphs, the
+             same ones the OS caption uses, so they read as window controls
+             rather than as letters. -->
+        <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Stretch"
+                    shell:WindowChrome.IsHitTestVisibleInChrome="True">
+          <Button x:Name="WinMin" Style="{StaticResource CaptionBtn}" Content="&#xE921;"
+                  ToolTip="Minimise" AutomationProperties.Name="Minimise"/>
+          <Button x:Name="WinMax" Style="{StaticResource CaptionBtn}" Content="&#xE922;"
+                  ToolTip="Maximise" AutomationProperties.Name="Maximise"/>
+          <Button x:Name="WinClose" Style="{StaticResource CaptionBtnClose}" Content="&#xE8BB;"
+                  ToolTip="Close" AutomationProperties.Name="Close"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- ========== 1. which surface ========== -->
+    <Border Grid.Row="1" Background="{StaticResource Ink}"
+            BorderBrush="{StaticResource HairSoft}" BorderThickness="0,0,0,1" Padding="18,9,18,9">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <Border Grid.Column="0" Background="{StaticResource Panel}" CornerRadius="7"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1" Padding="3">
+          <StackPanel Orientation="Horizontal">
+            <RadioButton x:Name="ModeWork" Style="{StaticResource Seg}" Content="Work surface" IsChecked="True"
+                         ToolTip="What is happening now: every conversation that is running or was, grouped by what it needs from you."/>
+            <RadioButton x:Name="ModeManage" Style="{StaticResource Seg}" Content="Session manager"
+                         ToolTip="What comes back at logon: every conversation by project, with the tick that decides."/>
+          </StackPanel>
+        </Border>
+        <!-- Column 1 carried a row of band chips that was never populated, and
+             stayed empty on purpose: the band headings inside the list already
+             show every count, and duplicating them in the chrome was the thing
+             the redesign set out to remove.
+
+             These two are not that. They are VIEW controls - the only place in
+             the window that says how much room the reading pane has - and they
+             live here rather than in the top bar because that bar has already
+             overlapped itself twice when something was added beside the search
+             box. Their labels say what pressing them DOES, not what is
+             currently true, which is the one thing a toggle must never get
+             backwards. -->
+        <!-- 🪤 THE TWO FOLD BUTTONS THAT WERE HERE ARE GONE, NOT MOVED-AND-KEPT.
+             They were the first attempt and the operator could not find them;
+             the carets now live on the columns' own headers, which is where the
+             looking happens. Leaving both would be two controls for one action
+             and would spend header width that has already overlapped twice. -->
+        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="Broadcast" Content="Send to many" Style="{StaticResource Btn}"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- ========== 2. the body ========== -->
+    <Grid Grid.Row="2">
+
+      <!-- ===== WORK SURFACE: rail | sessions | output pane =====
+           The splitters are real, and their widths are remembered. The rail and
+           the sessions column collapse on narrow windows: see Set-Breakpoint in
+           the script. Three columns is not a luxury that vanishes when the
+           window is small, it is a layout with a defined behaviour at every
+           width. -->
+      <!-- 🔴 THE PANES ARE CARDS ON A GROUND, not regions divided by hairlines.
+           They were flat rectangles separated by 1px rules, which is what the
+           operator meant by "the rounded edges and backgrounds are all gone" -
+           only the OUTER shell had ever been given the treatment the canvas
+           showed. Each pane now has its own radius, its own edge and its own
+           shadow, and the gutters between them are the ground showing through.
+           That is the whole difference between a window that reads as layered
+           and one that reads as partitioned. -->
+      <Grid x:Name="WorkSurface" Background="{StaticResource Ink}">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition x:Name="RailCol" Width="248" MinWidth="0"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition x:Name="ListCol" Width="372" MinWidth="0"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*" MinWidth="280"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- the projects rail: a FILTER, never the grouping -->
+        <Border x:Name="RailPane" Grid.Column="0" Background="{StaticResource Panel}"
+                CornerRadius="12" Margin="10,4,3,10" SnapsToDevicePixels="True"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+          <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.42" Color="#000000"/>
+          </Border.Effect>
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <!-- 🔴 THE PANE SEARCHES, SORTS AND FILTERS ITSELF. The header box
+                 is the GLOBAL one and reaches both panes at once; that is not
+                 the same as narrowing this list while leaving the other alone,
+                 which is what the operator asked for twice. -->
+            <StackPanel Grid.Row="0">
+              <Border Padding="16,12,12,6">
+                <Grid>
+                  <TextBlock Text="PROJECTS" Style="{StaticResource Caption}" VerticalAlignment="Center"/>
+                  <!-- 🔴 THE CONTROL SITS ON THE THING IT COLLAPSES. It was a
+                       pair of text buttons in the header row and the operator
+                       could not find them - "I still do not see the collapse
+                       buttons" - which for a control is the same as not having
+                       one. A caret in the column's own header needs no label to
+                       be understood, and it is where you look. -->
+                  <TextBlock x:Name="RailFold" Text="&#x2039;" Cursor="Hand"
+                             Style="{StaticResource Caption}" VerticalAlignment="Center"
+                             HorizontalAlignment="Right" Margin="0,0,2,0" Padding="6,0,6,0"
+                             ToolTip="Collapse the projects column (Ctrl+1)"
+                             AutomationProperties.Name="collapse the projects column"/>
+                  <TextBlock x:Name="RailClear" Text="clear" Style="{StaticResource Dim}"
+                             HorizontalAlignment="Right" VerticalAlignment="Center"
+                             Cursor="Hand" Visibility="Collapsed"
+                             ToolTip="Stop filtering by project."/>
+                </Grid>
+              </Border>
+              <TextBox x:Name="RailSearch" Style="{StaticResource Search}"
+                       Margin="12,0,12,7" Tag="Find a project"
+                       AutomationProperties.Name="find a project"/>
+              <Border Padding="14,0,12,9">
+                <StackPanel Orientation="Horizontal">
+                  <TextBlock x:Name="RailSort" Style="{StaticResource Meta}" Cursor="Hand"
+                             VerticalAlignment="Center"
+                             ToolTip="Change how the projects are ordered"/>
+                  <TextBlock Text="  ·  " Style="{StaticResource Meta}" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="RailOnlyLive" Style="{StaticResource Meta}" Cursor="Hand"
+                             VerticalAlignment="Center"
+                             ToolTip="Show only projects with something running"/>
+                  <!-- 🔴 HOW MANY ARE SHELVED, never silence. Shelving a project
+                       takes it off this rail AND out of the logon restore, so a
+                       rail that simply drew fewer tiles would be a rail whose
+                       length lies. It appears only when something is shelved -
+                       see Update-RailShelved - because "0 shelved" is chrome
+                       explaining a state nobody is in.
+                       🪤 NOT the session-level "hidden", which is a launch flag
+                       meaning "open this console off-screen". Different object,
+                       different word, on purpose. -->
+                  <TextBlock x:Name="RailShelved" Style="{StaticResource Meta}" Cursor="Hand"
+                             VerticalAlignment="Center" Margin="10,0,0,0"
+                             Visibility="Collapsed"
+                             AutomationProperties.Name="show shelved projects"/>
+                </StackPanel>
+              </Border>
+              <!-- 🔴 A LINE OF ITS OWN, AND IT IS NOT A CONTROL. The rail shows
+                   only what was touched in the last day, so a project quiet for
+                   a fortnight is never a tile here and there is nowhere on one
+                   to mark it - the count has to be able to speak for projects
+                   the rail cannot draw. It has no Cursor and no click: the tool
+                   points at what could be put away and never puts anything
+                   away, so a control that looked pressable would be promising
+                   an action that deliberately does not exist. The names are in
+                   the tooltip; hiding is the right-click on the tile. -->
+              <TextBlock x:Name="RailSuggest" Style="{StaticResource Meta}"
+                         Margin="14,0,12,9" TextWrapping="Wrap"
+                         Visibility="Collapsed"
+                         AutomationProperties.Name="projects that could be shelved"/>
+            </StackPanel>
+            <ListBox x:Name="RailList" Grid.Row="1" Style="{StaticResource Plain}"
+                     ItemContainerStyle="{StaticResource PlainItem}"
+                     ItemTemplate="{StaticResource RailRowTpl}"
+                     AutomationProperties.Name="projects"/>
+          </Grid>
+        </Border>
+
+        <!-- ============ THE PROJECTS COLUMN, COLLAPSED ============
+             🪤 NOT TO ZERO, TO A CARET. The rail is a filter and carries no
+             state worth keeping on screen, so almost all of it goes - but a
+             control that collapses its own column and leaves nothing behind
+             has removed the only way back, and the keyboard shortcut is not
+             discoverable enough to be the answer. 26px is the caret and
+             nothing else. -->
+        <Border x:Name="RailStrip" Grid.Column="0" Visibility="Collapsed"
+                Background="{StaticResource Panel}" CornerRadius="12" Margin="10,4,3,10"
+                SnapsToDevicePixels="True"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+          <TextBlock x:Name="RailOpen" Text="&#x203A;" Cursor="Hand"
+                     Style="{StaticResource Caption}"
+                     HorizontalAlignment="Center" VerticalAlignment="Top"
+                     Margin="0,13,0,0" Padding="6,2,6,2"
+                     ToolTip="Show the projects column again (Ctrl+1)"
+                     AutomationProperties.Name="show the projects column"/>
+        </Border>
+
+        <GridSplitter x:Name="RailSplit" Grid.Column="1" Width="4" HorizontalAlignment="Stretch"
+                      Background="Transparent" ResizeBehavior="PreviousAndNext"/>
+
+        <!-- the sessions column: grouped by BAND, two lines per row -->
+        <Border x:Name="ListPane" Grid.Column="2" Background="{StaticResource Panel}"
+                CornerRadius="12" Margin="3,4,3,10" SnapsToDevicePixels="True"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+          <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.42" Color="#000000"/>
+          </Border.Effect>
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Border Grid.Row="0" Padding="16,12,12,6">
+              <Grid>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                  <TextBlock x:Name="ListCaption" Text="SESSIONS" Style="{StaticResource Caption}" VerticalAlignment="Center"/>
+                  <!-- The order inside each band. A label rather than a dropdown:
+                       there are three of them and cycling is one click. -->
+                  <TextBlock x:Name="ListSort" Style="{StaticResource Meta}" Cursor="Hand"
+                             VerticalAlignment="Center" Margin="12,0,0,0"
+                             ToolTip="Change the order inside each band"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                            VerticalAlignment="Center">
+                  <TextBlock x:Name="ListCount" Style="{StaticResource Dim}"
+                             VerticalAlignment="Center"/>
+                  <!-- Same caret, same reason - see the projects header. -->
+                  <TextBlock x:Name="ListFold" Text="&#x2039;" Cursor="Hand"
+                             Style="{StaticResource Caption}" VerticalAlignment="Center"
+                             Margin="8,0,2,0" Padding="6,0,6,0"
+                             ToolTip="Collapse the sessions column to a strip of marks (Ctrl+2)"
+                             AutomationProperties.Name="collapse the sessions column"/>
+                </StackPanel>
+              </Grid>
+            </Border>
+            <!-- This pane's own search, independent of the header's global one. -->
+            <TextBox x:Name="ListSearch" Grid.Row="1" Style="{StaticResource Search}"
+                     Margin="12,0,12,8" Tag="Find a conversation"
+                     AutomationProperties.Name="find a conversation"/>
+            <ListBox x:Name="SessionList" Grid.Row="2" Style="{StaticResource Plain}"
+                     ItemContainerStyle="{StaticResource PlainItem}"
+                     ItemTemplate="{StaticResource SessionRowTpl}"
+                     AutomationProperties.Name="sessions"/>
+          </Grid>
+        </Border>
+
+        <!-- ============ THE SESSIONS COLUMN, COLLAPSED TO A STRIP ============
+             🔴 NOT TO NOTHING. Collapsing the list entirely reclaims the most
+             width and turns the tool off while you use it: this window's whole
+             job is saying which conversation is waiting on you, and with the
+             list hidden there is nowhere left for it to say so. A conversation
+             could sit needing you for as long as you were reading another one.
+
+             So the column narrows to a rail of dots instead - one per
+             conversation that needs you, in its band's accent, clickable to go
+             straight there. It costs about 44px of the width being reclaimed,
+             which is a twentieth of what the collapse gives back.
+
+             It shares Grid.Column 2 with ListPane and exactly one of them is
+             ever visible; the column's WIDTH is what actually changes. -->
+        <Border x:Name="ListStrip" Grid.Column="2" Visibility="Collapsed"
+                Background="{StaticResource Panel}" CornerRadius="12" Margin="3,4,3,10"
+                SnapsToDevicePixels="True"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+          <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.42" Color="#000000"/>
+          </Border.Effect>
+          <DockPanel Margin="0,11,0,11">
+            <!-- The way back, on the strip itself - see the projects strip. -->
+            <TextBlock x:Name="ListOpen" DockPanel.Dock="Top" Text="&#x203A;" Cursor="Hand"
+                       Style="{StaticResource Caption}"
+                       HorizontalAlignment="Center" Margin="0,0,0,9" Padding="6,2,6,2"
+                       ToolTip="Show the sessions column again (Ctrl+2)"
+                       AutomationProperties.Name="show the sessions column"/>
+            <TextBlock x:Name="StripCount" DockPanel.Dock="Top" Style="{StaticResource Caption}"
+                       HorizontalAlignment="Center" Margin="0,0,0,11" Text=""
+                       ToolTip="Conversations waiting on you"/>
+            <ScrollViewer VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
+              <ItemsControl x:Name="StripList"
+                            AutomationProperties.Name="conversations that need you">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border Background="Transparent" Cursor="Hand" Padding="0,6,0,6"
+                            ToolTip="{Binding Tip}">
+                      <Ellipse Width="10" Height="10" Fill="{Binding Accent}"
+                               HorizontalAlignment="Center"/>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </DockPanel>
+        </Border>
+
+        <GridSplitter x:Name="ListSplit" Grid.Column="3" Width="4" HorizontalAlignment="Stretch"
+                      Background="Transparent" ResizeBehavior="PreviousAndNext"/>
+
+        <!-- the output pane: header, transcript, pinned question, composer -->
+        <Border x:Name="OutputPane" Grid.Column="4" Background="{StaticResource Panel}"
+                CornerRadius="12" Margin="3,4,10,10" SnapsToDevicePixels="True"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1">
+          <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.42" Color="#000000"/>
+          </Border.Effect>
+        <Grid>
+          <!-- 0 header · 1 transcript · 2 RUNNING SHELLS · 3 a question · 4 the
+               composer. The shells row earns its own line rather than sharing
+               the question's: two Auto elements in ONE Grid row do not stack,
+               they overlap, and the two are visible at the same time exactly
+               when it matters most - a session that is asking you something
+               while a build runs behind it. -->
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+
+          <Border Grid.Row="0" Background="{StaticResource Panel}"
+                  BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="18,12,18,12">
+            <!-- ================== THREE STACKED ROWS ==================
+                 🔴 THE NAME AND THE BUTTONS NO LONGER SHARE A LINE. They did,
+                 in two columns, and the buttons are Auto-width: six of them
+                 take what they need and the name got the remainder, which on a
+                 pane this wide was about a fifth of the header. So the title
+                 read "millwright-str..." and the state line under it ran out
+                 of room mid-word - two pieces of text ending in the same place
+                 for no reason a reader could see, which is what "overlapping"
+                 looked like. Stacked, each row has the whole width and nothing
+                 is competing for it.
+                 ======================================================== -->
+            <Grid>
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" VerticalAlignment="Center">
+                <TextBlock x:Name="PaneName" Style="{StaticResource H1}" Text="" TextTrimming="CharacterEllipsis"/>
+                <!-- 🪤 A GRID, NOT A HORIZONTAL StackPanel. A horizontal stack
+                     measures its children against infinite width, so the state
+                     line never learned it had run out of room: it was cut off
+                     mid-word at the column edge and read as if it ran UNDER the
+                     button strip. In a Grid the text column is star-width, so
+                     it is measured against what is actually left and trims with
+                     an ellipsis the way the name above it always has. -->
+                <Grid Margin="0,2,0,0">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                  </Grid.ColumnDefinitions>
+                  <Border x:Name="PaneStateDot" Grid.Column="0" Width="7" Height="7" CornerRadius="4"
+                          Background="{StaticResource AccIdle}" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                  <TextBlock x:Name="PaneState" Grid.Column="1" Style="{StaticResource Dim}" Text=""
+                             TextTrimming="CharacterEllipsis"/>
+                </Grid>
+                <!-- ================== THE VITALS ==================
+                     What the terminal's own status line shows, for the session
+                     you are looking at: which model, how much context it has
+                     spent, the branch, the working tree against HEAD, whether
+                     Remote Control is on, and what is running right now.
+
+                     Every figure is already on disk - `message.model` and
+                     `message.usage` on an assistant record, `gitBranch` on
+                     every record, a Task or background Bash whose result has
+                     not come back - so none of it costs a question to claude.
+                     Only the +N -N asks git, and that answer is cached.
+                     ================================================ -->
+              </StackPanel>
+              <!-- 🪤 A WrapPanel, RIGHT-ALIGNED, ON ITS OWN ROW. Right-aligned
+                   so the eye still finds the actions where it always did, and
+                   wrapping so a narrow pane drops the last button to a second
+                   line instead of pushing it off the edge. -->
+              <WrapPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal"
+                         HorizontalAlignment="Right" Margin="0,10,0,0">
+                <Button x:Name="PaneCompact" Content="Compact" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
+                        ToolTip="Send /compact into this conversation now - watch the context bar to the left"/>
+                <Button x:Name="PaneTools" Content="Steps: folded" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
+                        ToolTip="How much of the machinery this pane shows - folded, full, or hidden. Remembered."/>
+                <!-- Beside Steps because they are the same kind of control: a
+                     view setting that belongs to the person reading, cycles on
+                     click, and is remembered. It scales the WHOLE window, not
+                     this pane - the list, the rail and the buttons move with
+                     it - which is why it says "Text" and not "Zoom pane". -->
+                <Button x:Name="PaneZoom" Content="Text: 100%" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
+                        ToolTip="How big every size on this surface is - 80% to 150%. Moves the list, the rail and the reading pane together. Remembered."/>
+                <Button x:Name="PaneWorktree" Content="New on worktree" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
+                        ToolTip="Start a fresh conversation in another worktree of this project"/>
+                <Button x:Name="PaneSettings" Content="Settings" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
+                        ToolTip="Name, model, effort, permissions, Remote Control, hidden"/>
+                <!-- 🔴 IT PRESSES Esc, IT DOES NOT KILL ANYTHING. Beside
+                     Relaunch on purpose: they are the two ways to stop a
+                     conversation doing what it is doing, and they differ in
+                     exactly the way the operator cares about - this one leaves
+                     the session and its turn-so-far alive, Relaunch does not.
+                     Enabled only while something is actually running; see
+                     Get-InterruptBlocker, which refuses on everything else
+                     because Esc at a prompt means something else entirely. -->
+                <Button x:Name="PaneStop" Content="Interrupt" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"
+                        ToolTip="Press Esc in this conversation to stop the turn it is running. Nothing is closed and nothing is lost from the transcript."/>
+                <Button x:Name="PaneGoTo" Content="Go to terminal" Style="{StaticResource BtnSlim}" Margin="0,0,6,4"/>
+                <Button x:Name="PaneRelaunch" Content="Relaunch" Style="{StaticResource BtnSlim}" Margin="0,0,0,4"/>
+              </WrapPanel>
+              <!-- 🪤 ITS OWN ROW, SPANNING BOTH COLUMNS. Inside the left column
+                   it only ever got the width the five buttons left over, so on
+                   a live session it wrapped onto two lines and the strip read
+                   as a stack rather than as a status line. Across the full
+                   header it is one line, which is what makes it scannable. -->
+              <WrapPanel x:Name="PaneChips" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,11,0,0"/>
+            </Grid>
+          </Border>
+
+          <!-- ================== THE CONTROL PLANE ==================
+               🔴 EVERY FIELD HERE IS A LAUNCH FLAG. claude reads them once, at
+               startup, so nothing changed here reaches a session that is already
+               running until it is reopened. The panel says so out loud and the
+               Apply button offers the relaunch - a dropdown that silently did
+               nothing would be worse than no dropdown.
+               ====================================================== -->
+          <!-- ================== SEND TO MANY ==================
+               One line into several conversations at once. It is the thing a
+               twenty-session day actually needs, and it is also the most
+               dangerous button in the window - so it names every conversation
+               it will type into, and it will not touch one that is mid-turn.
+               ================================================== -->
+          <Border x:Name="CastBox" AllowDrop="True" Grid.Row="1" Visibility="Collapsed" Panel.ZIndex="20"
+                  VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,10,18,0"
+                  Width="470" Background="{StaticResource PanelHi}" CornerRadius="10"
+                  BorderBrush="{StaticResource Hairline}" BorderThickness="1" Padding="18,16,18,16">
+            <Border.Effect>
+              <DropShadowEffect BlurRadius="26" ShadowDepth="5" Opacity="0.55" Color="#000000"/>
+            </Border.Effect>
+            <StackPanel>
+              <TextBlock Text="SEND TO MANY" Style="{StaticResource Caption}" Margin="0,0,0,4"/>
+              <TextBlock x:Name="CastWho" Style="{StaticResource Meta}" TextWrapping="Wrap"
+                         Margin="0,0,0,10" Text=""/>
+              <ListBox x:Name="CastList" Style="{StaticResource Plain}" MaxHeight="240"
+                       ItemContainerStyle="{StaticResource PlainItem}" Margin="0,0,0,12">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <Border Padding="0,5,0,5" Cursor="Hand">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto"/>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" x:Name="CastTick" Width="15" Height="15" CornerRadius="3"
+                                VerticalAlignment="Center" BorderBrush="#3A3F47" BorderThickness="1.4"
+                                Background="{Binding TickBg}" Margin="0,0,10,0"/>
+                        <TextBlock Grid.Column="1" Text="{Binding Name}" Style="{StaticResource Body}"
+                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="2" Text="{Binding Why}" Style="{StaticResource Meta}"
+                                   VerticalAlignment="Center" Margin="10,0,0,0"/>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+              <!-- 🪤 THE COMPOSER STYLE, BUT AcceptsReturn STAYS FALSE. This
+                   wraps and grows so a long message can be read back before it
+                   goes out - which is the whole complaint - but a literal
+                   newline here would be an ENTER in every terminal it reaches,
+                   submitting the message half-typed. Wrapping is visual;
+                   AcceptsReturn is what a keystroke does. -->
+              <TextBox x:Name="CastText" AllowDrop="True" Style="{StaticResource Composer}" AcceptsReturn="False"
+                       Tag="The one line every ticked conversation will receive" Margin="0,0,0,12"/>
+              <Grid>
+                <!-- 🔴 IT FILLS THE BOX, IT DOES NOT SEND. Twenty sessions
+                     compacting is not something to set off with one press and
+                     no chance to read what is going out - and the wording is
+                     the whole point of the feature, so it has to be visible
+                     and editable before it goes. Press this, read it, then
+                     Send, exactly as with anything else typed here. -->
+                <Button x:Name="CastCompact" Content="Morning compact" HorizontalAlignment="Left"
+                        Style="{StaticResource BtnSlim}"
+                        ToolTip="Fill the box with /compact plus the brief that tells each session what to keep. Nothing is sent until you press Send."/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                  <Button x:Name="CastCancel" Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
+                  <Button x:Name="CastSend" Content="Send" Style="{StaticResource BtnPrimary}"/>
+                </StackPanel>
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <Border x:Name="SettingsBox" Grid.Row="1" Visibility="Collapsed" Panel.ZIndex="20"
+                  VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,10,18,0"
+                  Width="430" Background="{StaticResource PanelHi}" CornerRadius="10"
+                  BorderBrush="{StaticResource Hairline}" BorderThickness="1" Padding="18,16,18,16">
+            <Border.Effect>
+              <DropShadowEffect BlurRadius="26" ShadowDepth="5" Opacity="0.55" Color="#000000"/>
+            </Border.Effect>
+            <StackPanel>
+              <TextBlock Text="THIS CONVERSATION" Style="{StaticResource Caption}" Margin="0,0,0,12"/>
+
+              <TextBlock Text="Name" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
+              <TextBox x:Name="SetName" Style="{StaticResource Search}" Tag="What this conversation is called"
+                       Margin="0,0,0,12"/>
+
+              <Grid Margin="0,0,0,12">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="12"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                  <TextBlock Text="Model" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
+                  <ComboBox x:Name="SetModel" Style="{StaticResource Drop}"/>
+                </StackPanel>
+                <StackPanel Grid.Column="2">
+                  <TextBlock Text="Effort" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
+                  <ComboBox x:Name="SetEffort" Style="{StaticResource Drop}"/>
+                </StackPanel>
+              </Grid>
+
+              <TextBlock Text="Permission mode" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
+              <ComboBox x:Name="SetPerm" Style="{StaticResource Drop}" Margin="0,0,0,4"/>
+              <TextBlock x:Name="SetPermNote" Style="{StaticResource Meta}" TextWrapping="Wrap"
+                         Margin="0,0,0,12" Text=""/>
+
+              <CheckBox x:Name="SetRemote" Style="{StaticResource Check}" Margin="0,0,0,8"
+                        Content="Remote Control - drive this conversation from your phone"/>
+              <CheckBox x:Name="SetHidden" Style="{StaticResource Check}" Margin="0,0,0,4"
+                        Content="Hidden - run with no terminal window"/>
+              <TextBlock Style="{StaticResource Meta}" TextWrapping="Wrap" Margin="22,0,0,12"
+                         Text="It keeps running when this tool closes, and you can still read and answer it here."/>
+
+              <!-- TOOL LIMITS. Last of the controls and deliberately plainest:
+                   a deny list that is subtly wrong does not announce itself, it
+                   just makes the session unable to do something, once, in an
+                   hour's time. Space-separated, claude's own syntax. -->
+              <Expander x:Name="SetToolsFold" Header="Tool limits" Margin="0,4,0,10"
+                        Foreground="{StaticResource TextMid}" FontFamily="{DynamicResource FontText}" FontSize="{DynamicResource SzBody}">
+                <StackPanel Margin="0,8,0,0">
+                  <TextBlock Text="Allow only these" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
+                  <!-- A real allow-list runs well past one line, and it was
+                       clipped: the tools you had granted scrolled off to the
+                       left where they could not be read back. Wraps and grows;
+                       both are parsed on whitespace so a wrap costs nothing. -->
+                  <TextBox x:Name="SetAllow" Style="{StaticResource Composer}" AcceptsReturn="False"
+                           Margin="0,0,0,9" Tag="e.g.  Read Grep Bash(git *)"/>
+                  <TextBlock Text="Never these" Style="{StaticResource Meta}" Margin="0,0,0,4"/>
+                  <TextBox x:Name="SetDeny" Style="{StaticResource Composer}" AcceptsReturn="False"
+                           Margin="0,0,0,6" Tag="e.g.  Bash(rm *) Write"/>
+                  <TextBlock Style="{StaticResource Meta}" TextWrapping="Wrap"
+                             Text="Space separated, exactly as claude takes them. Leave both empty for no limits at all."/>
+                </StackPanel>
+              </Expander>
+
+              <TextBlock x:Name="SetPending" Style="{StaticResource Dim}" TextWrapping="Wrap"
+                         Foreground="{StaticResource AccNeeds}" Visibility="Collapsed" Margin="0,0,0,10" Text=""/>
+
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="SetCancel" Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0"/>
+                <Button x:Name="SetApply" Content="Apply" Style="{StaticResource BtnPrimary}"/>
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
+          <!-- The transcript. A tail budget, said out loud at the top when it
+               is truncated: the biggest conversation on this machine is 2.5 MB
+               and a FlowDocument does not virtualize. -->
+          <Grid Grid.Row="1">
+            <FlowDocumentScrollViewer x:Name="PaneDoc"
+                                      VerticalScrollBarVisibility="Auto"
+                                      Padding="0" Margin="0"
+                                      Background="Transparent"
+                                      IsSelectionEnabled="True"
+                                      AutomationProperties.Name="conversation"/>
+            <TextBlock x:Name="PaneEmpty" Style="{StaticResource Dim}" Text=""
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       TextWrapping="Wrap" MaxWidth="420" TextAlignment="Center"/>
+
+            <!-- ============ WHAT THE SESSION'S OWN SCREEN SAYS, RIGHT NOW ======
+                 🔴 A COMPACT WRITES NOTHING TO THE TRANSCRIPT UNTIL IT FINISHES.
+                 Measured: the summary record and compactMetadata land at the END,
+                 so for the thirty to ninety seconds it runs there is literally
+                 nothing on disk for a transcript reader to draw. Reported as
+                 "when I compact a session, the session is not shown any longer
+                 or I do not see the progress of what is happening".
+
+                 The progress exists - it is on the session's screen, where
+                 claude prints its spinner and its token counts. This reads that
+                 screen and shows it, and it sits in the TRANSCRIPT'S OWN CELL
+                 rather than in a new row: while a compact runs the transcript
+                 has nothing to add, so replacing it costs nothing and the
+                 conversation comes straight back when the summary lands.
+
+                 🪤 IT IS NOT A TERMINAL. No input goes here, nothing is
+                 interpreted; it is a photograph of the last screen, taken every
+                 couple of seconds while something is worth watching. NoWrap
+                 because a console screen is already laid out in columns and
+                 rewrapping it would scramble a spinner into prose. -->
+            <Border x:Name="LivePane" Visibility="Collapsed"
+                    Background="{StaticResource Ink}" CornerRadius="10"
+                    BorderBrush="{StaticResource HueAskEdge}" BorderThickness="1"
+                    Padding="16,13,16,14">
+              <DockPanel>
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
+                  <TextBlock x:Name="LiveMark" Text="&#x2014;" Foreground="{StaticResource HueAsk}"
+                             FontFamily="{DynamicResource FontPane}" FontSize="{DynamicResource SzPane}"
+                             Margin="0,0,12,0"/>
+                  <TextBlock x:Name="LiveHead" Text="" Foreground="{StaticResource HueAsk}"
+                             FontFamily="{DynamicResource FontPane}" FontSize="{DynamicResource SzPane}"/>
+                </StackPanel>
+                <!-- Named, because holding your place across a refresh needs
+                     something to ask where your place was. -->
+                <ScrollViewer x:Name="LiveScroll" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Auto">
+                  <TextBlock x:Name="LiveText" Text="" TextWrapping="NoWrap"
+                             Foreground="{StaticResource TextHigh}"
+                             FontFamily="{DynamicResource FontPane}" FontSize="{DynamicResource SzPane}"
+                             AutomationProperties.Name="what this session's terminal is showing now"/>
+                </ScrollViewer>
+              </DockPanel>
+            </Border>
+          </Grid>
+
+          <!-- PINNED, not inline. A question that scrolls away on a long
+               conversation is a question you miss. -->
+          <!-- 🪤 A PANEL INSIDE THE CARD, not a slab across it, and NOT a bar
+               down its side. This was a hard 2px white rule across the full
+               width; that became a 3px white bar on the left, which the
+               operator disliked for the same reason the rule was wrong - it is
+               a hard, saturated edge in a window where nothing else has one,
+               and it reads as damage rather than as emphasis.
+               The signal survives without it: this panel is the only surface in
+               the pane with its own tinted ground and its own corner radius,
+               and the eyebrow above the question is the one place HueAsk
+               appears. A question you miss is the failure this panel exists to
+               prevent, and being the only teal thing on screen prevents it more
+               reliably than an edge does. -->
+          <!-- ================== WHAT IS RUNNING BEHIND THIS SESSION ==========
+               🔴 THE MARK SAID SOMETHING WAS RUNNING AND NOTHING COULD SAY
+               WHAT. Reported as "I cannot see a current running shell other
+               than the icon indicating there is something". The square on the
+               row is a COUNT off the session's status line - no id, no command;
+               the pane's shell block is a Bash(background) call that happens to
+               be inside the transcript tail. Two sources, so they could
+               disagree, and neither is a list. This panel is the list, and it
+               comes from Get-SRLiveTasks, which pairs each launch with the
+               task-notification that ends it - so it names the same shells the
+               mark is counting.
+
+               🪤 PINNED, LIKE THE QUESTION, AND FOR THE SAME REASON. A shell
+               you have to scroll to find is one you stop watching. It sits
+               BELOW the transcript and ABOVE the question so the newest words
+               and the answer box both keep their place.
+
+               Square, not round: the mark table reads a square as machinery and
+               a circle as a sub-agent, and that distinction is the one thing
+               the operator can already read at a glance. -->
+          <Border x:Name="ShellBox" Grid.Row="2" Visibility="Collapsed"
+                  Background="{StaticResource Rail}" CornerRadius="12"
+                  BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                  Margin="18,0,18,10" Padding="14,10,14,11">
+            <StackPanel>
+              <Grid Margin="0,0,0,2">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="ShellHead" Grid.Column="0" Style="{StaticResource Caption}"
+                           Foreground="{StaticResource HueTool}" Text="" VerticalAlignment="Center"/>
+                <Button x:Name="ShellFold" Grid.Column="1" Content="hide"
+                        Style="{StaticResource BtnSlim}" Margin="8,0,0,0"
+                        ToolTip="Collapse this panel. It comes back on its own when another shell starts."/>
+              </Grid>
+              <ItemsControl x:Name="ShellList" Margin="0,6,0,0">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border Background="Transparent" Padding="0,5,0,6" Cursor="Hand"
+                            ToolTip="{Binding ShTip}">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto"/>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="{Binding ShMark}" Foreground="{StaticResource HueTool}"
+                                   FontSize="{DynamicResource SzMicro}"
+                                   VerticalAlignment="Top" Margin="0,3,9,0"/>
+                        <StackPanel Grid.Column="1">
+                          <TextBlock Text="{Binding ShDesc}" Style="{StaticResource Body}"
+                                     Foreground="{StaticResource TextHigh}"
+                                     TextTrimming="CharacterEllipsis"/>
+                          <!-- The command as it was actually issued, in the
+                               machine face, because that is what it is. -->
+                          <TextBlock Text="{Binding ShCmd}" FontFamily="{DynamicResource FontMono}"
+                                     FontSize="{DynamicResource SzMono}"
+                                     Foreground="{StaticResource TextLow}"
+                                     TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+                          <!-- The last thing it printed. This is the whole
+                               point of the panel: a running shell that shows
+                               no output is indistinguishable from a hung one. -->
+                          <TextBlock Text="{Binding ShOut}" FontFamily="{DynamicResource FontMono}"
+                                     FontSize="{DynamicResource SzMono}"
+                                     Foreground="{StaticResource TextMid}"
+                                     Visibility="{Binding ShOutVis}"
+                                     TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <TextBlock Grid.Column="2" Text="{Binding ShAge}" Style="{StaticResource Meta}"
+                                   Margin="10,0,0,0" VerticalAlignment="Top"/>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Border>
+
+          <Border x:Name="AskBox" Grid.Row="3" Visibility="Collapsed"
+                  Background="{StaticResource HueAskFilm}" CornerRadius="14"
+                  Margin="14,0,14,14" SnapsToDevicePixels="True"
+                  BorderBrush="{StaticResource HueAskEdge}" BorderThickness="1"
+                  Padding="22,18,22,18">
+            <!-- A long question with a description under every option can run
+                 past the bottom of the pane, and an option you cannot reach is
+                 an option you cannot pick. Capped and scrollable; the cap is
+                 generous enough that the common three-option question never
+                 scrolls at all.
+
+                 🔴 THE CAP IS SET IN CODE, FROM THE WINDOW HEIGHT. It was a
+                 fixed 380px, which is a third of a tall window and nearly half
+                 of a short one - and the card sits in its own grid row, so
+                 every pixel it takes comes off the transcript above it.
+                 Reported as: the question card takes up a lot of space, and we
+                 still need to read the conversation while it is up. 380 stays
+                 here as the value before the first layout. See Set-AskCap. -->
+            <!-- 🔴 THE QUESTION IS PINNED; ONLY THE CHOICES SCROLL.
+                 Reported: "the question text is cut off and I cannot fully read
+                 the question". The whole card was ONE ScrollViewer - eyebrow,
+                 question, every option, the answer box, footer and note - under
+                 a single height cap. So the moment a round had a few options the
+                 question scrolled off the top, and the one thing you cannot
+                 answer a question without is the question.
+
+                 🪝 THE CAP IS NOT THE BUG AND MUST NOT BE RAISED AWAY. It
+                 exists because the card sits in its own grid row and every pixel
+                 it takes comes off the transcript - see Set-AskCap, a third of
+                 the window with a 220 floor. Raising it would trade a question
+                 you cannot read for a conversation you cannot read. The budget
+                 stays; what changes is WHO SPENDS IT. Question and answer box
+                 are Auto rows and always drawn; the choices between them take
+                 what is left and scroll inside it.
+
+                 Set-AskCap now caps this Grid rather than the inner scroller,
+                 so the third-of-the-window promise still covers the whole card
+                 and not just the part that scrolls. -->
+            <Grid x:Name="AskCard" MaxHeight="380">
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
+              <StackPanel Grid.Row="0">
+                <!-- ================== THE ROUND ==================
+                     🔑 A BATCHED QUESTION IS A ROUND, AND THE TERMINAL DRAWS IT
+                     AS A TAB BAR. Captured off a real one 2026-08-30:
+
+                         <-  [ ] Alpha  [x] Beta  [ ] Gamma  (v) Submit  ->
+
+                     One tab per question named by its header, an empty box while
+                     unanswered and a crossed one once answered. This window used
+                     to show only the question currently on screen, so a
+                     three-question round looked like one question that kept
+                     changing - you could not tell how many were coming, which
+                     you had done, or get back to one you wanted to change.
+
+                     The chips ARE the navigation, exactly as they are in the
+                     terminal: clicking one walks the round to it with the same
+                     left/right keys a person would press.
+                     ================================================ -->
+                <ItemsControl x:Name="AskTabs" Margin="0,0,0,12" Visibility="Collapsed">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                </ItemsControl>
+                <TextBlock x:Name="AskHeader" Style="{StaticResource Caption}" Text="" Margin="0,0,0,7"
+                           Foreground="{StaticResource HueAsk}"/>
+                <TextBlock x:Name="AskText" Style="{StaticResource Body}" Text="" TextWrapping="Wrap"
+                           FontSize="{DynamicResource SzStrong}" FontWeight="SemiBold" Foreground="{StaticResource TextMax}"/>
+              </StackPanel>
+              <ScrollViewer x:Name="AskScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                  <ItemsControl x:Name="AskOptions" Margin="0,14,0,0"/>
+
+                  <!-- The Submit tab is a review of the whole round: every question
+                  with the answer it currently holds. It is the one screen that
+                  shows how everything has been answered. -->
+                  <ItemsControl x:Name="AskReview" Margin="0,4,0,0" Visibility="Collapsed"/>
+                </StackPanel>
+              </ScrollViewer>
+              <StackPanel Grid.Row="2">
+                <!-- ================== IN YOUR OWN WORDS ==================
+                🔴 THE TERMINAL'S "Type something" ROW IS AN INLINE EDITOR,
+                and pressing ENTER on it while it is EMPTY DECLINES THE
+                WHOLE ROUND - measured twice, both times by accident. It was
+                being drawn here as an ordinary numbered option, so the
+                window was one click away from throwing a question the
+                operator was in the middle of answering.
+
+                It gets a real text box instead: type, then Send. Nothing is
+                committed until there is something to commit, which is the
+                one order that cannot decline the round by mistake.
+                ======================================================= -->
+                <Border x:Name="AskFreeBox" AllowDrop="True" Visibility="Collapsed" Margin="0,4,0,0"
+                Background="{StaticResource PanelHi}" CornerRadius="8"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                Padding="12,10,12,11">
+                <StackPanel>
+                <TextBlock x:Name="AskFreeLabel" Style="{StaticResource Caption}" Text="IN YOUR OWN WORDS"
+                Margin="0,0,0,7"/>
+                <Grid>
+                <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="AskFree" AllowDrop="True" Grid.Column="0" Style="{StaticResource Composer}"
+                Tag="Answer in your own words - Shift+Enter for a new line" Margin="0,0,8,0"
+                AutomationProperties.Name="answer this question in your own words"/>
+                <Button x:Name="AskFreeSend" Grid.Column="1" Content="Send"
+                VerticalAlignment="Bottom"
+                Style="{StaticResource BtnSlim}"
+                ToolTip="Type your answer into this question in the terminal and commit it"/>
+                </Grid>
+                </StackPanel>
+                </Border>
+
+                <!-- The note that qualifies the WHOLE question. Below the
+                buttons, because that is where it was written. -->
+                <TextBlock x:Name="AskFooter" Style="{StaticResource Dim}" Text="" TextWrapping="Wrap"
+                Margin="0,4,0,0" Visibility="Collapsed"/>
+                <TextBlock x:Name="AskNote" Style="{StaticResource Meta}" Text="" TextWrapping="Wrap"
+                Margin="0,9,0,0" Visibility="Collapsed"/>
+              </StackPanel>
+            </Grid>
+          </Border>
+
+          <!-- 18px of padding wider than the box on every side, and a drop that
+               lands on that margin is a drop the operator meant. Named because
+               the handlers hang here rather than on the TextBox - see
+               "DRAGGING A FILE INTO THE MESSAGE" in sessions-window.ps1. -->
+          <Border x:Name="SendDock" AllowDrop="True" Grid.Row="4" Background="{StaticResource Panel}"
+                  BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,0" Padding="18,10,18,12">
+            <Grid>
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+
+              <!-- ============ WHAT IS WAITING BEHIND THE TURN IT IS ON ========
+                   🔴 DOCKED HERE, NOT INSIDE THE TRANSCRIPT. The design this
+                   came from drew queued messages as ghost turns at the foot of
+                   the conversation, and the pane will not have it: it appends
+                   new turns to the end of the FlowDocument on a fast path
+                   (Test-CanAppend / Add-ReadDocumentTail), so anything parked at
+                   the bottom ends up ABOVE the replies that arrive after it.
+                   Fighting that would mean stripping and re-adding the ghosts on
+                   every append, to put them somewhere you can only see if you
+                   are already scrolled to the end.
+                   Docked, it is always visible, it costs the transcript nothing,
+                   and it sits exactly where the next message is about to be
+                   typed - which is the one place it is certain to be read.
+
+                   🪤 CAPPED, because a real queue is not two lines. Measured on
+                   this machine: one conversation was holding 57. Four, then a
+                   count - the list is there to tell you what is waiting, not to
+                   become the thing you have to scroll. -->
+              <StackPanel x:Name="QueueBox" Grid.Row="0" Grid.ColumnSpan="2"
+                          Visibility="Collapsed" Margin="0,0,0,9">
+                <TextBlock x:Name="QueueHead" Style="{StaticResource Meta}" Text=""
+                           Margin="0,0,0,5"/>
+                <ItemsControl x:Name="QueueList">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Grid Margin="0,0,0,3">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto"/>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="&#187;" Style="{StaticResource Meta}"
+                                   Foreground="{Binding QiBrush}" Margin="0,0,9,0"
+                                   VerticalAlignment="Top"/>
+                        <TextBlock Grid.Column="1" Text="{Binding QiText}" Style="{StaticResource Meta}"
+                                   Foreground="{Binding QiBrush}" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding QiTip}"/>
+                        <TextBlock Grid.Column="2" Text="{Binding QiWhen}" Style="{StaticResource Meta}"
+                                   Margin="12,0,0,0" VerticalAlignment="Top"/>
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <TextBlock x:Name="SendNote" Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource Dim}"
+                         Text="" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="Collapsed"/>
+              <!-- MaxHeight raised from the style's 168: this is the one you
+                   paste a whole prompt into, and nine lines was not enough to
+                   read one back before sending. Sixteen-ish lines, then it
+                   scrolls, and the transcript above it still owns the rest. -->
+              <TextBox x:Name="SendBox" Grid.Row="2" Grid.Column="0" Style="{StaticResource Composer}"
+                       MaxHeight="260" AllowDrop="True"
+                       Tag="Type here to send it into this session's terminal - / for skills, Shift+Enter for a new line"
+                       Margin="0,0,8,0"
+                       AutomationProperties.Name="type into this session"/>
+
+              <!-- THE SKILL PICKER. Opens on '/' at the start of the line, the
+                   same gesture that opens it inside claude itself, and filters
+                   as you type. Placement=Top so it grows UPWARDS out of the
+                   composer instead of off the bottom of the window. -->
+              <Popup x:Name="SkillPop" PlacementTarget="{Binding ElementName=SendBox}"
+                     Placement="Top" AllowsTransparency="True" StaysOpen="True"
+                     HorizontalOffset="0" VerticalOffset="-6">
+                <Border Background="{StaticResource PanelHi}" CornerRadius="9"
+                        BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                        MinWidth="460" MaxWidth="620" Padding="0,6,0,6">
+                  <Border.Effect>
+                    <DropShadowEffect BlurRadius="24" ShadowDepth="5" Opacity="0.55" Color="#000000"/>
+                  </Border.Effect>
+                  <StackPanel>
+                    <TextBlock x:Name="SkillHint" Style="{StaticResource Caption}"
+                               Margin="14,4,14,7" Text="SKILLS"/>
+                    <ListBox x:Name="SkillList" Style="{StaticResource Plain}" MaxHeight="260"
+                             ItemContainerStyle="{StaticResource PlainItem}">
+                      <ListBox.ItemTemplate>
+                        <DataTemplate>
+                          <Border Padding="14,7,14,7">
+                            <Grid>
+                              <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                              </Grid.ColumnDefinitions>
+                              <StackPanel Grid.Column="0">
+                                <TextBlock Text="{Binding Label}" Style="{StaticResource Body}"
+                                           FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding Blurb}" Style="{StaticResource Meta}"
+                                           TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+                              </StackPanel>
+                              <TextBlock Grid.Column="1" Text="{Binding Source}"
+                                         Style="{StaticResource Meta}" VerticalAlignment="Center"
+                                         Margin="12,0,0,0"/>
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ListBox.ItemTemplate>
+                    </ListBox>
+                  </StackPanel>
+                </Border>
+              </Popup>
+              <!-- Bottom-aligned because the box beside it grows now: stretched,
+                   the button would grow with it and become a tall slab. -->
+              <Button x:Name="SendBtn" Grid.Row="2" Grid.Column="1" Content="Send"
+                      VerticalAlignment="Bottom"
+                      Style="{StaticResource BtnPrimary}" IsEnabled="False"/>
+            </Grid>
+          </Border>
+        </Grid>
+        </Border>
+      </Grid>
+
+      <!-- ===== SESSION MANAGER: one full-width table =====
+           Deliberately a different SHAPE, not a different colour. Ported in
+           phase 4; the frame exists here so the switch is real from phase 1. -->
+      <!-- 🔴 ONE CARD, ON THE SAME GROUND AS THE WORK SURFACE. The manager was
+           a flat full-bleed table while the work surface had become three
+           floating cards, so switching surfaces switched design languages
+           halfway through the window. It is deliberately a different SHAPE - one
+           wide table rather than three columns - but it is the same material. -->
+      <Grid x:Name="ManageSurface" Visibility="Collapsed" Background="{StaticResource Ink}">
+        <Border Background="{StaticResource Panel}" CornerRadius="12" Margin="10,4,10,10"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="1"
+                SnapsToDevicePixels="True">
+          <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.42" Color="#000000"/>
+          </Border.Effect>
+        <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Border Grid.Row="0" Background="{StaticResource PanelHi}" CornerRadius="11,11,0,0"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1" Padding="18,11,18,11">
+          <!-- THE SAME COLUMN WIDTHS AS ManageRowTpl, and for the same reason a
+               table has a header row at all: a caption made of padded spaces
+               lines up with nothing, because the rows below it are a Grid and
+               the caption was not. Change a width here, change it there. -->
+          <Grid x:Name="ManageCaption">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="86"/>
+              <ColumnDefinition Width="260"/>
+              <ColumnDefinition Width="180"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <!-- 🔴 EACH ONE SORTS. They were inert TextBlocks that looked exactly
+                 like the sortable headers of every other table on the machine,
+                 which is why the operator clicked one and reported the filter
+                 broken. Tag carries the sort key; the arrow says which way. -->
+            <TextBlock x:Name="HdrLogon" Grid.Column="0" Tag="logon" Text="LOGON"
+                       Style="{StaticResource Caption}" HorizontalAlignment="Center" Cursor="Hand"/>
+            <TextBlock x:Name="HdrName" Grid.Column="1" Tag="name" Text="CONVERSATION"
+                       Style="{StaticResource Caption}" Margin="14,0,10,0" Cursor="Hand"/>
+            <TextBlock x:Name="HdrLane" Grid.Column="2" Tag="lane" Text="LANE"
+                       Style="{StaticResource Caption}" Margin="0,0,10,0" Cursor="Hand"/>
+            <TextBlock x:Name="HdrSaid" Grid.Column="3" Tag="said" Text="WHAT IT LAST SAID"
+                       Style="{StaticResource Caption}" Cursor="Hand"/>
+            <TextBlock x:Name="HdrAge" Grid.Column="4" Tag="age" Text="AGE"
+                       Style="{StaticResource Caption}" Margin="10,0,0,0" Cursor="Hand"/>
+          </Grid>
+        </Border>
+        <!-- 🔴 THE FILTER STRIP. The manager had sorting and nothing else - no
+             way to ask "just the ticked ones" or "just what is running", which
+             is the question this surface exists to answer before a logon. The
+             chips are exclusive: a filter that can be half-on in four
+             directions at once is a state nobody can read off the screen. -->
+        <Border Grid.Row="1" Background="{StaticResource Rail}"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="0,0,0,1"
+                Padding="18,8,18,8">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="SHOW" Style="{StaticResource Caption}" VerticalAlignment="Center"
+                       Margin="0,0,12,0"/>
+            <RadioButton x:Name="MgrAll" Content="Everything" Style="{StaticResource Seg}"
+                         GroupName="mgrfilter" IsChecked="True"/>
+            <RadioButton x:Name="MgrTicked" Content="Ticked" Style="{StaticResource Seg}"
+                         GroupName="mgrfilter"/>
+            <RadioButton x:Name="MgrRunning" Content="Running" Style="{StaticResource Seg}"
+                         GroupName="mgrfilter"/>
+            <RadioButton x:Name="MgrNeeds" Content="Needs you" Style="{StaticResource Seg}"
+                         GroupName="mgrfilter"/>
+            <TextBlock x:Name="MgrFilterNote" Style="{StaticResource Meta}" VerticalAlignment="Center"
+                       Margin="14,0,0,0" Text=""/>
+          </StackPanel>
+        </Border>
+
+        <ListBox x:Name="ManageList" Grid.Row="2" Style="{StaticResource Plain}"
+                 ItemContainerStyle="{StaticResource PlainItem}"
+                 ItemTemplate="{StaticResource ManageRowTpl}"
+                 AutomationProperties.Name="the ticked set"/>
+        <Border Grid.Row="3" Background="{StaticResource Rail}" CornerRadius="0,0,11,11"
+                BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,0" Padding="18,12,18,12">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="THE TICKED SET" Style="{StaticResource Caption}"
+                       VerticalAlignment="Center" Margin="0,0,14,0"/>
+            <Button x:Name="OpenNotRunning" Content="Open not running" Style="{StaticResource BtnPrimary}" Margin="0,0,8,0"/>
+            <Button x:Name="RelaunchSessions" Content="Relaunch sessions" Style="{StaticResource Btn}"/>
+            <TextBlock x:Name="ManageCount" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="14,0,0,0"/>
+          </StackPanel>
+        </Border>
+        </Grid>
+        </Border>
+      </Grid>
+    </Grid>
+
+    <!-- ========== 3. status ========== -->
+    <Border Grid.Row="3" Background="{StaticResource Panel}"
+            BorderBrush="{StaticResource Hairline}" BorderThickness="0,1,0,0" Padding="18,8,18,8">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <TextBlock x:Name="Status" Grid.Column="0" Style="{StaticResource Dim}" Text=""
+                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+        <StackPanel Grid.Column="1" Orientation="Horizontal">
+          <!-- No Close here any more: the title bar has one, and two buttons
+               that do the same thing in one window is one too many. The '?'
+               that used to sit here had no handler at all - a control that does
+               nothing when pressed is the exact defect this window was rebuilt
+               to stop having. -->
+          <Button x:Name="SaveBtn" Content="Save" Style="{StaticResource BtnPrimary}"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- ================== 4. THE SHEET ==================
+         Every question the window asks used to be a stock Windows MessageBox:
+         a grey 3D dialog in Segoe UI with a shield icon, thrown up in front of
+         a dark window that shares none of its vocabulary. It was also the only
+         part of the tool that could not be restyled, so the more the window
+         improved the more the dialogs stood out - and they appear at exactly
+         the moments that matter (closing live sessions, discarding ticks).
+
+         🪤 SCRIM AND CARD ARE TWO ELEMENTS ON PURPOSE, NOT ONE PANEL.
+         The scrim has to cover the HEADER too or the dim reads as half-applied,
+         which means spanning rows 0-3 - and rows 0, 1 and 3 are Height="Auto".
+         Anything with a real desired size placed across them inflates them
+         (the same trap already documented on SettingsBox above). A Rectangle
+         with no Width/Height has a desired size of ZERO and cannot inflate
+         anything, while still painting across the whole span. The card, which
+         does have a size, therefore lives alone in row 2 - the star row, where
+         nothing it does can change the layout of anything else.
+         ================================================== -->
+    <!-- ================== THE CONFIGURATION ITSELF ==================
+         Every key in session-restore.config.json, in plain language, grouped by
+         what it decides rather than by the order it happens to sit in the file.
+
+         🔴 IT WRITES ONLY WHAT YOU CHANGED. Rewriting the whole file from the
+         panel would mean every key this window does not understand - a setting
+         added by a later version, a hand-written comment - is silently dropped
+         by the act of opening a panel and pressing Apply. Changed keys only,
+         through Save-SRConfigValue, which is the same writer every other
+         setting in this window goes through.
+
+         🪤 AT THE ROOT, NOT INSIDE THE READING PANE, and that is a fix rather
+         than a preference. It was a 600px card in OutputPane's star row - a
+         column that is regularly narrower than 600 - and a fixed width centred
+         in a narrower column renders at its full width and spills over BOTH
+         neighbours. The search box carries a note about the identical trap.
+         It also simply belongs here: these settings are not about the
+         conversation on screen, so a panel that opens over the transcript is
+         describing the wrong thing.
+
+         🪤 ROW 2, FOR THE REASON THE SCRIM NOTE BELOW GIVES. Rows 0, 1 and 3
+         are Height="Auto" and anything with a real desired size placed across
+         them inflates them. Row 2 is the star row, where a sized element cannot
+         change the layout of anything else. The wrapper Grid has no Background,
+         so with the card collapsed it is not hit-testable and nothing under it
+         is blocked.
+         ============================================================= -->
+    <!-- 99, so it sits above the work surface and BELOW the scrim at 100. A
+         confirm sheet that appeared without dimming the panel it came from
+         would read as two dialogs rather than one question. -->
+    <Grid Grid.Row="2" Panel.ZIndex="99">
+      <Border x:Name="CfgBox" Visibility="Collapsed"
+              VerticalAlignment="Center" HorizontalAlignment="Center" Margin="24"
+              Width="640" MaxHeight="640" Background="{StaticResource PanelHi}" CornerRadius="12"
+              BorderBrush="{StaticResource EdgeLit}" BorderThickness="1" Padding="22,18,22,16">
+        <Border.Effect>
+          <DropShadowEffect BlurRadius="52" ShadowDepth="16" Opacity="0.7" Color="#000000"/>
+        </Border.Effect>
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+          <StackPanel Grid.Row="0">
+            <TextBlock Text="SETTINGS" Style="{StaticResource Caption}"/>
+            <TextBlock Style="{StaticResource Dim}" TextWrapping="Wrap" Margin="0,6,0,0"
+                       Text="These are session-restore's own settings - what it reopens at your next logon, what the lists show, and how the reading pane looks. Per-project switches live on the project tiles."/>
+            <TextBlock x:Name="CfgWhere" Style="{StaticResource Meta}" TextWrapping="Wrap"
+                       Margin="0,6,0,12"/>
+          </StackPanel>
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled">
+            <StackPanel x:Name="CfgList" Margin="0,0,10,0"/>
+          </ScrollViewer>
+          <Grid Grid.Row="2" Margin="0,14,0,0">
+            <TextBlock x:Name="CfgNote" Style="{StaticResource Meta}" TextWrapping="Wrap"
+                       VerticalAlignment="Center" HorizontalAlignment="Left" MaxWidth="360"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+              <Button x:Name="CfgCancel" Content="Cancel" Style="{StaticResource Btn}"
+                      Margin="0,0,8,0" MinWidth="92"/>
+              <Button x:Name="CfgApply" Content="Apply" Style="{StaticResource BtnPrimary}"
+                      MinWidth="92"/>
+            </StackPanel>
+          </Grid>
+        </Grid>
+      </Border>
+    </Grid>
+
+    <!-- ================== THIS PROJECT ==================
+         The three switches that belong to a project rather than to a
+         conversation, in one place, opened by right-clicking its tile.
+
+         🔑 IT IS THE SIBLING OF THE PER-CONVERSATION PANEL, deliberately. The
+         window already had "THIS CONVERSATION" behind a right-click; a project
+         had two pressable labels wedged onto its tile and shelving on a menu,
+         which is three different shapes for the same idea. One shape, two
+         scopes.
+
+         🪤 EVERY ROW SAYS THE STATE AND THE BUTTON SAYS THE CHANGE. A tick box
+         that both reports and acts has to be put back by hand when the confirm
+         behind it is declined, and one that silently failed to revert would
+         show a project as switched off while the registry still has it on - on
+         the panel whose whole job is telling you what will happen tomorrow.
+         A sentence plus a verb cannot drift that way: the panel re-reads itself
+         after every action.
+         ================================================== -->
+    <Grid Grid.Row="2" Panel.ZIndex="99">
+      <Border x:Name="ProjBox" Visibility="Collapsed"
+              VerticalAlignment="Center" HorizontalAlignment="Center" Margin="24"
+              Width="580" Background="{StaticResource PanelHi}" CornerRadius="12"
+              BorderBrush="{StaticResource EdgeLit}" BorderThickness="1" Padding="22,18,22,16">
+        <Border.Effect>
+          <DropShadowEffect BlurRadius="52" ShadowDepth="16" Opacity="0.7" Color="#000000"/>
+        </Border.Effect>
+        <StackPanel>
+          <TextBlock Text="THIS PROJECT" Style="{StaticResource Caption}"/>
+          <TextBlock x:Name="ProjName" Style="{StaticResource Display}" TextWrapping="Wrap"
+                     Margin="0,6,0,2" Text=""/>
+          <TextBlock x:Name="ProjWhere" Style="{StaticResource Meta}" TextWrapping="Wrap"
+                     Margin="0,0,0,16" Text=""/>
+
+          <Grid Margin="0,0,0,15">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Margin="0,0,16,0">
+              <TextBlock Text="Reopen at logon" Style="{StaticResource Body}"/>
+              <TextBlock x:Name="ProjRestoreNote" Style="{StaticResource Dim}" TextWrapping="Wrap"
+                         Margin="0,3,0,0" Text=""/>
+            </StackPanel>
+            <Button x:Name="ProjRestoreBtn" Grid.Column="1" Style="{StaticResource Btn}"
+                    MinWidth="112" VerticalAlignment="Top"/>
+          </Grid>
+
+          <Grid Margin="0,0,0,15">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Margin="0,0,16,0">
+              <TextBlock Text="Auto-tick new conversations" Style="{StaticResource Body}"/>
+              <TextBlock x:Name="ProjAutoNote" Style="{StaticResource Dim}" TextWrapping="Wrap"
+                         Margin="0,3,0,0" Text=""/>
+            </StackPanel>
+            <Button x:Name="ProjAutoBtn" Grid.Column="1" Style="{StaticResource Btn}"
+                    MinWidth="112" VerticalAlignment="Top"/>
+          </Grid>
+
+          <Grid Margin="0,0,0,4">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Margin="0,0,16,0">
+              <TextBlock Text="On the rail" Style="{StaticResource Body}"/>
+              <TextBlock x:Name="ProjShelveNote" Style="{StaticResource Dim}" TextWrapping="Wrap"
+                         Margin="0,3,0,0" Text=""/>
+            </StackPanel>
+            <Button x:Name="ProjShelveBtn" Grid.Column="1" Style="{StaticResource Btn}"
+                    MinWidth="112" VerticalAlignment="Top"/>
+          </Grid>
+
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="ProjClose" Content="Close" Style="{StaticResource BtnPrimary}"
+                    MinWidth="92"/>
+          </StackPanel>
+        </StackPanel>
+      </Border>
+    </Grid>
+
+    <Rectangle x:Name="Scrim" Grid.Row="0" Grid.RowSpan="4" Panel.ZIndex="100"
+               Visibility="Collapsed" Fill="#000000" Opacity="0.62"/>
+
+    <Grid x:Name="Sheet" Grid.Row="2" Panel.ZIndex="101" Visibility="Collapsed">
+      <Border MaxWidth="560" MaxHeight="480" VerticalAlignment="Center"
+              HorizontalAlignment="Center" Margin="24"
+              Background="{StaticResource Sheet}" CornerRadius="14"
+              BorderBrush="{StaticResource EdgeLit}" BorderThickness="1"
+              Padding="26,22,26,20" SnapsToDevicePixels="True">
+        <Border.Effect>
+          <DropShadowEffect BlurRadius="52" ShadowDepth="16" Opacity="0.7" Color="#000000"/>
+        </Border.Effect>
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+
+          <!-- Display, not H1. At 15px the question read at exactly the same
+               size as the pane name behind it, which is the wrong weighting for
+               the only thing on screen the operator is being asked to answer. -->
+          <TextBlock x:Name="SheetTitle" Grid.Row="0" Style="{StaticResource Display}"
+                     TextWrapping="Wrap" Margin="0,0,0,14" Text=""/>
+
+          <!-- The bodies name every conversation an action will touch, so this
+               scrolls rather than trimming: a list you cannot read to the end
+               is not a confirmation. -->
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled" Margin="0,0,0,20">
+            <TextBlock x:Name="SheetBody" Style="{StaticResource Body}"
+                       TextWrapping="Wrap" LineHeight="20" Text=""/>
+          </ScrollViewer>
+
+          <!-- Three at most, right-aligned, the primary last: the rightmost
+               button is the one Enter presses and the one the eye lands on. -->
+          <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="SheetB1" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                    Visibility="Collapsed" MinWidth="92"/>
+            <Button x:Name="SheetB2" Style="{StaticResource Btn}" Margin="0,0,8,0"
+                    Visibility="Collapsed" MinWidth="92"/>
+            <Button x:Name="SheetB3" Style="{StaticResource BtnPrimary}"
+                    Visibility="Collapsed" MinWidth="92"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+    </Grid>
+  </Grid>
+  </Border>
+</Window>

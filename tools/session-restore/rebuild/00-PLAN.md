@@ -881,6 +881,39 @@ differences of the 2 -> 25 ms kind were treated as real.
 pixels, not against a description, and it is the easiest thing here to break
 without noticing.
 
+### 4.1 as it turned out - first tranche: the window opens, 164 of 164
+
+**`Sessions2.exe --surface`** builds the ported window with no data context,
+shows it the render-driver way, and writes `%TEMP%\sr-surface-check.txt`. Exit 0
+means it opened, both shipped faces installed, and every named element in
+`01-CAPABILITIES.md` is present **by name and by kind**. The list is read from
+that document, not retyped.
+
+- **The markup is `lib/window2.xaml` with one attribute added** (`x:Class`), and
+  169 KB of it compiled to BAML first time. Every divergence from here is a named
+  change.
+- 🔴 **The XAML does not say what is on screen.** It names Segoe and Cascadia;
+  the PowerShell swaps in Manrope and IBM Plex Mono after parse and collapses
+  every `Sz*` to the pane size. `Views\Typefaces.cs` ports all three, with the
+  put-it-back-if-refused rule, and the fonts are embedded (linked from
+  `lib\fonts`, one copy in the repo).
+- 🪤 **Three names hide where a shown window never builds**: an inline
+  `ItemTemplate` on an empty list (`CastTick`), a `DataTemplate` in the resources
+  (`TickBox`), and a template nested in a template (`bb`). The check loads every
+  template's content, recursively, instead of needing data to reach them.
+- **Seen red, every path**: a renamed window control, a renamed name in an inline
+  item template, one in a resource template, a changed kind, and a face that did
+  not load - each failed on its own line. 🪤 The first break was invalid - `bb`
+  is a trigger target, so the BUILD failed and the check ran the previous exe
+  green. Every break since is gated on a build that passed.
+
+🔴 **Not yet done in 4.1: "replacing imperative updates with bindings".** The
+session row template binds 33 properties, six of them the fake band-heading row
+that 3.3 replaced with real grouping - so the next tranche splits
+`SessionRowTpl` into a row template and a `GroupStyle` header, and ports what
+`Build-Sessions` computes per row. That is also what 3.5's two carried
+measurements were waiting for.
+
 ---
 
 ## Phase 5 — behaviour parity

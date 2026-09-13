@@ -19,6 +19,16 @@
     -->
   </PropertyGroup>
 
+  <!--
+    🔴 THE FONTS THE SHIPPED WINDOW ACTUALLY DRAWS IN, embedded rather than
+    read from lib\fonts at run time. The XAML names Segoe and Cascadia and the
+    PowerShell replaces both after parse - see Views\Typefaces.cs. Linked, not
+    copied, so there is one set of font files in the repo.
+  -->
+  <ItemGroup>
+    <Resource Include="..\..\lib\fonts\*.ttf" Link="fonts\%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\SessionRestore.Core\SessionRestore.Core.csproj" />
   </ItemGroup>
