@@ -158,12 +158,26 @@ public static class Titles
         ((int)Math.Round(v, MidpointRounding.ToEven)).ToString(CultureInfo.InvariantCulture);
 
     /// <summary>PowerShell's <c>Split-Path -Leaf</c>.</summary>
-    private static string Leaf(string dir)
+    /// <remarks>
+    /// 🪤 SPLIT-PATH IS PROVIDER-RELATIVE, and two of its answers are not string
+    /// work at all - measured 2026-09-13: <c>C:\</c> leafs to <c>C:\</c>, and a bare
+    /// <c>\</c> or <c>/</c> to the CURRENT drive's root. The port trimmed separators
+    /// and answered <c>C:</c> and <c>\</c>; live data never has a drive root as a
+    /// project, so only a shape built for it found the difference. A bare <c>C:</c>
+    /// resolves against the current directory and is deliberately not ported: no
+    /// absolute project path can be one.
+    /// </remarks>
+    internal static string Leaf(string dir)
     {
         var t = dir.TrimEnd('\\', '/');
         if (t.Length == 0)
         {
-            return dir;
+            return dir.Length == 0 ? dir : Path.GetPathRoot(Environment.CurrentDirectory) ?? dir;
+        }
+
+        if (t.Length == 2 && t[1] == ':' && char.IsAsciiLetter(t[0]) && dir.Length > 2)
+        {
+            return t + "\\";
         }
 
         var i = t.LastIndexOfAny(['\\', '/']);

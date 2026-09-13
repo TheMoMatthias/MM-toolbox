@@ -102,6 +102,33 @@ public sealed class ConversationVm : INotifyPropertyChanged
     /// </summary>
     public string SearchText { get; private set; } = string.Empty;
 
+    /// <summary>The sessions column's own box searches title and auto-title only. See SearchMatch.</summary>
+    public string ListSearchText { get; private set; } = string.Empty;
+
+    /// <summary>What "by name" sorts on: the title, lower-cased once.</summary>
+    public string SortTitle { get; private set; } = string.Empty;
+
+    /// <summary>What "by project" sorts on: the project's disambiguated label, lower-cased once.</summary>
+    public string SortProject { get; private set; } = string.Empty;
+
+    /// <summary>The project's label, disambiguated against every other project. Set by the column.</summary>
+    public string ProjectLabel { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// Gives the row its project label and rebuilds what depends on it.
+    /// </summary>
+    /// <remarks>
+    /// 🔑 THE COLUMN SETS THIS, NOT THE ROW, because a label depends on every OTHER
+    /// project: two folders called <c>src</c> each take a parent segment. The row
+    /// cannot know that on its own.
+    /// </remarks>
+    public void ApplyLabel(string label)
+    {
+        ProjectLabel = label ?? string.Empty;
+        SortProject = ProjectLabel.ToLowerInvariant();
+        SearchText = SearchMatch.Haystack(Title, Session.AutoTitle, Directory.Path, Id, ProjectLabel);
+    }
+
     /// <summary>
     /// Whether this row passes the current filter.
     /// </summary>
@@ -427,8 +454,11 @@ public sealed class ConversationVm : INotifyPropertyChanged
         Raise(nameof(Enabled));
         Raise(nameof(Pinned));
 
-        SearchText = (t.Text + "" + Session.SessionId + "" + Directory.Path
-                      + "" + Session.Cwd).ToLowerInvariant();
+        // THE SHIPPED HAYSTACK, not the one this first had: title, id, path and
+        // cwd searched a field the window never searched and missed two it does.
+        SearchText = SearchMatch.Haystack(t.Text, Session.AutoTitle, Directory.Path, Id, ProjectLabel);
+        ListSearchText = SearchMatch.ListHaystack(t.Text, Session.AutoTitle);
+        SortTitle = t.Text.ToLowerInvariant();
     }
 
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null)

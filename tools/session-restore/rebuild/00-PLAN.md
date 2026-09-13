@@ -992,6 +992,51 @@ data flow built before its handler is guessed at twice.
 | still open | why it waits | trigger |
 |---|---|---|
 | sub-agent rows under the selected conversation (`SubAgentRowTpl`) | they appear on SELECTION, which is a handler | 4.2, `SessionList` selection |
+
+### 4.2a as it turned out - the handlers that only change what is shown
+
+**`Sessions2.exe --handlers`** drives each handler through its REAL event on
+the real control (`sr-handler-check.txt`, exit = failures): the chrome, the sort
+cycle, the 90 ms search debounce, both column folds with the strip, the two
+surfaces, the zoom. Twelve checks; zoom, the structural guard and the debounce
+were each seen red.
+
+- 🔴 **NOTHING IN THE APP CAN ACT ON A SESSION, AND A CHECK PROVES IT FROM THE
+  ASSEMBLY.** The first check reads every member reference compiled into
+  `Sessions2.dll` out of its metadata and fails on `ConsoleWriter`,
+  `RegistryWriter`, `RegistryTarget` or `Process.Start` - seen red by adding one
+  call to `ConsoleWriter.Send`.
+- 🔴 **THE SHIPPED FOLD AND ZOOM WRITE THE LIVE CONFIG.** Both call
+  `Save-SRConfigLater`. In the rebuild remembering is `IPreferences`, and the only
+  implementation is `NoPreferences`, which writes nothing and records what it was
+  asked - the check asserts the four folds were ASKED.
+- 🔴 **The zoom compounded** - `Typefaces.Scale` read the size it had just
+  written, so 100 -> 110 -> 125 read 13, 14.5, 18. The base is captured once, as
+  `$script:TypeBase` does. Caught on the check's first run.
+- 🪤 The maximise and minimise buttons are NOT pressed: maximising a window at
+  -32000 puts it on the operator's monitor. Their glyph rule is checked as a value.
+
+**Three port defects found in 3.x's view model on the way**, each now matching
+the shipped window with an oracle case:
+
+| what | was | is |
+|---|---|---|
+| the sort cycle | recent / name / **band** | recent / name / **project** - bands are always the grouping |
+| the search haystack | title, id, path, **cwd** | title, **auto-title**, path, id, **project label** (`search/filter`) |
+| what a search IS | `Contains` | **`-like "*q*"`** - `*` `?` `[ab]` are wildcards, a backtick escapes, an unclosed `[` throws and the list stays as it was |
+
+- **`Core.Rows.ProjectLabels`** ports `Update-ProjectLabels`: a folder name,
+  growing by a parent segment per clash up to four, case-insensitive in both the
+  keys and the grouping (`labels/live`, `labels/shapes`, 3 breaks).
+- 🪤 **`Split-Path -Leaf` is provider-relative**: `C:\` stays `C:\` and a bare
+  `\` becomes the current drive's root. `Titles.Leaf` answered `C:` - found only by
+  a shape, since no live project is a drive root.
+
+| next in 4.2 | why it waits | trigger |
+|---|---|---|
+| the rail (search, sort, only-live, shelved, clear, pick) | needs its own view model and the rail's grouping, a surface of its own | 4.2b |
+| selection, the strip's click, the band pick | the reading pane opens on selection | 4.2b/4.4 |
+| 🔴 every handler that launches, types, ends, saves or signs in | first C# code able to act; it gets a seam whose only implementation reaches the replica console, and the structural guard is widened rather than removed | 4.2c |
 | **the band pick** (`BandBg`, "only this") | 🪤 it cannot be a filter: the shipped column keeps EVERY heading when one band is picked, and a filtered-out group has no header | 4.2, with the handler |
 | **3.5's two measurements, against the real template** | the run on 2026-09-13 was at **99% CPU** (a game plus other sessions' python), so the ported window reading 5-10x the placeholder is not evidence of anything yet | a quiet machine: `--bench --repeats 40` |
 

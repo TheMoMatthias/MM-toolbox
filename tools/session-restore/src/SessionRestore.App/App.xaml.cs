@@ -28,6 +28,14 @@ public partial class App : Application
             return;
         }
 
+        // Plan item 4.2: drive the window-state handlers through their real events.
+        if (Array.Exists(e.Args, a => string.Equals(a, "--handlers", StringComparison.OrdinalIgnoreCase)))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Dispatcher.BeginInvoke(new Action(RunHandlers), DispatcherPriority.ApplicationIdle);
+            return;
+        }
+
         // Render the ported sessions column, bound to the registry read-only, to
         // a PNG - so a port can be LOOKED AT rather than inferred from a green.
         var renderAt = Array.FindIndex(e.Args, a => string.Equals(a, "--render", StringComparison.OrdinalIgnoreCase));
@@ -92,6 +100,34 @@ public partial class App : Application
         }
 
         Shutdown(code);
+    }
+
+    private void RunHandlers()
+    {
+        int failures;
+        string report;
+        try
+        {
+            var checks = Bench.HandlerChecks.Run();
+            report = Bench.HandlerChecks.Report(checks);
+            failures = checks.Count(c => !c.Passed);
+        }
+#pragma warning disable CA1031 // the check must report a failure, not vanish with it
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            report = "the handler check threw: " + ex.GetType().Name + ": " + ex.Message + Environment.NewLine + ex.StackTrace;
+            failures = 1000;
+        }
+
+        try
+        {
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "sr-handler-check.txt"), report);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+
+        Shutdown(failures);
     }
 
     private void RunSurface()

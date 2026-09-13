@@ -10,11 +10,16 @@ using SessionRestore.Core.Transcripts;
 namespace SessionRestore.App.ViewModels;
 
 /// <summary>How the sessions column is ordered.</summary>
+/// <remarks>
+/// 🔴 RECENT, NAME, PROJECT - the shipped cycle. The first port had BAND as the
+/// third, which the window never offered: bands are always the grouping, never a
+/// sort, and "by project" was missing entirely.
+/// </remarks>
 public enum SessionSort
 {
     Recent,
     Name,
-    Band,
+    Project,
 }
 
 /// <summary>
@@ -43,6 +48,9 @@ public sealed class SessionsVm : INotifyPropertyChanged
     private SessionSort _sort = SessionSort.Recent;
     private bool _onlyLive;
     private string _selectedId = string.Empty;
+    private string _listSearch = string.Empty;
+    private System.Text.RegularExpressions.Regex? _needleRx;
+    private System.Text.RegularExpressions.Regex? _listRx;
 
     public SessionsVm()
     {
@@ -118,10 +126,39 @@ public sealed class SessionsVm : INotifyPropertyChanged
             if (Set(ref _search, value ?? string.Empty))
             {
                 _needle = _search.Trim().ToLowerInvariant();
+                _needleRx = _needle.Length > 0 ? SearchMatch.Pattern(_needle) : null;
                 Reselect();
             }
         }
     }
+
+    /// <summary>The sessions column's own search box - titles only.</summary>
+    public string ListSearch
+    {
+        get => _listSearch;
+        set
+        {
+            if (Set(ref _listSearch, value ?? string.Empty))
+            {
+                _listNeedle = _listSearch.Trim().ToLowerInvariant();
+                _listRx = _listNeedle.Length > 0 ? SearchMatch.Pattern(_listNeedle) : null;
+                Reselect();
+            }
+        }
+    }
+
+    private string _listNeedle = string.Empty;
+
+    /// <summary>What the sort control says: "newest first", "by name", "by project".</summary>
+    public string SortLabel => _sort switch
+    {
+        SessionSort.Name => "by name",
+        SessionSort.Project => "by project",
+        _ => "newest first",
+    };
+
+    /// <summary>The sort control's click: the next of the three, round again.</summary>
+    public void CycleSort() => Sort = (SessionSort)(((int)_sort + 1) % 3);
 
     /// <summary>The rail's filter: one project, or all of them.</summary>
     public string Project
@@ -177,6 +214,7 @@ public sealed class SessionsVm : INotifyPropertyChanged
             if (Set(ref _sort, value))
             {
                 ApplySort();
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SortLabel)));
             }
         }
     }
@@ -202,7 +240,8 @@ public sealed class SessionsVm : INotifyPropertyChanged
         IReadOnlyDictionary<string, AgentStatus>? agents = null,
         IReadOnlyDictionary<string, SaidResult>? said = null,
         long nowTicks = 0,
-        IReadOnlyDictionary<string, RowExtras>? extras = null)
+        IReadOnlyDictionary<string, RowExtras>? extras = null,
+        ProjectLabels? labels = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         if (nowTicks <= 0)
@@ -210,8 +249,13 @@ public sealed class SessionsVm : INotifyPropertyChanged
             nowTicks = DateTime.Now.Ticks;
         }
 
+        var list = model as IList<(string Id, RegistrySession Session, RegistryDirectory Directory)> ?? model.ToList();
+
+        // Labels are disambiguated against every project the model holds.
+        labels ??= ProjectLabels.For(list.Select(m => m.Directory.Path).Distinct(StringComparer.OrdinalIgnoreCase));
+
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (id, session, directory) in model)
+        foreach (var (id, session, directory) in list)
         {
             seen.Add(id);
             var a = agents is not null && agents.TryGetValue(id, out var av) ? av : null;
@@ -221,11 +265,13 @@ public sealed class SessionsVm : INotifyPropertyChanged
             if (_byId.TryGetValue(id, out var row))
             {
                 row.Refresh(a, s, nowTicks, x);
+                row.ApplyLabel(labels.Of(directory.Path));
                 continue;
             }
 
             row = new ConversationVm(id, session, directory);
             row.Refresh(a, s, nowTicks, x);
+            row.ApplyLabel(labels.Of(directory.Path));
             _byId[id] = row;
             _rows.Add(row);
         }
@@ -267,6 +313,15 @@ public sealed class SessionsVm : INotifyPropertyChanged
     /// </remarks>
     private void Reselect()
     {
+        // 🔴 AN INVALID PATTERN CHANGES NOTHING. In the shipped window `-like`
+        // throws on an unclosed `[`, the rebuild is abandoned inside its catch, and
+        // the list keeps showing what it showed. Filtering to nothing instead would
+        // blank the column on the second character of `[draft]`.
+        if ((_needle.Length > 0 && _needleRx is null) || (_listNeedle.Length > 0 && _listRx is null))
+        {
+            return;
+        }
+
         using (_view.DeferRefresh())
         {
             foreach (var r in _rows)
@@ -310,8 +365,8 @@ public sealed class SessionsVm : INotifyPropertyChanged
             return false;
         }
 
-        return _needle.Length == 0
-            || r.SearchText.Contains(_needle, StringComparison.Ordinal);
+        return (_needleRx is null || _needleRx.IsMatch(r.SearchText))
+            && (_listRx is null || _listRx.IsMatch(r.ListSearchText));
     }
 
     /// <summary>
@@ -336,14 +391,11 @@ public sealed class SessionsVm : INotifyPropertyChanged
             switch (_sort)
             {
                 case SessionSort.Name:
-                    View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.Title), ListSortDirection.Ascending));
+                    View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.SortTitle), ListSortDirection.Ascending));
                     break;
-                case SessionSort.Band:
-                    // 🪤 NOTHING EXTRA. Sorting by band was a sort option while
-                    // the bands were built by hand; now that they are the grouping
-                    // it is already the outermost key, and adding it again would
-                    // be a second comparison that can never change an order.
-                    View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.LastActiveTicks), ListSortDirection.Descending));
+                case SessionSort.Project:
+                    View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.SortProject), ListSortDirection.Ascending));
+                    View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.SortTitle), ListSortDirection.Ascending));
                     break;
                 default:
                     View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.LastActiveTicks), ListSortDirection.Descending));

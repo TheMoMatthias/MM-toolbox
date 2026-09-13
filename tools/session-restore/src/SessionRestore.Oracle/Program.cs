@@ -93,6 +93,8 @@ cases.AddRange(QueueCases.All());
 cases.AddRange(VitalsCases.All());
 cases.AddRange(ContextCases.All());
 cases.AddRange(RowDecorCases.All());
+cases.AddRange(LabelCases.All());
+cases.AddRange(SearchCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");

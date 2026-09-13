@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Media;
 
@@ -25,6 +26,8 @@ public static class Typefaces
     private static readonly string[] SizeKeys = ["Micro", "Caption", "Body", "Mono", "Strong", "Display", "Pane"];
 
     private const double PaneFallback = 13.0;
+
+    private static readonly ConditionalWeakTable<FrameworkElement, StrongBox<double>> Base = new();
 
     /// <summary>What was installed, for the surface check to report.</summary>
     public sealed record Installed(bool Manrope, bool Plex, double Size);
@@ -117,10 +120,17 @@ public static class Typefaces
     /// hierarchy. The six base values stay in the XAML as the record of what the
     /// scale was.
     /// </remarks>
-    private static double Scale(FrameworkElement window, int zoomPercent)
+    public static double Scale(FrameworkElement window, int zoomPercent)
     {
+        ArgumentNullException.ThrowIfNull(window);
         var zoom = Math.Max(70, Math.Min(200, zoomPercent)) / 100.0;
-        var pane = window.Resources["SzPane"] is double d && d > 0 ? d : PaneFallback;
+
+        // 🔴 THE BASE IS READ ONCE, NOT EVERY TIME. This read SzPane on each call -
+        // and each call WRITES SzPane, so the second step scaled the first step's
+        // answer: 13, 14.5, 18, 27. The handler check caught it on its first run.
+        // The shipped window keeps the base in $script:TypeBase for exactly this.
+        var pane = Base.GetValue(window, w => new StrongBox<double>(
+            w.Resources["SzPane"] is double d && d > 0 ? d : PaneFallback)).Value;
         var v = Math.Round(pane * zoom * 2.0, MidpointRounding.ToEven) / 2.0;
         foreach (var k in SizeKeys)
         {
