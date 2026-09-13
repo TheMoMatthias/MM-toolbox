@@ -53,6 +53,13 @@ public static class HandlerChecks
             ShowActivated = false,
             IsHitTestVisible = false,
         };
+        // Every binding the handlers make the window draw - the rail's tiles and
+        // headings included, which the bench's window never attaches.
+        var trap = new KeystrokeBench.BindingErrorTrap();
+        System.Diagnostics.PresentationTraceSources.Refresh();
+        System.Diagnostics.PresentationTraceSources.DataBindingSource.Switch.Level = System.Diagnostics.SourceLevels.Error;
+        System.Diagnostics.PresentationTraceSources.DataBindingSource.Listeners.Add(trap);
+
         var shell = new WindowShell(w, vm, prefs);
         shell.Attach();
         var closed = false;
@@ -171,6 +178,89 @@ public static class HandlerChecks
                 WindowShell.NextZoom(105) == 110 && WindowShell.NextZoom(117) == 125 && WindowShell.NextZoom(200) == 80,
                 $"105 -> {WindowShell.NextZoom(105)}, 117 -> {WindowShell.NextZoom(117)}, 200 -> {WindowShell.NextZoom(200)}"));
 
+            // ---- the rail
+            var railSorts = new List<string>();
+            for (var i = 0; i < 4; i++)
+            {
+                Mouse(w.RailSort, UIElement.MouseLeftButtonDownEvent);
+                railSorts.Add(w.RailSort.Text);
+            }
+
+            checks.Add(new Check("the rail's sort cycles recent, name, waiting, busiest, and round",
+                string.Join(",", railSorts) == "name,waiting,busiest,recent", string.Join(", ", railSorts)));
+
+            var tilesAll = shell.Rail.Items.Count(x => !x.IsBand);
+            Mouse(w.RailOnlyLive, UIElement.MouseLeftButtonDownEvent);
+            var liveText = w.RailOnlyLive.Text;
+            var tilesLive = shell.Rail.Items.Count(x => !x.IsBand);
+            var liveExpected = vm.Rows.Where(r => r.Live).Select(r => r.ProjectPath).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+            Mouse(w.RailOnlyLive, UIElement.MouseLeftButtonDownEvent);
+            checks.Add(new Check("only-live narrows the rail to projects with something running, and back",
+                liveText == "running" && w.RailOnlyLive.Text == "all" && tilesLive == liveExpected
+                    && shell.Rail.Items.Count(x => !x.IsBand) == tilesAll && tilesAll > 0,
+                $"{tilesAll} tile(s), {tilesLive} running (expected {liveExpected}), back to {shell.Rail.Items.Count(x => !x.IsBand)}"));
+
+            Pump(w);
+            var head = shell.Rail.Items.FirstOrDefault(x => x.IsBand);
+            var headOk = false;
+            var headDetail = "no heading on the rail";
+            if (head is not null && w.RailList.ItemContainerGenerator.ContainerFromItem(head) is ListBoxItem hc)
+            {
+                // 🪤 PreviewMouseDOWN, NOT PreviewMouseLeftButtonDown. The left-button
+                // events are DIRECT routed events, raised on each element of the
+                // mouse-down route by a class handler - so raising one on the tile's
+                // container reached the container and nothing above it, and the
+                // rail's handler never ran. A real click is a PreviewMouseDown.
+                prefs.Asked.Clear();
+                var before2 = shell.Rail.Items.Count;
+                hc.RaiseEvent(new MouseButtonEventArgs(System.Windows.Input.Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.PreviewMouseDownEvent });
+                var shut = shell.Rail.IsShut(head.BandKey);
+                var after2 = shell.Rail.Items.Count;
+                var asked = prefs.Asked.LastOrDefault();
+                var hc2 = w.RailList.ItemContainerGenerator.ContainerFromItem(shell.Rail.Items.First(x => x.Id == head.Id)) as ListBoxItem;
+                hc2?.RaiseEvent(new MouseButtonEventArgs(System.Windows.Input.Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.PreviewMouseDownEvent });
+                headOk = shut && after2 == before2 - head.BandCount && asked.Key == "railBandsShut"
+                         && !shell.Rail.IsShut(head.BandKey) && shell.Rail.Items.Count == before2 && head.BandCount > 0;
+                headDetail = $"{head.BandLabel}: {before2} item(s), shut to {after2}, asked {asked.Key}={asked.Value}, reopened to {shell.Rail.Items.Count}";
+            }
+
+            checks.Add(new Check("clicking a band's heading folds its tiles away and asks to remember it, and again opens it",
+                headOk, headDetail));
+
+            var tile = shell.Rail.Items.FirstOrDefault(x => !x.IsBand);
+            var pickOk = false;
+            var pickDetail = "no tile on the rail";
+            if (tile is not null)
+            {
+                w.RailList.SelectedItem = tile;
+                Pump(w);
+                var picked = vm.Project;
+                var clearShown = w.RailClear.Visibility == Visibility.Visible;
+                var allOfIt = vm.View.Cast<ConversationVm>().All(r => string.Equals(r.ProjectPath, tile.Path, StringComparison.OrdinalIgnoreCase));
+                Mouse(w.RailClear, UIElement.MouseLeftButtonUpEvent);
+                Pump(w);
+                pickOk = string.Equals(picked, tile.Path, StringComparison.OrdinalIgnoreCase) && clearShown && allOfIt
+                         && vm.Project.Length == 0 && w.RailClear.Visibility != Visibility.Visible;
+                pickDetail = $"picked '{picked}', clear shown {clearShown}, column all that project {allOfIt}, cleared to '{vm.Project}'";
+            }
+
+            checks.Add(new Check("clicking a tile filters the sessions column to it, and clear undoes it",
+                pickOk, pickDetail));
+
+            w.RailSearch.Text = "zzzz-no-project";
+            Wait(w, Cadences.Debounce * 3);
+            var searched = shell.Rail.Items.Count(x => !x.IsBand);
+            w.RailSearch.Text = string.Empty;
+            Wait(w, Cadences.Debounce * 3);
+            checks.Add(new Check("the rail's own box narrows the rail, and clearing it widens it",
+                searched == 0 && shell.Rail.Items.Count(x => !x.IsBand) == tilesAll,
+                $"narrowed to {searched}, back to {shell.Rail.Items.Count(x => !x.IsBand)}"));
+
+            Pump(w);
+            checks.Add(new Check("nothing the handlers drew failed to bind",
+                trap.Seen.Count == 0,
+                trap.Seen.Count == 0 ? "0 binding error(s)" : trap.Seen.Count + " binding error(s), first: " + trap.Seen[0]));
+
             // ---- close, last
             w.WinClose.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             Pump(w);
@@ -178,6 +268,7 @@ public static class HandlerChecks
         }
         finally
         {
+            System.Diagnostics.PresentationTraceSources.DataBindingSource.Listeners.Remove(trap);
             if (!closed)
             {
                 w.Close();

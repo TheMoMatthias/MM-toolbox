@@ -60,12 +60,38 @@ public sealed class WindowShell
             Zoom = config.IsSet("zoom") ? config.GetInt("zoom") : 100;
         }
 
+        Rail = new RailVm(vm, key => _w.TryFindResource(key) as Brush,
+            config is not null && config.IsSet("railBandsShut") ? config.GetString("railBandsShut").Split(',') : null);
+        if (config?.Raw("autoTickLaneBudgets") is System.Text.Json.Nodes.JsonObject budgets)
+        {
+            var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in budgets)
+            {
+                if (kv.Value is System.Text.Json.Nodes.JsonValue jv && jv.TryGetValue<int>(out var n))
+                {
+                    map[kv.Key] = n;
+                }
+            }
+
+            Rail.AutoTickBudgets = map;
+        }
+
+        if (config is not null && config.IsSet("shelveSuggestDays"))
+        {
+            Rail.ShelveSuggestDays = config.GetInt("shelveSuggestDays");
+        }
+
         _search = new DispatcherTimer(DispatcherPriority.Input, _w.Dispatcher) { Interval = Cadences.Debounce };
         _search.Tick += (_, _) =>
         {
             _search.Stop();
             _vm.Search = _w.Search.Text;
             _vm.ListSearch = _w.ListSearch.Text;
+
+            // 🔴 BOTH PANES: the header box narrows the rail as well as the list.
+            Rail.Query = _w.Search.Text;
+            Rail.ProjectQuery = _w.RailSearch.Text;
+            RebuildRail();
         };
     }
 
@@ -75,6 +101,9 @@ public sealed class WindowShell
     public bool? FoldList { get; private set; }
 
     public int Zoom { get; private set; } = 100;
+
+    /// <summary>The projects rail's view model.</summary>
+    public RailVm Rail { get; }
 
     /// <summary>Wires every handler this tranche owns and applies the starting state.</summary>
     public void Attach()
@@ -108,7 +137,71 @@ public sealed class WindowShell
 
         _w.PaneZoom.Click += (_, _) => StepZoom();
 
+        // ---- the rail
+        _w.RailSearch.TextChanged += (_, _) => Restart();
+        _w.RailSort.MouseLeftButtonDown += (_, e) =>
+        {
+            Rail.CycleSort();
+            RebuildRail();
+            e.Handled = true;
+        };
+        _w.RailOnlyLive.MouseLeftButtonDown += (_, e) =>
+        {
+            Rail.OnlyLive = !Rail.OnlyLive;
+            RebuildRail();
+            e.Handled = true;
+        };
+        _w.RailShelved.MouseLeftButtonDown += (_, e) =>
+        {
+            Rail.ShowShelved = !Rail.ShowShelved;
+            RebuildRail();
+            Status(Rail.ShowShelved
+                ? string.Format(CultureInfo.InvariantCulture, "showing the {0} shelved project(s) - right-click one to put it back for good", Rail.Shelved)
+                : "shelved projects put away again");
+            e.Handled = true;
+        };
+        _w.RailClear.MouseLeftButtonUp += (_, _) =>
+        {
+            Rail.ClearPick();
+            _vm.Project = string.Empty;
+            RebuildRail();
+        };
+
+        // A heading FOLDS its band; it is never a pick.
+        _w.RailList.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            if (Clicked(e.OriginalSource as DependencyObject) is not { IsBand: true } band)
+            {
+                return;
+            }
+
+            Rail.ToggleBand(band.BandKey);
+            _prefs.Remember("railBandsShut", Rail.ShutList);
+            RebuildRail();
+            var lower = band.BandLabel.ToLowerInvariant();
+            Status(Rail.IsShut(band.BandKey)
+                ? string.Format(CultureInfo.InvariantCulture, "{0} folded away - click the heading again to show those {1} project(s)", lower, band.BandCount)
+                : string.Format(CultureInfo.InvariantCulture, "showing the {0} project(s) in {1}", band.BandCount, lower));
+            e.Handled = true;
+        };
+
+        // 🔴 A HEADING IS NOT A PROJECT: its path is empty, and letting it through
+        // would filter the sessions column to nothing with no tile lit to say why.
+        _w.RailList.SelectionChanged += (_, _) =>
+        {
+            if (_w.RailList.SelectedItem is not RailItemVm { IsBand: false } tile)
+            {
+                return;
+            }
+
+            Rail.TogglePick(tile.Path);
+            _vm.Project = Rail.Pick ?? string.Empty;
+            RebuildRail();
+        };
+
         _w.SessionList.ItemsSource = _vm.View;
+        _w.RailList.ItemsSource = Rail.Items;
+        RebuildRail();
         _w.ListSort.Text = _vm.SortLabel;
         Typefaces.Scale(_w, Zoom);
         _w.PaneZoom.Content = ZoomLabel(Zoom);
@@ -259,6 +352,62 @@ public sealed class WindowShell
         var waiting = items.Count(i => i.Band == Bands.Needs);
         _w.StripCount.Text = waiting > 0 ? waiting.ToString(CultureInfo.InvariantCulture) : "·";
         _w.StripCount.ToolTip = string.Format(CultureInfo.InvariantCulture, "{0} waiting on you, {1} working", waiting, items.Count - waiting);
+    }
+
+    // -------------------------------------------------------------------- rail
+
+    /// <summary>Rebuilds the rail and its header controls; an invalid pattern leaves both as they were.</summary>
+    public void RebuildRail()
+    {
+        if (!Rail.Rebuild())
+        {
+            return;
+        }
+
+        _w.RailSort.Text = Rail.Sort;
+        _w.RailOnlyLive.Text = Rail.OnlyLive ? "running" : "all";
+        _w.RailOnlyLive.Foreground = _w.TryFindResource(Rail.OnlyLive ? "TextMax" : "TextLow") as Brush;
+        _w.RailClear.Visibility = Rail.Pick is null ? Visibility.Collapsed : Visibility.Visible;
+
+        if (Rail.ShelvedControl is { } sh)
+        {
+            _w.RailShelved.Visibility = Visibility.Visible;
+            _w.RailShelved.Text = sh.Text;
+            _w.RailShelved.ToolTip = sh.Tip;
+            _w.RailShelved.Foreground = _w.TryFindResource(Rail.ShowShelved ? "TextMax" : "TextLow") as Brush;
+        }
+        else
+        {
+            _w.RailShelved.Visibility = Visibility.Collapsed;
+        }
+
+        if (Rail.SuggestControl is { } su)
+        {
+            _w.RailSuggest.Visibility = Visibility.Visible;
+            _w.RailSuggest.Text = su.Text;
+            _w.RailSuggest.ToolTip = su.Tip;
+        }
+        else
+        {
+            _w.RailSuggest.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>The rail item under a click, found by walking up to its container.</summary>
+    private static RailItemVm? Clicked(DependencyObject? d)
+    {
+        while (d is not null and not ListBoxItem)
+        {
+            d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d);
+        }
+
+        return (d as ListBoxItem)?.DataContext as RailItemVm;
+    }
+
+    private void Status(string text)
+    {
+        _w.Status.Text = text;
+        _w.Status.Foreground = _w.TryFindResource("TextMid") as Brush;
     }
 
     // ---------------------------------------------------------------- surfaces

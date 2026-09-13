@@ -1032,9 +1032,38 @@ the shipped window with an oracle case:
   `\` becomes the current drive's root. `Titles.Leaf` answered `C:` - found only by
   a shape, since no live project is a drive root.
 
+### 4.2b as it turned out - the projects rail
+
+- **`Core.Rows.Rail`** ports `Build-Rail`, `Get-RailGrouping` and `New-RailTile`;
+  **`ProjectAccent`** the dealt twelve-hue wheel; **`ShelveSuggestion`**
+  `Get-SRShelveSuggestion`. **`rail/build` splices `Build-Rail` and sixteen of its
+  helpers and runs the whole function**, over a model built to reach every rule, in
+  eleven rail settings - only `$ui`'s controls and `$window`'s brushes are stubbed,
+  with real brushes so the shipped casts survive.
+- 🔴 **Fourteen breaks; four MISSED on the first model.** It had no live-but-idle
+  conversation (so "working" counting `.Live` agreed), no working-but-not-live one
+  (so only-live reading the band agreed), a worktree project past BOTH cut-offs,
+  and no band holding two different waiting counts. Shapes added for each; all
+  fourteen caught.
+- 🪤 **Waiting and busiest tie, and PowerShell 5.1 promises nothing about ties.**
+  Each side checks its own order is non-increasing in the count (`orderOk`) and
+  then orders tiles that share a count by path - the ORDER is still compared, the
+  arbitrary tie-break is not.
+- 🪤 **`enabled` ABSENT IS NOT FALSE.** `Test-SRProjectRestoreOff` fires only on a
+  present false; `RegistryDirectory.EnabledPresent` now says which, without changing
+  what the writer writes.
+- **`RailVm` patches the list by id and signature** (`Sync-SRSessionItems`), and
+  `WindowShell` wires search (the shared 90 ms timer now rebuilds both panes),
+  sort, only-live, shelved, clear, heading-fold and tile-pick. `--handlers` is 18
+  checks, including one that fails on any binding error the handlers cause.
+- 🪤 **`PreviewMouseLeftButtonDown` IS A DIRECT EVENT.** Raised on a tile's
+  container it reached nothing above it, and the check stayed red with a correct
+  handler - a real click is a tunnelling `PreviewMouseDown`.
+- `--render` now draws the rail too, through the real shell.
+
 | next in 4.2 | why it waits | trigger |
 |---|---|---|
-| the rail (search, sort, only-live, shelved, clear, pick) | needs its own view model and the rail's grouping, a surface of its own | 4.2b |
+| a live-data rail comparison | the rail needs bands and live agents per row, which the oracle has no model pass to build; the shapes carry it for now | when the background pass is ported |
 | selection, the strip's click, the band pick | the reading pane opens on selection | 4.2b/4.4 |
 | 🔴 every handler that launches, types, ends, saves or signs in | first C# code able to act; it gets a seam whose only implementation reaches the replica console, and the structural guard is widened rather than removed | 4.2c |
 | **the band pick** (`BandBg`, "only this") | 🪤 it cannot be a filter: the shipped column keeps EVERY heading when one band is picked, and a filtered-out group has no header | 4.2, with the handler |

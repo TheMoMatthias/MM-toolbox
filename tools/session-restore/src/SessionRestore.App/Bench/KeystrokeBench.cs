@@ -66,7 +66,7 @@ public static class KeystrokeBench
     /// sub-agent dot on every row and nothing would say why. The port of the
     /// row template is exactly where that happens, so the bench counts them.
     /// </remarks>
-    private sealed class BindingErrorTrap : System.Diagnostics.TraceListener
+    internal sealed class BindingErrorTrap : System.Diagnostics.TraceListener
     {
         public List<string> Seen { get; } = [];
 

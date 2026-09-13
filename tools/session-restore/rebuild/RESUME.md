@@ -40,11 +40,12 @@ Last commit: see `git log`. Branch `main`.
 | 3.5 | the whole-list gestures | ⏸ carried to 4.1 |
 | 4.1 | the XAML port | ✅ window opens, 164/164; the sessions column fully bound, every mark oracle-checked |
 | 4.2a | handlers that only change what is shown | ✅ `--handlers` 12/12; the App provably references nothing that acts |
-| **4.2b** | **the rail, selection, the strip click** | ⏸ **start here** |
+| 4.2b | the projects rail | ✅ `rail/build` runs Build-Rail itself; 14 breaks caught; `--handlers` 18/18 |
+| **4.2c** | **selection and the reading pane, then the acting handlers behind a replica-only seam** | ⏸ **start here** |
 | 4.3-4.5 | keys, pane, animation | ⏸ |
 | 4-6 | the view, parity, cutover | ⏸ |
 
-**229 xUnit tests, 54 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
+**229 xUnit tests, 55 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 

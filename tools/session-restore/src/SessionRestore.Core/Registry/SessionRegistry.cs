@@ -60,7 +60,31 @@ public sealed class RegistryDirectory
 {
     [JsonPropertyName("path")] public string Path { get; set; } = string.Empty;
 
-    [JsonPropertyName("enabled")] public bool Enabled { get; set; }
+    private bool _enabled;
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled
+    {
+        get => _enabled;
+        set
+        {
+            _enabled = value;
+            EnabledPresent = true;
+        }
+    }
+
+    /// <summary>
+    /// Whether the file said <c>enabled</c> at all.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 ABSENT IS NOT FALSE. <c>Test-SRProjectRestoreOff</c> reads a project as
+    /// restoring nothing only when the field is PRESENT and false; a directory
+    /// written before the field existed restores as normal. A plain bool cannot
+    /// tell the two apart, and would have labelled such a project "no logon".
+    /// Not serialised - the writer still writes <see cref="Enabled"/> as before.
+    /// </remarks>
+    [JsonIgnore]
+    public bool EnabledPresent { get; private set; }
 
     [JsonPropertyName("missing")] public bool Missing { get; set; }
 
@@ -69,6 +93,21 @@ public sealed class RegistryDirectory
     [JsonPropertyName("sessions")] public List<RegistrySession> Sessions { get; set; } = [];
 
     [JsonExtensionData] public IDictionary<string, JsonElement>? Extra { get; set; }
+
+    /// <summary><c>Test-SRProjectShelved</c>: a <c>shelved</c> field that is truthy.</summary>
+    [JsonIgnore]
+    public bool Shelved =>
+        Extra is not null
+        && Extra.TryGetValue("shelved", out var v)
+        && v.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.String => (v.GetString() ?? string.Empty).Length > 0,
+            JsonValueKind.Number => v.GetDecimal() != 0,
+            JsonValueKind.Object => true,
+            JsonValueKind.Array => v.GetArrayLength() > 0,
+            _ => false,
+        };
 }
 
 /// <summary>

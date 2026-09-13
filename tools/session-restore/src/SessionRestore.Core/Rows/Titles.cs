@@ -158,6 +158,22 @@ public static class Titles
         ((int)Math.Round(v, MidpointRounding.ToEven)).ToString(CultureInfo.InvariantCulture);
 
     /// <summary>PowerShell's <c>Split-Path -Leaf</c>.</summary>
+    /// <summary>
+    /// <c>Get-SRPathLeaf</c>: the last segment by string work alone - empty for an
+    /// empty or all-separator path. Unlike <see cref="Leaf"/>, nothing is resolved.
+    /// </summary>
+    public static string PathLeaf(string? path)
+    {
+        var t = (path ?? string.Empty).TrimEnd('\\', '/');
+        if (t.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var i = t.LastIndexOfAny(['\\', '/']);
+        return i < 0 ? t : t[(i + 1)..];
+    }
+
     /// <remarks>
     /// 🪤 SPLIT-PATH IS PROVIDER-RELATIVE, and two of its answers are not string
     /// work at all - measured 2026-09-13: <c>C:\</c> leafs to <c>C:\</c>, and a bare

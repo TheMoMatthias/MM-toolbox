@@ -77,41 +77,47 @@ public static class Snapshot
             ShowActivated = false,
             IsHitTestVisible = false,
         };
-        w.SessionList.ItemsSource = vm.View;
+        // The rail through the real shell, preferences going nowhere - the same
+        // wiring the handler check drives.
+        new WindowShell(w, vm, new Services.NoPreferences()).Attach();
 
         w.Show();
         try
         {
             w.Dispatcher.Invoke(static () => { }, DispatcherPriority.ContextIdle);
-            var list = w.SessionList;
-            var dpi = VisualTreeHelper.GetDpi(list);
-            var width = Math.Max(1, (int)Math.Ceiling(list.ActualWidth * dpi.DpiScaleX));
-            var height = Math.Max(1, (int)Math.Ceiling(list.ActualHeight * dpi.DpiScaleY));
-            var bmp = new RenderTargetBitmap(width, height, dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
-
-            // 🪤 THE LIST HAS A TRANSPARENT BACKGROUND, so rendering it alone gives
-            // text on nothing. Paint the window's own ground under it first.
-            // 🪤 AND THROUGH A VisualBrush, not Render(list): rendering a visual
-            // that sits inside a tree carries its offset in the parent, and the
-            // picture comes out shifted by wherever the column happens to be.
-            var ground = new DrawingVisual();
-            using (var dc = ground.RenderOpen())
-            {
-                var r = new Rect(0, 0, list.ActualWidth, list.ActualHeight);
-                dc.DrawRectangle(w.Background, null, r);
-                dc.DrawRectangle(new VisualBrush(list), null, r);
-            }
-
-            bmp.Render(ground);
-
-            var enc = new PngBitmapEncoder();
-            enc.Frames.Add(BitmapFrame.Create(bmp));
-            using var fs = File.Create(pngPath);
-            enc.Save(fs);
+            Save(w, w.SessionList, pngPath);
+            Save(w, w.RailList, Path.ChangeExtension(pngPath, null) + "-rail.png");
         }
         finally
         {
             w.Close();
         }
+    }
+
+    /// <summary>One element of the window, on the window's own ground, to a PNG.</summary>
+    /// <remarks>
+    /// 🪤 THE LIST HAS A TRANSPARENT BACKGROUND, so it is painted over the window's
+    /// ground - and through a VisualBrush, since rendering a visual inside a tree
+    /// carries its offset in the parent and the picture comes out shifted.
+    /// </remarks>
+    private static void Save(Window w, FrameworkElement e, string pngPath)
+    {
+        var dpi = VisualTreeHelper.GetDpi(e);
+        var width = Math.Max(1, (int)Math.Ceiling(e.ActualWidth * dpi.DpiScaleX));
+        var height = Math.Max(1, (int)Math.Ceiling(e.ActualHeight * dpi.DpiScaleY));
+        var bmp = new RenderTargetBitmap(width, height, dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+        var ground = new DrawingVisual();
+        using (var dc = ground.RenderOpen())
+        {
+            var r = new Rect(0, 0, e.ActualWidth, e.ActualHeight);
+            dc.DrawRectangle(w.Background, null, r);
+            dc.DrawRectangle(new VisualBrush(e), null, r);
+        }
+
+        bmp.Render(ground);
+        var enc = new PngBitmapEncoder();
+        enc.Frames.Add(BitmapFrame.Create(bmp));
+        using var fs = File.Create(pngPath);
+        enc.Save(fs);
     }
 }
