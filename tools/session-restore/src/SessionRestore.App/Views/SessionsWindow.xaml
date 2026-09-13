@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
+        xmlns:v="clr-namespace:SessionRestore.App.Views"
         Title="Claude sessions"
         Width="1480" Height="980" MinWidth="620" MinHeight="420"
         WindowStartupLocation="CenterScreen"
@@ -147,6 +148,12 @@
     <SolidColorBrush x:Key="AccDone"    Color="#71757E"/>
     <SolidColorBrush x:Key="AccIdle"    Color="#54575E"/>
     <SolidColorBrush x:Key="AccQuiet"   Color="#3A3D43"/>
+    <!-- PORT 4.1: the band key to its accent, from the six brushes above. The
+         PowerShell put a resolved brush on every row object; a row that is never
+         rebuilt has no rebuild to resolve it in. -->
+    <v:BandAccent x:Key="BandAccent" Needs="{StaticResource AccNeeds}" Open="{StaticResource AccOpen}"
+                  Working="{StaticResource AccWorking}" Done="{StaticResource AccDone}"
+                  Idle="{StaticResource AccIdle}" Quiet="{StaticResource AccQuiet}"/>
     <!-- Focus is a neutral ring. It used to be the same clay as needs-you, so
          the keyboard's position and a demand for your attention were the same
          signal. -->
@@ -995,23 +1002,36 @@
          PowerShell can set System.Windows.Visibility directly and it binds with
          no extra type in the way.
          ==================================================== -->
-    <DataTemplate x:Key="SessionRowTpl">
-      <Grid>
-        <!-- the band heading -->
-        <Border Visibility="{Binding BandVis}" Padding="12,10,12,8" Margin="6,8,6,0"
-                CornerRadius="8" Background="{Binding BandBg}" Cursor="Hand"
+    <!-- PORT 4.1: THE BAND HEADING IS A GROUP HEADER NOW, NOT A FAKE ROW.
+         The shipped template drew it as a list item carrying every session
+         property present-but-switched-off, because a heading and a row shared
+         one template. Plan item 3.3 made the bands a real grouping, so the header
+         binds the GROUP: its Name is the band label, ItemCount is the count, and
+         the accent comes from the label too.
+         🪤 NOT Items[0].Band. A group is briefly EMPTY while a filter narrows
+         it away, and Items[0] on an empty group is a binding error per header -
+         caught by the bench's binding-error trap, eight of them in one run.
+         🪤 BandBg and BandHint - the pressed look of a picked band - wait for the
+         band-pick handler in 4.2; until then a heading is never picked. -->
+    <DataTemplate x:Key="BandHeaderTpl">
+        <Border Padding="12,10,12,8" Margin="6,8,6,0"
+                CornerRadius="8" Background="Transparent" Cursor="Hand"
                 ToolTip="Show only these - click again for all of them">
           <StackPanel Orientation="Horizontal">
-            <Border Width="3" Height="13" CornerRadius="2" Background="{Binding Accent}"
+            <Border Width="3" Height="13" CornerRadius="2"
+                    Background="{Binding Name, Converter={StaticResource BandAccent}}"
                     VerticalAlignment="Center" Margin="0,0,9,0"/>
-            <TextBlock Text="{Binding BandLabel}" Style="{StaticResource Caption}"
-                       Foreground="{Binding Accent}" VerticalAlignment="Center"/>
-            <TextBlock Text="{Binding BandCount}" Style="{StaticResource Caption}"
+            <TextBlock Text="{Binding Name}" Style="{StaticResource Caption}"
+                       Foreground="{Binding Name, Converter={StaticResource BandAccent}}"
+                       VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding ItemCount}" Style="{StaticResource Caption}"
                        FontWeight="Normal" Margin="9,0,0,0" VerticalAlignment="Center"/>
-            <TextBlock Text="{Binding BandHint}" Style="{StaticResource Meta}"
-                       Margin="10,0,0,0" VerticalAlignment="Center"/>
           </StackPanel>
         </Border>
+    </DataTemplate>
+
+    <DataTemplate x:Key="SessionRowTpl">
+      <Grid>
 
         <!-- a conversation
              🔴 TWO MARKS, EARNED. The list was asked to get LESS dense, so
@@ -1020,13 +1040,13 @@
              sub-agent pill only while one is actually out. On a quiet morning
              this row is exactly what it was before, which is the point - a
              signal that is always on has spent density and bought nothing. -->
-        <Border Visibility="{Binding RowVis}" Padding="0,12,14,13">
+        <Border Padding="0,12,14,13">
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="3"/>
               <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
-            <Border Grid.Column="0" Background="{Binding Accent}" Opacity="{Binding BarOpacity}"/>
+            <Border Grid.Column="0" Background="{Binding Band, Converter={StaticResource BandAccent}}" Opacity="{Binding BarOpacity}"/>
             <StackPanel Grid.Column="1" Margin="15,0,0,0">
               <Grid>
                 <Grid.ColumnDefinitions>
@@ -1036,9 +1056,12 @@
                   <ColumnDefinition Width="Auto"/>
                   <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <Ellipse Grid.Column="0" Width="6" Height="6" Fill="{Binding Accent}"
+                <Ellipse Grid.Column="0" Width="6" Height="6" Fill="{Binding Band, Converter={StaticResource BandAccent}}"
                          Visibility="{Binding DotVis}" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <TextBlock Grid.Column="1" Text="{Binding Name}" Style="{StaticResource Body}"
+                <!-- PORT 4.1: Title, not Name. The PowerShell row object called the
+                     title Name; the view model has Title, and the bench's
+                     binding-error trap caught the difference on its first run. -->
+                <TextBlock Grid.Column="1" Text="{Binding Title}" Style="{StaticResource Body}"
                            FontWeight="{Binding NameWeight}" FontStyle="{Binding NameStyle}"
                            Foreground="{StaticResource TextMax}" TextTrimming="CharacterEllipsis"/>
 
@@ -1128,6 +1151,15 @@
           </Grid>
         </Border>
 
+      </Grid>
+    </DataTemplate>
+
+    <!-- PORT 4.1: A SUB-AGENT ROW IS ITS OWN TEMPLATE. The shipped list put it in
+         the session template behind SubVis, for the same one-template reason as
+         the heading. Kept verbatim below for the sub-agent rows 4.2 adds; the
+         SubVis binding stays until that item type exists. -->
+    <DataTemplate x:Key="SubAgentRowTpl">
+      <Grid>
         <!-- ================== A SUB-AGENT ==================
              🔑 A sub-agent is a CONVERSATION, and it is selectable like any
              other. Claude Code writes each one its own transcript beside the
@@ -1713,10 +1745,18 @@
             <TextBox x:Name="ListSearch" Grid.Row="1" Style="{StaticResource Search}"
                      Margin="12,0,12,8" Tag="Find a conversation"
                      AutomationProperties.Name="find a conversation"/>
+            <!-- PORT 4.1: grouped by band. 🔴 IsVirtualizingWhenGrouping is not a
+                 tuning knob: grouping turns virtualization OFF unless it is set,
+                 and the column realises every row instead of a screenful. -->
             <ListBox x:Name="SessionList" Grid.Row="2" Style="{StaticResource Plain}"
                      ItemContainerStyle="{StaticResource PlainItem}"
                      ItemTemplate="{StaticResource SessionRowTpl}"
-                     AutomationProperties.Name="sessions"/>
+                     VirtualizingPanel.IsVirtualizingWhenGrouping="True"
+                     AutomationProperties.Name="sessions">
+              <ListBox.GroupStyle>
+                <GroupStyle HeaderTemplate="{StaticResource BandHeaderTpl}"/>
+              </ListBox.GroupStyle>
+            </ListBox>
           </Grid>
         </Border>
 

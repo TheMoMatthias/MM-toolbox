@@ -178,9 +178,14 @@ public static class BindingChecks
             // 6. PLAN ITEM 3.3's DONE-WHEN: a conversation moving band must not
             //    rebuild the column. The bands are a real grouping, so this is
             //    live grouping moving one row between two headings.
-            if (vm.Rows.Count > 0)
+            // 🪤 A ROW THAT IS ON SCREEN. Rows[0] was, until the surface rule
+            // arrived in 4.1 and made it a hidden cold conversation - and a
+            // hidden row that changes band moves between no headings, so the
+            // check reported `groups 1 -> 1, landed: False` about a row nobody
+            // could see.
+            var mover = vm.View.Cast<ConversationVm>().FirstOrDefault();
+            if (mover is not null)
             {
-                var mover = vm.Rows[0];
                 var wasBand = mover.Band;
                 var groupsBefore = vm.View.Groups?.Count ?? -1;
 
@@ -225,6 +230,37 @@ public static class BindingChecks
                 // Put it back, so the checks that follow see the model as it is.
                 mover.Refresh(null, null, DateTime.Now.Ticks);
                 Showing(window, vm);
+            }
+
+            // 8. THE SURFACE RULE, ALL THREE ARMS. Found missing by LOOKING at the
+            //    ported column in 4.1: it drew every conversation ever recorded.
+            //    🔴 A COLD ROW IS REQUIRED, and its absence FAILS the check rather
+            //    than skipping it - a green that never met a cold row proves only
+            //    that warm rows are shown.
+            var cold = vm.Rows.FirstOrDefault(r => !r.Live && !r.Warm);
+            if (cold is null)
+            {
+                checks.Add(new Check(
+                    "the surface hides a cold conversation, and a pick or a selection brings it back",
+                    false,
+                    "no cold conversation in the model, so nothing was tested"));
+            }
+            else
+            {
+                bool Shown() { Showing(window, vm); return vm.View.Cast<object>().Contains(cold); }
+                var hidden = !Shown();
+                vm.Project = cold.ProjectPath;
+                var byPick = Shown();
+                vm.Project = string.Empty;
+                vm.SelectedId = cold.Id;
+                var bySelection = Shown();
+                vm.SelectedId = string.Empty;
+                var hiddenAgain = !Shown();
+                checks.Add(new Check(
+                    "the surface hides a cold conversation, and a pick or a selection brings it back",
+                    hidden && byPick && bySelection && hiddenAgain,
+                    "hidden " + hidden + ", shown by its project " + byPick
+                        + ", shown while selected " + bySelection + ", hidden again " + hiddenAgain));
             }
 
             // 7. A row that genuinely leaves the model is removed - the check that

@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.ComponentModel;
 using System.Windows.Threading;
 using SessionRestore.App.ViewModels;
+using SessionRestore.App.Views;
 using SessionRestore.Core.Registry;
 
 namespace SessionRestore.App.Bench;
@@ -49,39 +50,93 @@ public static class KeystrokeBench
     }
 
     public sealed record BenchRun(
-        IReadOnlyList<Gesture> Gestures, int Rows, bool RealFrames, string Note);
+        IReadOnlyList<Gesture> Gestures, int Rows, bool RealFrames, string Note, string Host)
+    {
+        /// <summary>WPF binding failures seen while this host drew its rows.</summary>
+        public IReadOnlyList<string> BindingErrors { get; init; } = [];
+    }
 
-    public static BenchRun Run(int repeats = 20)
+    /// <summary>
+    /// Collects every data-binding failure WPF reports while it is attached.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 A BINDING TO A PROPERTY THAT IS NOT THERE FAILS SILENTLY - a line in a
+    /// trace nobody reads, and the target keeps its default. For a Visibility
+    /// that default is VISIBLE, so a misspelt `AgentVis` would draw the amber
+    /// sub-agent dot on every row and nothing would say why. The port of the
+    /// row template is exactly where that happens, so the bench counts them.
+    /// </remarks>
+    private sealed class BindingErrorTrap : System.Diagnostics.TraceListener
+    {
+        public List<string> Seen { get; } = [];
+
+        public override void Write(string? message) { }
+
+        public override void WriteLine(string? message)
+        {
+            if (message is not null && Seen.Count < 20)
+            {
+                Seen.Add(message);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 🔑 THE REAL WINDOW, AND THE PLACEHOLDER BESIDE IT IN THE SAME RUN.
+    /// </summary>
+    /// <remarks>
+    /// Plan item 4.1 is what 3.5's two carried measurements waited for: the
+    /// placeholder had no row template and no GroupStyle, so it could not say
+    /// what the real column costs. Both run here, one after the other, because
+    /// every speed claim in this repo made against a number from a DIFFERENT run
+    /// has since been withdrawn.
+    /// </remarks>
+    public static IReadOnlyList<BenchRun> RunBoth(int repeats = 20) =>
+        [Run(repeats, realWindow: false), Run(repeats, realWindow: true)];
+
+    public static BenchRun Run(int repeats = 20, bool realWindow = true)
     {
         var model = Model();
         var vm = new SessionsVm();
         vm.Sync(model);
 
-        var list = new ListBox
+        Window window;
+        if (realWindow)
         {
-            ItemsSource = vm.View,
-            DisplayMemberPath = nameof(ConversationVm.Title),
-            IsHitTestVisible = false,
-        };
+            // The ported window, with its own SessionList, row template and band
+            // header. No data context, no handler - only the column is bound.
+            var w = new SessionsWindow();
+            w.SessionList.ItemsSource = vm.View;
+            w.SessionList.IsHitTestVisible = false;
+            window = w;
+        }
+        else
+        {
+            var list = new ListBox
+            {
+                ItemsSource = vm.View,
+                DisplayMemberPath = nameof(ConversationVm.Title),
+                IsHitTestVisible = false,
+            };
 
-        // 🔴 GROUPING TURNS WPF VIRTUALIZATION OFF UNLESS THIS IS SET, and that
-        // is not a tuning knob - it is the difference between realising ~30
-        // containers and realising all 428. Adding the band grouping without it
-        // took `clear the search` from 13 ms to 87. It is opt-in for backwards
-        // compatibility, and it is the single least discoverable line in the
-        // whole view layer.
-        VirtualizingPanel.SetIsVirtualizingWhenGrouping(list, true);
-        var window = new Window
-        {
-            Content = list,
-            Width = 460,
-            Height = 940,
-            WindowStartupLocation = WindowStartupLocation.Manual,
-            Left = -32000,
-            Top = -32000,
-            ShowInTaskbar = false,
-            ShowActivated = false,
-        };
+            // 🔴 GROUPING TURNS WPF VIRTUALIZATION OFF UNLESS THIS IS SET, and
+            // that is not a tuning knob - it is the difference between realising
+            // ~30 containers and realising all 428. Adding the band grouping
+            // without it took `clear the search` from 13 ms to 87.
+            VirtualizingPanel.SetIsVirtualizingWhenGrouping(list, true);
+            window = new Window { Content = list, Width = 460, Height = 940 };
+        }
+
+        window.WindowStartupLocation = WindowStartupLocation.Manual;
+        window.Left = -32000;
+        window.Top = -32000;
+        window.ShowInTaskbar = false;
+        window.ShowActivated = false;
+
+        var trap = new BindingErrorTrap();
+        PresentationTraceSources.Refresh();
+        PresentationTraceSources.DataBindingSource.Switch.Level = SourceLevels.Error;
+        PresentationTraceSources.DataBindingSource.Listeners.Add(trap);
 
         window.Show();
         try
@@ -133,11 +188,18 @@ public static class KeystrokeBench
                 real,
                 real
                     ? "the window is shown and has a real PresentationSource - these are render numbers"
-                    : "the window has NO PresentationSource, so this is the headless path - every number above is suspect");
+                    : "the window has NO PresentationSource, so this is the headless path - every number above is suspect",
+                realWindow
+                    ? "the PORTED window: its SessionList, row template and band header"
+                    : "a placeholder ListBox: titles only, no GroupStyle")
+            {
+                BindingErrors = trap.Seen.ToList(),
+            };
         }
         finally
         {
             window.Close();
+            PresentationTraceSources.DataBindingSource.Listeners.Remove(trap);
         }
     }
 
@@ -251,7 +313,14 @@ public static class KeystrokeBench
         var sb = new System.Text.StringBuilder();
         sb.AppendLine(CultureInfo.InvariantCulture,
             $"  plan item 3.2 - a gesture with a real frame on the end. 60 fps is {FrameMs} ms.");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"  host: {run.Host}");
         sb.AppendLine(CultureInfo.InvariantCulture, $"  {run.Rows} conversation(s) bound.");
+        sb.AppendLine(CultureInfo.InvariantCulture,
+            $"  {(run.BindingErrors.Count == 0 ? "ok  " : "FAIL")}  {run.BindingErrors.Count} binding error(s) while drawing");
+        foreach (var e in run.BindingErrors.Take(5))
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture, $"        {e}");
+        }
         sb.AppendLine(CultureInfo.InvariantCulture, $"  {run.Note}");
         sb.AppendLine(
             "  it does NOT ask `claude agents`, so every row is non-live here - "

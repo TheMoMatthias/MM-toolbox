@@ -28,6 +28,17 @@ public partial class App : Application
             return;
         }
 
+        // Render the ported sessions column, bound to the registry read-only, to
+        // a PNG - so a port can be LOOKED AT rather than inferred from a green.
+        var renderAt = Array.FindIndex(e.Args, a => string.Equals(a, "--render", StringComparison.OrdinalIgnoreCase));
+        if (renderAt >= 0 && renderAt + 1 < e.Args.Length)
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            var png = e.Args[renderAt + 1];
+            Dispatcher.BeginInvoke(new Action(() => RunRender(png)), DispatcherPriority.ApplicationIdle);
+            return;
+        }
+
         var wanted = Array.Exists(e.Args, a =>
             string.Equals(a, "--bench", StringComparison.OrdinalIgnoreCase));
         if (!wanted)
@@ -57,6 +68,29 @@ public partial class App : Application
         // both times as a process that sat there until it was killed. Queue it
         // and let the loop start first.
         Dispatcher.BeginInvoke(new Action(() => RunBench(repeats)), DispatcherPriority.ApplicationIdle);
+    }
+
+    private void RunRender(string png)
+    {
+        var code = 0;
+        try
+        {
+            Bench.Snapshot.SessionColumn(png);
+        }
+#pragma warning disable CA1031 // a render must report a failure, not vanish with it
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            code = 1;
+            try
+            {
+                File.WriteAllText(png + ".error.txt", ex.ToString());
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+
+        Shutdown(code);
     }
 
     private void RunSurface()
@@ -99,8 +133,19 @@ public partial class App : Application
             // rebuild, and only one of those still holds at twice the
             // conversations - or keeps the selection.
             var checks = BindingChecks.Run(KeystrokeBench.Model());
-            var run = KeystrokeBench.Run(repeats);
-            report = BindingChecks.Report(checks) + Environment.NewLine + KeystrokeBench.Report(run);
+            var runs = KeystrokeBench.RunBoth(repeats);
+            var run = runs[^1];
+            report = BindingChecks.Report(checks);
+            foreach (var each in runs)
+            {
+                report += Environment.NewLine + KeystrokeBench.Report(each);
+            }
+
+            // 🔴 A BINDING ERROR FAILS THE RUN. See BindingErrorTrap.
+            foreach (var each in runs)
+            {
+                over += each.BindingErrors.Count * 10;
+            }
 
             foreach (var c in checks)
             {

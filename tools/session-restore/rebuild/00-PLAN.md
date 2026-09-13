@@ -907,12 +907,38 @@ that document, not retyped.
   is a trigger target, so the BUILD failed and the check ran the previous exe
   green. Every break since is gated on a build that passed.
 
-🔴 **Not yet done in 4.1: "replacing imperative updates with bindings".** The
-session row template binds 33 properties, six of them the fake band-heading row
-that 3.3 replaced with real grouping - so the next tranche splits
-`SessionRowTpl` into a row template and a `GroupStyle` header, and ports what
-`Build-Sessions` computes per row. That is also what 3.5's two carried
-measurements were waiting for.
+### 4.1 second tranche (2a) - the sessions column is the real column
+
+- **`SessionRowTpl` is split three ways**: the band heading is `BandHeaderTpl`,
+  a real `GroupStyle` header binding the group (`Name`, `ItemCount`); the
+  sub-agent row is `SubAgentRowTpl`, kept verbatim for 4.2; the session row keeps
+  everything else. `SessionList` groups, with `IsVirtualizingWhenGrouping`.
+- **The row binds the view model**: `Title`, `Age`, `Said` (via
+  `Core.Rows.Headline`, whose expected values were printed by the PowerShell
+  expression itself), `DotVis`/`NameWeight` on NEEDS YOU, `NameStyle` on a
+  derived title, `BarOpacity`, and the accent through a `BandAccent` converter
+  fed from the window's own `Acc*` brushes.
+- 🔴 **The bench now counts binding errors, and they fail the run.** A binding to
+  a missing property is a silent trace line AND a Visible default. The trap
+  caught two on its first two runs: `{Binding Name}` (the PowerShell row's word
+  for the title) and `Items[0].Band` in the header, which errors on a group
+  that is momentarily empty. Both fixed; 0 now, in both hosts.
+- 🔴 **LOOKING at the column found a port defect no check had asked about.**
+  `--render <png>` draws the column bound to the registry read-only - and it
+  drew **all 416 conversations under NOT RUNNING**. `SessionsVm` never applied
+  the surface rule. It does now (live, warm, or selected; a picked project shows
+  all of that project), with a binding check over all three arms that requires a
+  cold row to exist and was seen red with the rule removed. The column is 31.
+- The band-move check had to move a row that is **on screen**: `Rows[0]` became
+  a hidden cold row and reported `landed: False` about something nobody sees.
+
+🔴 **Still open in 4.1:**
+
+| what | why it waits | trigger |
+|---|---|---|
+| **2b: the row decorations** - queue mark, context bar, compact progress, sub-agent and shell counts | their readers (`Get-SRQueue` + freshness, `Get-SRRowCtx`, `Get-CtxBrush`, `Get-SRCompactText`, the status-line counts) are PowerShell-only; each needs an oracle case before its property stops being present-and-off | next 4.1 tranche |
+| **the band pick** (`BandBg`, "only this") | 🪤 it cannot be a filter: the shipped column keeps EVERY heading when one band is picked, and a filtered-out group has no header | 4.2, with the handler |
+| **3.5's two measurements, against the real template** | the run on 2026-09-13 was at **99% CPU** (a game plus other sessions' python), so the ported window reading 5-10x the placeholder is not evidence of anything yet | a quiet machine: `--bench --repeats 40` |
 
 ---
 

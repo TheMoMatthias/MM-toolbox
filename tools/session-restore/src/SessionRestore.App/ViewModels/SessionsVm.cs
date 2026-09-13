@@ -42,6 +42,7 @@ public sealed class SessionsVm : INotifyPropertyChanged
     private string _project = string.Empty;
     private SessionSort _sort = SessionSort.Recent;
     private bool _onlyLive;
+    private string _selectedId = string.Empty;
 
     public SessionsVm()
     {
@@ -147,6 +148,27 @@ public sealed class SessionsVm : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// The conversation the reading pane holds.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 IT IS PART OF THE FILTER, not only of the selection. A conversation
+    /// leaves the surface once it is neither live nor warm, and the model pass
+    /// runs every six seconds - so without this it could vanish from under the
+    /// pane mid-read. See Surface.Shows.
+    /// </remarks>
+    public string SelectedId
+    {
+        get => _selectedId;
+        set
+        {
+            if (Set(ref _selectedId, (value ?? string.Empty).ToLowerInvariant()))
+            {
+                Reselect();
+            }
+        }
+    }
+
     public SessionSort Sort
     {
         get => _sort;
@@ -232,12 +254,7 @@ public sealed class SessionsVm : INotifyPropertyChanged
     ///
     /// 🪤 DeferRefresh AROUND THE WHOLE PASS, or the view reacts to each row
     /// in turn and re-sorts between them.
-    /// </remarks>
-    /// <summary>
-    /// Re-decides which rows pass, and lets live filtering move the ones that
-    /// changed.
-    /// </summary>
-    /// <remarks>
+    ///
     /// 🪤 "ONE RESET WHEN MOST ROWS MOVE" WAS TRIED HERE AND WAS WORSE, which
     /// is worth writing down because it is the obvious idea. Live filtering is
     /// the wrong trade for a whole-list swap in principle - 428 notifications
@@ -270,8 +287,24 @@ public sealed class SessionsVm : INotifyPropertyChanged
             return false;
         }
 
-        if (_project.Length > 0
-            && !string.Equals(r.ProjectPath, _project, StringComparison.OrdinalIgnoreCase))
+        // 🔴 A PICKED PROJECT SHOWS THAT PROJECT, ALL OF IT - and the surface
+        // rule is what it replaces, not what it narrows. The shipped column
+        // answered a pick on an old project with an EMPTY list, because the
+        // 24-hour cut still applied; "expand the further-away projects and
+        // continue working on them" cannot mean an empty list. With no pick,
+        // the surface rule decides: live, warm, or the one being read.
+        //
+        // 🪤 THE PORT MISSED THIS UNTIL 4.1 DREW IT. The column showed all 416
+        // conversations under NOT RUNNING - every one ever recorded - and no
+        // check had asked, because every check was about how rows MOVE.
+        if (_project.Length > 0)
+        {
+            if (!string.Equals(r.ProjectPath, _project, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+        else if (!Surface.Shows(r.Live, r.Warm, r.Id, _selectedId, null))
         {
             return false;
         }

@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows;
+using System.Windows.Media;
 using SessionRestore.Core.Registry;
 using SessionRestore.Core.Rows;
 using SessionRestore.Core.Sessions;
@@ -43,6 +45,10 @@ public sealed class ConversationVm : INotifyPropertyChanged
     private bool _matches = true;
     private bool _enabled;
     private bool _pinned;
+    private Visibility _dotVis = Visibility.Collapsed;
+    private FontWeight _nameWeight = FontWeights.Normal;
+    private FontStyle _nameStyle = FontStyles.Normal;
+    private double _barOpacity = 0.25;
 
     public ConversationVm(string id, RegistrySession session, RegistryDirectory directory)
     {
@@ -118,8 +124,82 @@ public sealed class ConversationVm : INotifyPropertyChanged
     public bool DerivedTitle
     {
         get => _derivedTitle;
-        private set => Set(ref _derivedTitle, value);
+        private set
+        {
+            if (Set(ref _derivedTitle, value))
+            {
+                NameStyle = value ? FontStyles.Italic : FontStyles.Normal;
+            }
+        }
     }
+
+    // ---------------------------------------------------------------------
+    // WHAT THE ROW TEMPLATE DRAWS. Plan item 4.1.
+    //
+    // 🔑 PRE-COMPUTED WPF VALUES, NOT CONVERTERS, and that is the shipped
+    // template's own choice carried across: "Visibility is a property ON THE
+    // ROW OBJECT rather than a converter". Every one of these moves only when
+    // Band or DerivedTitle does, so a keystroke touches none of them.
+    // ---------------------------------------------------------------------
+
+    /// <summary>The dot beside the name - a NEEDS YOU row only.</summary>
+    public Visibility DotVis
+    {
+        get => _dotVis;
+        private set => Set(ref _dotVis, value);
+    }
+
+    /// <summary>SemiBold on a NEEDS YOU row, so the one thing asking for you reads first.</summary>
+    public FontWeight NameWeight
+    {
+        get => _nameWeight;
+        private set => Set(ref _nameWeight, value);
+    }
+
+    /// <summary>Italic when the title was derived rather than given.</summary>
+    public FontStyle NameStyle
+    {
+        get => _nameStyle;
+        private set => Set(ref _nameStyle, value);
+    }
+
+    /// <summary>The accent bar: faint on a conversation that is not running.</summary>
+    public double BarOpacity
+    {
+        get => _barOpacity;
+        private set => Set(ref _barOpacity, value);
+    }
+
+    // 🪤 PRESENT AND OFF UNTIL THEIR READERS ARE PORTED - plan item 4.1, second
+    // tranche. The template binds all of these, and a binding to a property that
+    // is not on the object is a silent trace error AND a Visible default: the
+    // amber sub-agent dot would draw on every row. The queue, the context
+    // resolver, the compact text and the status-line counts are PowerShell-only
+    // so far, and each gets an oracle case before it gets a value here.
+
+    public Visibility AgentVis { get; private set; } = Visibility.Collapsed;
+
+    public string AgentText { get; private set; } = string.Empty;
+
+    public Visibility ShellVis { get; private set; } = Visibility.Collapsed;
+
+    public string ShellText { get; private set; } = string.Empty;
+
+    public Visibility QVis { get; private set; } = Visibility.Collapsed;
+
+    public string QText { get; private set; } = string.Empty;
+
+    public string QTip { get; private set; } = string.Empty;
+
+    public Brush? QBrush { get; private set; }
+
+    public Visibility CtxVis { get; private set; } = Visibility.Collapsed;
+
+    public double CtxWidth { get; private set; }
+
+    public string CtxTip { get; private set; } = string.Empty;
+
+    public Brush? CtxBrush { get; private set; }
 
     public string Lane
     {
@@ -140,6 +220,10 @@ public sealed class ConversationVm : INotifyPropertyChanged
             {
                 BandOrder = Bands.OrderOf(value);
                 BandLabel = Bands.LabelOf(value);
+                var needs = string.Equals(value, Bands.Needs, StringComparison.Ordinal);
+                DotVis = needs ? Visibility.Visible : Visibility.Collapsed;
+                NameWeight = needs ? FontWeights.SemiBold : FontWeights.Normal;
+                BarOpacity = string.Equals(value, Bands.Quiet, StringComparison.Ordinal) ? 0.25 : 0.85;
             }
         }
     }
@@ -184,6 +268,12 @@ public sealed class ConversationVm : INotifyPropertyChanged
         get => _live;
         private set => Set(ref _live, value);
     }
+
+    /// <summary>
+    /// Active in the last 24 hours - the other half of what puts a row on the
+    /// work surface. Decided once per model pass, against that pass's clock.
+    /// </summary>
+    public bool Warm { get; private set; }
 
     /// <summary>The tick that decides what comes back at the next logon.</summary>
     public bool Enabled
@@ -234,8 +324,10 @@ public sealed class ConversationVm : INotifyPropertyChanged
         Age = Titles.AgeOf(LastActiveTicks, nowTicks);
 
         Live = agent is not null && agent.Pid != 0;
-        Band = Bands.Of(SessionState.Of(agent), said);
-        Said = said?.Said ?? string.Empty;
+        Warm = Titles.Warm(Session, nowTicks > 0 ? new DateTime(nowTicks, DateTimeKind.Local) : null);
+        var state = SessionState.Of(agent);
+        Band = Bands.Of(state, said);
+        Said = Headline.Of(said?.Said, state.Detail);
 
         _enabled = Session.Enabled;
         _pinned = Session.Pinned;
