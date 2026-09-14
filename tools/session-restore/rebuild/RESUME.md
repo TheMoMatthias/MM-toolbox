@@ -42,11 +42,12 @@ Last commit: see `git log`. Branch `main`.
 | 4.2a | handlers that only change what is shown | ✅ `--handlers` 12/12; the App provably references nothing that acts |
 | 4.2b | the projects rail | ✅ `rail/build` runs Build-Rail itself; 14 breaks caught; `--handlers` 18/18 |
 | 4.2c | selection, the pane's header, and a conversation's agents under it | ✅ `pane/header` and `agents/row` splice `Show-Selected` and the row block; `--handlers` 26/26 |
-| **4.2d** | **the acting handlers, behind a seam whose only implementation reaches the replica** | ⏸ **the gate** |
+| 4.2d | the acting seam: every act named, nothing behind it that can act | ✅ `acting/decisions` + `acting/sentences`; `--handlers` 39/39; the guard widened |
+| **4.2e** | **the implementation that really acts - replica console, scratch registry, and the sheet** | ⏸ **the gate** |
 | 4.3-4.5 | keys, the reading pane's BODY, animation | ⏸ |
 | 4-6 | the view, parity, cutover | ⏸ |
 
-**252 xUnit tests, 58 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
+**252 xUnit tests, 60 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 

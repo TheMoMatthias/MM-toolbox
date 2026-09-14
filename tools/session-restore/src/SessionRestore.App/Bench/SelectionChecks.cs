@@ -101,7 +101,7 @@ public static class SelectionChecks
                 ShowActivated = false,
                 IsHitTestVisible = false,
             };
-            var shell = new WindowShell(w, vm, new NoPreferences());
+            var shell = new WindowShell(w, vm, new NoPreferences(), new NoActs(), new NoConfirms());
             shell.Attach();
             w.Show();
             try

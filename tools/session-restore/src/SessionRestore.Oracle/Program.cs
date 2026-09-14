@@ -97,6 +97,7 @@ cases.AddRange(LabelCases.All());
 cases.AddRange(SearchCases.All());
 cases.AddRange(RailCases.All());
 cases.AddRange(PaneCases.All());
+cases.AddRange(ActingCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");

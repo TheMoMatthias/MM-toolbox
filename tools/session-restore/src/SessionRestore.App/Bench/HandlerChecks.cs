@@ -28,21 +28,50 @@ public static class HandlerChecks
 {
     public sealed record Check(string What, bool Passed, string Detail);
 
-    /// <summary>Types the App must not reference before the acting handlers get their seam.</summary>
+    /// <summary>
+    /// Types the App must not reference. The acting handlers do not relax this -
+    /// they go through a seam, and any implementation that really acts will live
+    /// in its own assembly so that this one goes on being unable to.
+    /// </summary>
     private static readonly string[] Forbidden =
     [
         "SessionRestore.Core.Console.ConsoleWriter",
+        "SessionRestore.Core.Console.ConsoleApi",
         "SessionRestore.Core.Registry.RegistryWriter",
         "SessionRestore.Core.Registry.RegistryTarget",
     ];
 
+    /// <summary>
+    /// Members of otherwise ordinary types that would start or end a session.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 THE FIRST VERSION OF THIS LIST HELD ONLY <c>Process.Start</c>, and the
+    /// break that proved <c>Kill</c> was caught STAYED GREEN - because the edit
+    /// adding it had never reached the file. The script that made it threw on a
+    /// later line and wrote nothing, and the check went on reading the list it
+    /// always had. Verify the bytes, not the intention.
+    /// </remarks>
+    private static readonly (string Type, string Member)[] ForbiddenMembers =
+    [
+        ("System.Diagnostics.Process", "Start"),
+        ("System.Diagnostics.Process", "Kill"),
+        ("System.Diagnostics.Process", "CloseMainWindow"),
+    ];
+
     public static IReadOnlyList<Check> Run()
     {
-        var checks = new List<Check> { Structure() };
+        var checks = new List<Check> { Structure(), OnlySeams() };
 
         var vm = new SessionsVm();
         vm.Sync(KeystrokeBench.Model());
         var prefs = new NoPreferences();
+
+        // 🔴 NOTHING HERE CAN ACT, AND THAT IS THE POINT OF DRIVING IT. The
+        // seam records what it was asked for; the checks assert the right act
+        // was requested for the right conversation. A launch is verified
+        // without launching.
+        var acts = new NoActs();
+        var confirms = new NoConfirms();
         var w = new SessionsWindow
         {
             WindowStartupLocation = WindowStartupLocation.Manual,
@@ -60,7 +89,7 @@ public static class HandlerChecks
         System.Diagnostics.PresentationTraceSources.DataBindingSource.Switch.Level = System.Diagnostics.SourceLevels.Error;
         System.Diagnostics.PresentationTraceSources.DataBindingSource.Listeners.Add(trap);
 
-        var shell = new WindowShell(w, vm, prefs);
+        var shell = new WindowShell(w, vm, prefs, acts, confirms);
         shell.Attach();
         var closed = false;
         w.Closed += (_, _) => closed = true;
@@ -260,6 +289,10 @@ public static class HandlerChecks
             // so a sub-agent row that fails to bind is caught by the same check.
             checks.AddRange(SelectionChecks.Run());
 
+            // ---- 4.2d: the handlers that would act, with nothing behind them
+            // that can. Inside the trap for the same reason.
+            checks.AddRange(ActingChecks.Run());
+
             Pump(w);
             checks.Add(new Check("nothing the handlers drew failed to bind",
                 trap.Seen.Count == 0,
@@ -288,6 +321,42 @@ public static class HandlerChecks
     /// a session or the registry fails the check - so a handler that reached for
     /// one, however indirectly it was written, cannot pass.
     /// </summary>
+    /// <summary>
+    /// The seam has exactly one implementation in this assembly, and it is the
+    /// one that does nothing.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THE REFERENCE CHECK BELOW ANSWERS "COULD THIS ASSEMBLY ACT". This one
+    /// answers the question that replaces it once a seam exists: "is there a
+    /// second implementation here". A class that really launched would not have
+    /// to name a forbidden type to be dangerous - it could reach the same place
+    /// through something this list has never heard of - so what is asserted is
+    /// that the only thing behind the acting handlers is <see cref="NoActs"/>.
+    ///
+    /// 🪤 IT LOOKS AT THE TYPES, NOT AT WHAT IS WIRED. A check that asked the
+    /// running window what it had been handed would pass for the window IT
+    /// built and say nothing about the one the operator runs.
+    /// </remarks>
+    private static Check OnlySeams()
+    {
+        var asm = typeof(HandlerChecks).Assembly;
+        static string[] Implementors(System.Reflection.Assembly a, Type seam) =>
+            [.. a.GetTypes()
+                .Where(t => t is { IsInterface: false, IsAbstract: false } && seam.IsAssignableFrom(t))
+                .Select(t => t.Name)
+                .OrderBy(n => n, StringComparer.Ordinal)];
+
+        var acts = Implementors(asm, typeof(IActs));
+        var confirms = Implementors(asm, typeof(IConfirms));
+        var prefs = Implementors(asm, typeof(IPreferences));
+
+        var ok = acts is ["NoActs"] && confirms is ["NoConfirms"] && prefs is ["NoPreferences"];
+        return new Check(
+            "the only implementations of the seams in this assembly are the ones that do nothing",
+            ok,
+            $"IActs: {string.Join(", ", acts)}; IConfirms: {string.Join(", ", confirms)}; IPreferences: {string.Join(", ", prefs)}");
+    }
+
     private static Check Structure()
     {
         var path = typeof(HandlerChecks).Assembly.Location;
@@ -309,7 +378,9 @@ public static class HandlerChecks
             var full = md.GetString(t.Namespace) + "." + md.GetString(t.Name);
             var member = md.GetString(m.Name);
             if (Array.Exists(Forbidden, f => string.Equals(f, full, StringComparison.Ordinal))
-                || (full == "System.Diagnostics.Process" && member == "Start"))
+                || Array.Exists(ForbiddenMembers, f =>
+                    string.Equals(f.Type, full, StringComparison.Ordinal)
+                    && string.Equals(f.Member, member, StringComparison.Ordinal)))
             {
                 hits.Add(full + "." + member);
             }

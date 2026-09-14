@@ -1151,6 +1151,71 @@ is marked through `Moving.Mark`, the `rows` entry is marked with it (a
 conversation that spoke can change BAND too), and the case fails if nothing held
 still. Two breaks - the band, and the pending text - both red.
 
+### 4.2d as it turned out - the acting seam, and a launch verified without launching
+
+**Every handler that could reach a conversation now exists, is wired, and is
+driven by the checks - and NOTHING behind them can act.** `IActs` is the one way
+anything in the window reaches a session; the only implementation in the build is
+`NoActs`, which performs nothing and records what it was asked. That is not a
+placeholder, it is the check: pressing Relaunch asserts that a RELAUNCH was
+requested, for THAT conversation, after a sheet was shown.
+
+- **`Core.Acting`** turns each act into a VALUE - `Interrupt.Blocker`,
+  `Typing.Of` (the send box's blocker and its note), `Relaunch.Refusal` /
+  `PaneAsk` / `ManagerAsk` / `TabName` / `IsBootShell`. Same move as Phase 2:
+  `Get-SRLaunchCommandLine` out of `Start-SRSession`, `Get-SRSaveRefusal` out of
+  the fenced `Save-SRRegistry`. An act becomes a value, and a value can be
+  compared.
+- **`acting/decisions`** CALLS `Get-InterruptBlocker` (it is a function) and
+  SPLICES the decision half of `Update-SendState`, over fifteen states a probe
+  can report. **`acting/sentences`** evaluates the shipped LINE that builds each
+  refusal and each sheet, with `Set-Status` and `Confirm-Action` replaced by
+  stubs that only remember what they were handed. **Eight breaks, eight red.**
+- 🔴 **`Invoke-RelaunchOne` IS NEVER EVALUATED, under any stub.** It calls
+  `Stop-Process`. What is compared is the sentence it would say, cut out of the
+  file by the words in it.
+- 🪤 **A `Confirm-Action` sits inside `if (...)` and can be continued with a
+  backtick**, so the call is cut by BALANCING the bracket the `if` opened. The
+  first attempt took the nearest bracket behind the marker - which is the body
+  argument's own - and evaluated a format string that called nothing, leaving
+  every field empty.
+- **`--handlers` is 39 checks**, twelve of them acting: Stop refuses what it
+  cannot interrupt and asks no sheet; Relaunch asks first and does nothing at all
+  on a no; the same button OPENS what is not running; /compact is sent as text
+  and is not confirmed; Send trims and an empty box sends nothing; Go to terminal
+  refuses a conversation with no terminal.
+
+**The guard was widened, not relaxed:**
+
+| | |
+|---|---|
+| the reference check | now also refuses `ConsoleApi`, `Process.Kill` and `Process.CloseMainWindow` |
+| **a new one** | the only implementations of `IActs`, `IConfirms` and `IPreferences` in this assembly are the ones that do nothing - a second one is red, whatever it references |
+
+🪤 **AND A BREAK THAT STAYED GREEN BECAUSE THE EDIT NEVER REACHED THE FILE.**
+The script adding `Process.Kill` to the list threw on a later line and wrote
+nothing, so the check went on reading the list it always had and the break looked
+caught when the rule did not exist. Proven properly afterwards: with `Kill`
+really on the list, the break reds. *Verify the bytes, not the intention.*
+
+🪤 **A SECOND INVALID BREAK, the same day:** the first version of that one called
+`Process.Kill()` for real, so the app killed itself before writing its report and
+the harness read the PREVIOUS run's file. A reference in the metadata is all the
+check reads, so the call now sits behind a condition that is false.
+
+🔴 **TWO BLOCKING PRECONDITIONS FOR ANY REAL `IActs`:**
+
+1. **There is no confirmation sheet in the ported window yet.** `NoConfirms`
+   answers yes. An implementation that actually relaunches, wired before the
+   sheet is ported, would close conversations without asking anybody.
+2. **The send box does not yet know a conversation is sitting on a MENU.** That
+   is the one refusal `Typing.Of` has that matters most - a session on a question
+   reads keystrokes as menu input, so text typed at it PICKS AN OPTION rather
+   than queueing behind one - and what knows is the screen probe, which the
+   background pass has not ported. `onAMenu: false` is honest while nothing can
+   act and must not survive anything that can. The queue DEPTH is wired, so the
+   note already says where a message will land.
+
 | next in 4.2 | why it waits | trigger |
 |---|---|---|
 | a live-data rail comparison | the rail needs bands and live agents per row, which the oracle has no model pass to build; the shapes carry it for now | when the background pass is ported |

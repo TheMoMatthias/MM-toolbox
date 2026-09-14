@@ -126,6 +126,28 @@ public sealed class ConversationVm : INotifyPropertyChanged, IListRow
     public bool Busy { get; private set; }
 
     /// <summary>
+    /// What the probe last said about the process holding this conversation.
+    /// </summary>
+    /// <remarks>
+    /// 🔑 KEPT, NOT RE-DERIVED. Every acting decision - may this be interrupted,
+    /// may it be relaunched, will the box accept typing - asks about the pid,
+    /// the kind and the status together, and a row that kept only the three
+    /// booleans it draws would make each caller invent its own idea of
+    /// "running". Null means nothing is holding it.
+    /// </remarks>
+    public AgentStatus? Agent { get; private set; }
+
+    /// <summary>
+    /// How many messages are already waiting for this conversation.
+    /// </summary>
+    /// <remarks>
+    /// 🔑 THE SEND BOX SAYS WHERE WHAT YOU TYPE WILL LAND. "Queued behind it" is
+    /// true and useless when four things are already waiting; the question the
+    /// operator actually has is whether this is the next thing read or the fifth.
+    /// </remarks>
+    public int Queued { get; private set; }
+
+    /// <summary>
     /// Gives the row its project label and rebuilds what depends on it.
     /// </summary>
     /// <remarks>
@@ -439,6 +461,7 @@ public sealed class ConversationVm : INotifyPropertyChanged, IListRow
 
         Live = agent is not null && agent.Pid != 0;
         Warm = Titles.Warm(Session, nowTicks > 0 ? new DateTime(nowTicks, DateTimeKind.Local) : null);
+        Agent = agent;
         var state = SessionState.Of(agent);
         Detail = state.Detail;
 
@@ -460,6 +483,7 @@ public sealed class ConversationVm : INotifyPropertyChanged, IListRow
         CtxTip = decor.CtxTip;
         CtxHue = decor.CtxHue;
 
+        Queued = extras?.Queue?.Count ?? 0;
         var mark = QueueMark.Of(extras?.Queue, now);
         QVis = mark.Visible ? Visibility.Visible : Visibility.Collapsed;
         QText = mark.Text;

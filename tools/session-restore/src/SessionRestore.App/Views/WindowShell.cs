@@ -8,6 +8,7 @@ using System.Windows.Threading;
 using SessionRestore.App.Services;
 using SessionRestore.App.ViewModels;
 using SessionRestore.Core;
+using SessionRestore.Core.Acting;
 using SessionRestore.Core.Config;
 using SessionRestore.Core.Rows;
 using SessionRestore.Core.Sessions;
@@ -42,16 +43,33 @@ public sealed class WindowShell
     private readonly SessionsWindow _w;
     private readonly SessionsVm _vm;
     private readonly IPreferences _prefs;
+    private readonly IActs _acts;
+    private readonly IConfirms _confirms;
     private readonly DispatcherTimer _search;
     private double _railWidth = 208.0;
     private double _listWidth = 336.0;
     private string _foldApplied = string.Empty;
 
-    public WindowShell(SessionsWindow window, SessionsVm vm, IPreferences prefs, ConfigFile? config = null)
+    /// <param name="acts">
+    /// 🔴 THE ONLY WAY ANYTHING HERE REACHES A CONVERSATION, and it has no
+    /// default on purpose. A parameter that quietly supplied one would be the
+    /// line along which a real implementation gets wired by accident; every
+    /// caller says which it means.
+    /// </param>
+    /// <param name="confirms">The sheet in front of anything that cannot be taken back.</param>
+    public WindowShell(
+        SessionsWindow window,
+        SessionsVm vm,
+        IPreferences prefs,
+        IActs acts,
+        IConfirms confirms,
+        ConfigFile? config = null)
     {
         _w = window ?? throw new ArgumentNullException(nameof(window));
         _vm = vm ?? throw new ArgumentNullException(nameof(vm));
         _prefs = prefs ?? throw new ArgumentNullException(nameof(prefs));
+        _acts = acts ?? throw new ArgumentNullException(nameof(acts));
+        _confirms = confirms ?? throw new ArgumentNullException(nameof(confirms));
 
         // Absent from the config means AUTO, not open: a fresh install keeps the
         // adaptive columns, and only a deliberate press pins one.
@@ -203,6 +221,13 @@ public sealed class WindowShell
 
         _w.SessionList.SelectionChanged += (_, _) => Select(_w.SessionList.SelectedItem);
 
+        // ---- the acting handlers. Every one of them goes through the seam.
+        _w.PaneStop.Click += (_, _) => Stop();
+        _w.PaneCompact.Click += (_, _) => Compact();
+        _w.PaneGoTo.Click += (_, _) => GoTo();
+        _w.PaneRelaunch.Click += (_, _) => RelaunchSelected();
+        _w.SendBtn.Click += (_, _) => Send();
+
         // 🪤 SELECT IT, DO NOT RE-OPEN THE COLUMN. Un-folding here would undo
         // the thing the operator just asked for the moment they used it - and
         // the column does not need to be visible to work: the rows are bound
@@ -328,6 +353,170 @@ public sealed class WindowShell
 
         _vm.SetAgents(row.Id, show, liveIds);
     }
+
+    // ----------------------------------------------------------------- acting
+
+    /// <summary>The conversation the pane is holding, or null - an agent is not one.</summary>
+    private ConversationVm? Selected() =>
+        _w.SessionList.SelectedItem switch
+        {
+            ConversationVm row => row,
+            AgentRowVm agent => agent.Parent,
+            _ => null,
+        };
+
+    /// <summary>
+    /// 🔑 STOPPING A TURN IS NOT CONFIRMED, and that is deliberate rather than
+    /// an omission. It is the recoverable half of the pair beside it - the
+    /// session stays open, the transcript keeps everything written so far, and
+    /// pressing it by mistake costs the rest of one turn. A sheet in front of a
+    /// gesture whose whole point is "stop, now" would be asking the operator to
+    /// watch it keep going while they read.
+    /// </summary>
+    private void Stop()
+    {
+        var row = Selected();
+        var why = Interrupt.Blocker(row is not null, Agent(row));
+        if (why.Length > 0)
+        {
+            Status(why, Tone.Warn);
+            return;
+        }
+
+        var r = _acts.Carry(new ActRequest(Act.Interrupt, row!.Id, row.Title, "esc"));
+        Status(r.Done ? "interrupting..." : r.Said, r.Done ? Tone.Info : Tone.Bad);
+    }
+
+    /// <summary>
+    /// 🔑 NOT CONFIRMED EITHER: compacting summarises and carries on, so a stray
+    /// press costs a summary rather than any work. The status line says what was
+    /// sent, which is the trace that matters if one was not meant.
+    ///
+    /// 🪤 IT IS TEXT, NOT A MENU KEY. A slash command goes the same way as
+    /// anything typed; pretending otherwise is how a keystroke lands in whatever
+    /// happens to be highlighted.
+    /// </summary>
+    private void Compact()
+    {
+        var row = Selected();
+        if (row is null)
+        {
+            Status("pick a conversation first", Tone.Bad);
+            return;
+        }
+
+        if (Agent(row) is null)
+        {
+            Status("that conversation is not running, so there is nothing to compact", Tone.Bad);
+            return;
+        }
+
+        Status("compacting...", Tone.Info);
+        var r = _acts.Carry(new ActRequest(Act.Send, row.Id, row.Title, "/compact"));
+        Status(r.Done ? "sent /compact" : r.Said, r.Done ? Tone.Ok : Tone.Bad);
+    }
+
+    private void GoTo()
+    {
+        var row = Selected();
+        if (row is null)
+        {
+            Status("select a conversation first", Tone.Warn);
+            return;
+        }
+
+        if (Agent(row) is null)
+        {
+            Status("that conversation is not running - there is no terminal to go to", Tone.Warn);
+            return;
+        }
+
+        Status("finding its tab...", Tone.Info);
+        var r = _acts.Carry(new ActRequest(Act.GoTo, row.Id, row.Title, string.Empty));
+        Status(
+            r.Done ? string.Format(CultureInfo.InvariantCulture, "went to {0}", _w.PaneName.Text) : r.Said,
+            r.Done ? Tone.Ok : Tone.Warn);
+    }
+
+    /// <summary>
+    /// 🔴 THE SHEET COMES FIRST, ALWAYS. A relaunch loses the turn AND the
+    /// process, so the act is never requested unless a confirmation was asked
+    /// for and answered - which is a thing a check can assert, and does.
+    ///
+    /// 🔑 A CONVERSATION THAT IS NOT RUNNING IS BEING OPENED, NOT RELAUNCHED,
+    /// and the sheet and the button both say so.
+    /// </summary>
+    private void RelaunchSelected()
+    {
+        var row = Selected();
+        if (row is null)
+        {
+            Status("select a conversation first", Tone.Warn);
+            return;
+        }
+
+        var agent = Agent(row);
+        var why = Relaunch.Refusal(agent, row.Title);
+        if (why.Length > 0)
+        {
+            Status(why, Tone.Warn);
+            return;
+        }
+
+        var ask = Relaunch.PaneAsk(agent, row.Title);
+        if (!_confirms.Ask(ask))
+        {
+            Status("nothing relaunched", Tone.Info);
+            return;
+        }
+
+        var what = agent is null ? Act.Open : Act.Relaunch;
+        var r = _acts.Carry(new ActRequest(what, row.Id, row.Title, ask.Verb));
+        if (!r.Done)
+        {
+            Status(r.Said, Tone.Bad);
+        }
+    }
+
+    private void Send()
+    {
+        var row = Selected();
+
+        // 🔴 THE MENU TEST IS NOT WIRED YET, AND IT IS THE ONE REFUSAL THAT
+        // MATTERS MOST. A session sitting on a question reads keystrokes as MENU
+        // INPUT, so text typed here would PICK AN OPTION rather than queue behind
+        // one - and what knows a conversation is on a menu is the screen probe,
+        // which the background pass has not ported. Passing false is honest while
+        // nothing can act; it must be wired before anything can.
+        var state = Typing.Of(row is not null, Agent(row), onAMenu: false, row?.Queued ?? 0);
+        if (!state.CanType)
+        {
+            Status(state.Blocker, Tone.Warn);
+            return;
+        }
+
+        var text = _w.SendBox.Text.Trim();
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        Status("typing it in...", Tone.Info);
+        var r = _acts.Carry(new ActRequest(Act.Send, row!.Id, row.Title, text));
+        if (!r.Done)
+        {
+            Status(r.Said, Tone.Bad);
+        }
+    }
+
+    /// <summary>What is holding a conversation, or null when nothing is.</summary>
+    /// <remarks>
+    /// 🪤 A ROW KNOWS IT IS LIVE; IT DOES NOT KEEP THE PROBE'S ANSWER. Until the
+    /// background pass is ported there is nothing here to hand the decisions, so
+    /// this is the one place that says so - and every acting decision reads it,
+    /// rather than each inventing its own idea of "running".
+    /// </remarks>
+    private static AgentStatus? Agent(ConversationVm? row) => row?.Agent;
 
     private void Head(PaneHead h)
     {
@@ -591,10 +780,25 @@ public sealed class WindowShell
         return (d as ListBoxItem)?.DataContext as RailItemVm;
     }
 
-    private void Status(string text)
+    /// <summary>How loudly the status line says it. <c>Set-Status</c>'s four kinds.</summary>
+    public enum Tone
+    {
+        Info,
+        Ok,
+        Warn,
+        Bad,
+    }
+
+    private void Status(string text, Tone tone = Tone.Info)
     {
         _w.Status.Text = text;
-        _w.Status.Foreground = _w.TryFindResource("TextMid") as Brush;
+        _w.Status.Foreground = _w.TryFindResource(tone switch
+        {
+            Tone.Bad => "AccNeeds",
+            Tone.Ok => "AccDone",
+            Tone.Warn => "TextHigh",
+            _ => "TextMid",
+        }) as Brush;
     }
 
     // ---------------------------------------------------------------- surfaces

@@ -79,7 +79,7 @@ public static class Snapshot
         };
         // The rail through the real shell, preferences going nowhere - the same
         // wiring the handler check drives.
-        var shell = new WindowShell(w, vm, new Services.NoPreferences());
+        var shell = new WindowShell(w, vm, new Services.NoPreferences(), new Services.NoActs(), new Services.NoConfirms());
         shell.Attach();
 
         w.Show();
