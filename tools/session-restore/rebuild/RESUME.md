@@ -1,6 +1,6 @@
 # Resume here
 
-**Kept current. Last updated 2026-09-13. Everything is committed and pushed;
+**Kept current. Last updated 2026-09-14. Everything is committed and pushed;
 the working tree holds only the operator's own live files.**
 
 Last commit: see `git log`. Branch `main`.
@@ -41,11 +41,12 @@ Last commit: see `git log`. Branch `main`.
 | 4.1 | the XAML port | ✅ window opens, 164/164; the sessions column fully bound, every mark oracle-checked |
 | 4.2a | handlers that only change what is shown | ✅ `--handlers` 12/12; the App provably references nothing that acts |
 | 4.2b | the projects rail | ✅ `rail/build` runs Build-Rail itself; 14 breaks caught; `--handlers` 18/18 |
-| **4.2c** | **selection and the reading pane, then the acting handlers behind a replica-only seam** | ⏸ **start here** |
-| 4.3-4.5 | keys, pane, animation | ⏸ |
+| 4.2c | selection, the pane's header, and a conversation's agents under it | ✅ `pane/header` and `agents/row` splice `Show-Selected` and the row block; `--handlers` 26/26 |
+| **4.2d** | **the acting handlers, behind a seam whose only implementation reaches the replica** | ⏸ **the gate** |
+| 4.3-4.5 | keys, the reading pane's BODY, animation | ⏸ |
 | 4-6 | the view, parity, cutover | ⏸ |
 
-**229 xUnit tests, 55 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
+**252 xUnit tests, 58 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 
@@ -85,6 +86,15 @@ a screen redraws, a transcript grows - and a run where the operator was working
 hard can legitimately forgive a row. A difference that is NOT forgiven is real.
 
 
+🔴 **BUT CHECK IT IS NOT A REAL ONE FIRST, BECAUSE ONE WAS.** On 2026-09-14
+`subagents/live-tasks` reported *PowerShell 2, C# 1* and read as exactly this
+shape - a live machine, a moving file. It was a defect: an **Agent** writes
+`run_in_background` as the STRING `"true"` while a Bash writes the boolean, and
+PowerShell's truthiness accepts both. The tell was that the case reded **five
+times out of five** and the file's length was pinned on both sides of both
+reads, so growth could not explain it. **If the length guard held and it reds
+repeatedly, it is real.** See `Core.Json.PsTruth` and `subagents/task-shapes`.
+
 🪤 **AND A CASE THAT REDS ONCE AND PASSES TWICE IS ALMOST CERTAINLY THE
 OPERATOR WORKING, NOT A DEFECT.** Several cases read things that move while ~30
 conversations are live. Each has a named allowance, and the shape they all need
@@ -102,10 +112,16 @@ else:
    hands a case one difference at a time, so splitting on `\n` cut a multi-line
    transcript body in half and reported a genuinely grown conversation as real.
    The earlier "check line by line" advice here was built on a wrong premise.
-3. **Is the length pinned BEFORE the PowerShell's read and on BOTH sides of the
+3. **Is the guard over the thing that MOVES, not over something next to it?**
+   `bands/live` compared a SHA of the last-said TEXT, and a session mid-turn
+   changes what it is PENDING while that text stands - so the SHA matched,
+   nothing was marked, and a real difference that was only the operator working
+   got through. It is now the file's length and last-write stamp, pinned on both
+   sides of both reads.
+4. **Is the length pinned BEFORE the PowerShell's read and on BOTH sides of the
    C#'s?** Taken after, a record landing mid-read pairs the longer length with
    the shorter answer, and nothing is left to forgive it.
-4. **Does the case still fail if nothing was compared?**
+5. **Does the case still fail if nothing was compared?**
 
 🔴 **AND AN ALLOWANCE MEANS AN UNCAPPED DIFF.** `JsonDiff` stopped at 50, so one
 grown conversation filled all 50 with forgivable rows and a deliberate corruption

@@ -1757,9 +1757,13 @@
                  and the column realises every row instead of a screenful. -->
             <ListBox x:Name="SessionList" Grid.Row="2" Style="{StaticResource Plain}"
                      ItemContainerStyle="{StaticResource PlainItem}"
-                     ItemTemplate="{StaticResource SessionRowTpl}"
                      VirtualizingPanel.IsVirtualizingWhenGrouping="True"
                      AutomationProperties.Name="sessions">
+              <!-- PORT 4.2c: two kinds of row, two templates. See RowTemplates. -->
+              <ListBox.ItemTemplateSelector>
+                <v:RowTemplates Session="{StaticResource SessionRowTpl}"
+                                    Agent="{StaticResource SubAgentRowTpl}"/>
+              </ListBox.ItemTemplateSelector>
               <ListBox.GroupStyle>
                 <GroupStyle HeaderTemplate="{StaticResource BandHeaderTpl}"/>
               </ListBox.GroupStyle>

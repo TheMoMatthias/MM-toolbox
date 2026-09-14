@@ -229,13 +229,11 @@ public static class SessionArgs
         return outp;
     }
 
-    private static bool Truthy(JsonElement v) => v.ValueKind switch
-    {
-        JsonValueKind.True => true,
-        JsonValueKind.False => false,
-        JsonValueKind.Null => false,
-        JsonValueKind.Number => v.TryGetDouble(out var d) && d != 0,
-        JsonValueKind.String => (v.GetString() ?? string.Empty).Length > 0,
-        _ => true,
-    };
+    /// <remarks>
+    /// 🔴 ONE RULE, IN ONE PLACE. This was a private copy, and a second copy in
+    /// the registry reader disagreed with it about an empty array while a THIRD
+    /// site did not use either and tested the JSON kind directly - which is how
+    /// every background agent went missing. See <see cref="Json.PsTruth"/>.
+    /// </remarks>
+    private static bool Truthy(JsonElement v) => Json.PsTruth.Of(v);
 }

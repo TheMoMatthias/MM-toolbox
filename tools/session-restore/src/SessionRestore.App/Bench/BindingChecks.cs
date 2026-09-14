@@ -66,7 +66,7 @@ public static class BindingChecks
         {
 
             var structural = 0;
-            ((INotifyCollectionChanged)vm.Rows).CollectionChanged += Count;
+            ((INotifyCollectionChanged)vm.Items).CollectionChanged += Count;
             void Count(object? s, NotifyCollectionChangedEventArgs e)
             {
                 if (e.Action != NotifyCollectionChangedAction.Move)
@@ -103,9 +103,9 @@ public static class BindingChecks
                 structural + " structural change(s)"));
 
             // 4. One property change repaints ONE row.
-            if (vm.Rows.Count > 0)
+            var row = vm.Rows.FirstOrDefault();
+            if (row is not null)
             {
-                var row = vm.Rows[0];
                 var touched = new List<string>();
                 void OnRow(object? s, PropertyChangedEventArgs e) => touched.Add(e.PropertyName ?? "?");
                 row.PropertyChanged += OnRow;
@@ -272,7 +272,7 @@ public static class BindingChecks
                 structural > 0,
                 structural + " structural change(s)"));
 
-            ((INotifyCollectionChanged)vm.Rows).CollectionChanged -= Count;
+            ((INotifyCollectionChanged)vm.Items).CollectionChanged -= Count;
         return checks;
         }
         finally

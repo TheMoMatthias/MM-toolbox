@@ -256,6 +256,10 @@ public static class HandlerChecks
                 searched == 0 && shell.Rail.Items.Count(x => !x.IsBand) == tilesAll,
                 $"narrowed to {searched}, back to {shell.Rail.Items.Count(x => !x.IsBand)}"));
 
+            // ---- 4.2c: selection, over a model built for it. Inside the trap,
+            // so a sub-agent row that fails to bind is caught by the same check.
+            checks.AddRange(SelectionChecks.Run());
+
             Pump(w);
             checks.Add(new Check("nothing the handlers drew failed to bind",
                 trap.Seen.Count == 0,

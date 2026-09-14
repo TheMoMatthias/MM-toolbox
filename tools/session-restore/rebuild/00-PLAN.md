@@ -1061,12 +1061,101 @@ the shipped window with an oracle case:
   handler - a real click is a tunnelling `PreviewMouseDown`.
 - `--render` now draws the rail too, through the real shell.
 
+### 4.2c as it turned out - selection, the pane's header, and a defect the checks could not see
+
+- **`Core.Rows.PaneHeader`** ports the two header shapes inside `Show-Selected` -
+  a conversation (band label, what the process is doing, the project) and a
+  sub-agent (kind, who it works for, what it was asked to do). **`pane/header`
+  splices both regions out of `Show-Selected`** and runs them over twelve
+  conversations and five agents; `$ui` and `$window.FindResource` are stubbed,
+  and the stub returns the resource KEY, which is what makes the dot comparable
+  at all. **Six breaks, six reds.**
+- **`Core.Rows.AgentRow`** is what a sub-agent row says. **`agents/row` splices
+  the shipped row block** - the tag and tooltip, then the drawn fields out of the
+  hashtable literal - over fourteen specs. **Eight breaks, seven red**; the
+  eighth (passing `0` for now instead of the hoisted clock) is not a defect and
+  was replaced by one that empties the age, which reds.
+- **`IListRow`** is the compile-time half of the column's contract. The view
+  filters, groups and sorts by property NAME, per item, by reflection - so two
+  row types with a renamed property is not an error anything sees: the sort
+  quietly stops ordering. Nothing binds to the interface; it exists so that
+  cannot happen.
+- 🔴 **`SubOrder` IS WHAT KEEPS AN AGENT UNDER ITS OWN CONVERSATION.** Every
+  other key on an agent row is MIRRORED from its parent, so the pair ties on all
+  of them and this breaks the tie. The shipped window never needed it - it builds
+  the list in order - and a view that sorts is a different machine.
+- 🪤 **AND THE FIRST CHECK OF IT COULD NOT GO RED.** With two conversations the
+  break stayed GREEN: `Array.Sort`, which is what a `ListCollectionView` sorts
+  with, falls back to a STABLE insertion sort below sixteen elements, so the
+  agent rows stayed put for a reason unrelated to the code. The check now builds
+  35 filler conversations to get above that threshold, and the break reds.
+- 🔴 **THE PORT SHOWED EVERY AGENT A CONVERSATION HAD EVER SPAWNED - 24 of them,
+  all finished, on the first conversation rendered. Found by LOOKING at
+  `--render`; all 25 checks were green.** The shipped rule is what is RUNNING,
+  plus the one being read, and its own comment records the operator reporting the
+  other behaviour twice. The checks now assert one row of three, and that the one
+  being read stays once it stops writing.
+- **The collapsed strip's marks select too**, and deliberately do NOT re-open
+  the column: un-folding there would undo the thing that was just asked for. It
+  selects the row rather than rebuilding the column to reach it - the shipped
+  handler used to call `Build-Sessions` purely so the rebind would restore the
+  selection, audited at 164 ms with 114 of it inside that one call. 🪤 The strip
+  is an `ItemsControl`, so its container is a **ContentPresenter** and a
+  `is ListBoxItem` test in the check found nothing while the handler was right.
+- **The pane's dot breathes only while a conversation is mid-turn**, and stopping
+  it CLEARS the animation rather than setting the opacity back - an animation
+  left running holds the property hostage and the assignment is ignored. Both
+  halves are one check, because "it is still for a quiet conversation" passes
+  just as well when the animation is never started for anything.
+- `--handlers` is **27 checks**, nine of them selection, all inside the same
+  binding-error trap. `--render` opens the first conversation in the VIEW that
+  has agents - picking from the MODEL picks one that is not on the surface, and
+  the picture came back with nothing on it and no way to tell why.
+
+🪤 **A defect the port inherits on purpose: a COLD conversation whose sub-agent is
+selected drops off the surface.** `Test-OnSurface` compares the selected id
+against the conversation's own, and a selected agent's id is `agent:...` - so
+neither the parent nor its agent rows survive the next model pass. It cannot
+happen to a live or warm conversation, which is every one you can reach. Ported
+as-is; parity first.
+
+### 4.2c also found a live reader defect - and it was in the C#
+
+🔴 **`run_in_background` is written BOTH WAYS.** A background Bash writes the
+JSON boolean `true`; an **Agent writes the STRING `"true"`**. PowerShell's
+`if ($b.input.run_in_background)` is true for any non-empty string, so the shipped
+tool sees both - and the C#, testing `ValueKind == True`, **silently dropped every
+background AGENT and kept every background shell.**
+
+- Caught by `subagents/live-tasks` as *PowerShell 2, C# 1* on a conversation with
+  one of each, with the file's length pinned on both sides so growth could not
+  explain it. Confirmed by running both readers on the same bytes.
+- **`Core.Json.PsTruth`** is now the one rule, and the other three sites use it:
+  two had their own private copies that disagreed with each other about an empty
+  array, and the third tested the kind directly. 🪤 **A non-empty string is true
+  even when it says "false"** - that is what the shipped tool does, and a port
+  that "fixed" it would differ from the window the operator is looking at.
+- 🔴 **The live case could only catch it by coincidence** - it needs an agent to
+  be out at that moment. **`subagents/task-shapes`** writes all twenty ways a
+  launch, an id and a finish can be spelled, so the next one needs no luck.
+
+### And one more harness hole, of the shape the others were
+
+🪤 **`bands/live` went red on the `pending` column, and its guard could not see
+it.** The guard compared a SHA of the last-said TEXT - so a session that is
+mid-turn, changing what it is PENDING while the last thing it said stands,
+matched the SHA, was never marked, and reported a real difference that was only
+the operator working in that conversation. The read is now pinned with the
+file's **length and last-write stamp on both sides of BOTH reads**, the whole row
+is marked through `Moving.Mark`, the `rows` entry is marked with it (a
+conversation that spoke can change BAND too), and the case fails if nothing held
+still. Two breaks - the band, and the pending text - both red.
+
 | next in 4.2 | why it waits | trigger |
 |---|---|---|
 | a live-data rail comparison | the rail needs bands and live agents per row, which the oracle has no model pass to build; the shapes carry it for now | when the background pass is ported |
-| selection, the strip's click, the band pick | the reading pane opens on selection | 4.2b/4.4 |
-| 🔴 every handler that launches, types, ends, saves or signs in | first C# code able to act; it gets a seam whose only implementation reaches the replica console, and the structural guard is widened rather than removed | 4.2c |
-| **the band pick** (`BandBg`, "only this") | 🪤 it cannot be a filter: the shipped column keeps EVERY heading when one band is picked, and a filtered-out group has no header | 4.2, with the handler |
+| 🔴 every handler that launches, types, ends, saves or signs in | first C# code able to act; it gets a seam whose only implementation reaches the replica console, and the structural guard is widened rather than removed | **4.2d - the gate in front of the operator** |
+| **the band pick** (`BandBg`, "only this") | 🪤 it cannot be a filter: the shipped column keeps EVERY heading when one band is picked, and a filtered-out group has no header | 4.2d, with the handler |
 | **3.5's two measurements, against the real template** | the run on 2026-09-13 was at **99% CPU** (a game plus other sessions' python), so the ported window reading 5-10x the placeholder is not evidence of anything yet | a quiet machine: `--bench --repeats 40` |
 
 ---

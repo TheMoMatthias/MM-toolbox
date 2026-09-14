@@ -99,15 +99,7 @@ public sealed class RegistryDirectory
     public bool Shelved =>
         Extra is not null
         && Extra.TryGetValue("shelved", out var v)
-        && v.ValueKind switch
-        {
-            JsonValueKind.True => true,
-            JsonValueKind.String => (v.GetString() ?? string.Empty).Length > 0,
-            JsonValueKind.Number => v.GetDecimal() != 0,
-            JsonValueKind.Object => true,
-            JsonValueKind.Array => v.GetArrayLength() > 0,
-            _ => false,
-        };
+        && Json.PsTruth.Of(v);
 }
 
 /// <summary>

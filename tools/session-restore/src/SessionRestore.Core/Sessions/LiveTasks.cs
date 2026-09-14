@@ -189,7 +189,11 @@ public static partial class LiveTasks
             return;
         }
 
-        if (!input.TryGetProperty("run_in_background", out var bg) || bg.ValueKind != JsonValueKind.True)
+        // 🔴 TRUTHY, NOT `== true`. An Agent launch writes the flag as the
+        // STRING "true" and a Bash writes the boolean - see PsTruth. Testing the
+        // kind dropped every background agent and kept every background shell,
+        // which the oracle caught as PowerShell 2 against C# 1.
+        if (!Json.PsTruth.Of(input, "run_in_background"))
         {
             return;
         }

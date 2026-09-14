@@ -3,12 +3,14 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using SessionRestore.App.Services;
 using SessionRestore.App.ViewModels;
 using SessionRestore.Core;
 using SessionRestore.Core.Config;
 using SessionRestore.Core.Rows;
+using SessionRestore.Core.Sessions;
 
 namespace SessionRestore.App.Views;
 
@@ -199,6 +201,34 @@ public sealed class WindowShell
             RebuildRail();
         };
 
+        _w.SessionList.SelectionChanged += (_, _) => Select(_w.SessionList.SelectedItem);
+
+        // 🪤 SELECT IT, DO NOT RE-OPEN THE COLUMN. Un-folding here would undo
+        // the thing the operator just asked for the moment they used it - and
+        // the column does not need to be visible to work: the rows are bound
+        // either way, so selecting one runs the usual handler and puts the
+        // conversation in the pane.
+        //
+        // 🪤 AND IT SELECTS THE ROW RATHER THAN REBUILDING THE COLUMN TO REACH
+        // IT. The shipped handler used to call Build-Sessions purely so the
+        // rebind would restore the selection - a correct route, audited at
+        // 164 ms with 114 of it inside that one call.
+        _w.StripList.PreviewMouseLeftButtonUp += (_, e) =>
+        {
+            if (StripClicked(e.OriginalSource as DependencyObject) is not { } id)
+            {
+                return;
+            }
+
+            var row = _vm.Rows.FirstOrDefault(r => string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase));
+            if (row is not null)
+            {
+                _w.SessionList.SelectedItem = row;
+            }
+
+            UpdateStrip();
+        };
+
         _w.SessionList.ItemsSource = _vm.View;
         _w.RailList.ItemsSource = Rail.Items;
         RebuildRail();
@@ -213,6 +243,142 @@ public sealed class WindowShell
     {
         _search.Stop();
         _search.Start();
+    }
+
+    // --------------------------------------------------------------- selection
+
+    /// <summary>
+    /// Opens a row in the reading pane: its header, and its sub-agents under it.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THE HEADER AND THE AGENT ROWS ONLY. Everything the shipped handler
+    /// does after this point reads files and spawns a process - the document, the
+    /// vitals strip, the pending question, the console probe - and none of it
+    /// exists yet. What is here is the half that is a few string assignments and
+    /// is always safe to redo.
+    ///
+    /// 🪤 SELECTING A SUB-AGENT KEEPS ITS PARENT EXPANDED. Passing the agent's
+    /// own id as the parent would take the agent rows away on the next pass -
+    /// including the one that was just selected - and the list would fight the
+    /// click.
+    /// </remarks>
+    public void Select(object? item)
+    {
+        switch (item)
+        {
+            case AgentRowVm agent:
+                _vm.SelectedId = agent.Id;
+                ShowAgents(agent.Parent, agent.Agent.Id);
+                Head(PaneHeader.OfAgent(agent.Agent, agent.Parent.Title));
+                break;
+
+            case ConversationVm row:
+                _vm.SelectedId = row.Id;
+                ShowAgents(row);
+                Head(PaneHeader.OfSession(row.Title, row.Band, row.Detail, row.ProjectLabel, row.Busy));
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The agent rows under one conversation: what is actually running, plus the
+    /// one being read.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 ONLY WHAT IS ACTUALLY RUNNING, and the port got this wrong first. It
+    /// listed every sub-agent the conversation had EVER spawned - 24 of them on
+    /// the first conversation rendered, all finished - which is the exact
+    /// complaint the shipped window carries a note about: the operator reported
+    /// seeing sub-agent sessions with none deployed, twice. The column answers
+    /// "what is happening now", and a row for an agent that finished last week
+    /// is not an answer to that. Found by LOOKING at the render; every check was
+    /// green.
+    ///
+    /// 🪤 THE ONE BEING READ STAYS, even once it goes quiet. An agent has
+    /// usually just stopped writing by the time you open it, and filtering
+    /// before that check would delete the row under the cursor on the next pass.
+    ///
+    /// 🔴 READ-ONLY, AND A DIRECTORY LISTING RATHER THAN A PARSE. Listing a
+    /// conversation's agents stats a handful of small meta files beside the
+    /// transcript; nothing here opens the conversation itself. That is what makes
+    /// it affordable on a click.
+    /// </remarks>
+    /// <param name="keepId">The sub-agent being read, which is shown whether or not it is still going.</param>
+    private void ShowAgents(ConversationVm row, string? keepId = null)
+    {
+        var all = SubAgents.List(row.Session.Jsonl);
+        var now = DateTimeOffset.Now;
+
+        // 🪤 ONE DEFINITION OF LIVE, DECIDED HERE AND HANDED DOWN. The row's tag
+        // and the amber count on the parent both mean "still writing"; asking the
+        // agent twice, a moment apart, is how the two come to disagree.
+        var liveIds = all.Where(a => a.IsLive(now)).Select(a => a.Id).ToHashSet(StringComparer.Ordinal);
+        var show = all.Where(a => liveIds.Contains(a.Id)).ToList();
+        if (!string.IsNullOrEmpty(keepId) && !liveIds.Contains(keepId))
+        {
+            var picked = all.Find(a => string.Equals(a.Id, keepId, StringComparison.Ordinal));
+            if (picked is not null)
+            {
+                show.Add(picked);
+            }
+        }
+
+        _vm.SetAgents(row.Id, show, liveIds);
+    }
+
+    private void Head(PaneHead h)
+    {
+        _w.PaneName.Text = h.Name;
+        _w.PaneState.Text = h.State;
+        _w.PaneStateDot.Background = _w.TryFindResource(PaneAccent(h.Accent)) as Brush;
+        Pulse(h.Pulse);
+    }
+
+    /// <summary>The window resource for a header accent.</summary>
+    /// <remarks>
+    /// 🪤 AN UNKNOWN BAND IS <c>AccIdle</c>, WHICH IS NOT THE QUIET ACCENT - the
+    /// shipped line falls back to AccIdle when the band table has no row, and
+    /// "quiet" IS a row in it. Two different answers; the oracle has a spec for
+    /// each.
+    /// </remarks>
+    public static string PaneAccent(string accent) => accent switch
+    {
+        PaneHeader.Ask => "HueAsk",
+        Bands.Needs => "AccNeeds",
+        Bands.Open => "AccOpen",
+        Bands.Working => "AccWorking",
+        Bands.Done => "AccDone",
+        Bands.Idle => "AccIdle",
+        Bands.Quiet => "AccQuiet",
+        _ => "AccIdle",
+    };
+
+    /// <summary>
+    /// 🔑 A DOT THAT BREATHES WHILE IT IS ACTUALLY THINKING, and stops dead
+    /// otherwise. A permanent animation would be decoration, and this window has
+    /// none.
+    /// </summary>
+    private void Pulse(bool on)
+    {
+        if (on)
+        {
+            var a = new DoubleAnimation(1.0, 0.35, new Duration(TimeSpan.FromSeconds(0.9)))
+            {
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever,
+            };
+            _w.PaneStateDot.BeginAnimation(UIElement.OpacityProperty, a);
+            return;
+        }
+
+        // 🪤 CLEARED, NOT SET TO 1. An animation left running holds the property
+        // hostage: a later assignment is ignored and the dot keeps breathing on a
+        // conversation that has stopped.
+        _w.PaneStateDot.BeginAnimation(UIElement.OpacityProperty, null);
+        _w.PaneStateDot.Opacity = 1.0;
     }
 
     // ------------------------------------------------------------------ chrome
@@ -343,6 +509,27 @@ public sealed class WindowShell
         }
 
         return items;
+    }
+
+    /// <summary>The id of the strip mark under a click, walking up from whatever was hit.</summary>
+    /// <remarks>
+    /// 🪤 THE ORIGINAL SOURCE IS THE SHAPE, NOT THE ITEM. A mark is a Border
+    /// inside a container, so the click lands several levels below the thing
+    /// that carries the row - walking up is what finds it.
+    /// </remarks>
+    public static string? StripClicked(DependencyObject? from)
+    {
+        while (from is not null)
+        {
+            if (from is FrameworkElement { DataContext: StripItem s })
+            {
+                return s.Id;
+            }
+
+            from = System.Windows.Media.VisualTreeHelper.GetParent(from);
+        }
+
+        return null;
     }
 
     private void UpdateStrip()

@@ -546,9 +546,7 @@ public static partial class TranscriptBlocks
             argShort = Str(input, "description").Trim();
         }
         else if (string.Equals(name, "Bash", StringComparison.Ordinal) &&
-                 input.ValueKind == JsonValueKind.Object &&
-                 input.TryGetProperty("run_in_background", out var bg) &&
-                 bg.ValueKind == JsonValueKind.True)
+                 Json.PsTruth.Of(input, "run_in_background"))
         {
             // 🪤 run_in_background IS ON THE INPUT AND NOWHERE ELSE. The
             // transcript answers a backgrounded Bash immediately and records no
@@ -630,7 +628,8 @@ public static partial class TranscriptBlocks
         // Everything else here is JSON claude wrote.
         s = TranscriptText.RemoveAnsi(s);
         var lines = s.Split('\n').Length;
-        var failed = b.TryGetProperty("is_error", out var e) && e.ValueKind == JsonValueKind.True;
+        // Truthy, as the shipped reader asks it: `$b.PSObject.Properties['is_error'] -and $b.is_error`.
+        var failed = Json.PsTruth.Of(b, "is_error");
 
         outp.Add(new TranscriptBlock(BlockKind.Result, failed ? "failed" : "result", s,
             lines.ToString(CultureInfo.InvariantCulture) + " lines", when));

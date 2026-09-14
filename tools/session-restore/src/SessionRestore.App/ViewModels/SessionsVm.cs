@@ -40,8 +40,19 @@ public enum SessionSort
 /// </remarks>
 public sealed class SessionsVm : INotifyPropertyChanged
 {
-    private readonly ObservableCollection<ConversationVm> _rows = [];
+    private readonly ObservableCollection<IListRow> _rows = [];
     private readonly Dictionary<string, ConversationVm> _byId = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The agent rows currently in the column, by the conversation they belong to.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 ONE PARENT AT A TIME, in practice - the rows exist only under the
+    /// conversation being read - but this is keyed rather than a single field
+    /// so that dropping them cannot depend on remembering which parent they had.
+    /// A stale key here is an agent row under a conversation nobody selected.
+    /// </remarks>
+    private readonly Dictionary<string, List<AgentRowVm>> _agentRows = new(StringComparer.OrdinalIgnoreCase);
 
     private string _search = string.Empty;
     private string _project = string.Empty;
@@ -59,7 +70,7 @@ public sealed class SessionsVm : INotifyPropertyChanged
         // and Remove for what moved instead of Reset for everything.
         var view = new ListCollectionView(_rows)
         {
-            Filter = o => o is ConversationVm r && r.Matches,
+            Filter = o => o is IListRow r && r.Matches,
         };
 
         // 🪤 IsLiveFiltering IS NOT ENOUGH ON ITS OWN. Without the property
@@ -108,8 +119,20 @@ public sealed class SessionsVm : INotifyPropertyChanged
 
     private readonly ListCollectionView _view;
 
-    /// <summary>Every conversation on the surface, ordered as the model gave them.</summary>
-    public IReadOnlyList<ConversationVm> Rows => _rows;
+    /// <summary>
+    /// Every row the column holds - conversations and the agent rows under the
+    /// one being read - in the order the model gave them.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 THIS IS THE SOURCE, NOT THE VIEW. A check that watches it for
+    /// structural changes is asking whether a gesture REBUILT the column, and
+    /// that is a different question from what is on screen - see the three
+    /// checks in Phase 3 that each passed while the thing they named was untrue.
+    /// </remarks>
+    public IReadOnlyList<IListRow> Items => _rows;
+
+    /// <summary>Every conversation on the surface, without the agent rows.</summary>
+    public IEnumerable<ConversationVm> Rows => _rows.OfType<ConversationVm>();
 
     /// <summary>
     /// 🔑 THE SEARCH BOX. One keystroke is a predicate over 434 items in native
@@ -276,16 +299,152 @@ public sealed class SessionsVm : INotifyPropertyChanged
             _rows.Add(row);
         }
 
+        // 🔴 THE AGENT ROWS ARE NOT IN `seen` AND MUST NOT BE JUDGED BY IT.
+        // Their ids are the agents' own, the model is a list of conversations,
+        // and a loop that only asked `seen.Contains` deleted every agent row on
+        // the next 2,5 s sweep - the rows appeared on the click and vanished a
+        // moment later. They are owned by SetAgents; what happens here is that
+        // an agent whose PARENT has gone goes with it.
         for (var i = _rows.Count - 1; i >= 0; i--)
         {
-            if (!seen.Contains(_rows[i].Id))
+            switch (_rows[i])
             {
-                _byId.Remove(_rows[i].Id);
-                _rows.RemoveAt(i);
+                case AgentRowVm agent when !seen.Contains(agent.Parent.Id):
+                    agent.Detach();
+                    _rows.RemoveAt(i);
+                    break;
+                case ConversationVm row when !seen.Contains(row.Id):
+                    _byId.Remove(row.Id);
+                    _rows.RemoveAt(i);
+                    break;
+                default:
+                    break;
             }
         }
 
+        foreach (var key in _agentRows.Keys.Where(k => !seen.Contains(k)).ToList())
+        {
+            _agentRows.Remove(key);
+        }
+
         Reselect();
+    }
+
+    /// <summary>
+    /// Puts the sub-agent rows under one conversation, and takes every other
+    /// conversation's away.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 UNDER THE SELECTED CONVERSATION ONLY. Rendering every conversation's
+    /// agents took the shipped list from 36 rows to 106 in review, on a surface
+    /// that had just been asked to get LESS dense, and one conversation on this
+    /// machine has 31 agents of its own. The amber dot still says, on every row,
+    /// that a session has agents out right now.
+    ///
+    /// 🪤 IT PATCHES, IT DOES NOT REPLACE. This is called again on every sweep
+    /// while a conversation is open, and dropping the rows to re-add them would
+    /// rebuild their containers two or three times a second - the exact cost
+    /// this whole class exists to remove. A row that is still there keeps its
+    /// object and gets new values.
+    ///
+    /// 🪤 AND THE PARENT MUST STAY OPEN WHILE ONE OF ITS AGENTS IS SELECTED, or
+    /// selecting an agent would remove the row that is selected. That is the
+    /// caller's business: it passes the parent of the selected agent.
+    /// </remarks>
+    /// <param name="parentId">The conversation whose agents are shown, or empty for none.</param>
+    /// <param name="agents">Its agents, in the order they should read.</param>
+    /// <param name="live">Which of them are still writing, by agent id. One definition, from the caller.</param>
+    /// <param name="nowTicks">Now, for the ages. 0 reads the clock.</param>
+    public void SetAgents(
+        string parentId,
+        IReadOnlyList<SubAgent> agents,
+        IReadOnlySet<string>? live = null,
+        long nowTicks = 0)
+    {
+        ArgumentNullException.ThrowIfNull(agents);
+        parentId = (parentId ?? string.Empty).ToLowerInvariant();
+        if (nowTicks <= 0)
+        {
+            nowTicks = DateTime.Now.Ticks;
+        }
+
+        // Everything filed under another conversation goes, whatever is passed.
+        foreach (var key in _agentRows.Keys.Where(k => !string.Equals(k, parentId, StringComparison.OrdinalIgnoreCase)).ToList())
+        {
+            Drop(key);
+        }
+
+        if (parentId.Length == 0 || !_byId.TryGetValue(parentId, out var parent))
+        {
+            return;
+        }
+
+        var wanted = agents.Select(a => AgentRowVm.IdPrefix + a.Id).ToHashSet(StringComparer.Ordinal);
+        if (!_agentRows.TryGetValue(parentId, out var held))
+        {
+            held = [];
+            _agentRows[parentId] = held;
+        }
+
+        for (var i = held.Count - 1; i >= 0; i--)
+        {
+            if (!wanted.Contains(held[i].Id))
+            {
+                Remove(held[i]);
+                held.RemoveAt(i);
+            }
+        }
+
+        var byId = held.ToDictionary(r => r.Id, StringComparer.Ordinal);
+        var at = _rows.IndexOf(parent);
+        for (var order = 0; order < agents.Count; order++)
+        {
+            var a = agents[order];
+            var id = AgentRowVm.IdPrefix + a.Id;
+            var running = live is not null ? live.Contains(a.Id) : a.IsLive();
+            if (byId.TryGetValue(id, out var row))
+            {
+                row.Refresh(running, nowTicks, order + 1);
+                continue;
+            }
+
+            row = new AgentRowVm(parent, a, order + 1);
+            row.Refresh(running, nowTicks, order + 1);
+            row.Matches = parent.Matches;
+            held.Add(row);
+
+            // Beside its parent in the source as well as in the view. The sort
+            // decides what is on screen; this only keeps the source readable.
+            if (at >= 0 && at + held.Count <= _rows.Count)
+            {
+                _rows.Insert(at + held.Count, row);
+            }
+            else
+            {
+                _rows.Add(row);
+            }
+        }
+    }
+
+    private void Drop(string parentId)
+    {
+        if (!_agentRows.TryGetValue(parentId, out var held))
+        {
+            return;
+        }
+
+        foreach (var row in held)
+        {
+            Remove(row);
+        }
+
+        _agentRows.Remove(parentId);
+    }
+
+    private void Remove(AgentRowVm row)
+    {
+        row.Detach();
+        _rows.Remove(row);
     }
 
     /// <summary>
@@ -324,9 +483,26 @@ public sealed class SessionsVm : INotifyPropertyChanged
 
         using (_view.DeferRefresh())
         {
+            // 🔴 THE CONVERSATIONS FIRST, THEN THEIR AGENTS. An agent row's
+            // answer is its parent's answer AND the expansion, so deciding it
+            // in one pass over a mixed list would read whatever the parent
+            // happened to hold - right for the rows that come after their
+            // parent and wrong for any that do not. Two passes cost one extra
+            // walk of a list that is already only booleans.
             foreach (var r in _rows)
             {
-                r.Matches = Passes(r);
+                if (r is ConversationVm c)
+                {
+                    c.Matches = Passes(c);
+                }
+            }
+
+            foreach (var r in _rows)
+            {
+                if (r is AgentRowVm a)
+                {
+                    a.Matches = a.Expanded && a.Parent.Matches;
+                }
             }
         }
     }
@@ -401,6 +577,18 @@ public sealed class SessionsVm : INotifyPropertyChanged
                     View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.LastActiveTicks), ListSortDirection.Descending));
                     break;
             }
+
+            // 🔴 LAST, ALWAYS, AND IT IS WHAT KEEPS AN AGENT UNDER ITS OWN
+            // CONVERSATION. Every key above is mirrored from the parent onto its
+            // agent rows, so the pair ties on all of them and this breaks the tie
+            // in favour of the conversation - 0 before 1, 2, 3.
+            //
+            // 🪤 A STABLE SORT WOULD NOT HAVE BEEN ENOUGH TO RELY ON.
+            // ListCollectionView sorts with Array.Sort, which is introsort and
+            // NOT stable, so "they were added in the right order" decides
+            // nothing once there are more than a few rows.
+            View.SortDescriptions.Add(
+                new SortDescription(nameof(IListRow.SubOrder), ListSortDirection.Ascending));
         }
     }
 

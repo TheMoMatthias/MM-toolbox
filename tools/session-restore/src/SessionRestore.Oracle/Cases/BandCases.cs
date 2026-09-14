@@ -287,6 +287,7 @@ public static class BandCases
                 fullSha = $(if ($sd -and "$($sd.Full)".Trim()) {
                     ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("$($sd.Full)"))).Replace('-','').ToLower())
                 } else { '' })
+                stamp   = "$($r.Stamp)"
             })
         }
         (@{ rows = $rows.ToArray(); agents = $agents; said = $said.ToArray() } | ConvertTo-Json -Compress -Depth 6)
@@ -295,13 +296,23 @@ public static class BandCases
         {
             var doc = JsonNode.Parse(psOut);
             var agents = AgentsFrom(doc);
-            var said = SaidFrom(doc);
+            var said = SaidFrom(doc, out var moved);
 
+            // 🔴 AND THE BAND GOES WITH IT. A conversation that spoke between
+            // the two reads can be in a different band as well as carry
+            // different text, so marking only the `said` row leaves the `rows`
+            // entry to report a difference nothing can forgive.
             var rows = new JsonArray();
             var spread = new Dictionary<string, int>(StringComparer.Ordinal);
             foreach (var a in doc?["rows"]?.AsArray() ?? [])
             {
                 var id = a?["id"]?.GetValue<string>() ?? string.Empty;
+                if (moved.Contains(id))
+                {
+                    rows.Add(new JsonObject { ["id"] = id, ["band"] = Spoke });
+                    continue;
+                }
+
                 var conv = SessionState.Of(agents.GetValueOrDefault(id));
                 var band = Bands.Of(conv, said.GetValueOrDefault(id));
                 spread[band] = spread.GetValueOrDefault(band) + 1;
@@ -316,12 +327,15 @@ public static class BandCases
             {
                 ["rows"] = rows,
                 ["agents"] = AgentsBack(doc, agents),
-                ["said"] = SaidBack(doc, said),
+                ["said"] = SaidBack(doc, said, moved),
             }.ToJsonString();
         })
     {
-        Tolerate = d => Diffs(d).All(x => x.Contains("this side read different text", StringComparison.Ordinal)),
-        ToleranceReason = "a conversation said something new between the two reads",
+        // 🪤 THIS ONE DIFFERENCE'S C# VALUE IS THE MARKER - never "some line of
+        // it contains the text", which inspects one line of a multi-line value
+        // and forgives all of them.
+        Tolerate = d => Moving.IsMarked(d, Spoke),
+        ToleranceReason = "a conversation spoke between the two reads - a file being worked in, not a differing reader",
     };
 
     /// <summary>
@@ -572,8 +586,18 @@ public static class BandCases
                 $cv = Resolve-SRSessionState -Agent $a -Conv $null
                 $sd = $null
                 $p = "$($s.jsonl)"
-                if ($p -and (Test-Path -LiteralPath $p)) { try { $sd = Get-SRLastSaid -JsonlPath $p } catch { } }
-                $script:model.Add([PSCustomObject]@{ Id = $id; S = $s; D = $d; A = $a; Conv = $cv; Said = $sd })
+                # The file's stamp on BOTH SIDES of this read. A conversation
+                # that is being worked in changes between the two readers, and
+                # an answer paired with a length taken afterwards cannot say
+                # whether it straddled a write.
+                $st1 = ''; $st2 = ''
+                if ($p -and (Test-Path -LiteralPath $p)) {
+                    try { $f1 = Get-Item -LiteralPath $p; $st1 = '{0}|{1}' -f $f1.Length, $f1.LastWriteTimeUtc.Ticks } catch { }
+                    try { $sd = Get-SRLastSaid -JsonlPath $p } catch { }
+                    try { $f2 = Get-Item -LiteralPath $p; $st2 = '{0}|{1}' -f $f2.Length, $f2.LastWriteTimeUtc.Ticks } catch { }
+                }
+                $stamp = $(if ($st1 -and $st1 -eq $st2) { $st1 } else { '' })
+                $script:model.Add([PSCustomObject]@{ Id = $id; S = $s; D = $d; A = $a; Conv = $cv; Said = $sd; Stamp = $stamp })
             }
         }
         $agents = New-Object System.Collections.Generic.List[object]
@@ -788,8 +812,25 @@ public static class BandCases
     /// This side reads every last-said itself; the PowerShell's digest is only
     /// used to line the rows up and to say when the text moved underneath.
     /// </summary>
-    private static Dictionary<string, SaidResult> SaidFrom(JsonNode? doc)
+    /// <summary>What a row says when the conversation moved under the two readers.</summary>
+    private const string Spoke = "(it spoke between the two reads)";
+
+    /// <summary>
+    /// The same last-said the PowerShell read, and which conversations did not
+    /// hold still long enough for that to be a fair question.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THE STAMP IS PINNED ON BOTH SIDES OF BOTH READS. The guard here used
+    /// to be a SHA of the last-said TEXT, which is a different question: a
+    /// session mid-turn changes what it is PENDING while the last thing it said
+    /// stands - so the SHA matched, nothing was marked, and the pending column
+    /// reported a real difference that was only the operator working. It made
+    /// the case intermittently red, which is worse than red: it teaches you to
+    /// re-run.
+    /// </remarks>
+    private static Dictionary<string, SaidResult> SaidFrom(JsonNode? doc, out HashSet<string> moved)
     {
+        moved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var byId = new Dictionary<string, SaidResult>(StringComparer.OrdinalIgnoreCase);
         var jsonl = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var s in SessionRegistry.Read().AllSessions)
@@ -805,43 +846,69 @@ public static class BandCases
                 continue;
             }
 
+            var psStamp = a?["stamp"]?.GetValue<string>() ?? string.Empty;
+            var before = Stamp(p);
             byId[id] = LastSaid.Read(p);
+            if (psStamp.Length == 0 || !string.Equals(psStamp, before, StringComparison.Ordinal)
+                || !string.Equals(before, Stamp(p), StringComparison.Ordinal))
+            {
+                moved.Add(id);
+            }
         }
 
         return byId;
     }
 
-    private static JsonArray SaidBack(JsonNode? doc, Dictionary<string, SaidResult> said)
+    /// <summary>Length and last-write, the same stamp the shipped readers cache on.</summary>
+    private static string Stamp(string path)
+    {
+        try
+        {
+            var f = new FileInfo(path);
+            return string.Create(CultureInfo.InvariantCulture, $"{f.Length}|{f.LastWriteTimeUtc.Ticks}");
+        }
+        catch (IOException)
+        {
+            return string.Empty;
+        }
+    }
+
+    private static JsonArray SaidBack(JsonNode? doc, Dictionary<string, SaidResult> said, HashSet<string> moved)
     {
         var back = new JsonArray();
+        var seen = 0;
         foreach (var a in doc?["said"]?.AsArray() ?? [])
         {
             var id = a?["id"]?.GetValue<string>() ?? string.Empty;
             var got = said.GetValueOrDefault(id);
-            var psSha = a?["fullSha"]?.GetValue<string>() ?? string.Empty;
-            var mySha = got is not null && got.Full.Trim().Length > 0 ? Sha(got.Full) : string.Empty;
 
-            if (!string.Equals(psSha, mySha, StringComparison.Ordinal))
+            // 🔴 A MARKER FILLS EVERY FIELD THE OTHER SIDE EMITTED. A partly
+            // marked row reports the rest as "present in PowerShell, missing in
+            // C#", and those lines carry nothing an allowance can match on.
+            if (moved.Contains(id))
             {
-                back.Add(new JsonObject
-                {
-                    ["id"] = id,
-                    ["has"] = "(this side read different text)",
-                    ["pending"] = "(this side read different text)",
-                    ["saidLen"] = "(this side read different text)",
-                    ["fullSha"] = "(this side read different text)",
-                });
+                back.Add(Moving.Mark(a, "id", Spoke));
                 continue;
             }
 
+            seen++;
             back.Add(new JsonObject
             {
                 ["id"] = id,
                 ["has"] = got is not null,
                 ["pending"] = got?.Pending ?? string.Empty,
                 ["saidLen"] = (got?.Said ?? string.Empty).Trim().Length,
-                ["fullSha"] = mySha,
+                ["fullSha"] = got is not null && got.Full.Trim().Length > 0 ? Sha(got.Full) : string.Empty,
+                ["stamp"] = a?["stamp"]?.GetValue<string>() ?? string.Empty,
             });
+        }
+
+        // 🔴 AND FAIL IF NOTHING WAS COMPARED. A run where every conversation
+        // moved would otherwise agree about nothing at all and print green.
+        // This row matches no allowance on purpose.
+        if (seen == 0)
+        {
+            back.Add(new JsonObject { ["id"] = "(nothing held still)", ["has"] = false });
         }
 
         return back;

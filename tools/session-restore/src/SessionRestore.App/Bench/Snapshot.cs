@@ -79,12 +79,31 @@ public static class Snapshot
         };
         // The rail through the real shell, preferences going nowhere - the same
         // wiring the handler check drives.
-        new WindowShell(w, vm, new Services.NoPreferences()).Attach();
+        var shell = new WindowShell(w, vm, new Services.NoPreferences());
+        shell.Attach();
 
         w.Show();
         try
         {
             w.Dispatcher.Invoke(static () => { }, DispatcherPriority.ContextIdle);
+
+            // 🔑 OPEN THE FIRST CONVERSATION THAT HAS AGENTS, so the picture
+            // shows the rows a selection adds rather than only the ones a bare
+            // list draws. Listing an agent directory stats a few small files;
+            // nothing here opens a transcript.
+            // 🪤 FROM THE VIEW, NOT FROM THE MODEL. Picking the first
+            // conversation in the MODEL that has agents picks one that is
+            // usually not on the surface at all - and an unmatched parent means
+            // unmatched agent rows, so the picture came back with no agents on
+            // it and nothing to say why.
+            var withAgents = vm.View.Cast<object>().OfType<ConversationVm>().FirstOrDefault(
+                r => Core.Sessions.SubAgents.List(r.Session.Jsonl).Count > 0);
+            if (withAgents is not null)
+            {
+                shell.Select(withAgents);
+                w.SessionList.SelectedItem = withAgents;
+                w.Dispatcher.Invoke(static () => { }, DispatcherPriority.ContextIdle);
+            }
             Save(w, w.SessionList, pngPath);
             Save(w, w.RailList, Path.ChangeExtension(pngPath, null) + "-rail.png");
         }

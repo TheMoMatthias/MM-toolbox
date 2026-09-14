@@ -33,7 +33,397 @@ public static class SubAgentCases
         yield return (Agents(), true, "every sub-agent of every conversation, and what it is");
         yield return (LastLines(), true, "the last thing each sub-agent said");
         yield return (Live(), true, $"what is still running, over {LiveTaskSample} conversations");
+        yield return (TaskShapes(), true, "every way a launch, an id and a finish can be written");
+        yield return (Row(), true, "the sub-agent row's name, tag, age and tooltip, against Build-Sessions' own block");
     }
+
+    // ------------------------------------------------------- the row it draws
+
+    /// <param name="Kind">The task kind: a teammate is <c>in_process_teammate</c>.</param>
+    private sealed record RowSpec(string Name, string Label, string Kind, string Description, string AgentType, bool Live, bool HasTranscript, int AgeSeconds);
+
+    private static readonly RowSpec[] RowSpecs =
+    [
+        new("a-task-still-working", "scout", "task", "sweep the callers", "general-purpose", true, true, 30),
+        new("a-task-that-finished", "scout", "task", "sweep the callers", "general-purpose", false, true, 7200),
+        new("a-teammate-still-working", "I7", "in_process_teammate", "hold the interface", "general-purpose", true, true, 5),
+        new("a-teammate-that-finished", "I7", "in_process_teammate", "hold the interface", "general-purpose", false, true, 90000),
+
+        // 🪤 45 OF 374 ON THIS MACHINE ARE METADATA AND NO TRANSCRIPT. A real
+        // state, and drawing it like an empty conversation reads as a broken
+        // reader rather than as an agent that left nothing.
+        new("no-transcript", "ghost", "task", "look around", "explorer", false, false, 400),
+        new("no-transcript-and-working", "ghost", "task", "look around", "explorer", true, false, 10),
+
+        // With no description the row falls back to the agent's TYPE, and the
+        // tooltip says so in words instead.
+        new("no-description", "scout", "task", "", "general-purpose", false, true, 300),
+        new("no-description-and-no-type", "scout", "task", "", "", false, true, 300),
+        new("no-description-no-transcript", "ghost", "in_process_teammate", "", "explorer", false, false, 300),
+
+        // The ages, at the boundaries Get-AgeLabel turns over.
+        new("age-under-90-seconds", "scout", "task", "x", "general-purpose", true, true, 89),
+        new("age-at-90-seconds", "scout", "task", "x", "general-purpose", false, true, 90),
+        new("age-an-hour", "scout", "task", "x", "general-purpose", false, true, 3600),
+        new("age-a-day", "scout", "task", "x", "general-purpose", false, true, 86400),
+        new("age-in-the-future", "scout", "task", "x", "general-purpose", true, true, -60),
+    ];
+
+    /// <summary>
+    /// 🔴 THE ROW IS INLINE IN Build-Sessions, so it is SPLICED rather than
+    /// copied: the tag and tooltip are built in one block and the drawn fields
+    /// are entries in the hashtable literal beneath it. Both regions are cut out
+    /// of the shipped file by their own lines.
+    /// </summary>
+    private static OracleCase Row() => new(
+        "agents/row",
+        "what a sub-agent row says, over every combination of kind, state and transcript",
+        RowScript(),
+        _ =>
+        {
+            var rows = new JsonArray();
+            var now = DateTime.Now;
+            foreach (var s in RowSpecs)
+            {
+                var agent = new SubAgent(
+                    Id: "a1",
+                    Label: s.Label,
+                    AgentType: s.AgentType,
+                    Description: s.Description,
+                    TaskKind: s.Kind,
+                    Model: string.Empty,
+                    Team: string.Empty,
+                    ToolUseId: string.Empty,
+                    Path: string.Empty,
+                    HasTranscript: s.HasTranscript,
+                    Bytes: 0,
+                    When: new DateTimeOffset(now.AddSeconds(-s.AgeSeconds)));
+                var t = Core.Rows.AgentRow.Of(agent, s.Live, now.Ticks);
+                rows.Add(new JsonObject
+                {
+                    ["n"] = s.Name,
+                    ["name"] = t.Name,
+                    ["desc"] = t.Description,
+                    ["tag"] = t.Tag,
+                    ["age"] = t.Age,
+                    ["opacity"] = t.Opacity,
+                    ["tip"] = t.Tip,
+                });
+            }
+
+            return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);
+        });
+
+    private static string RowScript()
+    {
+        var sb = new System.Text.StringBuilder();
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+
+        sb.Append("""
+        $winSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\sessions-window.ps1'))
+        foreach ($fn in @('Get-AgeLabel', 'Get-AgeTicks')) {
+            $a = $winSrc.IndexOf("function $fn")
+            if ($a -lt 0) { throw "could not find $fn" }
+            Invoke-Expression $winSrc.Substring($a, $winSrc.IndexOf("`n}", $a) - $a + 2)
+        }
+
+        # The tag and the tooltip, then the fields the row draws.
+        $fromA = $winSrc.IndexOf('                $tag = $(if ($sa.IsTeammate)')
+        $toA = $winSrc.IndexOf('                $items.Add([PSCustomObject]@{', $fromA)
+        $fromB = $winSrc.IndexOf('                    SubName = $sa.Label', $toA)
+        $toB = $winSrc.IndexOf("`n", $winSrc.IndexOf('                    SubTip = $tip', $fromB))
+        if ($fromA -lt 0 -or $toA -lt 0 -or $fromB -lt 0 -or $toB -lt 0) { throw 'could not find the sub-agent row block' }
+        $regionA = $winSrc.Substring($fromA, $toA - $fromA)
+        $regionB = $winSrc.Substring($fromB, $toB - $fromB)
+
+        $now = Get-Date
+        $specs = @(
+
+        """);
+
+        foreach (var s in RowSpecs)
+        {
+            sb.Append(inv, $"    @{{ n = '{s.Name}'; label = {PsText.Literal(s.Label)}; kind = '{s.Kind}'; ");
+            sb.Append(inv, $"desc = {PsText.Literal(s.Description)}; type = {PsText.Literal(s.AgentType)}; ");
+            sb.Append(inv, $"live = ${s.Live.ToString().ToLowerInvariant()}; has = ${s.HasTranscript.ToString().ToLowerInvariant()}; ");
+            sb.Append(inv, $"age = {s.AgeSeconds} }},\n");
+        }
+
+        sb.Append("""
+            $null)
+        $rows = @()
+        foreach ($s in $specs) {
+            if (-not $s) { continue }
+            $sa = [PSCustomObject]@{
+                Id            = 'a1'
+                Label         = $s.label
+                Description   = $s.desc
+                AgentType     = $s.type
+                IsTeammate    = ($s.kind -eq 'in_process_teammate')
+                Live          = $s.live
+                HasTranscript = $s.has
+                When          = $now.AddSeconds(-$s.age)
+            }
+            Invoke-Expression $regionA
+            $h = Invoke-Expression ('@{' + $regionB + '}')
+            $rows += [ordered]@{
+                n = "$($s.n)"; name = "$($h.SubName)"; desc = "$($h.SubDesc)"
+                tag = "$tag"; age = "$($h.SubAge)"
+                opacity = [double]$h.SubOpacity; tip = "$($h.SubTip)"
+            }
+        }
+        (@{ rows = $rows } | ConvertTo-Json -Compress -Depth 4)
+
+        """);
+
+        return sb.ToString();
+    }
+
+    // ------------------------------------------------- what is running: shapes
+
+    /// <summary>
+    /// 🔴 THE LIVE CASE PROVES THE PATHS TODAY'S MACHINE HAPPENS TO REACH, and on
+    /// most runs nothing at all is running - so it can be green over an empty
+    /// answer twice a day. The defect it eventually caught (an Agent writes
+    /// <c>run_in_background</c> as the STRING "true", so a kind test dropped every
+    /// background agent) only showed because one conversation happened to have an
+    /// agent out at that moment. These shapes are the same rules, written down, so
+    /// the next one does not need a coincidence.
+    /// </summary>
+    private sealed record TaskShape(string Name, string[] Lines);
+
+    private static string Use(string id, string name, string bg, string cmd) =>
+        new JsonObject
+        {
+            ["type"] = "assistant",
+            ["timestamp"] = "2026-09-13T08:00:00.000Z",
+            ["message"] = new JsonObject
+            {
+                ["role"] = "assistant",
+                ["content"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["type"] = "tool_use",
+                        ["id"] = id,
+                        ["name"] = name,
+                        ["input"] = Input(bg, name, cmd),
+                    },
+                },
+            },
+        }.ToJsonString();
+
+    /// <summary>The flag spelled the way the shape asks for: a bare word is JSON, anything else a string.</summary>
+    private static JsonObject Input(string bg, string name, string cmd)
+    {
+        var input = new JsonObject { ["description"] = "what it was asked to do" };
+        if (string.Equals(name, "Bash", StringComparison.Ordinal))
+        {
+            input["command"] = cmd;
+        }
+        else
+        {
+            input["subagent_type"] = cmd;
+        }
+
+        if (bg.Length > 0)
+        {
+            input["run_in_background"] = bg switch
+            {
+                "true" => JsonValue.Create(true),
+                "false" => JsonValue.Create(false),
+                "0" => JsonValue.Create(0),
+                "1" => JsonValue.Create(1),
+                "null" => null,
+                _ => JsonValue.Create(bg.Trim('\'')),
+            };
+        }
+
+        return input;
+    }
+
+    private static string Result(string useId, string text) =>
+        new JsonObject
+        {
+            ["type"] = "user",
+            ["timestamp"] = "2026-09-13T08:00:01.000Z",
+            ["message"] = new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["type"] = "tool_result",
+                        ["tool_use_id"] = useId,
+                        ["content"] = new JsonArray
+                        {
+                            new JsonObject { ["type"] = "text", ["text"] = text },
+                        },
+                    },
+                },
+            },
+        }.ToJsonString();
+
+    private static string ResultString(string useId, string text) =>
+        new JsonObject
+        {
+            ["type"] = "user",
+            ["timestamp"] = "2026-09-13T08:00:01.000Z",
+            ["message"] = new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["type"] = "tool_result",
+                        ["tool_use_id"] = useId,
+                        ["content"] = text,
+                    },
+                },
+            },
+        }.ToJsonString();
+
+    private static string Ended(string id) =>
+        new JsonObject
+        {
+            ["type"] = "user",
+            ["timestamp"] = "2026-09-13T08:00:02.000Z",
+            ["message"] = new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = "<task-notification>\n<task-id>" + id + "</task-id>\ndone\n</task-notification>",
+            },
+        }.ToJsonString();
+
+    private const string AgentSaid = "Async agent launched successfully.\nagentId: a1b2c3d4 (internal ID)";
+
+    private static readonly TaskShape[] RunShapes =
+    [
+        // 🔴 THE ONE THAT WAS WRONG. Both are launches; only the spelling differs.
+        new("bash-flag-is-a-boolean", [Use("u1", "Bash", "true", "sleep 5"), Result("u1", "running in background with ID: bd9l0w3g5")]),
+        new("agent-flag-is-a-string", [Use("u1", "Agent", "'true'", "general-purpose"), Result("u1", AgentSaid)]),
+
+        // 🪤 AND "false" AS A STRING IS TRUE IN POWERSHELL. It reads like a bug
+        // and is what the shipped tool does - the point of the case is that both
+        // sides say the same wrong-looking thing.
+        new("the-string-false-is-truthy", [Use("u1", "Agent", "'false'", "general-purpose"), Result("u1", AgentSaid)]),
+        new("the-boolean-false-is-not", [Use("u1", "Bash", "false", "sleep 5"), Result("u1", "running in background with ID: nope")]),
+        new("zero-is-not", [Use("u1", "Bash", "0", "sleep 5"), Result("u1", "running in background with ID: nope")]),
+        new("one-is", [Use("u1", "Bash", "1", "sleep 5"), Result("u1", "running in background with ID: one")]),
+        new("an-empty-string-is-not", [Use("u1", "Bash", "''", "sleep 5"), Result("u1", "running in background with ID: nope")]),
+        new("null-is-not", [Use("u1", "Bash", "null", "sleep 5"), Result("u1", "running in background with ID: nope")]),
+        new("absent-is-not", [Use("u1", "Bash", string.Empty, "sleep 5"), Result("u1", "running in background with ID: nope")]),
+
+        // The launch names the kind, not the flag.
+        new("task-counts-as-an-agent", [Use("u1", "Task", "'true'", "explorer"), Result("u1", AgentSaid)]),
+        new("another-tool-never-counts", [Use("u1", "Read", "true", "x"), Result("u1", "background with ID: nope")]),
+
+        // 🪤 EACH KIND HANDS ITS ID BACK IN ITS OWN WORDS, and a result that
+        // names the OTHER kind's phrasing is not a launch this can track.
+        new("an-agent-that-says-shell-is-dropped", [Use("u1", "Agent", "'true'", "general-purpose"), Result("u1", "background with ID: bd9l0w3g5")]),
+        new("a-shell-that-says-agent-is-dropped", [Use("u1", "Bash", "true", "sleep 5"), Result("u1", AgentSaid)]),
+        new("a-launch-with-no-result-is-not-open", [Use("u1", "Bash", "true", "sleep 5")]),
+
+        // The result content arrives as a bare string as well as as blocks.
+        new("a-string-result-body", [Use("u1", "Bash", "true", "sleep 5"), ResultString("u1", "background with ID: strbody")]),
+
+        // Finishing.
+        new("a-finished-shell-is-gone",
+        [
+            Use("u1", "Bash", "true", "sleep 5"), Result("u1", "background with ID: gone"), Ended("gone"),
+        ]),
+        new("a-finish-for-something-else-changes-nothing",
+        [
+            Use("u1", "Bash", "true", "sleep 5"), Result("u1", "background with ID: kept"), Ended("other"),
+        ]),
+        new("relaunched-after-finishing",
+        [
+            Use("u1", "Bash", "true", "a"), Result("u1", "background with ID: x"), Ended("x"),
+            Use("u2", "Bash", "true", "b"), Result("u2", "background with ID: x"),
+        ]),
+        new("two-at-once-keep-their-order",
+        [
+            Use("u1", "Bash", "true", "first"), Result("u1", "background with ID: aaa"),
+            Use("u2", "Agent", "'true'", "general-purpose"), Result("u2", AgentSaid),
+        ]),
+        new("empty-file", []),
+    ];
+
+    private static OracleCase TaskShapes() => new(
+        "subagents/task-shapes",
+        "every way a background launch, its id and its finish can be written",
+        // 🔴 PLAIN STRING EXPRESSIONS, NOT BASE64 - the antivirus's script scan
+        // refuses a decode-and-write and the case never runs. See PsText.Literal.
+        "$dir = Join-Path ([IO.Path]::GetTempPath()) ('sr-tasks-ps-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))\n"
+        + "$null = New-Item -ItemType Directory -Path $dir\n"
+        + "try {\n"
+        + "    $shapes = @(\n"
+        + string.Concat(RunShapes.Select(s =>
+            "        @{ n = '" + s.Name + "'; l = @(" + string.Join(", ", s.Lines.Select(PsText.Literal)) + ") },\n"))
+        + "        $null)\n"
+        + "    $rows = New-Object System.Collections.Generic.List[object]\n"
+        + "    foreach ($s in $shapes) {\n"
+        + "        if (-not $s) { continue }\n"
+        + "        $p = Join-Path $dir ($s.n + '.jsonl')\n"
+        + "        $text = $(if (@($s.l).Count) { (@($s.l) -join \"`n\") + \"`n\" } else { '' })\n"
+        + "        [IO.File]::WriteAllText($p, $text, (New-Object System.Text.UTF8Encoding $false))\n"
+        + "        $t = Get-SRLiveTasks -JsonlPath $p\n"
+        + "        $t = @($t)\n"
+        + "        $rows.Add([ordered]@{\n"
+        + "            n     = $s.n\n"
+        + "            count = $t.Count\n"
+        + "            ids   = (($t | ForEach-Object { \"$($_.Shell)\" }) -join ',')\n"
+        + "            kinds = (($t | ForEach-Object { \"$($_.Kind)\" }) -join ',')\n"
+        + "            cmds  = (($t | ForEach-Object { \"$($_.Command)\" }) -join '|')\n"
+        + "            descs = (($t | ForEach-Object { \"$($_.Desc)\" }) -join '|')\n"
+        + "        })\n"
+        + "    }\n"
+        + "    (@{ rows = $rows.ToArray() } | ConvertTo-Json -Compress -Depth 5)\n"
+        + "} finally {\n"
+        + "    Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue\n"
+        + "}\n",
+        _ =>
+        {
+            // 🪤 EACH SIDE WRITES ITS OWN COPY AND DELETES IT IN ITS OWN FINALLY.
+            // The PowerShell runs first, so a shared fixture would have to outlive
+            // a PowerShell that may fail - and leak whenever it did.
+            var dir = Path.Combine(Path.GetTempPath(), "sr-tasks-cs-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var rows = new JsonArray();
+                foreach (var s in RunShapes)
+                {
+                    var p = Path.Combine(dir, s.Name + ".jsonl");
+                    var text = s.Lines.Length == 0 ? string.Empty : string.Join("\n", s.Lines) + "\n";
+                    File.WriteAllBytes(p, System.Text.Encoding.UTF8.GetBytes(text));
+                    var t = LiveTasks.Read(p);
+                    rows.Add(new JsonObject
+                    {
+                        ["n"] = s.Name,
+                        ["count"] = t.Count,
+                        ["ids"] = string.Join(",", t.Select(x => x.Id)),
+                        ["kinds"] = string.Join(",", t.Select(x => x.Kind)),
+                        ["cmds"] = string.Join("|", t.Select(x => x.Command)),
+                        ["descs"] = string.Join("|", t.Select(x => x.Description)),
+                    });
+                }
+
+                return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);
+            }
+            finally
+            {
+                try
+                {
+                    Directory.Delete(dir, recursive: true);
+                }
+                catch (IOException)
+                {
+                }
+            }
+        });
 
     /// <summary>
     /// 🔴 EVERY CONVERSATION, because a sub-agent list is cheap: it reads a

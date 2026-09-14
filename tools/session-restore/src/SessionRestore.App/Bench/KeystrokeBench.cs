@@ -184,7 +184,7 @@ public static class KeystrokeBench
 
             return new BenchRun(
                 gestures,
-                vm.Rows.Count,
+                vm.Items.Count,
                 real,
                 real
                     ? "the window is shown and has a real PresentationSource - these are render numbers"

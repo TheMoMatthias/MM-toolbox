@@ -31,7 +31,7 @@ namespace SessionRestore.App.ViewModels;
 /// rebuild had, moved somewhere harder to see. <see cref="Refresh"/> does the
 /// work once when the model changes.
 /// </remarks>
-public sealed class ConversationVm : INotifyPropertyChanged
+public sealed class ConversationVm : INotifyPropertyChanged, IListRow
 {
     private string _title = string.Empty;
     private bool _derivedTitle;
@@ -92,6 +92,11 @@ public sealed class ConversationVm : INotifyPropertyChanged
     /// <summary>The project's path - what the rail filters on.</summary>
     public string ProjectPath => Directory.Path;
 
+    /// <summary>
+    /// A conversation always sorts before its own agents. See <see cref="IListRow.SubOrder"/>.
+    /// </summary>
+    public int SubOrder => 0;
+
     /// <summary>Sorting reads this, so it is a number rather than a parse.</summary>
     public long LastActiveTicks { get; private set; }
 
@@ -113,6 +118,12 @@ public sealed class ConversationVm : INotifyPropertyChanged
 
     /// <summary>The project's label, disambiguated against every other project. Set by the column.</summary>
     public string ProjectLabel { get; private set; } = string.Empty;
+
+    /// <summary>What the process is doing, in its own words. Empty means nothing is holding it.</summary>
+    public string Detail { get; private set; } = string.Empty;
+
+    /// <summary>Mid-turn: a process is holding it AND it says busy. What the pane's dot breathes on.</summary>
+    public bool Busy { get; private set; }
 
     /// <summary>
     /// Gives the row its project label and rebuilds what depends on it.
@@ -429,6 +440,12 @@ public sealed class ConversationVm : INotifyPropertyChanged
         Live = agent is not null && agent.Pid != 0;
         Warm = Titles.Warm(Session, nowTicks > 0 ? new DateTime(nowTicks, DateTimeKind.Local) : null);
         var state = SessionState.Of(agent);
+        Detail = state.Detail;
+
+        // The shipped header asks `$r.A -and $r.A.Status -eq 'busy'` - the
+        // process must be there AND say so, which is not the same question as
+        // Live (a pid) or as the WORKING band (a state).
+        Busy = agent is not null && agent.IsBusy;
         Band = Bands.Of(state, said);
         var now = nowTicks > 0 ? new DateTime(nowTicks, DateTimeKind.Local) : DateTime.Now;
         var decor = RowDecor.Of(said?.Said, state.Detail, extras?.Screen, extras?.LiveSubAgents ?? 0,
