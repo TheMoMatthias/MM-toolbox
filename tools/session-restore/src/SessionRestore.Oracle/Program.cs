@@ -101,6 +101,7 @@ cases.AddRange(PaneCases.All());
 cases.AddRange(ActingCases.All());
 cases.AddRange(KeyCases.All());
 cases.AddRange(AskSeenCases.All());
+cases.AddRange(TurnCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
@@ -146,6 +147,11 @@ foreach (var (c, expectAgree, meaning) in cases)
         if (c.Name.StartsWith("screen/menu", StringComparison.Ordinal))
         {
             Note("      " + MenuCases.Coverage());
+        }
+
+        if (c.Name.StartsWith("read/", StringComparison.Ordinal))
+        {
+            Note("      " + TurnCases.Coverage());
         }
 
         if (c.Name.Equals("rail/live", StringComparison.Ordinal))

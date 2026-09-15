@@ -69,6 +69,13 @@ public static class BlockCases
         _ => "?",
     };
 
+    /// <summary>
+    /// The same sample another case can ask for. 🪤 ONE PICKER, NOT TWO: two
+    /// copies of "the newest N transcripts" drift, and then two cases that read
+    /// as being over the same conversations are not.
+    /// </summary>
+    internal static string PsPickListFor(int take) => PsPickList(take);
+
     private static string PsPickList(int take) => $$"""
         $reg = Get-SRRegistry
         $all = @()

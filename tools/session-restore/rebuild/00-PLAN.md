@@ -1596,6 +1596,62 @@ red rather than anything in the output.
 
 ---
 
+### 4.4, first tranche - the turns the reading pane draws
+
+**`Core.Transcripts.ReadTurns` is `Get-ReadTurns` and `Get-RunSummary`: blocks
+grouped into the turns the pane renders.** This is the whole of what the pane
+SHOWS, as a value - and it is the half that can be compared before a pixel is
+drawn.
+
+🔑 **IT IS ALSO WHY THE DOCUMENT CAN BE VIRTUALIZED AT ALL.** The shipped window
+builds a `FlowDocument` straight out of this function, and a FlowDocument has no
+virtualization - which is the entire reason the pane needs a tail budget. A LIST
+of turns can be bound to a virtualizing panel instead. Either way the grouping
+is the same rule, so it is ported and compared first.
+
+| case | over |
+|---|---|
+| `read/turn-shapes` | 34 blocks written to reach every merge, every call shape and every cut |
+| `read/turns-live` | 195 real blocks from 12 real conversations, grouped into 89 turns carrying 31 steps |
+
+🔑 **THE BLOCKS ARE THE QUESTION IN THE LIVE CASE, NOT THE ANSWER.** They are
+already compared field for field by `transcript/blocks-detail`; what is asked
+here is whether two GROUPERS of the same blocks agree. Reading the transcript
+again on this side would compare two readers and two groupers at once, and a
+difference in either would look the same.
+
+🪤 **ONE EMITTER, SPLICED INTO THE POWERSHELL AND WRITTEN ONCE IN C#.** Two
+hand-kept field lists drift, and a field only one side prints arrives as
+*"present in PowerShell, missing in C#"* - which every allowance in this harness
+is shaped to forgive by accident.
+
+🪤 **AND `@($null).Count` IS 1, TWICE IN THAT ONE EMITTER.** A turn with no
+calls reported *"1 step     "* and emitted a call made of empty strings - both
+of which read exactly like a broken port. The kind says whether a turn carries
+steps; `Where-Object { $_ }` says which calls are real.
+
+**Twenty-two breaks, twenty-two red** - every merge, the blank line between
+merged messages, the notice count, the head-first first notice, the three
+special call kinds, the shell id read out of prose, the failed mark, the folded
+line's cut at 127 (not 130), the blank-line handling either side of the fold,
+the empty run that adds no turn, the turn's start stamp, and all four of the
+summary's rules.
+
+🔴 **AND ONE RULE HAD NO SHAPE UNTIL A BREAK STAYED GREEN ON IT.** Taking the
+LAST answer for a call instead of the first went unnoticed, because neither the
+written blocks nor twelve real conversations contained a call with two results.
+A tool that streams produces exactly that, and taking the last would show the
+tail of a long run instead of what it said. There is a shape for it now.
+
+**Verified:** 272 xUnit tests, **70 oracle cases**, `--surface` 164/164 exit 0,
+`--handlers` 82/82 exit 0.
+
+**Still to come in 4.4:** the pane's own rendering - the turn cards, the folded
+steps, the typography tuned against rendered pixels, and the virtualizing panel
+that lets the tail budget go.
+
+---
+
 | next in 4.2 | why it waits | trigger |
 |---|---|---|
 | a live-data rail comparison | ✅ `rail/live`: 412 real conversations, 14 real projects, two views | - |
