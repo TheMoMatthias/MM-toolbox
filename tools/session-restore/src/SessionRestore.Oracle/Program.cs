@@ -99,6 +99,7 @@ cases.AddRange(SearchCases.All());
 cases.AddRange(RailCases.All());
 cases.AddRange(PaneCases.All());
 cases.AddRange(ActingCases.All());
+cases.AddRange(KeyCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
@@ -144,6 +145,11 @@ foreach (var (c, expectAgree, meaning) in cases)
         if (c.Name.StartsWith("screen/menu", StringComparison.Ordinal))
         {
             Note("      " + MenuCases.Coverage());
+        }
+
+        if (c.Name.StartsWith("keys/", StringComparison.Ordinal))
+        {
+            Note("      " + KeyCases.Coverage());
         }
 
         if (c.Name.Equals("context/live", StringComparison.Ordinal))

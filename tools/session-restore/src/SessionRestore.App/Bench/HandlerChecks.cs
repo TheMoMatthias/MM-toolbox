@@ -297,7 +297,19 @@ public static class HandlerChecks
             // implementation may. Driven through its own buttons and keys, on
             // this window, which is shown off-screen - a window that has never
             // been shown has no PresentationSource and cannot be sent a key.
-            checks.AddRange(SheetChecks.Run(w, new Sheet(w)));
+            // 🔴 THE SHELL HAS TO KNOW A SHEET IS UP, AND THIS IS HOW THAT WAS
+            // FOUND: without the line below, the first Escape SheetChecks sent
+            // was taken by the window's own shortcut handler, the sheet's
+            // handler never ran, and its nested dispatcher frame pumped for
+            // ever - the whole check run hung with no report written. The
+            // shipped window gets this for free because Show-Sheet's handler is
+            // registered before the shortcut one; the port asks instead.
+            var sheet = new Sheet(w);
+            shell.SheetUp = () => sheet.IsUp;
+            checks.AddRange(SheetChecks.Run(w, sheet));
+
+            // ---- 4.3: real keys, into this window, through the real tunnel.
+            checks.AddRange(KeyChecks.Run(w, shell));
 
             Pump(w);
             checks.Add(new Check("nothing the handlers drew failed to bind",

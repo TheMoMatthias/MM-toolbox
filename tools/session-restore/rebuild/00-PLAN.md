@@ -1435,6 +1435,73 @@ It is one gesture, done rarely, at 1,3 frames, against 512 ms in the PowerShell.
 
 ---
 
+### 4.3 as it turned out - the keyboard, and the order that cost the operator rewind
+
+**The window's shortcut handler is ported, and the ORDER is what was ported.**
+`PreviewKeyDown` tunnels root to leaf, so the window's handler runs BEFORE
+whatever holds the keyboard - which is how the shipped tool ate Escape out of
+the terminal watcher AND threw the focus out of the pane, so the SECOND Escape
+of the rewind gesture went to the conversation list too. Neither could ever
+work. `/` and `l` were going the same way: `/compact` arrived as `compact` and
+`hello` as `heo`.
+
+- **`Core.Keys.KeyRoute`** is the whole decision as a value - fourteen acts, and
+  a `Handled` flag that is the other half of the answer.
+- **`keys/route` EVALUATES THE SHIPPED HANDLER**, cut out of the file by the
+  words around it, with each of its nine sinks replaced by a stub that records
+  only its own name. Twenty-seven states. 🪤 Three of the nine sinks are
+  ASSIGNMENTS rather than calls - emptying a search box, flipping `showOlder`,
+  folding a project - so there is no function to stub and what they did is read
+  off the state afterwards. A first version stubbed only the calls and reported
+  "nothing happened" for the manager's own `O`.
+- **`keys/term-typing`** puts `Test-SRTermTyping` through nine states.
+  🪤 **AND ONE OF THEM HAD TO BE INVENTED TO MAKE A RULE OBSERVABLE AT ALL.**
+  Dropping the empty-name guard stayed GREEN: an empty name simply misses in the
+  streaming record and both sides say no anyway. It only parts company when the
+  record HAS an empty key - so that shape is in the table now, and the break
+  reds.
+- **`--handlers` is 73 checks**, nine of them real keys raised into the real
+  window. 🔑 The shipped suite could not do this at all: a window that has never
+  been SHOWN has no PresentationSource and a `KeyEventArgs` cannot be
+  constructed against one, which is why the decision was split into functions
+  over there. This window is shown at -32000, so the tunnelling event itself can
+  be raised - and a tunnel-order defect is exactly what a value comparison alone
+  cannot see.
+
+🔴 **AND WIRING IT BROKE THE SHEET, WHICH IS HOW THE MISSING RULE WAS FOUND.**
+The first run hung with no report written: with a confirmation sheet up, the
+window's new shortcut handler took Escape first, marked it handled, the sheet's
+own handler never ran, and its nested dispatcher frame pumped for ever. The
+shipped window gets this free - `Show-Sheet`'s handler is registered at line 297
+and the shortcut handler at 14329, so the sheet marks the key handled and WPF
+never calls the later one. The port asks instead: `WindowShell.SheetUp`.
+
+🪤 **A COLLAPSED ELEMENT CANNOT TAKE THE KEYBOARD.** `LivePane` starts
+Collapsed, so `Focus()` on it returns false - and the first version of the
+watcher check pressed its keys with the focus still on the list and reported the
+window eating them, **which is what the real defect would look like too**.
+
+🔑 **AND AN UNPORTED ACT DECLINES THE KEY RATHER THAN SWALLOWING IT.** Five of
+the fourteen belong to panels this port has not reached. Reporting a key as
+handled when nothing happened is how a shortcut becomes a hole. There is a check
+that says so, and it is MEANT to fail when the reading pane arrives.
+
+**Six breaks of the wiring and twelve of the routing, all red** - including the
+one that reproduces the original defect exactly, and one whose failure mode is
+the run hanging rather than a red line.
+
+**Verified:** 272 xUnit tests, **66 oracle cases**, `--surface` 164/164 exit 0,
+`--handlers` **73/73** exit 0, zero binding errors.
+
+🔴 **AND THE ASK-SEEN RECORD IS NOW A RECORD.** The send box was passing a
+literal `onAMenu: false`; it reads `WindowShell.AskSeen` instead - the port of
+`$script:askSeen`, set and cleared by EVIDENCE so that a recompute reaches the
+same band rather than flipping the row between NEEDS YOU and WORKING. Nothing
+fills it yet - the cadence that reads a screen belongs with the model pass - but
+it is a gap with a name rather than a gap.
+
+---
+
 | next in 4.2 | why it waits | trigger |
 |---|---|---|
 | a live-data rail comparison | the rail needs bands and live agents per row, which the oracle has no model pass to build; the shapes carry it for now | when the background pass is ported |

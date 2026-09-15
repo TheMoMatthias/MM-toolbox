@@ -50,6 +50,7 @@ public sealed class WindowShell
     private double _railWidth = 208.0;
     private double _listWidth = 336.0;
     private string _foldApplied = string.Empty;
+    private bool _manage;
 
     /// <param name="acts">
     /// 🔴 THE ONLY WAY ANYTHING HERE REACHES A CONVERSATION, and it has no
@@ -157,6 +158,42 @@ public sealed class WindowShell
         _w.ModeManage.Checked += (_, _) => SetSurface(manage: true);
 
         _w.PaneZoom.Click += (_, _) => StepZoom();
+
+        // ---- 4.3: the keyboard.
+        //
+        // 🔴 PreviewKeyDown TUNNELS, root to leaf, so this runs BEFORE whatever
+        // holds the keyboard sees the key - which is exactly how the shipped
+        // window ate Escape, `/` and `l` out of the terminal watcher and made
+        // rewind unreachable. The ORDER is the fix, it lives in
+        // Core.Keys.KeyRoute, and it is compared against the shipped handler
+        // itself by `keys/route`.
+        _w.PreviewKeyDown += (_, e) =>
+        {
+            // 🪤 A SHEET IS IN FRONT OF EVERYTHING. The shipped window gets this
+            // for free - Show-Sheet's own PreviewKeyDown is registered first, so
+            // it marks the key handled and WPF never calls this one. The port's
+            // sheet is constructed by whoever owns the window, which may be
+            // after this, so the question is asked rather than assumed.
+            if (SheetUp())
+            {
+                return;
+            }
+
+            var r = Core.Keys.KeyRoute.Of(
+                Pressed(e.Key),
+                (Keyboard.Modifiers & ModifierKeys.Control) != 0,
+                InATextField(),
+                SearchWithText() is not null,
+                _w.CfgBox.Visibility == Visibility.Visible,
+                _w.ProjBox.Visibility == Visibility.Visible,
+                Core.Keys.KeyRoute.TermTyping(_w.LivePane.IsKeyboardFocusWithin, TermShowing, TermStreaming),
+                _manage);
+
+            if (Carry(r.Act))
+            {
+                e.Handled = r.Handled;
+            }
+        };
 
         // ---- the rail
         _w.RailSearch.TextChanged += (_, _) => Restart();
@@ -511,13 +548,28 @@ public sealed class WindowShell
     {
         var row = Selected();
 
-        // 🔴 THE MENU TEST IS NOT WIRED YET, AND IT IS THE ONE REFUSAL THAT
-        // MATTERS MOST. A session sitting on a question reads keystrokes as MENU
-        // INPUT, so text typed here would PICK AN OPTION rather than queue behind
-        // one - and what knows a conversation is on a menu is the screen probe,
-        // which the background pass has not ported. Passing false is honest while
-        // nothing can act; it must be wired before anything can.
-        var state = Typing.Of(row is not null, Agent(row), onAMenu: false, row?.Queued ?? 0);
+        // 🔴 THE ONE REFUSAL THAT MATTERS MOST. A session sitting on a question
+        // reads keystrokes as MENU INPUT, so text typed here would PICK AN
+        // OPTION rather than queue behind one.
+        //
+        // 🔑 IT READS A RECORD, NOT A SCREEN, and the shipped window does the
+        // same: `$script:askSeen` is set by evidence - a screen read that found
+        // a menu - and cleared by evidence, because the band is DERIVED and a
+        // recompute would otherwise overwrite the screen's answer with whatever
+        // the agent probe thought. That is what made a conversation flip between
+        // NEEDS YOU and WORKING every few seconds.
+        //
+        // 🪤 NOTHING FILLS IT YET - the cadence that reads a screen belongs with
+        // the model pass - so this is false for every conversation today. It is
+        // a RECORD rather than a literal false, which is the difference between
+        // a gap with a name and a gap.
+        //
+        // 🔴 AND THE REFUSAL THAT PROTECTS THE OPERATOR IS NOT THIS ONE. This
+        // decides what the box SAYS, from what the window has already seen;
+        // Core.Acting.SendRefusal decides whether the keystrokes are written at
+        // all, from a screen read taken at the moment of sending. The window's
+        // record is up to ~26 s behind and that read is ~9 ms old.
+        var state = Typing.Of(row is not null, Agent(row), OnAMenu(row?.Id), row?.Queued ?? 0);
         if (!state.CanType)
         {
             Status(state.Blocker, Tone.Warn);
@@ -567,6 +619,18 @@ public sealed class WindowShell
 
         return null;
     }
+
+    /// <summary>
+    /// Which conversations the window has SEEN a menu on. <c>$script:askSeen</c>.
+    /// </summary>
+    /// <remarks>
+    /// 🔑 SEEN IT, NOT DOING IT, AND CLEARED ONLY BY EVIDENCE - the transcript
+    /// growing, or a later screen read finding no menu. A recompute must reach
+    /// the same band from the same evidence, or the row flips.
+    /// </remarks>
+    public HashSet<string> AskSeen { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool OnAMenu(string? id) => id is not null && AskSeen.Contains(id);
 
     /// <summary>What is holding a conversation, or null when nothing is.</summary>
     /// <remarks>
@@ -860,10 +924,143 @@ public sealed class WindowShell
         }) as Brush;
     }
 
+    // ------------------------------------------------------------- the keyboard
+
+    /// <summary>
+    /// Whether a confirmation sheet is up. Set by whoever owns the window.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 EVERY SHORTCUT STANDS DOWN FOR IT, and Escape most of all: a sheet
+    /// answers Escape with the caller's own safe way out, and a shortcut that
+    /// took the key first would leave the question on screen over a window that
+    /// refuses input.
+    /// </remarks>
+    public Func<bool> SheetUp { get; set; } = static () => false;
+
+    /// <summary>
+    /// Which conversation the terminal watcher is showing, and which
+    /// conversations are streaming.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 BOTH ARE EMPTY UNTIL THE WATCHER IS PORTED, WHICH MAKES THE ANSWER
+    /// FALSE - and that is the SAFE direction only by accident, so it is named
+    /// rather than left implicit. With no watcher there is nothing holding the
+    /// keyboard that a bare letter could belong to; the moment one exists, these
+    /// two are what it must set.
+    /// </remarks>
+    public string TermShowing { get; set; } = string.Empty;
+
+    public IReadOnlyDictionary<string, bool>? TermStreaming { get; set; }
+
+    /// <summary>
+    /// 🪤 ASK THE ELEMENT WHAT IT IS, NEVER LIST THE BOXES. A list was correct
+    /// when the window had two text boxes and silently wrong for every one added
+    /// since - seven of them were having their keystrokes eaten by bare-letter
+    /// shortcuts. TextBoxBase covers TextBox and RichTextBox; PasswordBox is not
+    /// a TextBoxBase and has to be named. The two original tests stay as an OR
+    /// because IsKeyboardFocusWithin also catches focus sitting on a template
+    /// part rather than on the box itself.
+    /// </summary>
+    public static bool IsTypingTarget(object? element) =>
+        element is System.Windows.Controls.Primitives.TextBoxBase or PasswordBox;
+
+    private bool InATextField() =>
+        IsTypingTarget(Keyboard.FocusedElement)
+        || _w.Search.IsKeyboardFocusWithin
+        || _w.SendBox.IsKeyboardFocusWithin;
+
+    /// <summary>The search box that has the keyboard AND something in it, or null.</summary>
+    private TextBox? SearchWithText()
+    {
+        foreach (var b in new[] { _w.Search, _w.RailSearch, _w.ListSearch })
+        {
+            if (b.IsKeyboardFocusWithin && b.Text.Length > 0)
+            {
+                return b;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>WPF's key, in the names the routing uses.</summary>
+    private static Core.Keys.PressedKey Pressed(Key k) => k switch
+    {
+        Key.Escape => Core.Keys.PressedKey.Escape,
+        Key.Oem2 => Core.Keys.PressedKey.Slash,
+        Key.Space => Core.Keys.PressedKey.Space,
+        Key.L => Core.Keys.PressedKey.KeyL,
+        Key.N => Core.Keys.PressedKey.KeyN,
+        Key.O => Core.Keys.PressedKey.KeyO,
+        Key.D1 or Key.NumPad1 => Core.Keys.PressedKey.Digit1,
+        Key.D2 or Key.NumPad2 => Core.Keys.PressedKey.Digit2,
+        Key.Left => Core.Keys.PressedKey.Left,
+        Key.Right => Core.Keys.PressedKey.Right,
+        _ => Core.Keys.PressedKey.Other,
+    };
+
+    /// <summary>
+    /// Does what the routing decided.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 FIVE OF THE FOURTEEN ARE NOT PORTED YET, and this returns FALSE for
+    /// them rather than swallowing the key. Reporting a key as handled when
+    /// nothing happened is how a shortcut becomes a hole: the key would be gone
+    /// and the window would have done nothing with it. They are named here so
+    /// the list is a statement rather than a gap.
+    /// </remarks>
+    private bool Carry(Core.Keys.KeyAct act)
+    {
+        switch (act)
+        {
+            case Core.Keys.KeyAct.PassOn:
+                return false;
+
+            case Core.Keys.KeyAct.FoldRail:
+                ToggleFold(rail: true);
+                return true;
+
+            case Core.Keys.KeyAct.FoldList:
+                ToggleFold(rail: false);
+                return true;
+
+            case Core.Keys.KeyAct.ClearSearch:
+                if (SearchWithText() is { } box)
+                {
+                    box.Text = string.Empty;
+                    return true;
+                }
+
+                return false;
+
+            case Core.Keys.KeyAct.FocusList:
+                _w.SessionList.Focus();
+                return true;
+
+            case Core.Keys.KeyAct.FocusSearch:
+                _w.Search.Focus();
+                return true;
+
+            // Not ported: the spawn panel, the settings and project panels, the
+            // manager's ticking and folding, and the reading pane's tail budget.
+            case Core.Keys.KeyAct.Spawn:
+            case Core.Keys.KeyAct.CloseConfig:
+            case Core.Keys.KeyAct.CloseProject:
+            case Core.Keys.KeyAct.ToggleTick:
+            case Core.Keys.KeyAct.ToggleOlder:
+            case Core.Keys.KeyAct.FoldProject:
+            case Core.Keys.KeyAct.UnfoldProject:
+            case Core.Keys.KeyAct.LoadWhole:
+            default:
+                return false;
+        }
+    }
+
     // ---------------------------------------------------------------- surfaces
 
     private void SetSurface(bool manage)
     {
+        _manage = manage;
         Show(_w.ManageSurface, manage);
         Show(_w.WorkSurface, !manage);
         _w.Status.Text = manage
