@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -254,6 +255,34 @@ public sealed class WindowShell
             UpdateStrip();
         };
 
+        // 🪤 PreviewMouseLeftButtonDown, NOT a click and NOT SelectionChanged.
+        // A ListBoxItem marks button-down HANDLED when it selects - the same trap
+        // that stopped the session manager ticking anything at all - and
+        // selecting a heading is meaningless, so SelectionChanged has already
+        // stepped past it by the time it runs.
+        _w.SessionList.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            if (BandClicked(e.OriginalSource as DependencyObject) is not { } band)
+            {
+                return;
+            }
+
+            var picked = _vm.PickBand(band);
+            Status(
+                picked is null
+                    ? "showing every conversation again"
+                    : string.Format(
+                        CultureInfo.InvariantCulture,
+                        "showing only {0} - click the heading again for all of them",
+                        picked.ToLowerInvariant()),
+                Tone.Info);
+            e.Handled = true;
+        };
+
+        // 🔑 SO THE HEADINGS CAN SEE THE PICK. A group header's DataContext is
+        // its own CollectionViewGroup; the column's is what the two converters
+        // reach through to find which band is pressed.
+        _w.SessionList.DataContext = _vm;
         _w.SessionList.ItemsSource = _vm.View;
         _w.RailList.ItemsSource = Rail.Items;
         RebuildRail();
@@ -507,6 +536,36 @@ public sealed class WindowShell
         {
             Status(r.Said, Tone.Bad);
         }
+    }
+
+    /// <summary>
+    /// The band heading under a click, or null when the click was not on one.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 IT WALKS UP LOOKING FOR A DATA CONTEXT, NOT FOR A CONTROL TYPE. The
+    /// heading is a Border inside a GroupItem inside the panel, and which of
+    /// those the mouse reports depends on where in the heading it landed - on
+    /// the accent bar, on the label, or on the padding between them. What every
+    /// one of them shares is the CollectionViewGroup behind it.
+    /// </remarks>
+    private static string? BandClicked(DependencyObject? from)
+    {
+        for (var d = from; d is not null; d = VisualTreeHelper.GetParent(d))
+        {
+            // A row reached first means the click was on a conversation, not on
+            // a heading - stop, rather than walking past it to the group above.
+            if (d is ListBoxItem)
+            {
+                return null;
+            }
+
+            if (d is FrameworkElement { DataContext: CollectionViewGroup g })
+            {
+                return g.Name as string;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>What is holding a conversation, or null when nothing is.</summary>

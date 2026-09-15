@@ -160,18 +160,27 @@ public static class BindingChecks
                 !afterTyping.Contains("Reset", StringComparer.Ordinal),
                 Summarise(afterTyping)));
 
-            // 🪤 A SORT STILL RESETS, AND IT IS TOLD APART ON PURPOSE. Changing
-            // SortDescriptions resets the view whatever IsLiveSorting says, so the
-            // containers are rebuilt - which is why `cycle the sort` is the gesture
-            // still over a frame. Reporting it as the same failure as a filter Reset
-            // would have hidden that the filter fix worked.
+            // 🔑 AND A SORT NO LONGER RESETS EITHER. It used to: changing
+            // SortDescriptions resets the view whatever IsLiveSorting says, so
+            // every realised container was rebuilt - which was the whole of why
+            // `cycle the sort` sat over a frame. The three descriptions are now
+            // set once and cycling the sort assigns a new KEY to each row, so
+            // the view moves what moved.
+            //
+            // 🔴 AND THIS HALF IS NOT THE WHOLE QUESTION. "No Reset" is
+            // satisfied perfectly by a view that has stopped sorting, and the
+            // sentence reads the same either way - which is the exact shape of
+            // the three Phase 3 checks that passed while the thing they named
+            // was untrue. That the column is REALLY reordered is asserted over
+            // a real window, in SelectionChecks: by name, by project, by
+            // recency, and a conversation that just spoke rising to the top.
             actions.Clear();
             vm.Sort = SessionSort.Name;
             vm.Sort = SessionSort.Recent;
             var afterSort = new List<string>(actions);
             ((INotifyCollectionChanged)vm.View).CollectionChanged -= OnView;
             checks.Add(new Check(
-                "the VIEW answers a SORT without a Reset (known: it does not)",
+                "the VIEW answers a SORT without a Reset (and SelectionChecks proves it still sorts)",
                 !afterSort.Contains("Reset", StringComparer.Ordinal),
                 Summarise(afterSort)));
 

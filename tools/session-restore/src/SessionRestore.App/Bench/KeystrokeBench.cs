@@ -54,7 +54,34 @@ public static class KeystrokeBench
     {
         /// <summary>WPF binding failures seen while this host drew its rows.</summary>
         public IReadOnlyList<string> BindingErrors { get; init; } = [];
+
+        /// <summary>
+        /// What the SAME apparatus costs over code this rebuild cannot have
+        /// changed.
+        /// </summary>
+        /// <remarks>
+        /// 🔴 A RED BENCHMARK IS THE MACHINE THREE TIMES OUT OF FOUR, and this
+        /// repo has the scar: every absolute figure carried into Phase 4 was
+        /// taken at 35-99% CPU with about thirty live conversations, one
+        /// worst-case reading 684 ms, and none of them could be believed
+        /// afterwards. A number with no control beside it cannot be compared to
+        /// a number taken on another day, which is the only thing a benchmark
+        /// is for.
+        ///
+        /// 🔑 TWO CONTROLS, BECAUSE THERE ARE TWO WAYS TO BE SLOW. The spin is
+        /// pure arithmetic - it moves when the CPU is contended and for no other
+        /// reason. The idle frame is a dispatcher round-trip with NOTHING
+        /// changed: WPF's own floor on this machine, through the very drain
+        /// every gesture below is measured with. A gesture that grew while both
+        /// held still is the diff; one that grew in step with them is the
+        /// afternoon.
+        /// </remarks>
+        public Control Floor { get; init; } = new(0, 0);
     }
+
+    /// <param name="SpinMs">A fixed arithmetic loop. Pure CPU contention.</param>
+    /// <param name="IdleFrameMs">A drain to ContextIdle with nothing changed.</param>
+    public sealed record Control(double SpinMs, double IdleFrameMs);
 
     /// <summary>
     /// Collects every data-binding failure WPF reports while it is attached.
@@ -149,6 +176,12 @@ public static class KeystrokeBench
             // says so, and the caller fails on it.
             var real = PresentationSource.FromVisual(window) is not null;
 
+            // 🔑 BEFORE THE GESTURES AND AFTER THEM, and the WORSE of the two
+            // is reported. A control taken only at the start describes a machine
+            // that was quiet for one moment; the pair says whether it stayed
+            // that way for the run the figures came out of.
+            var floorBefore = Floor(window);
+
             var projects = Projects(model);
             var gestures = new List<Gesture>
             {
@@ -182,6 +215,11 @@ public static class KeystrokeBench
                     gesture: i => vm.OnlyLive = i % 2 == 0, view: vm.View),
             };
 
+            var floorAfter = Floor(window);
+            var floor = new Control(
+                Math.Max(floorBefore.SpinMs, floorAfter.SpinMs),
+                Math.Max(floorBefore.IdleFrameMs, floorAfter.IdleFrameMs));
+
             return new BenchRun(
                 gestures,
                 vm.Items.Count,
@@ -194,6 +232,7 @@ public static class KeystrokeBench
                     : "a placeholder ListBox: titles only, no GroupStyle")
             {
                 BindingErrors = trap.Seen.ToList(),
+                Floor = floor,
             };
         }
         finally
@@ -306,6 +345,63 @@ public static class KeystrokeBench
     private static void Drain(Window w) =>
         w.Dispatcher.Invoke(static () => { }, DispatcherPriority.ContextIdle);
 
+    /// <summary>
+    /// What this machine costs, right now, for work the rebuild cannot have
+    /// touched.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 THE SPIN HAS TO BE UNOPTIMISABLE. A loop whose result is discarded is
+    /// a loop the JIT is entitled to delete, and a control that has been
+    /// compiled away reads as a machine that got infinitely fast - which would
+    /// make every gesture beside it look correspondingly worse and be blamed on
+    /// the diff. The sum is returned, and the caller keeps it.
+    ///
+    /// 🔑 BOTH ARE MEDIANS OVER NINE. One reading of a contended machine is a
+    /// coin toss; the median of nine is what the gestures themselves are
+    /// reported as, so the two are comparable.
+    /// </remarks>
+    private static Control Floor(Window w)
+    {
+        const int Rounds = 9;
+
+        // One untimed pass, for the JIT, exactly as a gesture gets.
+        _ = Spin();
+        Drain(w);
+
+        var spins = new List<double>(Rounds);
+        var frames = new List<double>(Rounds);
+        for (var i = 0; i < Rounds; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            Kept += Spin();
+            sw.Stop();
+            spins.Add(sw.Elapsed.TotalMilliseconds);
+
+            sw.Restart();
+            Drain(w);
+            sw.Stop();
+            frames.Add(sw.Elapsed.TotalMilliseconds);
+        }
+
+        spins.Sort();
+        frames.Sort();
+        return new Control(spins[Rounds / 2], frames[Rounds / 2]);
+    }
+
+    /// <summary>Where the spin's answer goes, so nothing may delete the spin.</summary>
+    private static double Kept { get; set; }
+
+    private static double Spin()
+    {
+        var acc = 0.0;
+        for (var i = 1; i <= 4_000_000; i++)
+        {
+            acc += 1.0 / i;
+        }
+
+        return acc;
+    }
+
     /// <summary>The bench's own report, so a run says what it measured.</summary>
     public static string Report(BenchRun run)
     {
@@ -326,12 +422,28 @@ public static class KeystrokeBench
             "  it does NOT ask `claude agents`, so every row is non-live here - "
             + "which is why only-live filters to nothing.");
         sb.AppendLine();
+        // 🔴 THE CONTROL COMES FIRST, BECAUSE IT DECIDES WHETHER THE REST MEANS
+        // ANYTHING. Every figure carried out of Phase 3 was taken on a machine
+        // at 35-99% CPU and none of them could be compared to anything
+        // afterwards. These two are the same apparatus over code the rebuild
+        // cannot have touched.
         sb.AppendLine(CultureInfo.InvariantCulture,
-            $"  {"gesture",-24}{"median",9}{"min",9}{"worst",9}{"drawn",8}");
+            $"  control    spin {run.Floor.SpinMs,7:F2} ms      idle frame {run.Floor.IdleFrameMs,7:F2} ms      (worse of before and after)");
+        sb.AppendLine(
+            "             a gesture that grew while these held still is the code; "
+            + "one that grew with them is the machine.");
+        sb.AppendLine();
+        sb.AppendLine(CultureInfo.InvariantCulture,
+            $"  {"gesture",-24}{"median",9}{"min",9}{"worst",9}{"drawn",8}{"x idle",9}");
         foreach (var g in run.Gestures)
         {
+            // In units of this machine's own empty frame, so the figure can be
+            // set beside one taken on another day or another machine.
+            var x = run.Floor.IdleFrameMs > 0.0001
+                ? (g.Median / run.Floor.IdleFrameMs).ToString("F1", CultureInfo.InvariantCulture)
+                : "-";
             sb.AppendLine(CultureInfo.InvariantCulture,
-                $"  {g.Name,-24}{g.Median,9:F2}{g.Min,9:F2}{g.Worst,9:F2}{g.Drawn,8}   {(g.Inside ? "ok" : "OVER")}");
+                $"  {g.Name,-24}{g.Median,9:F2}{g.Min,9:F2}{g.Worst,9:F2}{g.Drawn,8}{x,9}   {(g.Inside ? "ok" : "OVER")}");
         }
 
         return sb.ToString();

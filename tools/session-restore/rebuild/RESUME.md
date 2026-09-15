@@ -37,18 +37,19 @@ Last commit: see `git log`. Branch `main`.
 | 3.2 | a keystroke under 16 ms | ✅ **2,1 ms**, live filtering, no Reset |
 | 3.3 | bands as grouping | ✅ one row Moves between headings, no Reset |
 | 3.4 | the background loops | ✅ 12 cadences, drift-checked |
-| 3.5 | the whole-list gestures | ⏸ carried to 4.1 |
+| 3.5 | the whole-list gestures | ✅ measured with a control in 4.2f; one gesture left over frame, knowingly |
 | 4.1 | the XAML port | ✅ window opens, 164/164; the sessions column fully bound, every mark oracle-checked |
 | 4.2a | handlers that only change what is shown | ✅ `--handlers` 12/12; the App provably references nothing that acts |
 | 4.2b | the projects rail | ✅ `rail/build` runs Build-Rail itself; 14 breaks caught; `--handlers` 18/18 |
 | 4.2c | selection, the pane's header, and a conversation's agents under it | ✅ `pane/header` and `agents/row` splice `Show-Selected` and the row block; `--handlers` 26/26 |
 | 4.2d | the acting seam: every act named, nothing behind it that can act | ✅ `acting/decisions` + `acting/sentences`; `--handlers` 39/39; the guard widened |
 | 4.2e, the safe half | the confirmation sheet, the menu probe, and the refusal below the seam | ✅ `screen/menu-*` + `acting/send-refusal`; `--handlers` 51/51; 29 breaks, 29 red |
+| 4.2f | the band pick, and the sort taken off SortDescriptions | ✅ `--handlers` 63/63; `cycle the sort` 16,2 -> 8,2 ms; 9 breaks, 9 red |
 | **4.2e** | **the implementation that really acts - replica console, scratch registry and config, in its own assembly** | ⏸ **the gate** |
 | 4.3-4.5 | keys, the reading pane's BODY, animation | ⏸ |
 | 4-6 | the view, parity, cutover | ⏸ |
 
-**272 xUnit tests, 64 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
+**272 xUnit tests, 64 oracle cases, 63 handler checks. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 
@@ -158,28 +159,38 @@ src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --bench --repeat
 ```
 
 Exit 0 means every gesture landed inside a frame AND every binding check passed.
-**It exits non-zero today, honestly** - see 3.5 below.
+**It exits non-zero today, honestly** - on `clear the project`, knowingly; see below.
 
-**4.1 is the XAML port**, and it arrives carrying two things that were
-deliberately not chased:
+**4.1 is the XAML port.** It arrived carrying two unanswered measurements, and
+**4.2f answered them - by giving the bench a CONTROL first.**
 
-| what | measured | why it waited |
-|---|---|---|
-| cycling the sort | ~21 ms | `SortDescriptions` Reset, then re-layout of 428 rows |
-| clearing a search / project / only-live | 65-115 ms | grouping, on a whole-list **widen** |
+It now reports two figures taken with the same apparatus over code the rebuild
+cannot have touched: a fixed arithmetic **spin** (pure CPU contention) and an
+**idle frame** (a drain to ContextIdle with nothing changed). Both are medians
+over nine, taken before AND after the gestures, worse of the two reported.
+Without them no figure can be set beside a figure from another day, which is the
+only thing a benchmark is for.
 
-🔴 **BOTH ARE VIRTUALIZATION QUESTIONS AND NEITHER CAN BE ANSWERED HONESTLY
-YET.** The bench binds a placeholder `ListBox` with `DisplayMemberPath` and **no
-`GroupStyle` at all**, so WPF is building group containers with nothing to build
-them from. Tuning container recycling and row height against that is tuning the
-wrong thing. `VirtualizingPanel.IsVirtualizingWhenGrouping` is already on - it is
-the least discoverable line in the view layer, since grouping turns
-virtualization off by default - and it was **not** what was costing.
+| gesture | then | now | verdict |
+|---|---|---|---|
+| cycling the sort | ~21 ms | **8,2 ms** | inside the frame |
+| clearing the project | 65-115 ms | **21,6 ms** | still OVER, and left there |
 
-🪤 **AND EVERY NUMBER ABOVE WAS TAKEN AT 35-65% CPU with 29 live
-conversations**, one worst-case reading 684 ms. Re-measure on a quiet machine
-before believing any absolute figure; only the 13 -> 70 kind of jump survived all
-three load levels.
+🔴 **IT WAS NEVER A VIRTUALIZATION QUESTION.** Four suspects were removed one at
+a time and not one moved either gesture: live sorting off, live grouping off,
+grouping off ENTIRELY, and the fourth sort key dropped. What was left was the
+containers - a sort replaced a `SortDescription`, and that raises Reset whatever
+`IsLiveSorting` says, so every realised container was rebuilt through the real
+row template. The sort now changes a KEY the rows carry instead.
+
+🔴 **AND THE "5-10x THE PLACEHOLDER" CLAIM THAT USED TO BE HERE DID NOT SURVIVE
+A CONTROL.** Measured in one process: 1,27x on clearing the project and 2x on
+the sort - and the placeholder ListBox, with no template and no GroupStyle, is
+over a frame on the widen too. The ported template was never the cause.
+
+🩤 **NONE OF THESE WAS TAKEN ON AN IDLE MACHINE EITHER** (spin 5,5-8,2 ms
+across the runs). The difference is that the control is now printed beside them,
+so the next run can say which way the machine moved.
 
 ---
 
@@ -194,7 +205,12 @@ they are not re-derived:
   **2,1 -> 25,5 ms**.
 - **`IsLiveSorting = false`** bought nothing measurable and would have cost
   something real: a conversation whose `lastActive` moves on a background refresh
-  has to rise to the top of a recent-first list.
+  has to rise to the top of a recent-first list. ✅ **That reason is now a
+  check** rather than an argument - 4.2f asserts the rise over a real window,
+  which nothing had ever done.
+- **Dropping the `DeferRefresh` around the filter loop**, so a whole-list WIDEN
+  raises Adds instead of one Reset: **24,17 ms against 21,57.** Measured in
+  4.2f. Three obvious fixes now, three worse.
 
 🔴 **2. A CHECK HAD TO BE TOLD WHAT IT WAS FOR, THREE TIMES.** Each passed
 while the thing it named was untrue:

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -106,6 +107,15 @@ public sealed class SessionsVm : INotifyPropertyChanged
         // something else re-sorted. A change that buys nothing and risks that is
         // not a trade, it is a regression waiting for a quiet week.
         view.IsLiveSorting = true;
+
+        // 🪤 ALL THREE, NOT JUST THE ONE THAT CHANGES WITH THE SORT CONTROL. An
+        // EMPTY LiveSortingProperties means "watch whatever is in
+        // SortDescriptions", so naming one property here NARROWS what the view
+        // reacts to - and BandOrder moving is how a conversation that starts
+        // working leaves the bottom of the column.
+        view.LiveSortingProperties.Add(nameof(IListRow.BandOrder));
+        view.LiveSortingProperties.Add(nameof(IListRow.SortKey));
+        view.LiveSortingProperties.Add(nameof(IListRow.SubOrder));
 
         View = view;
         _view = view;
@@ -236,7 +246,7 @@ public sealed class SessionsVm : INotifyPropertyChanged
         {
             if (Set(ref _sort, value))
             {
-                ApplySort();
+                Rekey();
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SortLabel)));
             }
         }
@@ -295,6 +305,15 @@ public sealed class SessionsVm : INotifyPropertyChanged
             row = new ConversationVm(id, session, directory);
             row.Refresh(a, s, nowTicks, x);
             row.ApplyLabel(labels.Of(directory.Path));
+
+            // 🔴 KEYED BEFORE IT IS ADDED, NOT AFTER. A row enters the view at
+            // the position its key puts it, and an unkeyed row ties with every
+            // other unkeyed row - so a pass that added first and keyed at the end
+            // left the column in the order the rows happened to arrive, and live
+            // sorting did not put it right. Measured: three conversations, two
+            // of them the wrong way round, and a sub-agent sitting under the
+            // wrong parent.
+            row.SortKey = KeyFor(row);
             _byId[id] = row;
             _rows.Add(row);
         }
@@ -326,6 +345,20 @@ public sealed class SessionsVm : INotifyPropertyChanged
         {
             _agentRows.Remove(key);
         }
+
+        // 🔴 A ROW WITH NO KEY TIES WITH EVERY OTHER ROW WITH NO KEY, and what
+        // then decides the order is the sub-order - which puts every
+        // conversation above every sub-agent instead of each agent under its own
+        // parent. That is what a model pass that forgot to key its new rows
+        // looks like, and three checks caught it within a minute of the sort
+        // moving onto a key the rows carry.
+        //
+        // 🪤 A REFRESH ALSO CHANGES WHAT A KEY SHOULD BE: a retitled
+        // conversation sorts somewhere else by name, and one that just spoke
+        // sorts to the top by recency. So every row is re-keyed, not only the
+        // new ones - it is a string assignment that notifies nothing when the
+        // value is unchanged.
+        Rekey();
 
         Reselect();
     }
@@ -508,6 +541,60 @@ public sealed class SessionsVm : INotifyPropertyChanged
     }
 
     /// <summary>
+    /// Which band's heading is pressed, or null when every conversation shows.
+    /// </summary>
+    public string? BandPick { get; private set; }
+
+    /// <summary>
+    /// Presses a band's heading, or un-presses it if it is the one already
+    /// pressed.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 IT IS NOT A FILTER, AND IT CANNOT BE. The shipped column keeps EVERY
+    /// heading when one band is picked - "hiding the others would leave no way
+    /// back except a control that is now off screen, and the counts beside them
+    /// are the reason to switch in the first place" - and a grouped view builds
+    /// its headings FROM its items, so filtering a band's rows out takes its
+    /// heading with them. The rows stay in the view and their containers
+    /// collapse; every group keeps its heading and its count.
+    ///
+    /// 🔑 AND THE COUNT STAYS RIGHT BY DOING NOTHING. The shipped BandCount is
+    /// taken BEFORE the pick skips any row, so a heading always says how many
+    /// are in that band rather than how many are drawn - which is exactly what
+    /// a group's own ItemCount reports once the rows are hidden instead of
+    /// removed.
+    /// </remarks>
+    /// <returns>The band now picked, or null.</returns>
+    public string? PickBand(string? bandLabel)
+    {
+        BandPick = string.IsNullOrEmpty(bandLabel)
+            || string.Equals(BandPick, bandLabel, StringComparison.Ordinal)
+            ? null
+            : bandLabel;
+
+        foreach (var r in _rows)
+        {
+            if (r is ConversationVm c)
+            {
+                c.Listed = BandPick is null || string.Equals(c.BandLabel, BandPick, StringComparison.Ordinal);
+            }
+        }
+
+        // 🪤 THE AGENTS ARE NOT TOUCHED HERE, AND THAT IS DELIBERATE. A second
+        // pass over them was written first, and it made the forwarding on the
+        // agent row DEAD - deleting the line that makes a sub-agent follow its
+        // parent out of a picked band changed nothing at all, so the break for
+        // it could not go red. One owner: setting the parent's Listed notifies,
+        // the agent mirrors it, and there is a single place to get it wrong.
+        //
+        // The filter above it still needs two passes, because an agent's answer
+        // is its parent's AND the expansion - two facts, only one of which the
+        // parent can notify about.
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BandPick)));
+        return BandPick;
+    }
+
+    /// <summary>
     /// 🔑 THE PREDICATE IS THE GESTURE. Everything it reads is a field that was
     /// computed when the model changed, so this is string and boolean work over
     /// 434 items - no file, no clock, no allocation per row.
@@ -546,51 +633,84 @@ public sealed class SessionsVm : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// 🪤 SortDescriptions ARE REPLACED IN ONE DEFERRED BLOCK. Assigning them one
-    /// at a time makes the view re-sort on each, so a two-key order costs two
-    /// full sorts and briefly shows a wrong one.
+    /// The three keys the column sorts on, set ONCE and never replaced.
     /// </summary>
+    /// <remarks>
+    /// 🔴 REPLACING A SortDescription RAISES RESET, and a Reset rebuilds every
+    /// realised container. Measured on this machine: cycling the sort cost
+    /// 17,2 ms on the ported window against 8,7 ms on a placeholder ListBox with
+    /// no row template - and turning off live sorting, live grouping, grouping
+    /// itself and the fourth sort key each moved neither figure. What was left
+    /// was the containers, so what changed is the thing that drops them.
+    ///
+    /// 🔑 BAND FIRST, ALWAYS. A view forms its groups in the order the items
+    /// arrive, so this is what puts NEEDS YOU at the top and NOT RUNNING at the
+    /// bottom - a fact about the board, not a preference the sort control gets
+    /// to change.
+    ///
+    /// 🔴 SUB-ORDER LAST, ALWAYS, AND IT IS WHAT KEEPS AN AGENT UNDER ITS OWN
+    /// CONVERSATION. Every key above is mirrored from the parent onto its agent
+    /// rows, so the pair ties on all of them and this breaks the tie in favour
+    /// of the conversation - 0 before 1, 2, 3. 🪤 A stable sort would not have
+    /// been enough to rely on: ListCollectionView sorts with Array.Sort, which
+    /// is introsort and NOT stable above sixteen elements.
+    /// </remarks>
     private void ApplySort()
     {
         using (_view.DeferRefresh())
         {
             View.SortDescriptions.Clear();
-
-            // 🔴 THE BAND ORDER SORTS FIRST, ALWAYS, whatever the column is
-            // sorted by inside a band. A view forms its groups in the order the
-            // items arrive, so this is what puts NEEDS YOU at the top and NOT
-            // RUNNING at the bottom - the order is a fact about the board, not a
-            // preference the sort control gets to change.
             View.SortDescriptions.Add(
                 new SortDescription(nameof(ConversationVm.BandOrder), ListSortDirection.Ascending));
-
-            switch (_sort)
-            {
-                case SessionSort.Name:
-                    View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.SortTitle), ListSortDirection.Ascending));
-                    break;
-                case SessionSort.Project:
-                    View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.SortProject), ListSortDirection.Ascending));
-                    View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.SortTitle), ListSortDirection.Ascending));
-                    break;
-                default:
-                    View.SortDescriptions.Add(new SortDescription(nameof(ConversationVm.LastActiveTicks), ListSortDirection.Descending));
-                    break;
-            }
-
-            // 🔴 LAST, ALWAYS, AND IT IS WHAT KEEPS AN AGENT UNDER ITS OWN
-            // CONVERSATION. Every key above is mirrored from the parent onto its
-            // agent rows, so the pair ties on all of them and this breaks the tie
-            // in favour of the conversation - 0 before 1, 2, 3.
-            //
-            // 🪤 A STABLE SORT WOULD NOT HAVE BEEN ENOUGH TO RELY ON.
-            // ListCollectionView sorts with Array.Sort, which is introsort and
-            // NOT stable, so "they were added in the right order" decides
-            // nothing once there are more than a few rows.
+            View.SortDescriptions.Add(
+                new SortDescription(nameof(IListRow.SortKey), ListSortDirection.Ascending));
             View.SortDescriptions.Add(
                 new SortDescription(nameof(IListRow.SubOrder), ListSortDirection.Ascending));
         }
+
+        Rekey();
     }
+
+    /// <summary>
+    /// Gives every row the key the current sort wants, and lets the view move
+    /// the ones that moved.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 THE AGENTS ARE NOT TOUCHED. Their key is read off the parent and the
+    /// parent's notification is forwarded, so assigning one here would be a
+    /// second owner of the same rule - the mistake the band pick made first.
+    /// </remarks>
+    private void Rekey()
+    {
+        foreach (var r in _rows)
+        {
+            if (r is ConversationVm c)
+            {
+                c.SortKey = KeyFor(c);
+            }
+        }
+    }
+
+    /// <summary>
+    /// One row's sort key, as a single ascending string.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 "MOST RECENT" IS DESCENDING AND THERE IS ONLY ONE DIRECTION TO GIVE.
+    /// So the ticks are subtracted from long.MaxValue and printed to a fixed
+    /// width - the newest conversation gets the smallest string, and a fixed
+    /// width is what makes a string compare order like a number. Zero-padded to
+    /// 19, which is the width of long.MaxValue.
+    ///
+    /// 🪤 AND "BY PROJECT" IS TWO KEYS. They are joined with a character that
+    /// cannot occur in either, so a project called "a" cannot sort into the
+    /// middle of one called "ab".
+    /// </remarks>
+    private string KeyFor(ConversationVm r) => _sort switch
+    {
+        SessionSort.Name => r.SortTitle,
+        SessionSort.Project => r.SortProject + "\u0000" + r.SortTitle,
+        _ => (long.MaxValue - r.LastActiveTicks).ToString("D19", CultureInfo.InvariantCulture),
+    };
 
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {

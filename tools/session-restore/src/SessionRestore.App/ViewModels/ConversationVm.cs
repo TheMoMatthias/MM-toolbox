@@ -43,6 +43,8 @@ public sealed class ConversationVm : INotifyPropertyChanged, IListRow
     private string _age = string.Empty;
     private bool _live;
     private bool _matches = true;
+    private bool _listed = true;
+    private string _sortKey = string.Empty;
     private bool _enabled;
     private bool _pinned;
     private Visibility _dotVis = Visibility.Collapsed;
@@ -109,6 +111,16 @@ public sealed class ConversationVm : INotifyPropertyChanged, IListRow
 
     /// <summary>The sessions column's own box searches title and auto-title only. See SearchMatch.</summary>
     public string ListSearchText { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// The single key the column sorts on. Set by the column, not by the row -
+    /// see <see cref="IListRow.SortKey"/>.
+    /// </summary>
+    public string SortKey
+    {
+        get => _sortKey;
+        set => Set(ref _sortKey, value);
+    }
 
     /// <summary>What "by name" sorts on: the title, lower-cased once.</summary>
     public string SortTitle { get; private set; } = string.Empty;
@@ -184,6 +196,22 @@ public sealed class ConversationVm : INotifyPropertyChanged, IListRow
     {
         get => _matches;
         set => Set(ref _matches, value);
+    }
+
+    /// <summary>
+    /// Whether a picked band lets this row be drawn. See <see cref="IListRow.Listed"/>
+    /// for why this is not the filter.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 IT IS NOT IN <c>LiveFilteringProperties</c>, AND MUST NOT BE. The view
+    /// has no opinion about it - the container's own Visibility binding does -
+    /// and naming it there would move rows in and out of the view, which is
+    /// exactly the thing that takes the heading away.
+    /// </remarks>
+    public bool Listed
+    {
+        get => _listed;
+        set => Set(ref _listed, value);
     }
 
     public string Title

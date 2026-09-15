@@ -37,6 +37,7 @@ public sealed class AgentRowVm : INotifyPropertyChanged, IListRow
 
     private readonly ConversationVm _parent;
     private bool _matches;
+    private bool _listed = true;
     private bool _expanded = true;
     private string _tag = string.Empty;
     private string _age = string.Empty;
@@ -64,6 +65,12 @@ public sealed class AgentRowVm : INotifyPropertyChanged, IListRow
         // are forwarded anyway: this row must not become the reason a fix over
         // there does not take.
         _parent.PropertyChanged += OnParentChanged;
+
+        // 🔴 INHERITED, NOT ASSUMED. A row created while a band is picked would
+        // otherwise start out drawn - selecting a conversation in a band that is
+        // NOT the picked one put its sub-agents on screen under a heading whose
+        // own rows were hidden.
+        _listed = parent.Listed;
 
         Refresh(agent.IsLive(), 0);
     }
@@ -94,6 +101,8 @@ public sealed class AgentRowVm : INotifyPropertyChanged, IListRow
     public int BandOrder => _parent.BandOrder;
 
     public string BandLabel => _parent.BandLabel;
+
+    public string SortKey => _parent.SortKey;
 
     public string SortTitle => _parent.SortTitle;
 
@@ -126,6 +135,21 @@ public sealed class AgentRowVm : INotifyPropertyChanged, IListRow
     {
         get => _matches;
         set => Set(ref _matches, value);
+    }
+
+    /// <summary>
+    /// An agent is drawn exactly when its conversation is. See <see cref="IListRow.Listed"/>.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 IT MIRRORS THE PARENT RATHER THAN ANSWERING FOR ITSELF, and it has to:
+    /// an agent row carries its parent's band, so a pick that drew the agent and
+    /// not the conversation - or the other way round - would leave a sub-agent
+    /// hanging under a heading with nothing above it.
+    /// </remarks>
+    public bool Listed
+    {
+        get => _listed;
+        set => Set(ref _listed, value);
     }
 
     // ---- what the row draws
@@ -199,6 +223,7 @@ public sealed class AgentRowVm : INotifyPropertyChanged, IListRow
         {
             case nameof(ConversationVm.BandOrder):
             case nameof(ConversationVm.BandLabel):
+            case nameof(ConversationVm.SortKey):
             case nameof(ConversationVm.SortTitle):
             case nameof(ConversationVm.SortProject):
             case nameof(ConversationVm.LastActiveTicks):
@@ -206,6 +231,9 @@ public sealed class AgentRowVm : INotifyPropertyChanged, IListRow
                 break;
             case nameof(ConversationVm.Matches):
                 Matches = _expanded && _parent.Matches;
+                break;
+            case nameof(ConversationVm.Listed):
+                Listed = _parent.Listed;
                 break;
             default:
                 break;

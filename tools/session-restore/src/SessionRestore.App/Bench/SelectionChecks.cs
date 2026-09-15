@@ -133,7 +133,12 @@ public static class SelectionChecks
                     "only the sub-agent that is still working appears under it",
                     at >= 0 && agents.Count == 1
                     && string.Equals(agents[0].SubName, "scout", StringComparison.Ordinal),
-                    $"{agents.Count} row(s) after it: {string.Join(", ", agents.Select(a => a.SubName))}"));
+                    $"{agents.Count} row(s) after it: {string.Join(", ", agents.Select(a => a.SubName))}"
+                    + " | at=" + at.ToString(CultureInfo.InvariantCulture)
+                    + " around: " + string.Join(" / ", rows.Skip(Math.Max(0, at - 1)).Take(4).Select(r =>
+                        r is AgentRowVm av ? "AGENT:" + av.SubName + "#" + av.SubOrder.ToString(CultureInfo.InvariantCulture) + " k=" + av.SortKey
+                        : r is ConversationVm cv ? cv.SortTitle + "#" + cv.SubOrder.ToString(CultureInfo.InvariantCulture) + " k=" + cv.SortKey
+                        : "?"))));
 
                 // ---- 3. what the row says about itself
                 var live = agents.FirstOrDefault(a => string.Equals(a.SubName, "scout", StringComparison.Ordinal));
@@ -263,6 +268,236 @@ public static class SelectionChecks
                     "the pane's dot breathes while a conversation is mid-turn, and stops when it is not",
                     breathing && still,
                     $"mid-turn animated {breathing}, then animated {w.PaneStateDot.HasAnimatedProperties} at opacity {w.PaneStateDot.Opacity.ToString("0.00", CultureInfo.InvariantCulture)}"));
+
+                // ---- 8b. and the sort still SORTS
+                //
+                // 🔴 THE OTHER HALF OF THE QUESTION, AND PHASE 3 HAD TO LEARN IT
+                // THREE TIMES. "The view answers a sort without a Reset" is
+                // satisfied perfectly by a view that has stopped sorting - and
+                // when the sort moved off SortDescriptions and onto a key the
+                // rows carry, that check went from "2 x Reset" to "the view
+                // raised nothing", which is the same sentence either way. A
+                // check that asks only what must NOT happen never asks whether
+                // the thing itself still works.
+                vm.Sort = SessionSort.Name;
+                Pump(w);
+                var byName = Titles(w);
+
+                vm.Sort = SessionSort.Recent;
+                Pump(w);
+                var byRecent = Titles(w);
+
+                vm.Sort = SessionSort.Project;
+                Pump(w);
+                var byProject = Titles(w);
+
+                var nameSorted = byName.SequenceEqual(byName.OrderBy(t => t, StringComparer.Ordinal));
+                checks.Add(new HandlerChecks.Check(
+                    "sorting by name really orders the column by name",
+                    byName.Count > 16 && nameSorted,
+                    string.Format(CultureInfo.InvariantCulture, "{0} row(s), in order: {1}, first: {2}",
+                        byName.Count, nameSorted, byName.Count > 0 ? byName[0] : "(none)")));
+
+                checks.Add(new HandlerChecks.Check(
+                    "and each sort gives a different order from the others",
+                    !byName.SequenceEqual(byRecent, StringComparer.Ordinal)
+                    && !byRecent.SequenceEqual(byProject, StringComparer.Ordinal),
+                    string.Format(CultureInfo.InvariantCulture, "name first '{0}', recent first '{1}', project first '{2}'",
+                        byName.Count > 0 ? byName[0] : "-",
+                        byRecent.Count > 0 ? byRecent[0] : "-",
+                        byProject.Count > 0 ? byProject[0] : "-")));
+
+                // 🔑 AND BACK, so the rest of the block runs on the order it
+                // expects rather than on whatever the last case left.
+                vm.Sort = SessionSort.Recent;
+                Pump(w);
+
+                // ---- 8c. and a conversation that just spoke rises to the top
+                //
+                // 🔴 THE REASON LIVE SORTING IS ON AT ALL, and until now nothing
+                // asserted it. Turning it off was considered in Phase 3 and
+                // rejected on exactly this ground: a conversation whose
+                // lastActive moves on a background refresh has to rise in a
+                // recent-first list rather than sit where it was. An untested
+                // reason is a reason that stops being true.
+                var oldest = vm.Rows
+                    .Where(r => string.Equals(r.BandLabel, Bands.LabelOf(Bands.Quiet), StringComparison.Ordinal))
+                    .OrderBy(r => r.LastActiveTicks)
+                    .First();
+                var wasAt = Titles(w).IndexOf(oldest.SortTitle);
+
+                oldest.Session.LastActive = DateTimeOffset.Now.AddSeconds(5);
+                vm.Sync(model, agents: agentMap);
+                Pump(w);
+                var nowAt = Titles(w).IndexOf(oldest.SortTitle);
+
+                checks.Add(new HandlerChecks.Check(
+                    "a conversation that just spoke rises to the top of a recent-first column",
+                    wasAt > 0 && nowAt == 0,
+                    string.Format(CultureInfo.InvariantCulture, "'{0}' was at {1}, now at {2}",
+                        oldest.SortTitle, wasAt, nowAt)));
+
+                // ---- 9. the band pick, pressed on the heading itself
+                //
+                // 🔴 THE HEADINGS ALL STAY, AND THAT IS THE WHOLE DIFFICULTY.
+                // A grouped view builds its headings FROM its items, so the
+                // obvious implementation - filter the other bands out - takes
+                // their headings and their counts with them, and the only way
+                // back is a control that is now off screen. The rows are hidden
+                // instead.
+                // 🔴 WITH THE AGENT-BEARING CONVERSATION OPEN, and that is not
+                // arrangement for its own sake. The first version of this block
+                // ran with a conversation that has no sub-agents selected, so
+                // there were no agent rows in the column at all - and deleting
+                // the line that makes an agent follow its parent out of a picked
+                // band stayed GREEN. A check has to be standing somewhere the
+                // rule applies.
+                // 🪤 AND WITH ITS AGENT WRITING AGAIN. Check 5b aged this one to
+                // an hour ago on purpose, so by here the column has no live
+                // sub-agent at all - which is why the first version of the check
+                // below found nothing to hold and passed with zero rows.
+                Age(withAgents, "agent-live", DateTime.Now);
+                shell.Select(head);
+                Pump(w);
+
+                var groupsBefore = Groups(w);
+                var headings = groupsBefore.Select(g => g.Name as string ?? string.Empty).ToList();
+                var countsBefore = groupsBefore.Select(g => g.ItemCount).ToList();
+
+                var target = vm.Rows.First(r => string.Equals(r.Id, busy.Session.SessionId, StringComparison.OrdinalIgnoreCase));
+                var pickLabel = target.BandLabel;
+
+                // The real event, on the real heading, through the real handler.
+                PressHeading(w, pickLabel);
+                Pump(w);
+
+                var groupsAfter = Groups(w);
+                var headingsKept = groupsAfter.Select(g => g.Name as string ?? string.Empty).ToList();
+                var countsAfter = groupsAfter.Select(g => g.ItemCount).ToList();
+
+                checks.Add(new HandlerChecks.Check(
+                    "picking a band keeps every heading and every count",
+                    headings.Count > 1
+                    && headingsKept.SequenceEqual(headings, StringComparer.Ordinal)
+                    && countsAfter.SequenceEqual(countsBefore),
+                    string.Format(CultureInfo.InvariantCulture, "{0} heading(s) before, {1} after: {2}",
+                        headings.Count, headingsKept.Count, string.Join(" / ", headingsKept))));
+
+                var drawn = vm.Rows.Count(r => r.Listed);
+                var inBand = vm.Rows.Count(r => string.Equals(r.BandLabel, pickLabel, StringComparison.Ordinal));
+                checks.Add(new HandlerChecks.Check(
+                    "and draws only that band's conversations",
+                    Pressed
+                    && string.Equals(vm.BandPick, pickLabel, StringComparison.Ordinal)
+                    && drawn == inBand && inBand > 0 && drawn < vm.Rows.Count(),
+                    string.Format(CultureInfo.InvariantCulture, "heading found {0}, picked '{1}', {2} of {3} drawn",
+                        Pressed, vm.BandPick, drawn, vm.Rows.Count()) + " [" + Where + "]"));
+
+                // 🔑 THE CONTAINER IS WHAT ACTUALLY HIDES IT. Listed being false
+                // and the row still on screen is the failure this whole approach
+                // is exposed to, so the check asks the ListBox, not the model.
+                var hidden = vm.Rows.FirstOrDefault(r => !r.Listed);
+                var hiddenVis = Visibility.Visible;
+                if (hidden is not null)
+                {
+                    w.SessionList.ScrollIntoView(hidden);
+                    Pump(w);
+                    hiddenVis = w.SessionList.ItemContainerGenerator.ContainerFromItem(hidden) is UIElement c
+                        ? c.Visibility
+                        : Visibility.Collapsed;
+                }
+
+                checks.Add(new HandlerChecks.Check(
+                    "a row in a band that was not picked is not drawn at all",
+                    hidden is not null && hiddenVis == Visibility.Collapsed,
+                    hidden is null ? "nothing was hidden" : $"'{hidden.SortTitle}' is {hiddenVis}"));
+
+                // Pressing it again gives every conversation back.
+                PressHeading(w, pickLabel);
+                Pump(w);
+                checks.Add(new HandlerChecks.Check(
+                    "pressing the same heading again shows every conversation",
+                    vm.BandPick is null && vm.Rows.All(r => r.Listed),
+                    string.Format(CultureInfo.InvariantCulture, "pick '{0}', {1} of {2} drawn",
+                        vm.BandPick ?? "(none)", vm.Rows.Count(r => r.Listed), vm.Rows.Count())));
+
+                // 🪤 AND A CLICK ON A ROW IS NOT A CLICK ON ITS HEADING. The
+                // walk up the tree stops at the ListBoxItem, or every click in
+                // the column would find the group above it and toggle the band.
+                if (w.SessionList.ItemContainerGenerator.ContainerFromItem(target) is UIElement rowC)
+                {
+                    rowC.RaiseEvent(new System.Windows.Input.MouseButtonEventArgs(
+                        System.Windows.Input.Mouse.PrimaryDevice, 0, System.Windows.Input.MouseButton.Left)
+                    { RoutedEvent = UIElement.PreviewMouseDownEvent });
+                    Pump(w);
+                }
+
+                // ---- 10. the heading has to LOOK pressed
+                //
+                // 🔴 NOTHING ELSE ASSERTS THIS, AND THE BREAK PROVED IT: cutting
+                // the PropertyChanged that tells the headings the pick moved left
+                // every check above green. The column would narrow with no sign
+                // of why, which reads as rows going missing rather than as a
+                // choice - and the way back is the heading you cannot see is
+                // pressed.
+                PressHeading(w, pickLabel);
+                Pump(w);
+
+                var pickedBg = HeadingGround(w, pickLabel);
+                var otherLabel = headings.First(h => !string.Equals(h, pickLabel, StringComparison.Ordinal));
+                var otherBg = HeadingGround(w, otherLabel);
+                var sel = w.TryFindResource("SelBg") as System.Windows.Media.Brush;
+
+                checks.Add(new HandlerChecks.Check(
+                    "the picked heading takes the selected ground and the others stay transparent",
+                    sel is not null && ReferenceEquals(pickedBg, sel)
+                    && ReferenceEquals(otherBg, System.Windows.Media.Brushes.Transparent),
+                    string.Format(CultureInfo.InvariantCulture, "'{0}' {1}, '{2}' {3}",
+                        pickLabel, Describe(pickedBg), otherLabel, Describe(otherBg))));
+
+                checks.Add(new HandlerChecks.Check(
+                    "and says 'only this' beside that heading alone",
+                    string.Equals(HeadingHint(w, pickLabel), BandPickedHint.Hint, StringComparison.Ordinal)
+                    && HeadingHint(w, otherLabel).Length == 0,
+                    string.Format(CultureInfo.InvariantCulture, "'{0}' says '{1}', '{2}' says '{3}'",
+                        pickLabel, HeadingHint(w, pickLabel), otherLabel, HeadingHint(w, otherLabel))));
+
+                // ---- 11. a sub-agent leaves with its conversation
+                var inModel = vm.Items.OfType<AgentRowVm>().ToList();
+                var agentRows = View(w).OfType<AgentRowVm>().ToList();
+                var agentDrawn = agentRows.Count(r => r.Listed);
+                checks.Add(new HandlerChecks.Check(
+                    "a sub-agent is not drawn when its conversation's band is not the picked one",
+                    inModel.Count > 0 && agentDrawn == 0 && inModel.All(r => !r.Listed)
+                    && !string.Equals(head.BandLabel, pickLabel, StringComparison.Ordinal),
+                    string.Format(CultureInfo.InvariantCulture,
+                        "{0} in the model, {1} in the view, {2} drawn, parent in '{3}', picked '{4}'",
+                        inModel.Count, agentRows.Count, agentDrawn, head.BandLabel, vm.BandPick)));
+
+                // ---- 11b. and one that appears WHILE a band is picked
+                //
+                // 🔴 THE ROW IS BUILT, NOT MOVED. Selecting a conversation makes
+                // its agent rows from nothing, so the pick has to reach them at
+                // construction - a row that started out drawn put sub-agents on
+                // screen under a heading whose own conversations were hidden.
+                shell.Select(other);
+                Pump(w);
+                shell.Select(head);
+                Pump(w);
+                var madeUnderAPick = vm.Items.OfType<AgentRowVm>().ToList();
+                checks.Add(new HandlerChecks.Check(
+                    "a sub-agent row built while a band is picked is not drawn either",
+                    madeUnderAPick.Count > 0 && madeUnderAPick.All(r => !r.Listed),
+                    string.Format(CultureInfo.InvariantCulture, "{0} row(s) made, {1} drawn",
+                        madeUnderAPick.Count, madeUnderAPick.Count(r => r.Listed))));
+
+                PressHeading(w, pickLabel);
+                Pump(w);
+
+                checks.Add(new HandlerChecks.Check(
+                    "clicking a conversation does not pick its band",
+                    vm.BandPick is null,
+                    "pick '" + (vm.BandPick ?? "(none)") + "'"));
             }
             finally
             {
@@ -281,6 +516,200 @@ public static class SelectionChecks
         }
 
         return checks;
+    }
+
+    /// <summary>The ground behind one band's heading, as the window actually drew it.</summary>
+    private static System.Windows.Media.Brush? HeadingGround(SessionsWindow w, string band) =>
+        InHeading<Border>(w, band)?.Background;
+
+    /// <summary>The words beside one band's heading - "only this", or nothing.</summary>
+    private static string HeadingHint(SessionsWindow w, string band)
+    {
+        var header = HeaderOf(w, band);
+        if (header is null)
+        {
+            return "(no heading)";
+        }
+
+        foreach (var t in Everything(header).OfType<TextBlock>())
+        {
+            if (string.Equals(t.Text, BandPickedHint.Hint, StringComparison.Ordinal))
+            {
+                return t.Text;
+            }
+        }
+
+        // The hint TextBlock is the one after the count; empty is the answer
+        // when nothing is picked, and it has to be told apart from "no heading".
+        return string.Empty;
+    }
+
+    private static string Describe(System.Windows.Media.Brush? b) =>
+        b is System.Windows.Media.SolidColorBrush s
+            ? s.Color.ToString(CultureInfo.InvariantCulture)
+            : b?.GetType().Name ?? "null";
+
+    private static GroupItem? HeaderOf(SessionsWindow w, string band)
+    {
+        var group = Groups(w).FirstOrDefault(g => string.Equals(g.Name as string, band, StringComparison.Ordinal));
+        return group is null ? null : Headers(w).FirstOrDefault(h => ReferenceEquals(h.DataContext, group));
+    }
+
+    /// <summary>The first element of a kind that belongs to the HEADING, not to a row under it.</summary>
+    private static T? InHeading<T>(SessionsWindow w, string band)
+        where T : FrameworkElement
+    {
+        var header = HeaderOf(w, band);
+        if (header is null)
+        {
+            return null;
+        }
+
+        foreach (var e in Everything(header).OfType<T>())
+        {
+            if (ReferenceEquals(e.DataContext, header.DataContext))
+            {
+                return e;
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<DependencyObject> Everything(DependencyObject root)
+    {
+        for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            yield return child;
+            foreach (var deeper in Everything(child))
+            {
+                yield return deeper;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether the last <see cref="PressHeading"/> actually found a heading to
+    /// press.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 A CHECK THAT CANNOT TELL MUST NOT PRINT GREEN, and the shape here is
+    /// the one this repo keeps meeting: "the band is not picked" is what a press
+    /// that never happened looks like AND what a broken handler looks like. The
+    /// two are different findings and the check has to say which.
+    /// </remarks>
+    private static bool Pressed { get; set; }
+
+    /// <summary>What the press actually landed on, for the detail line.</summary>
+    private static string Where { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The conversations the column is showing, in the order it shows them -
+    /// within ONE band, so a band order that never changes cannot make two
+    /// different sorts look the same.
+    /// </summary>
+    private static List<string> Titles(SessionsWindow w) =>
+        [.. View(w).OfType<ConversationVm>()
+            .Where(r => string.Equals(r.BandLabel, Bands.LabelOf(Bands.Quiet), StringComparison.Ordinal))
+            .Select(r => r.SortTitle)];
+
+    /// <summary>The view's groups - one per band that has anything in it.</summary>
+    private static List<CollectionViewGroup> Groups(SessionsWindow w) =>
+        [.. (w.SessionList.ItemsSource as ListCollectionView)?.Groups?.OfType<CollectionViewGroup>() ?? []];
+
+    /// <summary>
+    /// Presses one band's heading the way a mouse does.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 THE HEADING IS NOT AN ITEM CONTAINER, so there is nothing to ask the
+    /// generator for. It lives inside the GroupItem the panel builds for that
+    /// group, and the only way to reach it is down the visual tree - which means
+    /// the group has to have been REALISED, so this scrolls to the group's first
+    /// row first.
+    /// </remarks>
+    private static void PressHeading(SessionsWindow w, string band)
+    {
+        var group = Groups(w).FirstOrDefault(g => string.Equals(g.Name as string, band, StringComparison.Ordinal));
+        if (group?.Items.Count > 0)
+        {
+            w.SessionList.ScrollIntoView(group.Items[0]);
+            Pump(w);
+        }
+
+        // 🪤 BY DATA CONTEXT, NOT BY Content. A GroupItem's Content is set from
+        // the group, but what the heading's own elements inherit - and what the
+        // handler walks up looking for - is the DataContext. Matching on Content
+        // found nothing, the press never happened, and two checks read as a
+        // broken handler while the handler had never run.
+        var header = Headers(w).FirstOrDefault(h => ReferenceEquals(h.DataContext, group));
+        Pressed = header is not null;
+        var target = header is null || group is null ? null : Down(header, group);
+        Where = target is null
+            ? "no element in the heading"
+            : target.GetType().Name + " ctx=" + (((target as FrameworkElement)?.DataContext)?.GetType().Name ?? "null");
+        // 🪤 PreviewMouseDown, NOT PreviewMouseLeftButtonDown. The Left variant
+        // is a DIRECT routed event: raised on a leaf it reaches that leaf and
+        // nothing above it, so the column's handler never ran and two checks
+        // read as a broken handler for the second time in one afternoon. A real
+        // click routes PreviewMouseDown, which every element on the way re-raises
+        // as the Left variant on ITSELF. The strip learned this the same way, and
+        // so did the rail.
+        target?.RaiseEvent(new System.Windows.Input.MouseButtonEventArgs(
+            System.Windows.Input.Mouse.PrimaryDevice, 0, System.Windows.Input.MouseButton.Left)
+        { RoutedEvent = UIElement.PreviewMouseDownEvent });
+    }
+
+    private static IEnumerable<GroupItem> Headers(DependencyObject root)
+    {
+        for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            if (child is GroupItem g)
+            {
+                yield return g;
+            }
+
+            foreach (var deeper in Headers(child))
+            {
+                yield return deeper;
+            }
+        }
+    }
+
+    /// <summary>
+    /// An element inside the HEADING that a mouse could land on.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 A GroupItem CONTAINS ITS ROWS AS WELL AS ITS HEADING. The first
+    /// version took the first TextBlock anywhere under it, which is a
+    /// conversation's own title - and the handler correctly refused to read a
+    /// band out of a row, so the press did nothing and two checks read as a
+    /// broken handler. The heading's elements are the ones whose DataContext is
+    /// still the GROUP.
+    /// </remarks>
+    private static UIElement? Down(DependencyObject from, object group)
+    {
+        for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(from); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(from, i);
+            if (child is FrameworkElement fe && !ReferenceEquals(fe.DataContext, group))
+            {
+                continue;
+            }
+
+            if (child is TextBlock t)
+            {
+                return t;
+            }
+
+            if (Down(child, group) is { } deeper)
+            {
+                return deeper;
+            }
+        }
+
+        return null;
     }
 
     private sealed record Made(RegistrySession Session, RegistryDirectory Dir, string Jsonl);

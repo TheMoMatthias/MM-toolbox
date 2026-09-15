@@ -1319,13 +1319,129 @@ the screen is read fresh.
 
 ---
 
+### 4.2f - the band pick, and the first optimisation with a control under it
+
+**THE BAND PICK.** Clicking a heading narrows the column to that band; clicking
+it again gives everything back. It was deferred out of 4.2a with a note saying
+why, and the note was right:
+
+🪤 **IT CANNOT BE A FILTER.** The shipped column keeps EVERY heading when one
+band is picked - *"hiding the others would leave no way back except a control
+that is now off screen, and the counts beside them are the reason to switch in
+the first place"* - and a grouped view builds its headings FROM its items, so a
+band whose rows are filtered out loses its heading and its count with them.
+
+🔑 **SO THE ROWS STAY IN THE VIEW AND THE CONTAINER COLLAPSES.** Every group
+keeps its heading and its `ItemCount` - and the count stays RIGHT by doing
+nothing, because the shipped `BandCount` is taken BEFORE the pick skips any row.
+Two different questions, and one answer each.
+
+- `--handlers` **63 checks**, nine of them the pick, pressed on the real heading
+  through the real event. **Nine breaks, nine red.**
+- 🪤 **AND `PreviewMouseLeftButtonDown` IS A DIRECT ROUTED EVENT.** Raised on a
+  leaf it reaches that leaf and nothing above it, so the column's handler never
+  ran and two checks read as a broken handler. A real click routes
+  `PreviewMouseDown`, which every element on the way re-raises as the Left
+  variant on itself. **The strip learned this in 4.2c and the rail before it;
+  this is the third time.**
+- 🪤 **A GroupItem CONTAINS ITS ROWS AS WELL AS ITS HEADING**, so "the first
+  TextBlock under it" is a conversation's title. The heading's own elements are
+  the ones whose DataContext is still the GROUP.
+- 🪤 **AND TWO OF THE FIRST EIGHT BREAKS WERE INVALID.** One deleted a rule that
+  was enforced in TWO places, so nothing changed; the fix was to delete the
+  second copy rather than the check. The other found a real gap behind it - a
+  sub-agent row BUILT while a band is picked started out drawn, because a
+  constructor assumed rather than inherited.
+- 🪤 **AND ONE CHECK COULD NOT SEE THE HEADING AT ALL.** Cutting the
+  notification that tells the headings the pick moved left every check green:
+  the column would narrow with no sign of why, and the way back is the heading
+  you cannot see is pressed. Now asserted as the ground and the words.
+
+---
+
+**THE BENCH GREW A CONTROL, AND IT SHOULD HAVE HAD ONE FROM THE START.** Every
+absolute figure carried out of Phase 3 was taken at 35-99% CPU with about thirty
+live conversations, and none of them could be compared to anything afterwards.
+
+| control | what it is |
+|---|---|
+| `spin` | a fixed arithmetic loop. Moves when the CPU is contended and for no other reason |
+| `idle frame` | a drain to `ContextIdle` with NOTHING changed - WPF's own floor, through the very drain every gesture is measured with |
+
+Both are medians over nine, taken BEFORE and AFTER the gestures, and the worse
+of the two is reported. 🪤 The spin returns its sum and the caller keeps it: a
+loop whose result is discarded is a loop the JIT may delete, and a control that
+has been compiled away reads as a machine that got infinitely fast - which makes
+every gesture beside it look correspondingly worse and be blamed on the diff.
+
+🔴 **AND IT IMMEDIATELY RETIRED A CARRIED CLAIM.** `RESUME.md` said the ported
+window read "5-10x the placeholder". Measured with the control in the same
+process: **1,27x on `clear the project` and 2x on `cycle the sort`** - and the
+placeholder's `clear the project` is over a frame too, at 17,45 ms. The port was
+never the cause.
+
+**FOUR SUSPECTS REMOVED ONE AT A TIME, AND NOT ONE OF THEM MOVED EITHER
+GESTURE** (ported host, 40 repeats, spin beside each):
+
+| variant | cycle the sort | clear the project |
+|---|---|---|
+| baseline | 16,15 (spin 8,15) | 22,49 |
+| live sorting off | 16,30 (spin 5,68) | 22,47 |
+| live grouping off | 18,35 (spin 6,19) | 23,64 |
+| **grouping off entirely** | 15,89 (spin 8,03) | 18,64 |
+| the fourth sort key dropped | 17,16 (spin 5,50) | 20,99 |
+
+What was left was the containers. **A sort changed `SortDescriptions`, and
+replacing one raises Reset whatever `IsLiveSorting` says** - so every realised
+container was dropped and rebuilt through the real row template, which is the
+8,5 ms the ported host pays over the placeholder.
+
+🔑 **SO THE SORT MOVED OFF THE DESCRIPTIONS AND ONTO A KEY THE ROWS CARRY.**
+Three descriptions, set once and never replaced - band, key, sub-order - and
+cycling the sort assigns a new `SortKey` to each row. 🪤 Which means it has to
+be ONE ascending string: "most recent" is descending, so the ticks are
+subtracted from `long.MaxValue` and printed to a fixed width of 19, and "by
+project" is two keys joined with a character that cannot occur in either.
+
+**`cycle the sort`: 16,15 -> 8,17 ms, inside the frame.** (Spin 8,15 -> 6,96, so
+about 1,7x after the machine is taken out of it.)
+
+🔴 **AND IT BROKE THREE CHECKS WITHIN A MINUTE, WHICH IS THE POINT.** Rows
+created by the model pass never got a key, so they all tied - and what then
+decided the order was the sub-order, which puts every conversation above every
+sub-agent instead of each agent under its own parent. A row is now keyed BEFORE
+it is added to the view, because an unkeyed row enters at the position its empty
+key puts it and live sorting does not put it right afterwards.
+
+🔴 **AND THE OTHER HALF OF THE QUESTION HAD TO BE ADDED.** *"The view answers a
+sort without a Reset"* went from `2 x Reset` to `the view raised nothing` - and
+that sentence is satisfied perfectly by a view that has STOPPED SORTING. It is
+the exact shape of the three Phase 3 checks that passed while the thing they
+named was untrue. So `SelectionChecks` now asserts, over a real window, that the
+column is really reordered by name, that each sort gives a different order, and
+that **a conversation that just spoke rises to the top of a recent-first
+column** - which is the reason live sorting is on at all and which nothing had
+ever checked.
+
+🪤 **AND A THIRD "OBVIOUS FIX" WAS MEASURED AND WAS WORSE.** Dropping the
+`DeferRefresh` around the filter loop, so a WIDEN raises Adds instead of one
+Reset: **24,17 ms against 21,57.** It joins the two Phase 3 already has.
+
+🔴 **`clear the project` IS STILL OVER A FRAME AT 21,6 ms, AND IS LEFT THERE.**
+It is the whole-list widen - 407 of 415 rows coming back at once - the placeholder
+host is over on it too, turning grouping off entirely buys 4 ms of 22, and the
+two cheap levers have now been measured and rejected three times between them.
+It is one gesture, done rarely, at 1,3 frames, against 512 ms in the PowerShell.
+
+---
+
 | next in 4.2 | why it waits | trigger |
 |---|---|---|
 | a live-data rail comparison | the rail needs bands and live agents per row, which the oracle has no model pass to build; the shapes carry it for now | when the background pass is ported |
 | 🔴 an implementation that really acts | the seam, the sheet and the menu probe are all built; what is left is the thing behind them - replica console, scratch registry and config, in its OWN assembly so this one stays provably unable to touch a conversation | **4.2e - the gate in front of the operator** |
 | the cadence that fills the ask-seen record | `Bands.Of` and `Typing.Of` both take it and nothing sets it; it is a screen read on a timer, which belongs with the model pass | when the background pass is ported |
-| **the band pick** (`BandBg`, "only this") | 🪤 it cannot be a filter: the shipped column keeps EVERY heading when one band is picked, and a filtered-out group has no header | next, with the shown-only handlers |
-| **3.5's two measurements, against the real template** | the run on 2026-09-13 was at **99% CPU** (a game plus other sessions' python), so the ported window reading 5-10x the placeholder is not evidence of anything yet | a quiet machine: `--bench --repeats 40` |
+| **3.5's two measurements** | ✅ done, with a control: `cycle the sort` is 8,2 ms and inside the frame; `clear the project` is 21,6 and left there | - |
+| a quiet-machine re-run | the bench now reports its own control, so a figure taken at 45% CPU can be set beside one taken at 5% - but none of the figures above was taken on an idle machine | whenever the machine is quiet |
 
 ---
 
