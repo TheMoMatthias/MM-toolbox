@@ -50,7 +50,8 @@ public static class KeystrokeBench
     }
 
     public sealed record BenchRun(
-        IReadOnlyList<Gesture> Gestures, int Rows, bool RealFrames, string Note, string Host)
+        IReadOnlyList<Gesture> Gestures, int Rows, bool RealFrames, string Note, string Host,
+        bool Animating = false)
     {
         /// <summary>WPF binding failures seen while this host drew its rows.</summary>
         public IReadOnlyList<string> BindingErrors { get; init; } = [];
@@ -118,10 +119,24 @@ public static class KeystrokeBench
     /// every speed claim in this repo made against a number from a DIFFERENT run
     /// has since been withdrawn.
     /// </remarks>
+    /// <summary>
+    /// The placeholder, the ported window, and the ported window WITH THE PULSE
+    /// RUNNING - plan item 4.5's done-when.
+    /// </summary>
+    /// <remarks>
+    /// 🔑 THE THIRD RUN IS THE POINT OF THE OTHER TWO. A figure taken on a still
+    /// window says what a gesture costs when nothing is happening, which is not
+    /// when the operator makes them: the dot breathes on every conversation that
+    /// is mid-turn, and mid-turn is exactly when he is looking.
+    /// </remarks>
     public static IReadOnlyList<BenchRun> RunBoth(int repeats = 20) =>
-        [Run(repeats, realWindow: false), Run(repeats, realWindow: true)];
+    [
+        Run(repeats, realWindow: false),
+        Run(repeats, realWindow: true),
+        Run(repeats, realWindow: true, animating: true),
+    ];
 
-    public static BenchRun Run(int repeats = 20, bool realWindow = true)
+    public static BenchRun Run(int repeats = 20, bool realWindow = true, bool animating = false)
     {
         var model = Model();
         var vm = new SessionsVm();
@@ -176,6 +191,22 @@ public static class KeystrokeBench
             // says so, and the caller fails on it.
             var real = PresentationSource.FromVisual(window) is not null;
 
+            // 🔴 PLAN ITEM 4.5'S DONE-WHEN: no gesture exceeds a frame while an
+            // animation is RUNNING. A pulse is a composition-thread animation
+            // and is supposed to cost the UI thread nothing - "supposed to" is
+            // not a measurement, and this window's one animation repeats for
+            // ever on every mid-turn conversation, so it is running during most
+            // of the gestures the operator makes.
+            //
+            // 🪤 ON THE WINDOW ITSELF, NOT ON A ROW. A row's container is
+            // recycled by the virtualizing panel, so an animation started on one
+            // is thrown away the moment it scrolls - which would measure nothing
+            // and look like a pass.
+            if (animating)
+            {
+                window.BeginAnimation(UIElement.OpacityProperty, Views.WindowShell.Breath());
+            }
+
             // 🔑 BEFORE THE GESTURES AND AFTER THEM, and the WORSE of the two
             // is reported. A control taken only at the start describes a machine
             // that was quiet for one moment; the pair says whether it stayed
@@ -229,7 +260,8 @@ public static class KeystrokeBench
                     : "the window has NO PresentationSource, so this is the headless path - every number above is suspect",
                 realWindow
                     ? "the PORTED window: its SessionList, row template and band header"
-                    : "a placeholder ListBox: titles only, no GroupStyle")
+                    : "a placeholder ListBox: titles only, no GroupStyle",
+                animating)
             {
                 BindingErrors = trap.Seen.ToList(),
                 Floor = floor,
@@ -237,6 +269,10 @@ public static class KeystrokeBench
         }
         finally
         {
+            // 🪤 CLEARED BEFORE THE WINDOW CLOSES. An animation left running on
+            // a window holds it, and a bench that leaked one would keep the
+            // process alive after its report was written.
+            window.BeginAnimation(UIElement.OpacityProperty, null);
             window.Close();
             PresentationTraceSources.DataBindingSource.Listeners.Remove(trap);
         }
@@ -409,7 +445,8 @@ public static class KeystrokeBench
         var sb = new System.Text.StringBuilder();
         sb.AppendLine(CultureInfo.InvariantCulture,
             $"  plan item 3.2 - a gesture with a real frame on the end. 60 fps is {FrameMs} ms.");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"  host: {run.Host}");
+        sb.AppendLine(CultureInfo.InvariantCulture,
+            $"  host: {run.Host}{(run.Animating ? "   WITH THE PULSE RUNNING" : string.Empty)}");
         sb.AppendLine(CultureInfo.InvariantCulture, $"  {run.Rows} conversation(s) bound.");
         sb.AppendLine(CultureInfo.InvariantCulture,
             $"  {(run.BindingErrors.Count == 0 ? "ok  " : "FAIL")}  {run.BindingErrors.Count} binding error(s) while drawing");

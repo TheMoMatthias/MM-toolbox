@@ -51,10 +51,11 @@ Last commit: see `git log`. Branch `main`.
 | 4.4a | the turns the reading pane draws | ✅ `read/turn-shapes` + `read/turns-live`; 22 breaks, 22 red |
 | 4.4b | what the pane draws for each turn | ✅ `read/document` evaluates Add-ReadTurn; 4 port defects found; 25 of 26 breaks red |
 | **4.2e** | **the implementation that really acts - replica console, scratch registry and config, in its own assembly** | ⏸ **the gate** |
-| 4.4c-4.5 | the pane's PIXELS (virtualized, typography), animation | ⏸ |
+| 4.5 | animation | ✅ `anim/pulse`; the dot sampled off the element; `--bench` exits 0 WITH THE PULSE RUNNING |
+| 4.4c | the pane's PIXELS - virtualized, typography, the alignment harness | ⏸ **the largest view item, and the plan says LAST** |
 | 4-6 | the view, parity, cutover | ⏸ |
 
-**272 xUnit tests, 71 oracle cases, 82 handler checks. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
+**272 xUnit tests, 72 oracle cases, 83 handler checks. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 

@@ -264,6 +264,38 @@ public static class SelectionChecks
                 var still = !w.PaneStateDot.HasAnimatedProperties
                             && Math.Abs(w.PaneStateDot.Opacity - 1.0) < 0.001;
 
+                // ---- 8a. and it breathes the way the shipped one does
+                //
+                // 🔴 THE ELEMENT, NOT THE TABLE IT READS. anim/pulse compares
+                // the NUMBERS against New-SRPulse, and that check passes just as
+                // well if the dot is animated by something else entirely - which
+                // is exactly what had happened: 4.2c wrote 1.0 to 0.35 with no
+                // easing straight into the shell, every check went green, and
+                // the dot read as a fault light rather than as breathing.
+                //
+                // 🪤 SO IT IS SAMPLED OFF THE DOT. A fade that stops at 0.35
+                // NEVER reaches 0.3, whatever the table says; one that goes to
+                // 0.25 does, within a half-breath. What is asserted is the thing
+                // the operator can see.
+                shell.Select(busyRow);
+                Pump(w);
+                var lowest = 1.0;
+                for (var i = 0; i < 40; i++)
+                {
+                    Pump(w);
+                    lowest = Math.Min(lowest, w.PaneStateDot.Opacity);
+                    Thread.Sleep(30);
+                }
+
+                checks.Add(new HandlerChecks.Check(
+                    "the dot really fades to the shipped floor, not to a higher one",
+                    lowest <= Core.Rows.Pulse.To + 0.02,
+                    string.Format(CultureInfo.InvariantCulture, "it reached {0:0.000}, floor is {1:0.00}",
+                        lowest, Core.Rows.Pulse.To)));
+
+                shell.Select(other);
+                Pump(w);
+
                 checks.Add(new HandlerChecks.Check(
                     "the pane's dot breathes while a conversation is mid-turn, and stops when it is not",
                     breathing && still,

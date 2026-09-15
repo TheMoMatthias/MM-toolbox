@@ -1711,6 +1711,65 @@ budget go.
 
 ---
 
+### 4.5 - the one animation, and the port that had it wrong
+
+🔴 **THE BREATHING DOT WAS WRONG SINCE 4.2c AND EVERY CHECK PASSED.** The port
+wrote it straight into the shell - **1.0 to 0.35, no easing** - against a shipped
+animation that goes to **0.25 on a SineEase, in and out**. The checks asked
+whether the dot animated when a conversation was mid-turn and stopped when it
+was not; both were true. None of them asked what it LOOKED like, and the shipped
+source says exactly why that matters:
+
+> *Eased, not linear: a linear fade reads as a fault light, a sine one reads as
+> breathing.*
+
+A dot reading as a fault light on every mid-turn conversation is the opposite of
+what it is for. **It was found by reading `New-SRPulse`, not by a check.**
+
+- **`Core.Rows.Pulse`** is the animation as numbers; `WindowShell.Breath()`
+  builds it, once, for the reason the shipped tool has one function: *"two
+  copies of a 900 ms sine is how they drift apart."*
+- **`anim/pulse`** evaluates `New-SRPulse` and reads the real `DoubleAnimation`
+  back field by field. Nothing is stubbed - building an animation draws nothing.
+  🪤 The easing is compared by TYPE NAME and MODE, not by sampling: a different
+  family with the same endpoints samples identically at 0 and 1 and differently
+  everywhere a person looks. **Six breaks, six red.**
+- 🔴 **AND THE ELEMENT IS CHECKED SEPARATELY FROM THE TABLE.** `anim/pulse`
+  passes just as well if the dot is animated by something else entirely - which
+  is precisely what had happened. `--handlers` now SAMPLES the dot's own opacity
+  over a half-breath and requires it to reach the shipped floor: a fade that
+  stops at 0.35 never reaches 0.3, whatever the table says. Measured **0.266**.
+  The seventh break - the table right, the element wrong - reds.
+
+**AND 4.5'S DONE-WHEN IS MET.** `--bench` now runs a THIRD host: the ported
+window **with the pulse running**, which is the state the operator actually makes
+gestures in - the dot breathes on every conversation that is mid-turn, and
+mid-turn is when he is looking.
+
+```
+gesture                    median      min    worst   drawn   x idle
+search keystroke             1.13     0.04    10.56       8     11.2   ok
+clear the search             7.03     4.00    49.93       8     69.8   ok
+pick a project               8.83     1.83    61.03      92     87.6   ok
+clear the project           16.32     7.88    46.44       8    161.9   ok
+cycle the sort               6.69     3.04    22.38       8     66.4   ok
+only-live on and off         5.54     1.30    21.35       0     54.9   ok
+```
+
+**Exit 0 - the first time the bench has left non-zero behind.** 🪤 `clear the
+project` is at 16,32 against a 16,7 budget, which is INSIDE and is not
+comfortable: the same gesture measured 21,6 on a busier run an hour earlier.
+The control is printed beside it so the next run can say which way the machine
+moved, and the widen remains the one gesture with no margin.
+
+🪤 **ON THE WINDOW, NOT ON A ROW.** A row's container is recycled by the
+virtualizing panel, so an animation started on one is thrown away the moment it
+scrolls - which would measure nothing and look like a pass. And it is cleared
+before the window closes: an animation left running on a window holds it, and a
+bench that leaked one would keep the process alive after its report was written.
+
+---
+
 | next in 4.2 | why it waits | trigger |
 |---|---|---|
 | a live-data rail comparison | ✅ `rail/live`: 412 real conversations, 14 real projects, two views | - |

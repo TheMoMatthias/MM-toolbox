@@ -677,12 +677,7 @@ public sealed class WindowShell
     {
         if (on)
         {
-            var a = new DoubleAnimation(1.0, 0.35, new Duration(TimeSpan.FromSeconds(0.9)))
-            {
-                AutoReverse = true,
-                RepeatBehavior = RepeatBehavior.Forever,
-            };
-            _w.PaneStateDot.BeginAnimation(UIElement.OpacityProperty, a);
+            _w.PaneStateDot.BeginAnimation(UIElement.OpacityProperty, Breath());
             return;
         }
 
@@ -692,6 +687,30 @@ public sealed class WindowShell
         _w.PaneStateDot.BeginAnimation(UIElement.OpacityProperty, null);
         _w.PaneStateDot.Opacity = 1.0;
     }
+
+    /// <summary>
+    /// The one pulse, built from <see cref="Core.Rows.Pulse"/>.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THE FIRST PORT OF THIS HAD TWO NUMBERS WRONG - it faded to 0.35 and
+    /// used no easing at all, where the shipped one goes to 0.25 on a sine in
+    /// and out. That is not decoration: *"a linear fade reads as a fault light,
+    /// a sine one reads as breathing"*, and the dot's whole job is to say that
+    /// a conversation is thinking rather than that something is wrong. It was
+    /// caught by reading <c>New-SRPulse</c>, and it is compared by
+    /// <c>anim/pulse</c> now so it cannot drift back.
+    ///
+    /// 🔑 AND IT IS ONE FUNCTION BECAUSE THE SHIPPED ONE IS. Two callers want
+    /// the identical animation, and two copies of a 900 ms sine is how they
+    /// come apart.
+    /// </remarks>
+    public static DoubleAnimation Breath() => new(Core.Rows.Pulse.From, Core.Rows.Pulse.To,
+                                                  new Duration(Core.Rows.Pulse.Duration))
+    {
+        AutoReverse = Core.Rows.Pulse.AutoReverse,
+        RepeatBehavior = Core.Rows.Pulse.Forever ? RepeatBehavior.Forever : new RepeatBehavior(1),
+        EasingFunction = new SineEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseInOut },
+    };
 
     // ------------------------------------------------------------------ chrome
 
