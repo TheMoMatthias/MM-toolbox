@@ -1553,9 +1553,52 @@ one that hung instead of reddening.**
 
 ---
 
+### 4.6b - the rail over real data, and two breaks that were not breaks
+
+**`rail/live` builds the rail from the registry that is actually on this
+machine: 412 real conversations across 14 real projects, with real bands and
+real live flags.** It was deferred out of 4.2b with a named trigger - *"the rail
+needs bands and live agents per row, which the oracle has no model pass to
+build"* - and the background pass built exactly that composition.
+
+🔑 **THE POWERSHELL COMPOSES THE ROWS AND HANDS THEM OVER AS THE QUESTION.**
+The band of a live conversation moves and the agent map is a subprocess taken at
+one moment, so two sides reading those independently would differ for reasons
+about the machine rather than about either rail. Here the INPUT is fixed by one
+side and the ANSWER - headings, tiles, counts, accents, order - is computed
+twice. **Nothing moves, so nothing needs forgiving, and a difference is real.**
+
+🔴 **ONE VIEW REACHED ONE SET OF BRANCHES.** The first version built only
+`recent`, and over that view the rail never reads the LIVE flag at all -
+dropping it on the C# side stayed **green**. It runs `recent` and `only-live`
+now, and the break reds.
+
+🪤 **`busiest` AND `waiting` ARE DELIBERATELY NOT IN IT.** They order tiles by a
+count, and over 412 real conversations that count ties constantly - both sorts
+are unstable, so the two sides disagreed about the order of tied tiles and about
+nothing else. `rail/build` already compares those two orders across eleven
+shaped views with a tie normaliser written for it; a second copy here would
+catch nothing new.
+
+🪤 **AND TWO OF THE SEVEN BREAKS WERE NOT BREAKS AT ALL:**
+
+| the break | why it changed nothing |
+|---|---|
+| reversing the accent order | `ProjectAccent.Order` sorts its input, so the reverse is a no-op. The valid form - making every lookup MISS, so every tile takes slot 0 - reds |
+| un-disambiguating a project label | `ProjectLabels.Of` falls back to the path's leaf, and all fourteen of this machine's projects already have distinct leaves. **The disambiguation branch is not reachable by the operator's own data at all** - `labels/shapes`, over projects built to clash at every depth, is what covers it |
+
+🔴 **The second one is worth keeping in view: a case over real data cannot test a
+rule the real data does not contain**, and the tell is a break that will not go
+red rather than anything in the output.
+
+**Verified:** 272 xUnit tests, **68 oracle cases**, `--surface` 164/164 exit 0,
+`--handlers` 82/82 exit 0. Six valid breaks, six red.
+
+---
+
 | next in 4.2 | why it waits | trigger |
 |---|---|---|
-| a live-data rail comparison | the rail needs bands and live agents per row; the model pass now builds exactly that | **next - the trigger has fired** |
+| a live-data rail comparison | ✅ `rail/live`: 412 real conversations, 14 real projects, two views | - |
 | 🔴 an implementation that really acts | the seam, the sheet and the menu probe are all built; what is left is the thing behind them - replica console, scratch registry and config, in its OWN assembly so this one stays provably unable to touch a conversation | **4.2e - the gate in front of the operator** |
 | the ask-seen record | ✅ closed in 4.6: the ask tier fills it, `agents/ask-seen` compares the rule | - |
 | **3.5's two measurements** | ✅ done, with a control: `cycle the sort` is 8,2 ms and inside the frame; `clear the project` is 21,6 and left there | - |

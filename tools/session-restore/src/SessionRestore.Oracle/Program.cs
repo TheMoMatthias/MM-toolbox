@@ -148,6 +148,11 @@ foreach (var (c, expectAgree, meaning) in cases)
             Note("      " + MenuCases.Coverage());
         }
 
+        if (c.Name.Equals("rail/live", StringComparison.Ordinal))
+        {
+            Note("      " + RailCases.LiveCoverage());
+        }
+
         if (c.Name.StartsWith("keys/", StringComparison.Ordinal))
         {
             Note("      " + KeyCases.Coverage());

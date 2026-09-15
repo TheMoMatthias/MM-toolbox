@@ -47,11 +47,12 @@ Last commit: see `git log`. Branch `main`.
 | 4.2f | the band pick, and the sort taken off SortDescriptions | ✅ `--handlers` 63/63; `cycle the sort` 16,2 -> 8,2 ms; 9 breaks, 9 red |
 | 4.3 | the keyboard: the tunnel order that cost rewind | ✅ `keys/route` evaluates the shipped handler; `--handlers` 73/73; 18 breaks, 18 red |
 | 4.6 | the background pass - the board refreshes itself | ✅ three tiers, the ask-seen gap closed; `--handlers` 82/82; 11 breaks, 11 red |
+| 4.6b | the rail over real data | ✅ `rail/live`: 412 real conversations, 14 real projects; 6 breaks, 6 red |
 | **4.2e** | **the implementation that really acts - replica console, scratch registry and config, in its own assembly** | ⏸ **the gate** |
 | 4.4-4.5 | the reading pane's BODY, animation | ⏸ |
 | 4-6 | the view, parity, cutover | ⏸ |
 
-**272 xUnit tests, 67 oracle cases, 82 handler checks. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
+**272 xUnit tests, 68 oracle cases, 82 handler checks. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 

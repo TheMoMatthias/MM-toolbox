@@ -38,6 +38,7 @@ public static class RailCases
     public static IEnumerable<(OracleCase Case, bool ExpectAgree, string Meaning)> All()
     {
         yield return (Rails(), true, "headings and tiles for eleven rail settings, against Build-Rail itself");
+        yield return (Live(), true, "the same rail over the operator's own projects, with real bands and real live flags");
     }
 
     private sealed record Sess(string Id, string Lane, bool Gone, double AgeHours, bool Ticked, string Band, bool Live);
@@ -222,6 +223,127 @@ public static class RailCases
         """,
         psOut => CSharpSide(psOut));
 
+    /// <summary>
+    /// The PowerShell half: compose the real model, run the real Build-Rail.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 THE SAME SPLICE LIST AS <c>rail/build</c> PLUS THE BAND FUNCTIONS,
+    /// because this one derives the band rather than being handed it.
+    /// </remarks>
+    private const string LiveScript = """
+        Add-Type -AssemblyName PresentationCore
+        $winSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\sessions-window.ps1'))
+        foreach ($fn in @('Build-Rail', 'Get-RailGrouping', 'New-RailTile', 'Get-RailBandCuts', 'Get-RailBandKey',
+                          'Get-ProjectAccent', 'Convert-HslToColor', 'Update-ProjectLabels', 'Get-ProjectLabel',
+                          'Test-SRProjectRestoreOff', 'Test-SRProjectAutoTickOff', 'Get-SRPathLeaf',
+                          'Update-RailShelved', 'Update-RailSuggest', 'Update-ShelveSuggestions',
+                          'Sync-SRSessionItems', 'Get-SRItemSig',
+                          'Test-SROpenDismissed', 'Get-SRRestingBand', 'Get-Band', 'Get-Title')) {
+            $a = $winSrc.IndexOf("function $fn")
+            if ($a -lt 0) { throw "could not find $fn in sessions-window.ps1" }
+            $b = $winSrc.IndexOf("`n}", $a)
+            Invoke-Expression $winSrc.Substring($a, $b - $a + 2)
+        }
+        foreach ($var in @('$script:RailBands = @(', '$script:SR_PathSeps = ')) {
+            $a = $winSrc.IndexOf($var)
+            $b = $winSrc.IndexOf("`n)", $a)
+            $e = $winSrc.IndexOf("`n", $a)
+            $stmt = $(if ($var.EndsWith('(')) { $winSrc.Substring($a, $b - $a + 2) } else { $winSrc.Substring($a, $e - $a) })
+            Invoke-Expression $stmt
+        }
+
+        function New-SRNamedBrush($r) { $x = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb($r, 1, 2)); $x.Freeze(); $x }
+        $brushes = [ordered]@{ SelBg = (New-SRNamedBrush 11); EdgeLit = (New-SRNamedBrush 12); TextMax = (New-SRNamedBrush 13); TextHigh = (New-SRNamedBrush 14); TextLow = (New-SRNamedBrush 15) }
+        $window = New-Object PSObject
+        $window | Add-Member -MemberType ScriptMethod -Name FindResource -Value { param($k) $brushes[$k] }
+        $V_Show = 'Visible'; $V_Hide = 'Collapsed'
+        function New-SRCtl { [PSCustomObject]@{ Text = ''; Visibility = 'Collapsed'; ToolTip = $null; Foreground = $null; ItemsSource = $null } }
+
+        $script:HandbackMinChars = 40
+        $script:askSeen = @{}
+        $script:openDismissed = @{}
+
+        # ---- the real model -------------------------------------------------
+        $agentMap = Get-SRAgentStatus -Refresh
+        $reg = Get-SRRegistry
+        $script:dirs = @(@($reg.directories) | Where-Object { -not $_.missing })
+        $script:model = @()
+        $rowsOut = @()
+        foreach ($d in $script:dirs) {
+            foreach ($s in @($d.sessions)) {
+                if ($s.gone) { continue }
+                $id = "$($s.sessionId)".ToLower()
+                $a = $agentMap[$id]
+                # 🪤 -Conv $null IS WHAT UPDATE-MODEL PASSES: the transcript
+                # reader is not on the band path at all.
+                $cv = Resolve-SRSessionState -Agent $a -Conv $null
+                $at = 0
+                try { $at = ([datetime]$s.lastActive).Ticks } catch { }
+                $r = [PSCustomObject]@{ Id = $id; S = $s; D = $d; A = $a; Conv = $cv; Said = $null
+                                        At = [long]$at; Band = ''; Live = [bool]($a -and $a.pid); Hay = ''; HayProj = '' }
+                $r.Band = "$(Get-Band $r)"
+                $script:model += $r
+                $rowsOut += [ordered]@{ id = $id; band = $r.Band; live = $r.Live }
+            }
+        }
+
+        $script:accentOrder = @(); $script:accentCache = @{}
+        Update-ProjectLabels
+        foreach ($r in $script:model) {
+            $t = Get-Title $r.S $r.D
+            $r.Hay = ('{0} {1} {2} {3} {4}' -f $t.Text, $r.S.autoTitle, $r.D.path, $r.Id, (Get-ProjectLabel "$($r.D.path)")).ToLower()
+            $r.HayProj = ('{0} {1}' -f (Get-ProjectLabel "$($r.D.path)"), $r.D.path).ToLower()
+        }
+
+        # 🔴 NEITHER SIDE GETS THE OPERATOR'S CONFIG. The lane budgets and the
+        # shelve suggestions are read off it, and a comparison that depended on
+        # a file he edits would move under both of us. rail/build's shaped views
+        # are what exercise those two branches.
+        $script:cfg = [PSCustomObject]@{}
+        Update-ShelveSuggestions
+
+        # 🔴 TWO VIEWS, NOT ONE, AND THE FIRST VERSION HAD ONE. Over `recent`
+        # alone the rail never reads the LIVE flag at all - so dropping it on
+        # this side stayed green, along with the label and the accent order.
+        # One view reaches one set of branches; this is the same lesson the
+        # captured screens taught, in a different shape.
+        $gen = 0
+        $out = @()
+        foreach ($v in @(
+            @{ n = 'recent';    sort = 'recent';  live = $false },
+            @{ n = 'only-live'; sort = 'recent';  live = $true  })) {
+            $gen++
+            $ui = @{ Search = (New-SRCtl); RailSearch = (New-SRCtl); RailList = (New-SRCtl); RailClear = (New-SRCtl); RailShelved = (New-SRCtl); RailSuggest = (New-SRCtl) }
+            $script:railSort = $v.sort; $script:railOnlyLive = $v.live; $script:railShowShelved = $false; $script:railPick = $null
+            $script:railBandShut = @{}
+            $script:modelGen = $gen
+            $script:railBound = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
+            Build-Rail
+
+            $vi = @()
+            foreach ($it in @($script:railBound)) {
+                if ("$($it.Kind)" -eq 'band') {
+                    $vi += [ordered]@{ kind = 'band'; key = "$($it.BandKey)"; label = "$($it.BandLabel)"; count = [int]$it.BandCount; caret = "$($it.BandCaret)" }
+                } else {
+                    $c = $it.Accent.Color
+                    $vi += [ordered]@{ kind = 'tile'; path = "$($it.Path)"; label = "$($it.Label)"; count = [int]$it.Count
+                                       state = "$($it.State)"; accent = ('{0:X2}{1:X2}{2:X2}' -f $c.R, $c.G, $c.B) }
+                }
+            }
+            $out += [ordered]@{ view = $v.n; items = $vi }
+        }
+        $items = $out
+
+        # 🔑 THE QUESTION TRAVELS AS A COUNT, NOT AS ITSELF. The directories
+        # and the per-row bands are handed over so both sides build the rail
+        # from ONE registry read - but echoing a megabyte of registry back would
+        # make a one-tile difference arrive inside a diff nobody can read. Both
+        # sides state how many rows and how many projects they worked from, so a
+        # side that quietly dropped some is caught, and the ANSWER is the rail.
+        (@{ views = $items; rowCount = @($rowsOut).Count; dirCount = @($script:dirs).Count
+            rows = $rowsOut; dirs = $script:dirs } | ConvertTo-Json -Compress -Depth 8)
+        """;
+
     /// <summary>One clock for the case, shared by both sides through the spliced model.</summary>
     private static readonly DateTime Now = DateTime.Now.AddMinutes(-1);
 
@@ -271,6 +393,197 @@ public static class RailCases
         Flush();
         return (ok, fixedItems);
     }
+
+
+    // ------------------------------------------------- the rail over real data
+
+    /// <summary>
+    /// The rail built from the registry that is actually on this machine.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THIS WAS DEFERRED FROM 4.2b WITH A NAMED TRIGGER - *"the rail needs
+    /// bands and live agents per row, which the oracle has no model pass to
+    /// build"*. The background pass built exactly that composition, so the
+    /// trigger has fired.
+    ///
+    /// 🔑 THE POWERSHELL COMPOSES THE ROWS AND HANDS THEM OVER AS THE QUESTION,
+    /// which is what makes this comparable at all. The band of a live
+    /// conversation moves, the agent map is a subprocess taken at one moment,
+    /// and two sides reading those independently would differ for reasons that
+    /// are about the machine rather than about either rail. Here the INPUT is
+    /// fixed by one side and the ANSWER - the headings, the tiles, their counts,
+    /// their accents and their order - is computed twice. Nothing moves, so
+    /// nothing needs forgiving, and a difference is real.
+    ///
+    /// 🪤 AND IT DELIBERATELY DOES NOT EXERCISE THE LANE BUDGETS OR THE SHELVE
+    /// SUGGESTIONS. Both are read off the operator's own config, which this must
+    /// not depend on; both sides are given the same empty ones. Those two
+    /// branches are what `rail/build`'s eleven shaped views are for - this case
+    /// answers a different question: does the rail agree over FOURTEEN REAL
+    /// PROJECTS and four hundred real conversations.
+    /// </remarks>
+    private static OracleCase Live() => new(
+        "rail/live",
+        "headings, tiles, counts and accents over the registry on this machine",
+        LiveScript,
+        psOut =>
+        {
+            var doc = System.Text.Json.Nodes.JsonNode.Parse(psOut);
+
+            // The directories, exactly as the other side read them.
+            var dirs = new List<RegistryDirectory>();
+            foreach (var d in doc?["dirs"]?.AsArray() ?? [])
+            {
+                if (d is not null
+                    && JsonSerializer.Deserialize<RegistryDirectory>(d.ToJsonString()) is { } model)
+                {
+                    dirs.Add(model);
+                }
+            }
+
+            // The band and the live flag per conversation - the question, not
+            // the answer. Neither is recomputed here.
+            var bands = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var live = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in doc?["rows"]?.AsArray() ?? [])
+            {
+                var id = r?["id"]?.GetValue<string>() ?? string.Empty;
+                bands[id] = r?["band"]?.GetValue<string>() ?? string.Empty;
+                if (r?["live"]?.GetValue<bool>() == true)
+                {
+                    live.Add(id);
+                }
+            }
+
+            var labels = ProjectLabels.For(dirs.Select(x => x.Path));
+            var accents = ProjectAccent.Order(dirs.Select(x => x.Path));
+
+            var rows = new List<RailRow>();
+            foreach (var dir in dirs)
+            {
+                foreach (var session in dir.Sessions)
+                {
+                    var id = session.SessionId.ToLowerInvariant();
+                    if (session.Gone || !bands.TryGetValue(id, out var band))
+                    {
+                        continue;
+                    }
+
+                    var at = session.LastActive?.LocalDateTime.Ticks ?? 0;
+                    var hay = SearchMatch.Haystack(
+                        Titles.Of(session, dir).Text, session.AutoTitle, dir.Path, id, labels.Of(dir.Path));
+                    var hayProj = (labels.Of(dir.Path) + " " + dir.Path).ToLowerInvariant();
+                    rows.Add(new RailRow(dir.Path, at, band, live.Contains(id), session, dir, hay, hayProj));
+                }
+            }
+
+            LiveRows = rows.Count;
+            LiveDirs = dirs.Count;
+
+            // 🪤 THE SHELVE SUGGESTION IS NOT READ OFF THE CONFIG - IT IS
+            // DERIVED. Handing both sides an empty one made the first run red
+            // on a single tile: "4 idle - could be shelved" against "4 idle".
+            // Only the DAY COUNT comes from the config; the suggestion itself
+            // comes from how long the project has been quiet and whether
+            // anything in it is running, so this side has to work it out too.
+            var suggest = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var dir in dirs)
+            {
+                var running = dir.Sessions.Any(x => live.Contains(x.SessionId.ToLowerInvariant()));
+                var why = ShelveSuggestion.For(dir, null, running, DateTime.Now);
+                if (why.Length > 0)
+                {
+                    suggest[dir.Path] = why;
+                }
+            }
+
+            // The same four views the other side built, in the same order.
+            var views = new JsonArray();
+            foreach (var (name, sort, onlyLive) in LiveViews)
+            {
+                var built = Rail.Build(
+                    rows,
+                    new RailView(string.Empty, string.Empty, sort, onlyLive, false,
+                                 new HashSet<string>(StringComparer.Ordinal), null),
+                    labels, accents, RailCuts.At(),
+                    _ => false,
+                    suggest);
+
+                views.Add(new JsonObject { ["view"] = name, ["items"] = Items(built) });
+            }
+
+            // 🪤 THE QUESTION IS HANDED BACK UNCHANGED, and that is not a
+            // cheat - it is what lets the two documents be compared at all.
+            // What must never be echoed is the ANSWER; the views and the two
+            // counts are computed here from the rows this side built.
+            return new JsonObject
+            {
+                ["views"] = views,
+                ["rowCount"] = LiveRows,
+                ["dirCount"] = LiveDirs,
+                ["rows"] = doc?["rows"]?.DeepClone(),
+                ["dirs"] = doc?["dirs"]?.DeepClone(),
+            }.ToJsonString();
+        });
+
+    /// <summary>
+    /// 🔴 TWO VIEWS, NOT ONE. Over `recent` alone the rail never reads the LIVE
+    /// flag at all, so dropping it on this side stayed GREEN. One view reaches
+    /// one set of branches - the same lesson the captured screens taught, in a
+    /// different shape.
+    ///
+    /// 🪤 AND `busiest` AND `waiting` ARE DELIBERATELY NOT HERE. They order
+    /// tiles by a count, and over 412 real conversations that count TIES
+    /// constantly - both sorts are unstable, so the two sides disagreed on the
+    /// order of tied tiles and on nothing else. `rail/build` already compares
+    /// those two orders across eleven shaped views, with a tie normaliser
+    /// written for exactly this; repeating it here would add a second copy of
+    /// that machinery to catch nothing new.
+    /// </summary>
+    private static readonly (string Name, string Sort, bool OnlyLive)[] LiveViews =
+    [
+        ("recent", "recent", false),
+        ("only-live", "recent", true),
+    ];
+
+    /// <summary>The rail's items, as the two sides compare them.</summary>
+    private static JsonArray Items(RailBuild? built)
+    {
+        var items = new JsonArray();
+        if (built is not null)
+        {
+            foreach (var h in built.Items)
+            {
+                items.Add(h switch
+                {
+                    RailHead head => new JsonObject
+                    {
+                        ["kind"] = "band", ["key"] = head.Key, ["label"] = head.Label,
+                        ["count"] = head.Count, ["caret"] = head.Caret,
+                    },
+                    RailTile tile => new JsonObject
+                    {
+                        ["kind"] = "tile", ["path"] = tile.Path, ["label"] = tile.Label,
+                        ["count"] = tile.Count, ["state"] = tile.State,
+                        ["accent"] = string.Format(CultureInfo.InvariantCulture, "{0:X2}{1:X2}{2:X2}",
+                            tile.Accent.R, tile.Accent.G, tile.Accent.B),
+                    },
+                    _ => new JsonObject { ["kind"] = "?" },
+                });
+            }
+        }
+
+        return items;
+    }
+
+    /// <summary>How many real conversations and projects the live case held.</summary>
+    public static int LiveRows { get; private set; }
+
+    public static int LiveDirs { get; private set; }
+
+    public static string LiveCoverage() => string.Format(CultureInfo.InvariantCulture,
+        "{0} real conversation(s) across {1} real project(s), bands and live flags handed over as the question",
+        LiveRows, LiveDirs);
 
     private static string CSharpSide(string psOut)
     {
