@@ -77,6 +77,7 @@ cases.AddRange(RegistryCases.All());
 cases.AddRange(TranscriptCases.All());
 cases.AddRange(BlockCases.All());
 cases.AddRange(ScreenCases.All());
+cases.AddRange(MenuCases.All());
 cases.AddRange(AgentCases.All());
 cases.AddRange(SubAgentCases.All());
 cases.AddRange(LaunchCases.All());
@@ -138,6 +139,11 @@ foreach (var (c, expectAgree, meaning) in cases)
         if (c.Name.StartsWith("console/", StringComparison.Ordinal))
         {
             Note("      " + ScreenCases.Coverage());
+        }
+
+        if (c.Name.StartsWith("screen/menu", StringComparison.Ordinal))
+        {
+            Note("      " + MenuCases.Coverage());
         }
 
         if (c.Name.Equals("context/live", StringComparison.Ordinal))

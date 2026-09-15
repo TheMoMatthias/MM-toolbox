@@ -1216,11 +1216,115 @@ check reads, so the call now sits behind a condition that is false.
    act and must not survive anything that can. The queue DEPTH is wired, so the
    note already says where a message will land.
 
+### 4.2e, the safe half - the two things that were blocking an implementation
+
+**Both preconditions in front of anything that can act are now built and
+proven, and nothing that can act was written.** They were named at the end of
+4.2d as the reasons a real `IActs` could not be wired; this closes them.
+
+**1. THE CONFIRMATION SHEET.** `NoConfirms` answered yes. An implementation
+wired in front of that would have closed conversations without asking anybody.
+`Views/Sheet.cs` is the shipped `Show-Sheet`: a nested `DispatcherFrame`, so the
+caller parks on its own line while the dispatcher keeps pumping - which is what
+lets seven call sites stay written as `if (Confirm-Action ...) { do it }`.
+Buttons fill from the RIGHT so the primary always lands on B3, Esc answers with
+whatever the caller nominated as the safe way out, Enter takes the primary, and
+the scrim comes down only at depth zero.
+
+- **`--handlers` is 51 checks**, twelve of them the sheet's, driven through its
+  real buttons and real keys. **Ten breaks, ten red** - including Ask answering
+  yes whatever was pressed, Escape taking the primary, the buttons filling from
+  the left, and the sheet never being shown at all.
+- 🪤 **AND ONE CHECK WAS ASSERTING THE WRONG THING.** The nesting check pressed
+  B3 after an inner sheet had closed and expected the OUTER's answer; it got the
+  inner's key, because a closing sheet does not put the outer one's labels back.
+  That is the shipped behaviour character for character - `Show-Sheet` saves
+  `$sheetFrame` and `$sheetEscape` and nothing else. **The check was wrong, not
+  the port**, so it now asserts the thing that IS restored: the outer sheet's own
+  Escape.
+- The structural guard was widened rather than relaxed: the seam rule now reads
+  *the only implementation of `IActs` here does nothing, and the only sheet is
+  the one that asks*. A sheet cannot launch, type or write; a second `IActs`
+  is still red.
+
+**2. THE MENU PROBE.** The send box was passing `onAMenu: false`. A session
+sitting on a menu reads keystrokes as MENU INPUT, so a sentence typed at it picks
+an option instead of queueing behind the turn. `Core.Console.LiveMenu` is
+`Test-SRPromptLine` + `Get-SRLiveMenuStart` + `Test-SRLiveMenu`, ported as one
+function for the reason the shipped tool made it one: the band and the card were
+answering it differently.
+
+| the case | what it is over |
+|---|---|
+| `screen/menu-fixtures` | the fourteen CAPTURED screens, the start line and every prompt line BY INDEX |
+| `screen/menu-live` | the operator's own consoles, on the screens that held still |
+| `screen/menu-shapes` | twenty screens written to reach every rule |
+
+🔴 **AND THE CAPTURES COULD NOT GO RED. Seven rules were broken one at a time
+against `screen/menu-fixtures` and FOUR OF THE SEVEN STAYED GREEN** - a run of
+one counting as a menu, the shortcuts status line dropped from the patterns, the
+option pattern loosened to three digits and an empty label, and the patterns
+losing the case-insensitivity PowerShell's `-match` gives them. The fourteen real
+screens simply do not contain those shapes.
+
+🔑 **WHICH IS "A GREEN OVER LIVE DATA PROVES ONLY THE PATHS LIVE DATA REACHES",
+ONE LEVEL UP. A CAPTURED CORPUS IS STILL A DATA SOURCE.** A corpus is not a
+spec; it covers the branches the captures happened to walk, and it stops being
+obvious that it does once the files are checked in and look like fixtures. The
+answer is the same one as always - substitute the data source, spell the shapes
+identically on both sides, break each rule again. **Against `screen/menu-shapes`
+all seven red.**
+
+🪤 **AND `screen/menu-live` COMPARED FIVE CONSOLES WITH NOT ONE OF THEM ON A
+MENU.** It proves the agreement holds on real screens; it proves nothing about
+the menu arm, and its coverage line says so in as many words. That is the
+distinction between a case that ran and a case that checked something.
+
+**3. THE REFUSAL BELOW THE SEAM, which is the one that protects the operator.**
+`Typing` decides what the window SAYS from what it has already seen;
+`Core.Acting.SendRefusal` decides whether the keystrokes are written at all,
+from a screen read taken at the moment of sending. The shipped tool split them
+deliberately - the window's own record is up to ~26 s behind (a 15 s probe that
+itself takes 11.3 s), and a screen read through the held-open reader costs ~9 ms.
+
+- **`acting/send-refusal`** splices the ladder out of `Send-SRSessionInput` by
+  the words in it, cutting ABOVE the first line that could type. The region is
+  refused outright if `[SRCon]` appears anywhere in it, so there is nothing to
+  stub - nothing that types is present. **Twelve breaks, twelve red**, including
+  the menu refusal dropped altogether and the process check moved below the
+  screen check.
+- 🔴 **A FAILED READ IS NOT A MISSING MENU**, and that is deliberately not the
+  safe-looking choice: the reader sometimes comes back empty about a menu that is
+  plainly still there, so an unreadable screen refuses nothing. 🪤 The first
+  break written for that rule was INVALID - `IsOn("")` is already false, so it
+  changed no behaviour. The valid one (an unreadable screen treated AS a menu)
+  reds.
+- 🪤 **AND THE CURSOR GLYPH MANGLED IN TRANSIT, for the third time in this
+  rebuild.** U+276F written literally into the script arrived as two Latin-1
+  characters, the menu screen's first option stopped matching, and the PowerShell
+  reported NO refusal where the C# reported the menu one - which reads exactly
+  like a port that is wrong about menus. Every non-ASCII character now goes down
+  the pipe as `$([char]0xNNNN)`.
+
+**Verified:** 272 xUnit tests, **64 oracle cases**, `--surface` 164/164 exit 0,
+`--handlers` **51/51** exit 0 with zero binding errors. 29 deliberate breaks
+across the three units, 29 red - after two that were invalid and were redone.
+
+🔴 **WHAT IS STILL NOT WIRED, AND IT IS ONE STEP RATHER THAN A RULE: nothing
+FILLS the ask-seen record.** `Bands.Of` already takes it and `Typing.Of` already
+reads it; what is missing is the cadence that reads a screen and sets it, which
+belongs with the background model pass. Until that exists the window's send box
+cannot know, which is why the refusal that matters lives BELOW the seam, where
+the screen is read fresh.
+
+---
+
 | next in 4.2 | why it waits | trigger |
 |---|---|---|
 | a live-data rail comparison | the rail needs bands and live agents per row, which the oracle has no model pass to build; the shapes carry it for now | when the background pass is ported |
-| 🔴 every handler that launches, types, ends, saves or signs in | first C# code able to act; it gets a seam whose only implementation reaches the replica console, and the structural guard is widened rather than removed | **4.2d - the gate in front of the operator** |
-| **the band pick** (`BandBg`, "only this") | 🪤 it cannot be a filter: the shipped column keeps EVERY heading when one band is picked, and a filtered-out group has no header | 4.2d, with the handler |
+| 🔴 an implementation that really acts | the seam, the sheet and the menu probe are all built; what is left is the thing behind them - replica console, scratch registry and config, in its OWN assembly so this one stays provably unable to touch a conversation | **4.2e - the gate in front of the operator** |
+| the cadence that fills the ask-seen record | `Bands.Of` and `Typing.Of` both take it and nothing sets it; it is a screen read on a timer, which belongs with the model pass | when the background pass is ported |
+| **the band pick** (`BandBg`, "only this") | 🪤 it cannot be a filter: the shipped column keeps EVERY heading when one band is picked, and a filtered-out group has no header | next, with the shown-only handlers |
 | **3.5's two measurements, against the real template** | the run on 2026-09-13 was at **99% CPU** (a game plus other sessions' python), so the ported window reading 5-10x the placeholder is not evidence of anything yet | a quiet machine: `--bench --repeats 40` |
 
 ---

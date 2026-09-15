@@ -34,6 +34,7 @@ public static class ActingCases
     {
         yield return (Decisions(), true, "who may be interrupted and typed into, over every state a probe can report");
         yield return (Sentences(), true, "every refusal and sheet the acting handlers say, from the shipped lines themselves");
+        yield return (SendLadder(), true, "the refusal in front of the keystrokes, spliced out of Send-SRSessionInput");
     }
 
     // --------------------------------------------------------- the decisions
@@ -308,5 +309,209 @@ public static class ActingCases
         """);
 
         return sb.ToString();
+    }
+
+    // ------------------------------------------- the refusal below the seam
+
+    /// <param name="Screen">What a screen read comes back with. Null is a read that failed.</param>
+    private sealed record Sending(
+        string Name, string Text, int Pid, string Kind, string WaitingFor,
+        string NotClaude, string? Screen, bool Force);
+
+    /// <summary>
+    /// 🔴 THE SCREENS ARE THE SAME TEXT ON BOTH SIDES, and they are the point of
+    /// this case: the menu arm is the one the window CANNOT reach, because the
+    /// window's record is up to 26 s old and this read is 9 ms old. A ladder
+    /// checked only over what the operator's sessions happen to be showing would
+    /// never walk it - none of them is on a menu most of the time.
+    /// </summary>
+    private const string MenuScreen = "some prose\n\u276F 1. alpha\n  2. bravo";
+
+    private const string PromptScreen = "1. alpha\n2. bravo\n? for shortcuts";
+
+    private static readonly Sending[] Sendings =
+    [
+        new("empty", "", 100, "interactive", "", "", null, false),
+        new("whitespace-only", "   \t  ", 100, "interactive", "", "", null, false),
+        new("newlines-only", "\r\n\r\n", 100, "interactive", "", "", null, false),
+        new("flattened", "one\r\ntwo\nthree\rfour", 100, "interactive", "", "", null, false),
+        new("no-pid", "hello", 0, "interactive", "", "", null, false),
+        new("negative-pid", "hello", -3, "interactive", "", "", null, false),
+        new("a-background-agent", "hello", 100, "agent", "", "", null, false),
+        new("kind-in-capitals", "hello", 100, "Interactive", "", "", null, false),
+        new("no-kind-at-all", "hello", 100, "", "", "", null, false),
+        new("waiting-on-a-dialog", "hello", 100, "interactive", "DIALOG OPEN", "", null, false),
+        new("dialog-mid-sentence", "hello", 100, "interactive", "it opened a dialog just now", "", null, false),
+        new("dialog-but-forced", "hello", 100, "interactive", "dialog", "", null, true),
+        new("pid-belongs-to-something-else", "hello", 100, "interactive", "", "that pid is not claude any more", null, false),
+
+        // 🪤 THE PROCESS CHECK COMES BEFORE THE SCREEN. A screen belonging to
+        // something else is not evidence about anything, and a port that read it
+        // first would refuse with the wrong sentence.
+        new("wrong-process-and-a-menu", "hello", 100, "interactive", "", "that pid is not claude any more", MenuScreen, false),
+
+        new("on-a-menu", "hello", 100, "interactive", "", "", MenuScreen, false),
+        new("on-a-menu-but-forced", "hello", 100, "interactive", "", "", MenuScreen, true),
+
+        // 🔴 A FAILED READ IS NOT A MISSING MENU - it refuses nothing, which is
+        // the shipped behaviour and is deliberately NOT the safe-looking one.
+        new("screen-would-not-read", "hello", 100, "interactive", "", "", null, false),
+        new("screen-came-back-empty", "hello", 100, "interactive", "", "", "", false),
+
+        new("at-its-own-prompt", "hello", 100, "interactive", "", "", PromptScreen, false),
+    ];
+
+    private static OracleCase SendLadder() => new(
+        "acting/send-refusal",
+        "every refusal Send-SRSessionInput reaches before it writes a single keystroke",
+        SendScript(),
+        _ =>
+        {
+            var rows = new JsonArray();
+            foreach (var x in Sendings)
+            {
+                var why = SendRefusal.Of(x.Text, x.Pid, x.Kind, x.WaitingFor, x.NotClaude, x.Screen, x.Force);
+                rows.Add(new JsonObject
+                {
+                    ["n"] = x.Name,
+                    ["why"] = why,
+                    ["body"] = SendRefusal.Body(x.Text),
+                    ["forceable"] = SendRefusal.IsForceable(why),
+                });
+            }
+
+            return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);
+        });
+
+    /// <summary>
+    /// 🔴 NOT ONE LINE BELOW THE CUT IS EVALUATED. Everything after the note
+    /// about the text and the submit being two calls writes into a live console:
+    /// <c>[SRCon]::Send</c> and <c>[SRCon]::SendKeys</c>. The region taken here
+    /// ends at that note, so the spliced code CANNOT reach them - there is
+    /// nothing to stub, because nothing that types is present.
+    ///
+    /// 🪤 THE END MARKER IS FOUND BY ASCII WORDS AND BACKED UP TO THE LINE
+    /// START. The line carries an emoji, and an emoji down this pipe is one
+    /// codepage away from not matching - a marker that silently misses would
+    /// take the region to the end of the file.
+    /// </summary>
+    private static string SendScript()
+    {
+        var sb = new StringBuilder();
+
+        sb.Append("""
+        $src = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\_common.ps1'))
+
+        # The two refusal constants, taken from the file rather than retyped - a
+        # comparison against a copy of the sentence proves only that the copy was
+        # made correctly.
+        foreach ($v in @('$SR_RefuseDialog', '$SR_RefuseMenu')) {
+            $a = $src.IndexOf("`n" + $v) + 1
+            if ($a -le 0) { throw "could not find $v" }
+            Invoke-Expression $src.Substring($a, $src.IndexOf("`n", $a) - $a)
+        }
+
+        $a = $src.IndexOf('function Test-SRForceableRefusal')
+        if ($a -lt 0) { throw 'could not find Test-SRForceableRefusal' }
+        Invoke-Expression $src.Substring($a, $src.IndexOf("`n}", $a) - $a + 2)
+
+        # ---- the ladder, cut above the first line that could type -----------
+        $from = $src.IndexOf('    $body = ($Text -replace')
+        $mark = $src.IndexOf('THE TEXT AND THE SUBMIT ARE TWO CALLS', $from)
+        if ($from -lt 0 -or $mark -lt 0) { throw 'could not find the send ladder' }
+        # Back up to the start of the line the marker sits on.
+        $to = $src.LastIndexOf("`n", $mark) + 1
+        $region = $src.Substring($from, $to - $from)
+        if ($region -match '\[SRCon\]') { throw 'the region reaches the console writer - refusing to evaluate it' }
+
+        # The two things the ladder asks the machine, replaced by what the case
+        # is telling it. Nothing else in the region calls out at all.
+        function Test-SRClaudeProcess { param($ProcessId) return $script:notClaude }
+        function Get-SRScreenText { param($ProcessId)
+            if ($null -eq $script:screen) { throw 'no screen' }
+            return $script:screen
+        }
+
+        Invoke-Expression ("function Get-SendRefusal { param([string]`$Text, [int]`$ProcessId, [string]`$Kind, [string]`$WaitingFor, [switch]`$Force)`n" + $region + "`n  return '' `n}")
+
+        $rows = @()
+        $specs = @(
+        """);
+
+        foreach (var x in Sendings)
+        {
+            sb.Append("            @{ n='").Append(x.Name).Append("'; t=")
+              .Append(Ps(x.Text)).Append("; pid=").Append(x.Pid.ToString(CultureInfo.InvariantCulture))
+              .Append("; k=").Append(Ps(x.Kind))
+              .Append("; wf=").Append(Ps(x.WaitingFor))
+              .Append("; nc=").Append(Ps(x.NotClaude))
+              .Append("; sc=").Append(x.Screen is null ? "$null" : Ps(x.Screen))
+              .Append("; f=$").Append(x.Force ? "true" : "false")
+              .Append(" }\n");
+        }
+
+        sb.Append("""
+        )
+        foreach ($s in $specs) {
+            $script:notClaude = $s.nc
+            $script:screen = $s.sc
+            $why = Get-SendRefusal -Text $s.t -ProcessId $s.pid -Kind $s.k -WaitingFor $s.wf -Force:([bool]$s.f)
+            $body = ($s.t -replace "`r`n", ' ' -replace "`r", ' ' -replace "`n", ' ').Trim()
+            $rows += [ordered]@{
+                n         = $s.n
+                why       = "$why"
+                body      = "$body"
+                forceable = [bool](Test-SRForceableRefusal -Why "$why")
+            }
+        }
+        (@{ rows = $rows } | ConvertTo-Json -Compress -Depth 5)
+        """);
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// One C# string as a PowerShell double-quoted literal.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 EVERY NON-ASCII CHARACTER GOES AS <c>$([char]0xNNNN)</c>, AND THE
+    /// FIRST VERSION DID NOT. The cursor glyph U+276F written literally into the
+    /// script arrived at the other end as two Latin-1 characters, so the menu
+    /// screen's first option stopped matching the option pattern, the run never
+    /// started, and the PowerShell reported NO REFUSAL where the C# reported the
+    /// menu one. It reads exactly like a port that is wrong about menus. An
+    /// emoji down this pipe is one codepage away from not matching, and this is
+    /// the third time that has cost an hour in this rebuild.
+    /// </remarks>
+    private static string Ps(string s)
+    {
+        var sb = new StringBuilder("\"");
+        foreach (var ch in s)
+        {
+            switch (ch)
+            {
+                case '`': sb.Append("``"); break;
+                case '"': sb.Append("`\""); break;
+                case '$': sb.Append("`$"); break;
+                case '\r': sb.Append("`r"); break;
+                case '\n': sb.Append("`n"); break;
+                case '\t': sb.Append("`t"); break;
+                default:
+                    if (ch is < ' ' or > '~')
+                    {
+                        sb.Append("$([char]0x")
+                          .Append(((int)ch).ToString("X4", CultureInfo.InvariantCulture))
+                          .Append(')');
+                    }
+                    else
+                    {
+                        sb.Append(ch);
+                    }
+
+                    break;
+            }
+        }
+
+        return sb.Append('"').ToString();
     }
 }

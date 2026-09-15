@@ -293,6 +293,12 @@ public static class HandlerChecks
             // that can. Inside the trap for the same reason.
             checks.AddRange(ActingChecks.Run());
 
+            // ---- 4.2e, the safe half: the sheet that has to exist before any
+            // implementation may. Driven through its own buttons and keys, on
+            // this window, which is shown off-screen - a window that has never
+            // been shown has no PresentationSource and cannot be sent a key.
+            checks.AddRange(SheetChecks.Run(w, new Sheet(w)));
+
             Pump(w);
             checks.Add(new Check("nothing the handlers drew failed to bind",
                 trap.Seen.Count == 0,
@@ -350,9 +356,24 @@ public static class HandlerChecks
         var confirms = Implementors(asm, typeof(IConfirms));
         var prefs = Implementors(asm, typeof(IPreferences));
 
-        var ok = acts is ["NoActs"] && confirms is ["NoConfirms"] && prefs is ["NoPreferences"];
+        // 🔴 IActs IS THE ONE THAT MUST STAY EMPTY, AND IT IS THE ONLY ONE. It
+        // is the seam through which a session is launched, ended, typed into or
+        // saved, so a second implementation in THIS assembly is the whole thing
+        // the structural guard exists to prevent - an implementation that really
+        // acts gets its own assembly, so that this one can go on being provably
+        // unable to touch a conversation.
+        //
+        // 🔑 A CONFIRMATION SHEET IS NOT AN ACT, AND REFUSING IT HERE WOULD BE
+        // THE WRONG RULE MADE STRICTER. The sheet ASKS; it cannot launch, type
+        // or write, and it is a hard PRECONDITION for anything that can - wired
+        // before it existed, a real IActs would have closed conversations
+        // without asking anybody. So Sheet is named, and anything BESIDES the
+        // two is still red.
+        var ok = acts is ["NoActs"]
+              && confirms is ["NoConfirms", "Sheet"]
+              && prefs is ["NoPreferences"];
         return new Check(
-            "the only implementations of the seams in this assembly are the ones that do nothing",
+            "the only implementation of IActs here does nothing, and the only sheet is the one that asks",
             ok,
             $"IActs: {string.Join(", ", acts)}; IConfirms: {string.Join(", ", confirms)}; IPreferences: {string.Join(", ", prefs)}");
     }

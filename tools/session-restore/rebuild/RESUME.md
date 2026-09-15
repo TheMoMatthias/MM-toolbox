@@ -1,6 +1,6 @@
 # Resume here
 
-**Kept current. Last updated 2026-09-14. Everything is committed and pushed;
+**Kept current. Last updated 2026-09-15. Everything is committed and pushed;
 the working tree holds only the operator's own live files.**
 
 Last commit: see `git log`. Branch `main`.
@@ -43,11 +43,12 @@ Last commit: see `git log`. Branch `main`.
 | 4.2b | the projects rail | ✅ `rail/build` runs Build-Rail itself; 14 breaks caught; `--handlers` 18/18 |
 | 4.2c | selection, the pane's header, and a conversation's agents under it | ✅ `pane/header` and `agents/row` splice `Show-Selected` and the row block; `--handlers` 26/26 |
 | 4.2d | the acting seam: every act named, nothing behind it that can act | ✅ `acting/decisions` + `acting/sentences`; `--handlers` 39/39; the guard widened |
-| **4.2e** | **the implementation that really acts - replica console, scratch registry, and the sheet** | ⏸ **the gate** |
+| 4.2e, the safe half | the confirmation sheet, the menu probe, and the refusal below the seam | ✅ `screen/menu-*` + `acting/send-refusal`; `--handlers` 51/51; 29 breaks, 29 red |
+| **4.2e** | **the implementation that really acts - replica console, scratch registry and config, in its own assembly** | ⏸ **the gate** |
 | 4.3-4.5 | keys, the reading pane's BODY, animation | ⏸ |
 | 4-6 | the view, parity, cutover | ⏸ |
 
-**252 xUnit tests, 60 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
+**272 xUnit tests, 64 oracle cases. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 
@@ -119,6 +120,11 @@ else:
    nothing was marked, and a real difference that was only the operator working
    got through. It is now the file's length and last-write stamp, pinned on both
    sides of both reads.
+3b. 🔴 **IS THE CASE OVER A CORPUS OF CAPTURED FILES?** Then it is a data
+   source like any other and it covers only the branches those captures walk.
+   `screen/menu-fixtures` held fourteen real screens and **four of seven
+   deliberate breaks stayed green on it**. Checked-in fixtures look like a spec
+   and are not one; write the shapes as well.
 4. **Is the length pinned BEFORE the PowerShell's read and on BOTH sides of the
    C#'s?** Taken after, a record landing mid-read pairs the longer length with
    the shorter answer, and nothing is left to forgive it.
