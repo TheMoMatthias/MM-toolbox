@@ -102,6 +102,7 @@ cases.AddRange(ActingCases.All());
 cases.AddRange(KeyCases.All());
 cases.AddRange(AskSeenCases.All());
 cases.AddRange(TurnCases.All());
+cases.AddRange(DocCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
@@ -149,7 +150,11 @@ foreach (var (c, expectAgree, meaning) in cases)
             Note("      " + MenuCases.Coverage());
         }
 
-        if (c.Name.StartsWith("read/", StringComparison.Ordinal))
+        if (c.Name.Equals("read/document", StringComparison.Ordinal))
+        {
+            Note("      " + DocCases.Coverage());
+        }
+        else if (c.Name.StartsWith("read/", StringComparison.Ordinal))
         {
             Note("      " + TurnCases.Coverage());
         }

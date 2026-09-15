@@ -1652,6 +1652,65 @@ that lets the tail budget go.
 
 ---
 
+### 4.4b - what the pane DRAWS for each turn, and a shapes table that lied
+
+**`Core.Transcripts.ReadDoc` is the document's own decisions**: the rule above a
+human turn, the heading and whose voice it is, the trailing note, the marker
+word, a fold's caption and the one line a closed fold shows, the gutter's mark,
+and whether a fold starts open. `read/document` EVALUATES `Add-ReadTurn` with
+every WPF sink replaced by one that only writes down what it was handed, at all
+three steps settings.
+
+🔴 **THE HIDDEN COUNT IS AN ACCUMULATOR ACROSS TURNS**, which is why this is a
+document rather than a per-turn value. A dropped step adds to a running total
+that is SPENT on the next heading - "3 steps hidden" beside the next thing
+anybody said - and reset.
+
+**Four real port defects, all found by the case:**
+
+| what I had wrong | what the shipped one does |
+|---|---|
+| `thinking` drawn on `hidden` | dropped - and **not counted**, because reasoning is not a STEP |
+| `queued` and `thinking` bodies both trimmed | only `thinking` trims |
+| a gutter mark on every spoken turn | you/said/msgin are LABELLED; only rail blocks carry a mark |
+| the hook, file and notice captions missing | `HOOK {name}`, `{tool}  N file(s)`, `NOTICE` / `N NOTICES`, each with a headline beside it |
+
+🔴 **AND THE SHAPES TABLE WAS WEAKER THAN IT READ.** Eight breaks stayed green
+the first time, and the biggest reason was not a missing rule - it was that
+**six runs written back to back are ONE run.** The grouper consumes every
+consecutive tool/result block into a single turn, so a table that looked like it
+held six runs held one turn of sixteen calls, and every per-run rule was being
+tested once. Found by a break that could not go red: matching ANY shell instead
+of the live one changed nothing, because there was only ever one run and it held
+the live shell already. A spoken turn between each of them fixed it: **27 turns,
+68 drawn entries, and 25 of 26 breaks red.**
+
+🪤 **THE TWENTY-SIXTH IS AN INVALID BREAK AND IS WRITTEN DOWN AS ONE.** The
+`.Trim()` that `queued` lacks and `thinking` has cannot be seen from here at
+all: the headline already skips blank lines and trims the line it picks. Where
+it WOULD show is the fold's DATA, which this comparison does not reach.
+
+🪤 **AND THE STALE ASSEMBLY CAUGHT ME TWICE IN ONE HOUR.** A break that will not
+compile leaves the PREVIOUS binary in place, and `--no-build` then runs it and
+reports green. Both times the tell was a coverage line that had not moved -
+"14 turn(s)" after adding five shapes. The break harness checks the build's exit
+code; a hand-run probe does not, and that is the one that lied.
+
+🪤 **`ArrayList.Add` RETURNS THE INDEX.** The shipped `$doc.Blocks.Add($fp)` is
+unguarded - correct against a FlowDocument, whose collection returns void - so a
+stand-in ArrayList emitted a stray integer per block and the case failed with
+*"'0' is invalid after a single JSON value"*, which names neither the call nor
+the reason. `List[object]` has a void Add.
+
+**Verified:** 272 xUnit tests, **71 oracle cases**, `--surface` 164/164 exit 0,
+`--handlers` 82/82 exit 0.
+
+**Still to come in 4.4:** the pixels - the turn cards themselves, the typography
+tuned against rendered output, and the virtualizing panel that lets the tail
+budget go.
+
+---
+
 | next in 4.2 | why it waits | trigger |
 |---|---|---|
 | a live-data rail comparison | ✅ `rail/live`: 412 real conversations, 14 real projects, two views | - |

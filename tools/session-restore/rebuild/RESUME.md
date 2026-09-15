@@ -49,11 +49,12 @@ Last commit: see `git log`. Branch `main`.
 | 4.6 | the background pass - the board refreshes itself | ✅ three tiers, the ask-seen gap closed; `--handlers` 82/82; 11 breaks, 11 red |
 | 4.6b | the rail over real data | ✅ `rail/live`: 412 real conversations, 14 real projects; 6 breaks, 6 red |
 | 4.4a | the turns the reading pane draws | ✅ `read/turn-shapes` + `read/turns-live`; 22 breaks, 22 red |
+| 4.4b | what the pane draws for each turn | ✅ `read/document` evaluates Add-ReadTurn; 4 port defects found; 25 of 26 breaks red |
 | **4.2e** | **the implementation that really acts - replica console, scratch registry and config, in its own assembly** | ⏸ **the gate** |
-| 4.4b-4.5 | the pane's RENDERING (virtualized, typography), animation | ⏸ |
+| 4.4c-4.5 | the pane's PIXELS (virtualized, typography), animation | ⏸ |
 | 4-6 | the view, parity, cutover | ⏸ |
 
-**272 xUnit tests, 70 oracle cases, 82 handler checks. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
+**272 xUnit tests, 71 oracle cases, 82 handler checks. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
 file, nothing has typed into a conversation, and nothing has launched or ended
 one - the Launch namespace has no method that could.**
 
