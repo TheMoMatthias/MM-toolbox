@@ -100,6 +100,7 @@ cases.AddRange(RailCases.All());
 cases.AddRange(PaneCases.All());
 cases.AddRange(ActingCases.All());
 cases.AddRange(KeyCases.All());
+cases.AddRange(AskSeenCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
@@ -152,6 +153,13 @@ foreach (var (c, expectAgree, meaning) in cases)
             Note("      " + KeyCases.Coverage());
         }
 
+        // 🪤 BEFORE the agents/ prefix below it, which would otherwise claim
+        // this one and print a session count about a case that reads no session.
+        if (c.Name.Equals("agents/ask-seen", StringComparison.Ordinal))
+        {
+            Note("      " + AskSeenCases.Coverage());
+        }
+
         if (c.Name.Equals("context/live", StringComparison.Ordinal))
         {
             Note("      " + ContextCases.LiveCompared.ToString(CultureInfo.InvariantCulture) + " conversation(s) held still and were compared");
@@ -167,7 +175,8 @@ foreach (var (c, expectAgree, meaning) in cases)
             Note("      " + QueueCases.Coverage());
         }
 
-        if (c.Name.StartsWith("agents/", StringComparison.Ordinal))
+        if (c.Name.StartsWith("agents/", StringComparison.Ordinal)
+            && !c.Name.Equals("agents/ask-seen", StringComparison.Ordinal))
         {
             Note("      " + AgentCases.Compared.ToString(CultureInfo.InvariantCulture)
                  + " session(s) held still across both asks and were compared field by field");

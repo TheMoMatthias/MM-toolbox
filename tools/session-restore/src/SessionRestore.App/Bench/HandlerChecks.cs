@@ -311,6 +311,10 @@ public static class HandlerChecks
             // ---- 4.3: real keys, into this window, through the real tunnel.
             checks.AddRange(KeyChecks.Run(w, shell));
 
+            // ---- the three background tiers, over readers this machine does
+            // not own. Nothing here touches a live console or the registry.
+            checks.AddRange(PassChecks.Run(w.Dispatcher));
+
             Pump(w);
             checks.Add(new Check("nothing the handlers drew failed to bind",
                 trap.Seen.Count == 0,

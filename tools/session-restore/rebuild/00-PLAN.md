@@ -1502,11 +1502,62 @@ it is a gap with a name rather than a gap.
 
 ---
 
+### 4.6 - the background pass: the board stops being a screenshot
+
+**Every reader this rebuild needs was finished in Phase 2 and nothing had ever
+called them on a clock**, so the ported window showed whatever was true when it
+opened. `ModelPass` runs the three cadences the shipped window runs, and they
+are three rather than one for a measured reason:
+
+| tier | every | what it costs |
+|---|---|---|
+| fast | 6 s | a registry read. Re-derives the bands from the agent map WITHOUT re-reading transcripts - which is what moves a conversation into NEEDS YOU |
+| live | 15 s | `claude agents --json`, a SUBPROCESS: 295 ms of a 508 ms refresh, the single dominant cost |
+| ask | 400 ms | one screen read. The difference between a question appearing in fifteen seconds and in under half of one |
+
+🔑 **THE PROBE'S TWO HALVES COLLAPSE INTO ONE PASS**, and it is the one
+deliberate difference from the shipped structure. Over there the live probe is a
+runspace started by one timer and harvested by a 200 ms collector, because a
+DispatcherTimer tick cannot await. `BackgroundPass` already reads on the thread
+pool and applies on the UI thread, so the starter and the collector are one
+statement.
+
+🔴 **AND THE ASK-SEEN GAP IS CLOSED.** The send box has been reading a record
+that nothing filled. `Core.Sessions.AskSeenSet` is `Set-AskSeen` - flagged and
+cleared by EVIDENCE, never by a recompute, which is what stopped a conversation
+flipping between NEEDS YOU and WORKING every few seconds. `agents/ask-seen`
+compares it over eleven polls, **answer and set**; five breaks, five red.
+
+- **`--handlers` is 82 checks**, nine of them the pass. Every reader is
+  SUBSTITUTED - nothing in the checks reads a live console or the registry.
+- 🔴 **A poll whose answer did not move costs NOTHING.** 🪤 The first version of
+  that check counted model reads and could not tell this tier's from the fast
+  tier's - *"1 read during 4 polls"*, and no way to say which clock had struck.
+  A check that cannot attribute what it measured is not measuring the rule; it
+  counts rebands now.
+- 🪤 **AND A CHECK PROVED THE WRONG LOOP SURVIVED.** "A pass that throws is
+  reported and the loop carries on" cleared its failure flag the moment ONE
+  failure was reported - so a tier that had never thrown kept the read count
+  moving and the check passed while the loop that threw was dead.
+
+🔴 **AND A BREAK FOUND A DEADLOCK I HAD WRITTEN.** Disposing the pass from the
+UI thread while a pass was parked in `InvokeAsync` waiting for that same thread
+hung the whole run for four minutes. It only surfaced because a break made the
+fastest tier tick every 400 ms and so made the race easy to lose. The
+cancellation token now reaches the invoke, and the check pumps rather than
+blocks. **Six breaks of the pass, six red - after two that would not compile and
+one that hung instead of reddening.**
+
+**Verified:** 272 xUnit tests, **67 oracle cases**, `--surface` 164/164 exit 0,
+`--handlers` **82/82** exit 0, zero binding errors.
+
+---
+
 | next in 4.2 | why it waits | trigger |
 |---|---|---|
-| a live-data rail comparison | the rail needs bands and live agents per row, which the oracle has no model pass to build; the shapes carry it for now | when the background pass is ported |
+| a live-data rail comparison | the rail needs bands and live agents per row; the model pass now builds exactly that | **next - the trigger has fired** |
 | 🔴 an implementation that really acts | the seam, the sheet and the menu probe are all built; what is left is the thing behind them - replica console, scratch registry and config, in its OWN assembly so this one stays provably unable to touch a conversation | **4.2e - the gate in front of the operator** |
-| the cadence that fills the ask-seen record | `Bands.Of` and `Typing.Of` both take it and nothing sets it; it is a screen read on a timer, which belongs with the model pass | when the background pass is ported |
+| the ask-seen record | ✅ closed in 4.6: the ask tier fills it, `agents/ask-seen` compares the rule | - |
 | **3.5's two measurements** | ✅ done, with a control: `cycle the sort` is 8,2 ms and inside the frame; `clear the project` is 21,6 and left there | - |
 | a quiet-machine re-run | the bench now reports its own control, so a figure taken at 45% CPU can be set beside one taken at 5% - but none of the figures above was taken on an idle machine | whenever the machine is quiet |
 

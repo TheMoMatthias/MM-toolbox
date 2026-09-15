@@ -74,7 +74,15 @@ public sealed class BackgroundPass : IAsyncDisposable
                         return;
                     }
 
-                    await _ui.InvokeAsync(() => apply(answer), DispatcherPriority.Background)
+                    // 🔴 THE TOKEN GOES TO THE INVOKE, AND IT IS NOT TIDINESS.
+                    // Without it a pass parked waiting for the UI thread cannot
+                    // be cancelled - and disposing this loop from THAT thread
+                    // then deadlocks: the disposer waits for the loop, the loop
+                    // waits for the disposer's thread. Measured as a check run
+                    // that hung for four minutes and had to be killed, on a
+                    // break that made the fastest tier tick every 400 ms and so
+                    // made the race easy to lose.
+                    await _ui.InvokeAsync(() => apply(answer), DispatcherPriority.Background, _stop.Token)
                              .Task.ConfigureAwait(false);
                     Passes++;
                 }
