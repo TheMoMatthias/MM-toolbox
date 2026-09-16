@@ -105,6 +105,7 @@ cases.AddRange(TurnCases.All());
 cases.AddRange(DocCases.All());
 cases.AddRange(AnimCases.All());
 cases.AddRange(PaneMetricCases.All());
+cases.AddRange(RowCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
@@ -163,7 +164,18 @@ foreach (var (c, expectAgree, meaning) in cases)
             Note("      " + PaneMetricCases.Coverage());
         }
 
-        if (c.Name.Equals("read/document", StringComparison.Ordinal))
+        if (c.Name.StartsWith("read/prose", StringComparison.Ordinal) ||
+            c.Name.StartsWith("read/spoken", StringComparison.Ordinal) ||
+            c.Name.StartsWith("read/doc-links", StringComparison.Ordinal))
+        {
+            // 🪤 THE COVERAGE LINE HAS TO BELONG TO THE CASE. Every read/* case
+            // used to print the TURN coverage, so read/spoken reported "198 real
+            // blocks grouped into 88 turns" about a comparison that never looked
+            // at a turn - a number that reads as evidence and is about something
+            // else.
+            Note("      " + RowCases.Coverage());
+        }
+        else if (c.Name.Equals("read/document", StringComparison.Ordinal))
         {
             Note("      " + DocCases.Coverage());
         }

@@ -37,9 +37,21 @@ public static class StepsView
 /// seeing.
 /// </param>
 /// <param name="Open">Whether a fold starts open.</param>
+/// <param name="Turn">
+/// Which turn drew this.
+/// </param>
+/// <remarks>
+/// 🔑 <paramref name="Turn"/> IS HOW THE PIXELS FIND THE WORDS. The entries are
+/// a SUBSEQUENCE of the turns - `hidden` drops whole turns and adds them to a
+/// tally instead - so a view that walked both lists in step would pair the
+/// wrong body with the wrong heading the moment anything was hidden. It is set
+/// in one place rather than at the eleven emit sites, so a new arm cannot
+/// forget it.
+/// </remarks>
 public sealed record DocEntry(
     string Kind, bool Rule, string Label, string Trailing,
-    string Marker, string Caption, string Gutter, bool Open, string Trailing2 = "");
+    string Marker, string Caption, string Gutter, bool Open, string Trailing2 = "",
+    int Turn = -1);
 
 /// <summary>
 /// What the reading pane shows for a list of turns - the decisions, without the
@@ -144,8 +156,10 @@ public static class ReadDoc
         var openFolds = string.Equals(stepsView, StepsView.Full, StringComparison.Ordinal);
         var hidden = 0;
 
-        foreach (var t in turns)
+        for (var ix = 0; ix < turns.Count; ix++)
         {
+            var t = turns[ix];
+            var before = outp.Count;
             switch (t.Kind)
             {
                 case "you":
@@ -293,6 +307,15 @@ public static class ReadDoc
 
                 default:
                     break;
+            }
+
+            // 🔑 STAMPED ONCE, HERE, RATHER THAN AT ELEVEN EMIT SITES. Every arm
+            // that draws adds exactly one entry, and the arms that hide add
+            // none - so the index belongs to whatever this turn just appended,
+            // if it appended anything.
+            if (outp.Count > before)
+            {
+                outp[^1] = outp[^1] with { Turn = ix };
             }
         }
 

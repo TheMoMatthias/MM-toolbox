@@ -81,7 +81,7 @@ public static class PaneMetricCases
     /// resources would agree for the wrong reason and go on agreeing after
     /// somebody changed the XAML.
     /// </remarks>
-    private const string Preamble = """
+    internal const string Preamble = """
         Add-Type -AssemblyName PresentationCore
         Add-Type -AssemblyName PresentationFramework
         $winSrc = [System.IO.File]::ReadAllText((Join-Path $SR_Root 'lib\sessions-window.ps1'))

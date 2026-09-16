@@ -876,6 +876,7 @@ differences of the 2 -> 25 ms kind were treated as real.
 | 4.3 | Keyboard: the tunnel order from `01-CAPABILITIES.md` | the terminal watcher receives Escape, `/` and `l`; the settings panel still closes on Escape |
 | 4.4 | The reading pane, virtualized | a 2,5 MB conversation opens without a tail budget, and the alignment harness still passes |
 | 4.4c-a | The pane's geometry, as numbers | ✅ `pane/metrics`, `pane/marks`, `pane/measure`, `pane/blocks`, `pane/prose`; 48 breaks, 48 red |
+| 4.4c-b | The pane as lines - the split, the spans, the links | ✅ `read/spoken`, `read/prose-shapes`, `read/prose-live`, `read/doc-links`; 1,500 rows over 155 real bodies; 49 breaks, 48 red |
 | 4.5 | Animation: transitions on the gestures that now have headroom | no gesture exceeds 16 ms while an animation is running |
 
 🪤 **4.4 last of the view work.** The typography was tuned against rendered
@@ -1840,6 +1841,87 @@ half-pixels.
 **Still to come in 4.4c:** the pixels themselves - the virtualizing panel that
 replaces `FlowDocumentScrollViewer`, the turn cards, and the alignment harness
 walking what they render.
+
+
+---
+
+### 4.4c-b - the pane as LINES, and the rule that a row is not a turn
+
+🔑 **A ROW IS A LINE, NOT A TURN, AND THAT IS THE WHOLE POINT OF VIRTUALIZING.**
+A reply of four hundred lines drawn as one item is one item the panel must
+realize in full before it can measure the next; as four hundred rows, it
+realizes the dozen on screen. The shipped `FlowDocument` had no choice - it does
+not virtualize at all, which is the entire reason there is a 96 KB tail budget
+to retire.
+
+`Core.Reading.PaneRows` walks what `ReadDoc` already decided and splits the three
+kinds that carry prose - `you`, `msgin`, `said` - into source lines, the way
+`Add-ReadProse` does. **Nothing is re-decided there**; anything that looks like a
+decision in it is a bug. `DocEntry` gained a `Turn` index for it, stamped in ONE
+place rather than at the eleven emit sites, because the entries are a
+SUBSEQUENCE of the turns and a view walking both lists in step would pair the
+wrong body with the wrong heading the moment anything was hidden.
+
+**Four more ports, all of them values:**
+
+| what | why it had to be ported |
+|---|---|
+| `Core.Transcripts.Spoken` | `Convert-SRSpoken` - the one body the pane edits before drawing it |
+| `Core.Reading.Inline` | `Add-SRInlineRuns` + `Add-SRLinkedText` - bold, inline code, emphasis, links |
+| `Core.Reading.DocLinks` | `Set-SRDocLinks` + `Get-SRDocLinkRx` - which files this conversation wrote |
+| `Core.Reading.PaneRows` | the split itself, plus the ground's first and last line |
+
+**Four cases, and 49 breaks with 48 red** (the one that stays green is recorded
+below as unreachable, not as a gap). `read/prose-live` compares **1,500 rows out
+of 155 real bodies**, run by run - text, weight, slant, face, and whether it
+opens.
+
+🔴 **THE COMPARISON STARTED WEAKER THAN IT READ, AND THE EXCLUSION WAS THE
+TELL.** The first version compared a whole line of text and excused any line
+carrying a backtick or an asterisk as `(inline)` - about a third of the real
+corpus. The first thing that exclusion hid was that the two sides did not agree
+what `semi` MEANT on such a line: on the shipped side it had become *"something
+in here is bold"*, on the ported side it was still *"this line is a heading"*.
+The fix was not a better exclusion, it was to port `Add-SRInlineRuns` so there
+is nothing to exclude. **An allowance that covers a third of the data is not an
+allowance, it is the check giving up.**
+
+🪤 **AND FOUR BREAKS THAT WOULD NOT GO RED, ALL FOR THE SAME REASON AS LAST
+TIME:** the case could not reach the rule. A fence with trailing blank lines, a
+seventh hash, a `+` bullet and a `\r\n` line ending were each absent from the
+table; the empty `<command-args>` row could not tell the two orderings apart
+because the whole string was the tag and `Trim()` flattened both answers. The
+overlap and ordering rules inside the link splitter needed a SECOND pattern to
+overlap with, which is why `DocLinks` was ported in this tranche rather than
+later.
+
+🔴 **TWO PIECES OF THE SHIPPED CODE CANNOT FIRE, AND THE PORT CARRIES THEM
+ANYWAY.**
+
+- **A URL on a line with no markdown marks is not a link.** `Add-ReadProse`'s
+  cheap gate - *"a line with no backtick and no asterisk cannot carry any inline
+  mark"* - skips the emitter that link detection lives inside. So
+  `see https://example.com` is pressable only when the same line happens to hold
+  a backtick or an asterisk. It is reproduced because the oracle compares against
+  the window, but it reads as a defect rather than a decision.
+- **The recursion cap of 3 is one more than can ever be used.** The bold
+  alternative is non-greedy, so a bold span can never contain another `**` pair;
+  the italic alternative's body is `[^*]*`, so an italic can never contain a `*`
+  at all. The deepest a real line reaches is **2**. Measured: a cap of 1 goes
+  red, a cap of 2 does not.
+
+🪤 **THREE HARNESS TRAPS WORTH THE LINE THEY COST.** A placeholder token that is
+a SUBSTRING of another (`CALLS` inside `OTHERCALLS`) silently rewrote the second
+one - the same collision as `WIDTHS` inside `READWIDTHS` an hour earlier.
+`JsonArray.Add(string)` needs a `TypeInfoResolver` and throws at the first
+element - third time in this rebuild; `JsonValue.Create` is the answer. And
+**PowerShell's `Sort-Object` is culture-aware and case-insensitive**, so it put
+`bcdc864d358f` before `bcdc86-scratch` while an ordinal sort does the opposite -
+and the two sides then disagreed about a SET they had both got right.
+
+**Still to come in 4.4c:** the panel itself - the `ItemsControl` that replaces
+`FlowDocumentScrollViewer`, the templates per row shape, and the alignment
+harness walking what they render.
 
 ---
 
