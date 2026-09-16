@@ -2132,16 +2132,62 @@
             </StackPanel>
           </Border>
 
-          <!-- The transcript. A tail budget, said out loud at the top when it
-               is truncated: the biggest conversation on this machine is 2.5 MB
-               and a FlowDocument does not virtualize. -->
+          <!-- The transcript.
+
+               🔴 A NAMED DIVERGENCE, AND THE ONE STRUCTURAL CHANGE IN THIS
+               PORT. The shipped control is a FlowDocumentScrollViewer, and a
+               FlowDocument DOES NOT VIRTUALIZE - which is the whole reason there
+               is a 96 KB tail budget and a "load the whole conversation" control
+               above it. The biggest conversation on this machine is 2.5 MB. An
+               ItemsControl over a VirtualizingStackPanel realizes the dozen rows
+               on screen instead of all of them, and 4.4's done-when is that a
+               2.5 MB conversation opens with no tail budget at all.
+
+               The divergence is recorded in 01-CAPABILITIES.md under "Named
+               divergences", where the surface check reads it: a kind that
+               differs without a row there is a FAILURE, and a row that describes
+               a control the record does not have is also one.
+
+               🚨 AND IT COSTS SOMETHING THE OPERATOR WILL NOTICE:
+               IsSelectionEnabled is gone. A FlowDocument lets you drag a
+               selection across paragraphs; an ItemsControl does not. Copying a
+               path out of a transcript is a thing this pane is used for - the
+               link work says so in as many words - so this is a gap to close,
+               not a trade that has been made. It is on the plan.
+
+               🚤 CanContentScroll="True" IS WHAT MAKES IT VIRTUALIZE AT ALL.
+               Left at the ScrollViewer default the panel is measured with
+               infinite height, every row is realized, and the whole exercise
+               buys nothing while looking exactly like it worked. -->
           <Grid Grid.Row="1">
-            <FlowDocumentScrollViewer x:Name="PaneDoc"
-                                      VerticalScrollBarVisibility="Auto"
-                                      Padding="0" Margin="0"
-                                      Background="Transparent"
-                                      IsSelectionEnabled="True"
-                                      AutomationProperties.Name="conversation"/>
+            <ItemsControl x:Name="PaneDoc"
+                          Background="Transparent"
+                          BorderThickness="0"
+                          AutomationProperties.Name="conversation"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          ScrollViewer.CanContentScroll="True"
+                          ScrollViewer.VerticalScrollBarVisibility="Auto"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <VirtualizingStackPanel/>
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.Template>
+                <ControlTemplate TargetType="ItemsControl">
+                  <ScrollViewer CanContentScroll="True" Focusable="False"
+                                Padding="{TemplateBinding Padding}">
+                    <ItemsPresenter/>
+                  </ScrollViewer>
+                </ControlTemplate>
+              </ItemsControl.Template>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <v:PaneLine/>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
             <TextBlock x:Name="PaneEmpty" Style="{StaticResource Dim}" Text=""
                        HorizontalAlignment="Center" VerticalAlignment="Center"
                        TextWrapping="Wrap" MaxWidth="420" TextAlignment="Center"/>

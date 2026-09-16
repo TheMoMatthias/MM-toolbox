@@ -188,6 +188,23 @@ once and is not any more. Check each before rebuilding it.
 | `shell` | Border |  |
 | `tb` | ToggleButton |  |
 
+## Named divergences in the C# port
+
+🔴 **THIS TABLE IS THE ONLY PLACE A PORTED CONTROL MAY BE A DIFFERENT KIND FROM
+THE ONE ABOVE.** Everything else in this document is a record of the SHIPPED
+window and must stay true to it; editing a row up there to make a check pass
+would destroy the only account of what is being replaced.
+
+🚤 **AND A DEAD ROW HERE IS A FAILURE, NOT A LEFTOVER.** A divergence naming a
+control the record does not have, or claiming a `was` kind the record does not
+give it, goes red - the same rule the alignment harness uses for an allowance
+that matches nothing. `Sessions2.exe --surface` reads this table and prints
+every row it used.
+
+| name | was | is | why |
+|---|---|---|---|
+| `PaneDoc` | FlowDocumentScrollViewer | ItemsControl | a FlowDocument does not virtualize, which is the whole reason there is a 96 KB tail budget; 4.4's done-when is a 2,5 MB conversation with no budget at all. Costs `IsSelectionEnabled` - dragging a selection across paragraphs - which is a gap to close, not a trade that has been made. |
+
 ## Right-click menu actions
 
 | label | calls | line |

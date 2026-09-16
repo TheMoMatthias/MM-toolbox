@@ -877,6 +877,7 @@ differences of the 2 -> 25 ms kind were treated as real.
 | 4.4 | The reading pane, virtualized | a 2,5 MB conversation opens without a tail budget, and the alignment harness still passes |
 | 4.4c-a | The pane's geometry, as numbers | ✅ `pane/metrics`, `pane/marks`, `pane/measure`, `pane/blocks`, `pane/prose`; 48 breaks, 48 red |
 | 4.4c-b | The pane as lines - the split, the spans, the links | ✅ `read/spoken`, `read/prose-shapes`, `read/prose-live`, `read/doc-links`; 1,500 rows over 155 real bodies; 49 breaks, 48 red |
+| 4.4c-c | The pane's pixels - virtualized, the alignment harness | ✅ `--align` exit 0 over 1,475 rows with 25 containers realized; 14 breaks, 14 red; one defect found by LOOKING |
 | 4.5 | Animation: transitions on the gestures that now have headroom | no gesture exceeds 16 ms while an animation is running |
 
 🪤 **4.4 last of the view work.** The typography was tuned against rendered
@@ -1922,6 +1923,76 @@ and the two sides then disagreed about a SET they had both got right.
 **Still to come in 4.4c:** the panel itself - the `ItemsControl` that replaces
 `FlowDocumentScrollViewer`, the templates per row shape, and the alignment
 harness walking what they render.
+
+
+---
+
+### 4.4c-c - the pane's PIXELS, and the defect only a picture could see
+
+**`PaneDoc` is an `ItemsControl` over a `VirtualizingStackPanel` now**, and that
+is a **named divergence** rather than a quiet edit: `01-CAPABILITIES.md` gained a
+*Named divergences* table, `--surface` reads it, prints every row it used, and
+**fails on a row that describes nothing** - a name the record does not have, or a
+`was` kind it does not give that control. Three breaks, three red.
+
+> 🚨 **AND IT COSTS SOMETHING THE OPERATOR WILL NOTICE: `IsSelectionEnabled` IS
+> GONE.** A FlowDocument lets you drag a selection across paragraphs; an
+> ItemsControl does not. Copying a path out of a transcript is a thing this pane
+> is used for - the link work says so in as many words. **This is a gap to close,
+> not a trade that has been made.**
+
+🪤 **`CanContentScroll="True"` IS WHAT MAKES IT VIRTUALIZE AT ALL.** Left at the
+ScrollViewer default the panel is measured with infinite height, every row is
+realized, and the whole exercise buys nothing *while looking exactly like it
+worked*. Measured: **1,475 rows across 12 documents, at most 25 containers
+realized at once.**
+
+**`Bench/AlignChecks.cs` is the shipped rule, re-expressed** - *EVERY BLOCK
+STARTS ON THE TEXT COLUMN, OR IT IS ON A NAMED LIST* - walking rendered
+coordinates, with the exemption table and the dead-allowance rule intact. It
+scrolls the document a page at a time, because measuring only what is on screen
+at offset zero would measure the first dozen rows of every conversation and call
+it the document. **14 breaks, 14 red.**
+
+🔴 **AND THE HARNESS WAS WRONG FOUR TIMES BEFORE IT WAS RIGHT - each time in the
+direction that produces a WALL of identical failures, which is the shape that
+reads as "the port put everything in the wrong place".**
+
+| what it reported | what was actually wrong |
+|---|---|
+| 1,835 rows at the page padding | `PaneLine` was a `ContentControl`, and WPF looks a theme template up by the control's OWN type - a derived class with no style gets none, so nothing was drawn. It is a `Border` now |
+| 1,717 rows at the page padding | the walk read `TextBlock.Text`, which is empty on a line built from `Inlines` |
+| 1,717 rows, "col 0" | relaxing that to `Inlines.Count > 0` caught the GUTTER MARKER - a TextBlock with its Text set has one implicit Run. The marker is skipped by POSITION now, not by length |
+| 455 rows at the page padding | a blank line has no words and is on no column; it gets a third state, not a pass and not a failure |
+
+🔴 **THE REAL DEFECT WAS FOUND BY LOOKING, NOT BY A CHECK - AND THE CHECK COULD
+NOT HAVE FOUND IT.** `--render-pane` draws the pane over a real conversation to a
+PNG. In the first picture, a grounded human turn came out as a **stack of
+separate cards**: `Prose` returned early for a blank line without painting it, so
+the ground broke at every paragraph break. That is the exact failure the shipped
+builder's own note warns about, arrived at from the other direction - and the
+alignment pass abstains on blank lines BY DESIGN, so no green could ever have
+moved. [[feedback-element-not-the-table]]
+
+🪤 **THE STALE ASSEMBLY, AGAIN.** A build with three errors leaves the previous
+binary in place and the check runs it: the same 92 failures came back twice with
+a fix applied in between. The tell was a number that did not move.
+
+🔑 **A LIST IS TWO COLUMNS AND ONLY ONE OF THEM MOVES WITH THE HANG**, so a hang
+of twice the right width passed the column rule unchanged. The words after the
+marker get their own measurement, against `bump + hang` - and the break that
+exposed it goes red in both directions now.
+
+**Verified:** `--align` exit 0, 1,341 measurable positions, both allowances in
+use. `--surface` 164/164 with the divergence printed. `--handlers` 83/83.
+`--bench` exit 0 on a quiet machine - `clear the project` **10,3 ms** against
+19,7 an hour earlier, with the control's spin at 3,0 ms against 6,4 and its idle
+frame at 0,14 against 0,42. The gesture moved with the control, so the earlier
+red was the machine. [[feedback-benchmark-control]]
+
+**Still open in the reading pane:** selection across rows; the fold that opens
+and closes; the live tail; drilling into a sub-agent. Those are behaviour, and
+they are Phase 5.
 
 ---
 

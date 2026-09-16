@@ -33,13 +33,17 @@ public static class SurfaceCheck
     }
 
     /// <summary>The result of one check.</summary>
-    public sealed record Result(bool Opened, Typefaces.Installed Faces, IReadOnlyList<Row> Rows, string Source)
+    public sealed record Result(
+        bool Opened, Typefaces.Installed Faces, IReadOnlyList<Row> Rows, string Source,
+        IReadOnlyList<Divergence> Used, IReadOnlyList<string> DeadRows)
     {
         // 🪤 A MISSING FACE FAILS TOO. The shipped window survives without one,
         // on the system face - but the port embeds them precisely so that it
         // never has to, and a check that only PRINTED "NOT installed" would read
         // green over a window in the wrong typeface.
-        public int Failures => (Opened ? 0 : 1) + (Faces.Manrope ? 0 : 1) + (Faces.Plex ? 0 : 1) + Rows.Count(r => !r.Passed);
+        public int Failures =>
+            (Opened ? 0 : 1) + (Faces.Manrope ? 0 : 1) + (Faces.Plex ? 0 : 1)
+            + Rows.Count(r => !r.Passed) + DeadRows.Count;
     }
 
     /// <summary>Where the capability document is, walking up from the executable.</summary>
@@ -59,6 +63,13 @@ public static class SurfaceCheck
 
         return null;
     }
+
+    /// <summary>A control this port deliberately builds as a different kind.</summary>
+    /// <param name="Name">The control's name, which must be in the record above.</param>
+    /// <param name="Was">The kind the shipped window uses.</param>
+    /// <param name="Is">The kind this port uses.</param>
+    /// <param name="Why">The reason, printed whenever the row is used.</param>
+    public sealed record Divergence(string Name, string Was, string Is, string Why);
 
     /// <summary>Every `name` | kind row in both control tables.</summary>
     public static List<(string Name, string Kind)> Expected(string document)
@@ -89,10 +100,73 @@ public static class SurfaceCheck
         return rows;
     }
 
+    /// <summary>
+    /// Every row of the named-divergence table.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 A NAMED DIVERGENCE, NEVER A SILENT ONE. The record above describes
+    /// the SHIPPED window; a port that needed a different kind used to have two
+    /// options, and both were bad - edit the record, which destroys the only
+    /// account of what is being replaced, or loosen the check, which stops it
+    /// being a check. This is the third: say so, in the document, where the check
+    /// reads it and prints it.
+    /// </remarks>
+    public static List<Divergence> Diverges(string document)
+    {
+        var rows = new List<Divergence>();
+        var inTable = false;
+        foreach (var line in File.ReadLines(document))
+        {
+            if (line.StartsWith("## ", StringComparison.Ordinal))
+            {
+                inTable = line.StartsWith("## Named divergences", StringComparison.Ordinal);
+                continue;
+            }
+
+            if (!inTable)
+            {
+                continue;
+            }
+
+            var m = Regex.Match(line, @"^\| `([^`]+)` \| (\w+) \| (\w+) \| (.*?)\s*\|?$");
+            if (m.Success)
+            {
+                rows.Add(new Divergence(
+                    m.Groups[1].Value, m.Groups[2].Value, m.Groups[3].Value, m.Groups[4].Value));
+            }
+        }
+
+        return rows;
+    }
+
     public static Result Run()
     {
         var doc = Document() ?? throw new FileNotFoundException("rebuild\\01-CAPABILITIES.md was not found above the executable");
         var expected = Expected(doc);
+
+        // 🪤 A DEAD DIVERGENCE IS A FAILURE. A row naming a control the record
+        // does not have, or claiming a `was` kind it does not give that control,
+        // has stopped describing anything - and a row that has stopped firing is
+        // exactly what the alignment harness refuses to carry forward.
+        var diverges = Diverges(doc);
+        var dead = new List<string>();
+        var swap = new Dictionary<string, Divergence>(StringComparer.Ordinal);
+        foreach (var d in diverges)
+        {
+            var hit = expected.FindIndex(e =>
+                string.Equals(e.Name, d.Name, StringComparison.Ordinal) &&
+                string.Equals(e.Kind, d.Was, StringComparison.Ordinal));
+            if (hit < 0)
+            {
+                dead.Add($"{d.Name}: the record has no {d.Was} by that name");
+                continue;
+            }
+
+            swap[d.Name] = d;
+            expected[hit] = (d.Name, d.Is);
+        }
+
+        var used = new List<Divergence>();
 
         var w = new SessionsWindow
         {
@@ -137,7 +211,15 @@ public static class SurfaceCheck
                 }
             }
 
-            return new Result(opened, faces, rows, doc);
+            foreach (var row in rows)
+            {
+                if (row.Passed && swap.TryGetValue(row.Name, out var d))
+                {
+                    used.Add(d);
+                }
+            }
+
+            return new Result(opened, faces, rows, doc, used, dead);
         }
         finally
         {
@@ -163,6 +245,17 @@ public static class SurfaceCheck
         foreach (var g in r.Rows.Where(x => x.Passed).GroupBy(x => x.Where))
         {
             sb.AppendLine(inv, $"        {g.Count()} found in the {g.Key}");
+        }
+
+        // 🔴 PRINTED EVERY RUN, because a divergence nobody reads is a silent one.
+        foreach (var d in r.Used)
+        {
+            sb.AppendLine(inv, $"  note  {d.Name} is a {d.Is} here and a {d.Was} in the shipped window - {d.Why}");
+        }
+
+        foreach (var x in r.DeadRows)
+        {
+            sb.AppendLine(inv, $"  FAIL  a named divergence describes nothing - {x}");
         }
 
         return sb.ToString();

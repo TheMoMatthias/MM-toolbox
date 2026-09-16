@@ -36,6 +36,45 @@ public partial class App : Application
             return;
         }
 
+        // Plan item 4.4c: lay the reading pane out over real conversations and
+        // measure where every row's words land.
+        if (Array.Exists(e.Args, a => string.Equals(a, "--align", StringComparison.OrdinalIgnoreCase)))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Dispatcher.BeginInvoke(new Action(RunAlign), DispatcherPriority.ApplicationIdle);
+            return;
+        }
+
+        // The reading pane over a real conversation, to a PNG - so 4.4c can be
+        // LOOKED AT rather than inferred from an alignment green.
+        var paneAt = Array.FindIndex(e.Args, a => string.Equals(a, "--render-pane", StringComparison.OrdinalIgnoreCase));
+        if (paneAt >= 0 && paneAt + 1 < e.Args.Length)
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            var png = e.Args[paneAt + 1];
+            var view = paneAt + 2 < e.Args.Length && !e.Args[paneAt + 2].StartsWith("--", StringComparison.Ordinal)
+                ? e.Args[paneAt + 2]
+                : SessionRestore.Core.Transcripts.StepsView.Folded;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    Snapshot.Pane(png, view);
+                }
+#pragma warning disable CA1031 // the render must report, not vanish
+                catch (Exception ex)
+#pragma warning restore CA1031
+                {
+                    Console.Error.WriteLine(ex);
+                    Shutdown(1);
+                    return;
+                }
+
+                Shutdown(0);
+            }), DispatcherPriority.ApplicationIdle);
+            return;
+        }
+
         // Render the ported sessions column, bound to the registry read-only, to
         // a PNG - so a port can be LOOKED AT rather than inferred from a green.
         var renderAt = Array.FindIndex(e.Args, a => string.Equals(a, "--render", StringComparison.OrdinalIgnoreCase));
@@ -152,6 +191,35 @@ public partial class App : Application
         try
         {
             File.WriteAllText(Path.Combine(Path.GetTempPath(), "sr-surface-check.txt"), report);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+
+        Shutdown(failures);
+    }
+
+    private void RunAlign()
+    {
+        int failures;
+        string report;
+        try
+        {
+            var r = AlignChecks.Run();
+            report = AlignChecks.Report(r);
+            failures = r.Failures;
+        }
+#pragma warning disable CA1031 // the check must report a failure, not vanish with it
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            report = "the alignment pass threw: " + ex.GetType().Name + ": " + ex.Message
+                     + Environment.NewLine + ex.StackTrace;
+            failures = 1000;
+        }
+
+        try
+        {
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "sr-align-check.txt"), report);
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }

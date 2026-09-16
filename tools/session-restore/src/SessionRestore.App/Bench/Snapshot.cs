@@ -113,6 +113,88 @@ public static class Snapshot
         }
     }
 
+    /// <summary>
+    /// The reading pane over a real conversation, to a PNG.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 BECAUSE A GREEN IS NOT A LOOK. The alignment pass proves every row
+    /// starts on the same x; it has nothing to say about whether the result reads
+    /// as a conversation. The pulse was wrong for three commits under checks that
+    /// all passed, and it was found by looking.
+    /// </remarks>
+    public static void Pane(string pngPath, string view = Core.Transcripts.StepsView.Folded)
+    {
+        var w = new SessionsWindow
+        {
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            Left = -32000,
+            Top = -32000,
+            ShowInTaskbar = false,
+            ShowActivated = false,
+            Width = 1480,
+            Height = 980,
+        };
+
+        w.Show();
+        try
+        {
+            w.Dispatcher.Invoke(static () => { }, DispatcherPriority.ContextIdle);
+
+            // 🪤 THE NEWEST CONVERSATION IS NOT NECESSARILY A USEFUL PICTURE.
+            // The loaded window is the TAIL, so it usually opens mid-reply - and
+            // the first one tried had no human turn in its tail at all, which
+            // means the two things only a human turn draws, the RULE and the
+            // GROUND, were in no picture ever taken of this pane. It walks the
+            // recent ones until it finds a conversation that has both.
+            var rows = new List<Core.Reading.PaneRow>();
+            foreach (var path in KeystrokeBench.Model()
+                .Where(m => !string.IsNullOrEmpty(m.S.Jsonl) && File.Exists(m.S.Jsonl))
+                .OrderByDescending(m => m.S.LastActive)
+                .Select(m => m.S.Jsonl)
+                .Take(12))
+            {
+                var turns = Core.Transcripts.ReadTurns.Of(
+                    Core.Transcripts.TranscriptBlocks.Read(path!, 400, 2 * 1024 * 1024));
+                var got = Core.Reading.PaneRows.Of(turns, Core.Transcripts.ReadDoc.Of(turns, view));
+                var at = got.FindIndex(r => string.Equals(
+                    r.Shape, Core.Reading.RowShape.Rule, StringComparison.Ordinal));
+                if (at >= 0)
+                {
+                    rows = got[at..];
+                    break;
+                }
+
+                if (rows.Count == 0)
+                {
+                    rows = got;
+                }
+            }
+
+            if (rows.Count == 0)
+            {
+                return;
+            }
+
+
+            var pad = Core.Reading.PaneMetrics.PagePadding(
+                w.PaneDoc.ActualWidth, 13.0, Core.Reading.PaneMetrics.Gutter(100));
+            w.PaneDoc.Padding = new Thickness(pad.Left, pad.Top, pad.Right, pad.Bottom);
+            w.PaneDoc.ItemsSource = rows;
+
+            for (var i = 0; i < 3; i++)
+            {
+                w.UpdateLayout();
+                w.Dispatcher.Invoke(static () => { }, DispatcherPriority.ContextIdle);
+            }
+
+            Save(w, w.PaneDoc, pngPath);
+        }
+        finally
+        {
+            w.Close();
+        }
+    }
+
     /// <summary>One element of the window, on the window's own ground, to a PNG.</summary>
     /// <remarks>
     /// 🪤 THE LIST HAS A TRANSPARENT BACKGROUND, so it is painted over the window's

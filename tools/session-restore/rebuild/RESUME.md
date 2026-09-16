@@ -54,7 +54,8 @@ Last commit: see `git log`. Branch `main`.
 | 4.5 | animation | ✅ `anim/pulse`; the dot sampled off the element; `--bench` exits 0 WITH THE PULSE RUNNING |
 | 4.4c-a | the pane's GEOMETRY as numbers - the column the harness is made of | ✅ five `pane/*` cases, four of them element-level; 48 breaks, 48 red |
 | 4.4c-b | the pane as LINES - PaneRows, Spoken, Inline, DocLinks | ✅ four `read/*` cases; 1,500 rows over 155 real bodies; 49 breaks, 48 red |
-| 4.4c-c | the pane's PIXELS - the virtualizing panel, the templates, the alignment harness over what they render | ⏸ **the largest view item, and the plan says LAST** |
+| 4.4c-c | the pane's PIXELS - the virtualizing panel, the templates, the alignment harness | ✅ `--align` + `--render-pane`; 1,475 rows, 25 containers; 14 breaks, 14 red |
+| **selection** | **dragging a selection across rows - an ItemsControl cannot, a FlowDocument could** | ⚠ **a named gap, not a trade** |
 | 4-6 | the view, parity, cutover | ⏸ |
 
 **272 xUnit tests, 72 oracle cases, 83 handler checks. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
