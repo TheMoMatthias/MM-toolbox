@@ -164,11 +164,27 @@ unreadable path reachable on purpose.
 against **512 ms** in the PowerShell.
 
 ```
+powershell -NoProfile -ExecutionPolicy Bypass -File src\build.ps1 -Oracle
+src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --surface
+src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --handlers
+src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --align
 src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --bench --repeats 40
+src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --render-pane %TEMP%\sr-pane.png hidden
 ```
 
-Exit 0 means every gesture landed inside a frame AND every binding check passed.
-**It exits non-zero today, honestly** - on `clear the project`, knowingly; see below.
+Each writes its report to `%TEMP%\sr-*-check.txt` and exits with its failure
+count. `--bench` exit 0 means every gesture landed inside a frame AND every
+binding check passed.
+
+🪤 **AND `--bench` IS THE ONE THAT DEPENDS ON THE MACHINE.** Measured on the
+same build an hour apart: `clear the project` **19,7 ms** with the control's spin
+at 6,4 and its idle frame at 0,42, then **10,3 ms** with the spin at 3,0 and the
+frame at 0,14. The gesture moved WITH the control, so the red was the machine.
+Read the control line before reading any gesture. [[feedback-benchmark-control]]
+
+🔴 **`--render-pane` IS NOT OPTIONAL AFTER TOUCHING THE PANE.** The one real
+defect in 4.4c - a grounded turn drawn as a stack of separate cards - was found
+by looking at that PNG, and the alignment pass abstains on the rows it was in.
 
 **4.1 is the XAML port.** It arrived carrying two unanswered measurements, and
 **4.2f answered them - by giving the bench a CONTROL first.**
