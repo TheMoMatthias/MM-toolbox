@@ -104,6 +104,7 @@ cases.AddRange(AskSeenCases.All());
 cases.AddRange(TurnCases.All());
 cases.AddRange(DocCases.All());
 cases.AddRange(AnimCases.All());
+cases.AddRange(PaneMetricCases.All());
 
 Console.WriteLine();
 Console.WriteLine("  sr-oracle - the old implementation and the new, on the same input");
@@ -154,6 +155,12 @@ foreach (var (c, expectAgree, meaning) in cases)
         if (c.Name.StartsWith("anim/", StringComparison.Ordinal))
         {
             Note("      " + AnimCases.Coverage());
+        }
+
+        if (c.Name.StartsWith("pane/", StringComparison.Ordinal) &&
+            !c.Name.Equals("pane/header", StringComparison.Ordinal))
+        {
+            Note("      " + PaneMetricCases.Coverage());
         }
 
         if (c.Name.Equals("read/document", StringComparison.Ordinal))

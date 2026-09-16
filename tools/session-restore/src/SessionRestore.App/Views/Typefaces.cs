@@ -2,6 +2,8 @@ using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Media;
 
+using SessionRestore.Core.Reading;
+
 namespace SessionRestore.App.Views;
 
 /// <summary>
@@ -25,7 +27,7 @@ public static class Typefaces
 
     private static readonly string[] SizeKeys = ["Micro", "Caption", "Body", "Mono", "Strong", "Display", "Pane"];
 
-    private const double PaneFallback = 13.0;
+    private const double PaneFallback = PaneMetrics.PaneBase;
 
     private static readonly ConditionalWeakTable<FrameworkElement, StrongBox<double>> Base = new();
 
@@ -123,7 +125,6 @@ public static class Typefaces
     public static double Scale(FrameworkElement window, int zoomPercent)
     {
         ArgumentNullException.ThrowIfNull(window);
-        var zoom = Math.Max(70, Math.Min(200, zoomPercent)) / 100.0;
 
         // 🔴 THE BASE IS READ ONCE, NOT EVERY TIME. This read SzPane on each call -
         // and each call WRITES SzPane, so the second step scaled the first step's
@@ -131,7 +132,12 @@ public static class Typefaces
         // The shipped window keeps the base in $script:TypeBase for exactly this.
         var pane = Base.GetValue(window, w => new StrongBox<double>(
             w.Resources["SzPane"] is double d && d > 0 ? d : PaneFallback)).Value;
-        var v = Math.Round(pane * zoom * 2.0, MidpointRounding.ToEven) / 2.0;
+
+        // 🔑 THE CLAMP AND THE HALF-PIXEL ROUNDING COME FROM PaneMetrics, not from
+        // here. The gutter is computed from the same clamped zoom, and two copies
+        // of "between 70 and 200, rounded to the half" is precisely how the marker
+        // column and the words it marks would end up on different half-pixels.
+        var v = PaneMetrics.Size(pane, zoomPercent);
         foreach (var k in SizeKeys)
         {
             window.Resources["Sz" + k] = v;

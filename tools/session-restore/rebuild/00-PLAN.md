@@ -875,6 +875,7 @@ differences of the 2 -> 25 ms kind were treated as real.
 | 4.2 | Wire the 77 handlers | every row of the capability table has its handler, and the 101 unwired elements are each confirmed as label/container or deleted |
 | 4.3 | Keyboard: the tunnel order from `01-CAPABILITIES.md` | the terminal watcher receives Escape, `/` and `l`; the settings panel still closes on Escape |
 | 4.4 | The reading pane, virtualized | a 2,5 MB conversation opens without a tail budget, and the alignment harness still passes |
+| 4.4c-a | The pane's geometry, as numbers | ✅ `pane/metrics`, `pane/marks`, `pane/measure`, `pane/blocks`, `pane/prose`; 48 breaks, 48 red |
 | 4.5 | Animation: transitions on the gestures that now have headroom | no gesture exceeds 16 ms while an animation is running |
 
 🪤 **4.4 last of the view work.** The typography was tuned against rendered
@@ -1767,6 +1768,78 @@ virtualizing panel, so an animation started on one is thrown away the moment it
 scrolls - which would measure nothing and look like a pass. And it is cleared
 before the window closes: an animation left running on a window holds it, and a
 bench that leaked one would keep the process alive after its report was written.
+
+
+---
+
+### 4.4c-a - the pane's GEOMETRY, before anything is drawn with it
+
+🔴 **THE ALIGNMENT HARNESS IS MADE OF THESE NUMBERS, SO THEY GO FIRST.** The
+shipped rule is *"EVERY BLOCK STARTS ON THE TEXT COLUMN, OR IT IS ON A NAMED
+LIST"*, and the text column is `PagePadding.Left + GutterW` - two values that
+live in two different parts of a 15,000-line script. Port either of them wrong
+and the ported harness still passes, because it would be measuring the port
+against the port. `Core.Reading.PaneMetrics` settles them against the shipped
+window first; the harness is built on top of numbers already known to agree.
+
+**Five cases, and four of them read RENDERED ELEMENTS rather than a table:**
+
+| case | what it compares |
+|---|---|
+| `pane/metrics` | the gutter base, the leading, the measure, the tail and the three line spacings - and the gutter, size and lead at **seven zooms**, two of them outside the clamp |
+| `pane/marks` | every one of the fifteen markers by **code point** and by palette key, plus a capitalised kind, an empty one and an unknown one |
+| `pane/measure` | `Set-ReadMeasure`'s page padding at six pane widths x three reading widths x **two zooms**, and the text column it implies |
+| `pane/blocks` | `New-GutterPara`, `New-RailBlock`, `Add-ReadRule` and `Add-ReadLabel` **built for real** - margins, indents, column widths, the rail's inset and the gaps around a timestamp, read back off the objects |
+| `pane/prose` | `Add-ReadProse` for six line shapes x grounded and not - where a bullet's block indent goes, which character it draws, and the hanging indent |
+
+**48 breaks, 48 red.** [[feedback-verification]]
+
+🪤 **AND FOUR OF THEM WOULD NOT GO RED THE FIRST TIME - none because the code
+was right.** Each one is the same shape: *a case over data that cannot contain
+the rule.*
+
+- **`TooNarrow` and `AssumedWidth` were unobservable at 100% zoom.** The
+  measured target is 867 px and the assumed pane is 900, so
+  `available - 44 - target` is negative everywhere below about 1400 px and the
+  44 px floor answers instead. The ladder now walks **two zooms**; at 70% the
+  target is 600 and the arithmetic reaches the surface.
+- **`TextColumn` had no consumer yet** - it is the harness's line, and the
+  harness is the next tranche. `pane/measure` now reports it, computed the same
+  way the shipped assertion computes it.
+- **`ListBump` had no consumer either**, so `pane/prose` was written: it calls
+  the real `Add-ReadProse` and reads the paragraph's margin.
+- **A one-line grounded turn cannot tell "first and last" from "every".** The
+  9 px cap inside a ground goes on the FIRST paragraph's `Padding.Top` and the
+  LAST one's `Padding.Bottom`; a single-line turn is both, so a break that
+  capped every paragraph stayed green. A three-line turn was added.
+
+🔴 **A REAL DEFECT IN THE SHIPPED CODE, AND IT IS THE ORACLE'S ANSWER THAT
+STANDS.** `Set-ReadMeasure -Size 16` does nothing. Its own comment calls the
+parameter *"the one legitimate override (the shot harness renders at a fixed
+size so a picture is comparable between runs)"* - but **PowerShell variable
+names ignore case**, so the function's first line, `$size = $script:PaneSize`,
+overwrites the `$Size` PARAMETER before `if ($Size -gt 0)` below it ever looks
+at it. The test then reads 13, passes, and assigns 13 over 13. Every picture the
+shot harness has ever taken was rendered at the pane size, not at the size it
+asked for. `pane/measure` asserts the shipped behaviour and says why; the day
+somebody repairs the collision, the case goes red and the note explains it.
+[[feedback-powershell-truthiness]]
+
+🪤 **A SPLICE ORDER THAT LOOKS EXACTLY LIKE A PORT DEFECT.** Running the
+`$SR_Marks` literal before `$SR_MarkDot` bound every `G` to `$null`, `[char]$null`
+is `[char]0`, and the whole marker table came back as fifteen NUL glyphs. The
+shape on screen - every glyph wrong, all in the same way - reads as "the port
+got the table wrong" and is a two-line ordering bug in the harness.
+
+🔑 **`Typefaces.Scale` NOW CALLS `PaneMetrics.Size`.** The clamp and the
+half-pixel rounding were about to exist twice - once for the type and once for
+the gutter - and two copies of *"between 70 and 200, rounded to the half"* is
+precisely how the marker column and the words it marks end up on different
+half-pixels.
+
+**Still to come in 4.4c:** the pixels themselves - the virtualizing panel that
+replaces `FlowDocumentScrollViewer`, the turn cards, and the alignment harness
+walking what they render.
 
 ---
 
