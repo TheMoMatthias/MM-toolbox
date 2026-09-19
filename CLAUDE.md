@@ -139,6 +139,19 @@ do not keep re-firing batches. Big-file `cat` (>30 KB) also truncates output ("o
 
 ---
 
+### Token economy: context re-read is the cost
+
+**Measured (AlgoTrader, 2026-09-19): 97 % of agent spend was context RE-READ; output was 2 %.** Every tool call
+re-reads the whole context, so cost ≈ calls × context size, and the account limit stops multi-agent work long
+before the work runs out. Same quality, less spend:
+- one call per step, not per command: batch independent reads into one script; no `cd` prefix;
+- whatever you read stays for the rest of the session: redirect large output to a file and grep/head it, use
+  `pytest -q --tb=short`, and read big files with offset/limit;
+- read each file once; do not re-read a file to check your own edit;
+- long agents get expensive quadratically: at ~120 calls, hand off to a fresh agent with a precise remaining list;
+- give an agent prompt pointers, not pasted docs (CLAUDE.md is already injected), and cap concurrent workflows;
+- measure spend from the transcripts' `usage` fields; never estimate. Label a transcript by its `claude -n` name, not its folder.
+
 ## 4. Windows / PowerShell environment facts
 
 **Atomic-write temps** (`mkstemp(dir=<target_dir>)` → write → `os.replace`) are fine as TEMP HYGIENE —
