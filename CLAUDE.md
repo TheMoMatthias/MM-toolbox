@@ -102,6 +102,12 @@ publishing to third parties, or anything a project `CLAUDE.md` marks critical. S
 action, the blast radius, and the rollback first. Project rules add to this list; they never
 remove from it.
 
+🔑 **A standing operator ruling IS the explicit go-ahead.** When a project files an operator-ruled grant of
+standing authority for an act on this list, that ruling is the go-ahead for that act, within the ruling's own
+preconditions and rails, so no per-act question is needed. The list is not shortened: the ruling is the
+operator saying yes in advance. An act the ruling does not name, or whose preconditions are not met, still
+stops here.
+
 **This list is the whole of the ask-first surface.** If an act is not on it and not covered by the
 per-prompt gate's two-part test — two readings of the request would produce materially different
 deliverables, AND nothing on hand settles which — it does not warrant a question.
