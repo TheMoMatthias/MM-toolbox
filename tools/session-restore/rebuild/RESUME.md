@@ -55,7 +55,7 @@ Last commit: see `git log`. Branch `main`.
 | 4.4c-a | the pane's GEOMETRY as numbers - the column the harness is made of | ✅ five `pane/*` cases, four of them element-level; 48 breaks, 48 red |
 | 4.4c-b | the pane as LINES - PaneRows, Spoken, Inline, DocLinks | ✅ four `read/*` cases; 1,500 rows over 155 real bodies; 49 breaks, 48 red |
 | 4.4c-c | the pane's PIXELS - the virtualizing panel, the templates, the alignment harness | ✅ `--align` + `--render-pane`; 1,475 rows, 25 containers; 14 breaks, 14 red |
-| **selection** | **dragging a selection across rows - an ItemsControl cannot, a FlowDocument could** | ⚠ **a named gap, not a trade** |
+| 4.4c-d | the selection, put back by hand - PaneSelection, PaneSelect, the clipboard seam | ✅ `--select` exit 0 over 299 real rows; 23 breaks, 23 red |
 | 4-6 | the view, parity, cutover | ⏸ |
 
 **272 xUnit tests, 72 oracle cases, 83 handler checks. PHASE 2 IS COMPLETE. Nothing in the C# has written to any live
@@ -168,6 +168,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File src\build.ps1 -Oracle
 src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --surface
 src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --handlers
 src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --align
+src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --select
 src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --bench --repeats 40
 src\SessionRestore.App\bin\Release\net8.0-windows\Sessions2.exe --render-pane %TEMP%\sr-pane.png hidden
 ```

@@ -67,13 +67,21 @@ public static class AlignChecks
 
     /// <summary>What one pass found.</summary>
     public sealed record Result(
-        int Rows, int Measured, int Realized, int Docs,
+        int Rows, int Measured, int Realized, int Docs, int Blanks,
         IReadOnlyList<string> Offences,
         IReadOnlyList<string> Live,
         IReadOnlyList<string> Dead,
         IReadOnlyList<string> Notes)
     {
-        public int Failures => Offences.Count + Dead.Count + (Measured == 0 ? 1 : 0);
+        /// <remarks>
+        /// 🪤 AND AN ABSTAIN THAT SWALLOWS THE DOCUMENT IS A FAILURE. Rows with no
+        /// words are skipped by design - a blank line is on no column - but the
+        /// skip is only honest while it stays a minority. A change that stopped
+        /// the words rendering at all would otherwise turn every row into an
+        /// abstain and report green over nothing.
+        /// </remarks>
+        public int Failures =>
+            Offences.Count + Dead.Count + (Measured == 0 ? 1 : 0) + (Blanks > Measured ? 1 : 0);
     }
 
     /// <summary>
@@ -162,7 +170,14 @@ public static class AlignChecks
                             // not a failure. It is a paragraph break drawn at 0.4 of
                             // the body size; measuring its box would measure the page
                             // padding and report 455 offences about nothing.
-                            if (row.Blank)
+                            // 🪤 AND A LINE OF SPACES IS NOT MARKED Blank EITHER. The
+                            // shipped rule is that a row is blank when the builder
+                            // added no run at all, which a source line of one space
+                            // does not satisfy - it draws a space, at full height.
+                            // It still carries no WORDS, so it is on no column, and
+                            // the abstain has to be about the words rather than
+                            // about the flag.
+                            if (row.Blank || !HasWords(line))
                             {
                                 blanks++;
                                 continue;
@@ -267,8 +282,11 @@ public static class AlignChecks
                 rowsTotal, read, realizedMax));
         }
 
-        return new Result(rowsTotal, measured, realizedMax, read, offences, live, dead, notes);
+        return new Result(rowsTotal, measured, realizedMax, read, blanks, offences, live, dead, notes);
     }
+
+    /// <summary>Whether anything in this row carries words.</summary>
+    private static bool HasWords(PaneLine line) => FirstWords(line) is not null;
 
     /// <summary>Which named form this row is in.</summary>
     private static string Form(PaneRow row) => row.Marker.Length > 0 ? "list" : string.Empty;
@@ -591,6 +609,12 @@ public static class AlignChecks
         if (r.Measured == 0)
         {
             sb.AppendLine("        FAIL  NOTHING WAS MEASURED - this pass proves nothing");
+        }
+
+        if (r.Blanks > r.Measured)
+        {
+            sb.AppendLine(inv,
+                $"        FAIL  more rows carried no words ({r.Blanks}) than carried words ({r.Measured}) - the abstain has swallowed the document");
         }
 
         foreach (var x in r.Offences)

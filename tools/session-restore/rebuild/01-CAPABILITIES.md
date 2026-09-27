@@ -203,7 +203,7 @@ every row it used.
 
 | name | was | is | why |
 |---|---|---|---|
-| `PaneDoc` | FlowDocumentScrollViewer | ItemsControl | a FlowDocument does not virtualize, which is the whole reason there is a 96 KB tail budget; 4.4's done-when is a 2,5 MB conversation with no budget at all. Costs `IsSelectionEnabled` - dragging a selection across paragraphs - which is a gap to close, not a trade that has been made. |
+| `PaneDoc` | FlowDocumentScrollViewer | ItemsControl | a FlowDocument does not virtualize, which is the whole reason there is a 96 KB tail budget; 4.4's done-when is a 2,5 MB conversation with no budget at all. It cost `IsSelectionEnabled` - dragging a selection across paragraphs - and 4.4c-d put that back by hand: `Views/PaneSelect.cs`, character-precise within a row and row-granular across rows, with Ctrl+C and Ctrl+A. |
 
 ## Right-click menu actions
 

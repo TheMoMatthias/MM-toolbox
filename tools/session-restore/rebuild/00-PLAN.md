@@ -878,6 +878,7 @@ differences of the 2 -> 25 ms kind were treated as real.
 | 4.4c-a | The pane's geometry, as numbers | ✅ `pane/metrics`, `pane/marks`, `pane/measure`, `pane/blocks`, `pane/prose`; 48 breaks, 48 red |
 | 4.4c-b | The pane as lines - the split, the spans, the links | ✅ `read/spoken`, `read/prose-shapes`, `read/prose-live`, `read/doc-links`; 1,500 rows over 155 real bodies; 49 breaks, 48 red |
 | 4.4c-c | The pane's pixels - virtualized, the alignment harness | ✅ `--align` exit 0 over 1,475 rows with 25 containers realized; 14 breaks, 14 red; one defect found by LOOKING |
+| 4.4c-d | The selection, put back by hand | ✅ `--select` exit 0; 23 breaks, 23 red; two real defects found by strengthening the check |
 | 4.5 | Animation: transitions on the gestures that now have headroom | no gesture exceeds 16 ms while an animation is running |
 
 🪤 **4.4 last of the view work.** The typography was tuned against rendered
@@ -1993,6 +1994,89 @@ red was the machine. [[feedback-benchmark-control]]
 **Still open in the reading pane:** selection across rows; the fold that opens
 and closes; the live tail; drilling into a sub-agent. Those are behaviour, and
 they are Phase 5.
+
+
+---
+
+### 4.4c-d - putting the selection back, and a check that read stronger than it was
+
+🔴 **4.4c-c TOOK A CAPABILITY AWAY AND THIS GIVES IT BACK.** The pane is an
+ItemsControl now, and an ItemsControl has no selection at all - so dragging
+across paragraphs and pressing Ctrl+C, which the FlowDocument did for free,
+stopped working. `Core.Reading.PaneSelection` is the value half and
+`Views/PaneSelect.cs` the gestures: **character-precise within a row,
+row-granular across rows**, which is not a compromise but how text selection
+works.
+
+🔑 **THE SELECTION IS A MODEL RANGE AND THE HIGHLIGHT IS IN THE PANE'S OWN
+TREE.** A virtualizing panel throws containers away as you scroll, so a
+selection anchored to an element would vanish on exactly the drag a person makes
+when they want more than a page - it is two `(row, offset)` points instead. And
+the highlight is a Canvas inside the ItemsControl's template rather than an
+adorner, because an adorner is not part of the element: rendering the pane to a
+PNG would leave it out, so the highlight could only ever be COUNTED, never
+looked at.
+
+🪤 **THE CLIPBOARD IS BEHIND A SEAM, AND THAT IS NOT CEREMONY.** The
+clipboard is the OPERATOR'S. A check that pressed the real Ctrl+C would throw
+away whatever he had copied, on the machine he is working on, while thirty
+conversations run.
+
+🔴 **THE FIRST VERSION OF THE CHECK CAUGHT 10 OF 23 BREAKS**, and every one
+it missed was the same shape: *the gesture it drove could not reach the rule.*
+It dragged from the left edge of one row to the left edge of another, so **every
+offset in it was zero** - six breaks about where a line is CUT went green,
+including a TextPointer offset used as a character count, which is wrong on
+every line carrying inline code. It compared the copy against
+`PaneSelection.RowText`, so three breaks IN `RowText` went green because both
+sides moved together. And it measured one screenful of a 294-row document.
+
+**What it does now:** drags mid-line and asserts the first line is a strict
+suffix and the last a strict prefix of their rows; hit-tests both ends of every
+row and asserts the far end equals the length of what that row COPIES;
+scrolls the whole document; compares every row's copy against the characters its
+own TextBlocks DREW; and **says which shapes it reached** - a list, a label with
+a trailing note, a block with a caption. **23 of 23 red.**
+
+🔴 **AND THE STRONGER CHECK FOUND TWO REAL DEFECTS IMMEDIATELY:**
+
+| what it said | what was wrong |
+|---|---|
+| `end 1 of 64` | a bulleted line draws its marker and its words as two TextBlocks side by side, and the hit-test walked them left to right - so clicking anywhere in the words of a list item landed inside the bullet. It walks from the RIGHT now, because the pieces touch: the first character of the words sits exactly on the marker's right edge, inside both boxes |
+| copies `**bold**`, draws `bold` | the copy was built from `row.Text`, which still carries the markdown that selected the emphasis. The screen draws weight; the clipboard was getting asterisks that are nowhere on it. It is built from the SPANS now |
+
+🪤 **A BLOCK'S MARKER AND ITS CAPTION TURN OUT TO BE MUTUALLY EXCLUSIVE.**
+Only `compact` and `asked` set a marker word and neither carries a caption, so
+`PaneMetrics.BlockGap` - the gap between them - cannot be reached in the document
+as it stands, and a break removing it stayed green over 729 compared rows. Kept
+with a note rather than deleted: the shipped builder has the same branch.
+
+**Two things fixed on the way, neither of them mine:**
+
+- **`subagents/list` had been going red on a busy machine**, stably, three runs
+  running, on the same two agent ids. Both sides sort a conversation's agents by
+  WHEN and **both sorts are unstable** - `Sort-Object` promises nothing about
+  ties in 5.1 and `List<T>.Sort` is an introsort above sixteen elements. A tie
+  NORMALISER (not an allowance) orders ties by id on both sides, off the numbers
+  each side actually emitted. What remained after that was genuine churn - an
+  agent's transcript growing between the two reads - and this case was the one
+  sibling without the `Moving` marker `subagents/live-tasks` has had since
+  September.
+- **The alignment pass abstained on `Blank` rows but not on a line of one
+  SPACE**, which is not marked blank and carries no words either. The abstain is
+  about the words now, and it carries its own guard: **more abstains than
+  measurements is a failure**, so a change that stopped the words rendering
+  cannot report green over nothing.
+
+**Verified:** `--select` exit 0 over 299 real rows - 1,126 rows compared against
+what they draw, 727 round-tripped, all four shapes reached. `--align` exit 0,
+2,866 positions over 1,972 rows. `--surface` 164/164, `--handlers` 83/83, 272
+tests, **81 oracle cases**.
+
+🪤 **`--bench` IS RED, AND THE CONTROL SAYS WHY.** `clear the project`
+39,1 ms against 10,3 earlier today - with the control's spin at **8,2 ms against
+3,0** and 15 rows drawn where there were 7. The gesture moved with the control
+and the registry grew; the pane is not in that path at all.
 
 ---
 

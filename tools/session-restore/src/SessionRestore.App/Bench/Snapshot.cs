@@ -122,7 +122,7 @@ public static class Snapshot
     /// as a conversation. The pulse was wrong for three commits under checks that
     /// all passed, and it was found by looking.
     /// </remarks>
-    public static void Pane(string pngPath, string view = Core.Transcripts.StepsView.Folded)
+    public static void Pane(string pngPath, string view = Core.Transcripts.StepsView.Folded, bool select = false)
     {
         var w = new SessionsWindow
         {
@@ -187,12 +187,56 @@ public static class Snapshot
                 w.Dispatcher.Invoke(static () => { }, DispatcherPriority.ContextIdle);
             }
 
+            if (select)
+            {
+                // 🔴 SO THE HIGHLIGHT CAN BE LOOKED AT AND NOT ONLY COUNTED. The
+                // selection check asserts 43 rectangles; only a picture says
+                // whether they land on the words, wrap with them, and leave the
+                // text readable through the wash.
+                var sel = new PaneSelect(w.PaneDoc, new Services.NoClip());
+                var pts = SelectablePoints(w, sel);
+                if (pts.Count >= 2)
+                {
+                    sel.Begin(pts[1]);
+                    sel.Extend(pts[^2]);
+                    for (var i = 0; i < 2; i++)
+                    {
+                        w.UpdateLayout();
+                        w.Dispatcher.Invoke(static () => { }, DispatcherPriority.ContextIdle);
+                    }
+                }
+            }
+
             Save(w, w.PaneDoc, pngPath);
         }
         finally
         {
             w.Close();
         }
+    }
+
+    /// <summary>A point on each realized row that carries words.</summary>
+    private static List<Point> SelectablePoints(SessionsWindow w, PaneSelect sel)
+    {
+        var outp = new List<Point>();
+        foreach (var line in sel.Lines())
+        {
+            if (line.DataContext is not Core.Reading.PaneRow row || row.Blank)
+            {
+                continue;
+            }
+
+            var pieces = PaneSelect.Pieces(line, row);
+            if (pieces.Count == 0)
+            {
+                continue;
+            }
+
+            var tb = pieces[0].Text;
+            outp.Add(tb.TranslatePoint(new Point(2, tb.ActualHeight / 2), w.PaneDoc));
+        }
+
+        return outp;
     }
 
     /// <summary>One element of the window, on the window's own ground, to a PNG.</summary>

@@ -2149,11 +2149,15 @@
                a control the record does not have is also one.
 
                🚨 AND IT COSTS SOMETHING THE OPERATOR WILL NOTICE:
-               IsSelectionEnabled is gone. A FlowDocument lets you drag a
-               selection across paragraphs; an ItemsControl does not. Copying a
-               path out of a transcript is a thing this pane is used for - the
-               link work says so in as many words - so this is a gap to close,
-               not a trade that has been made. It is on the plan.
+               IsSelectionEnabled is gone, AND IT HAS BEEN PUT BACK BY HAND.
+               A FlowDocument lets you drag a selection across paragraphs; an
+               ItemsControl does not, and copying a path out of a transcript is
+               a thing this pane is used for - the link work says so in as many
+               words. Views/PaneSelect.cs does the selecting now:
+               character-precise within a row, row-granular across rows, and
+               held as a MODEL range so it survives the panel recycling rows.
+               The highlight is the PaneMarks canvas below, inside this
+               template, rather than an adorner.
 
                🚤 CanContentScroll="True" IS WHAT MAKES IT VIRTUALIZE AT ALL.
                Left at the ScrollViewer default the panel is measured with
@@ -2176,10 +2180,24 @@
               </ItemsControl.ItemsPanel>
               <ItemsControl.Template>
                 <ControlTemplate TargetType="ItemsControl">
-                  <ScrollViewer CanContentScroll="True" Focusable="False"
-                                Padding="{TemplateBinding Padding}">
-                    <ItemsPresenter/>
-                  </ScrollViewer>
+                  <!-- 🔑 THE HIGHLIGHT IS IN THE PANE'S OWN TREE, NOT IN AN
+                       ADORNER LAYER. Two reasons, and the second is the one that
+                       matters: an adorner is not part of the element, so rendering
+                       the pane to a PNG through a VisualBrush leaves it out - the
+                       selection could only ever be COUNTED, never looked at. And
+                       an AdornerLayer is not guaranteed to exist in every hosting
+                       arrangement, which would be a silent no-op.
+
+                       🪤 NOT INSIDE THE ScrollViewer. The rectangles are in
+                       the pane's coordinates, so a layer that scrolled with the
+                       content would drift by the scroll offset. -->
+                  <Grid>
+                    <ScrollViewer CanContentScroll="True" Focusable="False"
+                                  Padding="{TemplateBinding Padding}">
+                      <ItemsPresenter/>
+                    </ScrollViewer>
+                    <Canvas x:Name="PaneMarks" IsHitTestVisible="False"/>
+                  </Grid>
                 </ControlTemplate>
               </ItemsControl.Template>
               <ItemsControl.ItemTemplate>

@@ -445,6 +445,19 @@ public static class SubAgentCases
                 $a = Get-SRSubAgents -JsonlPath $p
                 $a = @($a)
                 if (-not $a.Count) { continue }
+                # 🔴 A TIE NORMALISER, NOT AN ALLOWANCE. Both sides order a
+                # conversation's agents by WHEN, newest first, and BOTH sorts are
+                # unstable - Sort-Object makes no promise about ties in 5.1, and
+                # List<T>.Sort is an introsort above sixteen elements. So two agents
+                # that started in the same tick come back in whichever order each
+                # implementation happened to produce, and the comparison failed on
+                # row 194 of 200 with the same two ids, stably, three runs running.
+                # Ordering ties by id on BOTH sides keeps every field compared and
+                # still shows a real WHEN-ordering difference; forgiving the
+                # difference instead would have hidden one.
+                $a = @($a | Sort-Object -Property `
+                        @{ Expression = { if ($_.When) { ([datetime]$_.When).ToUniversalTime().Ticks } else { [long]0 } }; Descending = $true }, `
+                        @{ Expression = { "$($_.Id)" }; Descending = $false })
                 foreach ($x in $a) {
                     $rows += [ordered]@{
                         of       = "$($s.sessionId)"
@@ -464,6 +477,17 @@ public static class SubAgentCases
                 }
             }
         }
+        # 🔴 THE NORMALISER IS APPLIED TO THE EMITTED ROWS, not to the
+        # objects behind them. Sorting the objects left the difference in place and
+        # merely moved it from row 194 to row 491, because the two sides were
+        # keying off DIFFERENT values - one a DateTimeOffset instant, the other a
+        # [datetime] that had already lost its offset. Sorting the numbers both
+        # sides actually put in the row makes the keys identical by construction,
+        # so a remaining difference is a difference in the DATA and nothing else.
+        $rows = @($rows | Sort-Object -Property `
+                @{ Expression = { "$($_.of)" } }, `
+                @{ Expression = { $(if ($null -eq $_.when) { [long]0 } else { [long]$_.when }) }; Descending = $true }, `
+                @{ Expression = { "$($_.id)" } })
         (@{ rows = $rows } | ConvertTo-Json -Compress -Depth 6)
         """,
         psOut =>
@@ -488,6 +512,14 @@ public static class SubAgentCases
                 }
             }
 
+            var asked_ = new Dictionary<string, (long Bytes, JsonNode? Row)>(StringComparer.Ordinal);
+            foreach (var a in JsonNode.Parse(psOut)?["rows"]?.AsArray() ?? [])
+            {
+                var k = (a?["of"]?.GetValue<string>() ?? string.Empty) + "\u0001"
+                      + (a?["id"]?.GetValue<string>() ?? string.Empty);
+                asked_[k] = (Num(a?["bytes"]), a);
+            }
+
             var rows = new JsonArray();
             foreach (var of in parents)
             {
@@ -497,8 +529,28 @@ public static class SubAgentCases
                     continue;
                 }
 
-                foreach (var x in SubAgents.List(path))
+                // 🔑 THE SAME TIE NORMALISER THIS SIDE. See the note on the
+                // PowerShell half: the ordering rule is WHEN, and the tie-break is
+                // the harness's, applied identically to both.
+                foreach (var x in SubAgents.List(path)
+                    .OrderByDescending(x => x.When)
+                    .ThenBy(x => x.Id, StringComparer.Ordinal))
                 {
+                    // 🔴 AN AGENT WRITING WHILE IT IS READ IS A MOVING TARGET,
+                    // AND THIS CASE WAS THE ONE SIBLING WITHOUT THE MARKER.
+                    // `subagents/live-tasks` has had it since 2026-09-13;
+                    // `subagents/list` compared a live file's LENGTH with nothing to
+                    // say when it changed between the two reads, so it went red
+                    // whenever the machine was busy - a different row and a
+                    // different number every run, which is the tell.
+                    AgentsSeen++;
+                    if (asked_.TryGetValue(of + "\u0001" + x.Id, out var was) &&
+                        was.Bytes != x.Bytes)
+                    {
+                        rows.Add(Moving.Mark(was.Row, "id", Grew));
+                        continue;
+                    }
+
                     rows.Add(new JsonObject
                     {
                         ["of"] = of,
@@ -515,9 +567,12 @@ public static class SubAgentCases
                         ["when"] = x.When.UtcTicks,
                         ["teammate"] = x.IsTeammate,
                     });
-                    AgentsSeen++;
                 }
             }
+
+            // 🔑 THE SAME KEYS, OFF THE SAME EMITTED NUMBERS. See the note on
+            // the PowerShell half.
+            rows = Sorted(rows);
 
             if (AgentsSeen == 0)
             {
@@ -529,7 +584,42 @@ public static class SubAgentCases
             }
 
             return new JsonObject { ["rows"] = rows }.ToJsonString(Compact);
-        });
+        })
+    {
+        // The C# value of this one difference is the marker - see Moving.
+        Tolerate = d => Moving.IsMarked(d, Grew),
+        ToleranceReason = "a sub-agent's own transcript was written to between the two reads",
+    };
+
+    /// <summary>What a row that moved between the two reads is marked with.</summary>
+    private const string Grew = "(grew between the two reads)";
+
+    /// <summary>
+    /// A number out of the PowerShell's JSON, however ConvertTo-Json wrote it.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 GetValue&lt;long&gt;() THROWS ON A JSON STRING, and ConvertTo-Json does not
+    /// promise which a value comes back as. The whole case then reports "the C#
+    /// side threw" - a message about the harness, wearing the shape of a
+    /// difference.
+    /// </remarks>
+    private static long Num(JsonNode? n)
+    {
+        if (n is null)
+        {
+            return -1;
+        }
+
+        if (n.GetValueKind() == System.Text.Json.JsonValueKind.Number &&
+            n.AsValue().TryGetValue<long>(out var v))
+        {
+            return v;
+        }
+
+        return long.TryParse(n.ToString(), System.Globalization.CultureInfo.InvariantCulture, out var p)
+            ? p
+            : -1;
+    }
 
     /// <summary>The one line each sub-agent's own transcript ends on.</summary>
     private static OracleCase LastLines() => new(
@@ -705,6 +795,42 @@ public static class SubAgentCases
     public static int LastLinesSeen { get; private set; }
 
     public static int LiveTasksSeen { get; private set; }
+
+    /// <summary>
+    /// The rows in one order that neither implementation chose.
+    /// </summary>
+    /// <remarks>
+    /// 🪤 BOTH SORTS ARE UNSTABLE. Sort-Object makes no promise about ties in 5.1
+    /// and List&lt;T&gt;.Sort is an introsort above sixteen elements, so two agents
+    /// that started in the same tick come back in whichever order each run
+    /// happened to produce. This is a NORMALISER, not an allowance: every field is
+    /// still compared, and a real difference in WHEN still moves a row.
+    /// </remarks>
+    private static JsonArray Sorted(JsonArray rows)
+    {
+        var items = new List<JsonNode>();
+        foreach (var r in rows)
+        {
+            if (r is not null)
+            {
+                items.Add(r);
+            }
+        }
+
+        var ordered = items
+            .OrderBy(r => r["of"]?.GetValue<string>() ?? string.Empty, StringComparer.Ordinal)
+            .ThenByDescending(r => r["when"]?.GetValue<long>() ?? 0L)
+            .ThenBy(r => r["id"]?.GetValue<string>() ?? string.Empty, StringComparer.Ordinal)
+            .ToList();
+
+        var outp = new JsonArray();
+        foreach (var r in ordered)
+        {
+            outp.Add(r.DeepClone());
+        }
+
+        return outp;
+    }
 
     public static string Coverage() => string.Format(System.Globalization.CultureInfo.InvariantCulture,
         "{0} sub-agent(s), {1} last line(s), {2} conversation(s) for what is running",

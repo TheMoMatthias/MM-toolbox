@@ -45,6 +45,14 @@ public partial class App : Application
             return;
         }
 
+        // Plan item 4.4c-d: drag a selection across the pane and copy it.
+        if (Array.Exists(e.Args, a => string.Equals(a, "--select", StringComparison.OrdinalIgnoreCase)))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Dispatcher.BeginInvoke(new Action(RunSelect), DispatcherPriority.ApplicationIdle);
+            return;
+        }
+
         // The reading pane over a real conversation, to a PNG - so 4.4c can be
         // LOOKED AT rather than inferred from an alignment green.
         var paneAt = Array.FindIndex(e.Args, a => string.Equals(a, "--render-pane", StringComparison.OrdinalIgnoreCase));
@@ -59,7 +67,8 @@ public partial class App : Application
             {
                 try
                 {
-                    Snapshot.Pane(png, view);
+                    Snapshot.Pane(png, view, Array.Exists(e.Args,
+                        x => string.Equals(x, "--selected", StringComparison.OrdinalIgnoreCase)));
                 }
 #pragma warning disable CA1031 // the render must report, not vanish
                 catch (Exception ex)
@@ -191,6 +200,35 @@ public partial class App : Application
         try
         {
             File.WriteAllText(Path.Combine(Path.GetTempPath(), "sr-surface-check.txt"), report);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+
+        Shutdown(failures);
+    }
+
+    private void RunSelect()
+    {
+        int failures;
+        string report;
+        try
+        {
+            var r = SelectChecks.Run();
+            report = SelectChecks.Report(r);
+            failures = r.Failures;
+        }
+#pragma warning disable CA1031 // the check must report a failure, not vanish with it
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            report = "the selection pass threw: " + ex.GetType().Name + ": " + ex.Message
+                     + Environment.NewLine + ex.StackTrace;
+            failures = 1000;
+        }
+
+        try
+        {
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "sr-select-check.txt"), report);
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }

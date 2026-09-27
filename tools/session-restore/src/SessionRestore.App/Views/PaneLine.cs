@@ -331,7 +331,7 @@ public sealed class PaneLine : Border
         {
             line.Children.Add(new TextBlock
             {
-                Text = (row.Marker2.Length > 0 ? "  " : string.Empty) + row.Caption,
+                Text = (row.Marker2.Length > 0 ? PaneMetrics.BlockGap : string.Empty) + row.Caption,
                 FontSize = size,
                 Foreground = Palette.Brush(this, "TextMid"),
                 TextTrimming = TextTrimming.CharacterEllipsis,
@@ -342,7 +342,7 @@ public sealed class PaneLine : Border
         {
             line.Children.Add(new TextBlock
             {
-                Text = "   " + row.Trailing2,
+                Text = PaneMetrics.BlockTrailGap + row.Trailing2,
                 FontSize = size,
                 Foreground = Palette.Brush(this, "TextLow"),
             });

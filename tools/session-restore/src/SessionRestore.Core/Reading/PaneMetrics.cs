@@ -260,6 +260,12 @@ public static class PaneMetrics
     /// <summary>Between the label and what trails it.</summary>
     public const string TrailGap = "          ";
 
+    /// <summary>Between a block's marker word and its caption.</summary>
+    public const string BlockGap = "  ";
+
+    /// <summary>Between a block's caption and what trails it.</summary>
+    public const string BlockTrailGap = "   ";
+
     /// <summary>The turn rule's air above.</summary>
     public const double RuleTop = 26.0;
 
