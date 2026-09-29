@@ -50,7 +50,9 @@ Last commit: see `git log`. Branch `main`.
 | 4.6b | the rail over real data | ✅ `rail/live`: 412 real conversations, 14 real projects; 6 breaks, 6 red |
 | 4.4a | the turns the reading pane draws | ✅ `read/turn-shapes` + `read/turns-live`; 22 breaks, 22 red |
 | 4.4b | what the pane draws for each turn | ✅ `read/document` evaluates Add-ReadTurn; 4 port defects found; 25 of 26 breaks red |
-| **4.2e** | **the implementation that really acts - replica console, scratch registry and config, in its own assembly** | ⏸ **the gate** |
+| 4.2e-1 | the acting assembly: interrupt, send, key - proven only against the replica | ✅ 36 tests, 16 breaks 16 red; `--handlers` 84 with the no-Live guard |
+| **4.2e-2** | **the registry and config, written to scratch copies** | ⏸ next |
+| **4.2e-3** | **open, relaunch, close, go-to, sign-in - against a stub executable** | ⏸ after 4.2e-2 |
 | 4.5 | animation | ✅ `anim/pulse`; the dot sampled off the element; `--bench` exits 0 WITH THE PULSE RUNNING |
 | 4.4c-a | the pane's GEOMETRY as numbers - the column the harness is made of | ✅ five `pane/*` cases, four of them element-level; 48 breaks, 48 red |
 | 4.4c-b | the pane as LINES - PaneRows, Spoken, Inline, DocLinks | ✅ four `read/*` cases; 1,500 rows over 155 real bodies; 49 breaks, 48 red |

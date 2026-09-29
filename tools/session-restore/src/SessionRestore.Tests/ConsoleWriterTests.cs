@@ -140,7 +140,7 @@ public sealed class ConsoleWriterTests
     /// input queue to write into and every assertion here would fail for a
     /// reason that has nothing to do with the code under test.
     /// </remarks>
-    private static (ConsoleTarget Target, Process Proc, string OutFile) StartReplica()
+    internal static (ConsoleTarget Target, Process Proc, string OutFile) StartReplica()
     {
         var outFile = Path.Combine(Path.GetTempPath(),
             "sr-replica-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture) + ".txt");
@@ -189,7 +189,7 @@ public sealed class ConsoleWriterTests
         return (ConsoleTarget.ForOwnedConsole((uint)proc.Id), proc, outFile);
     }
 
-    private static void Cleanup(Process proc, string outFile)
+    internal static void Cleanup(Process proc, string outFile)
     {
         try
         {

@@ -1,3 +1,4 @@
+using SessionRestore.Core.Acting;
 using System.IO;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
@@ -60,7 +61,7 @@ public static class HandlerChecks
 
     public static IReadOnlyList<Check> Run()
     {
-        var checks = new List<Check> { Structure(), OnlySeams() };
+        var checks = new List<Check> { Structure(), OnlySeams(), NoLive() };
 
         var vm = new SessionsVm();
         vm.Sync(KeystrokeBench.Model());
@@ -392,6 +393,33 @@ public static class HandlerChecks
             "the only implementation of IActs here does nothing, and the only sheet is the one that asks",
             ok,
             $"IActs: {string.Join(", ", acts)}; IConfirms: {string.Join(", ", confirms)}; IPreferences: {string.Join(", ", prefs)}");
+    }
+
+    /// <summary>
+    /// The window does not reference the assembly that acts.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THE ACTING IMPLEMENTATION EXISTS NOW, SO THIS IS THE GUARD THAT
+    /// MATTERS. <c>SessionRestore.Live</c> types into consoles and will write the
+    /// registry; the window stays provably unable to reach a conversation only
+    /// while it cannot even load that assembly. It is read from the metadata of
+    /// <c>Sessions2.dll</c> itself, so a reference added for convenience - to
+    /// test something, to wire it early - goes red here before it can do anything.
+    /// </remarks>
+    private static Check NoLive()
+    {
+        var refs = typeof(HandlerChecks).Assembly.GetReferencedAssemblies()
+            .Select(a => a.Name ?? string.Empty)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+        var live = refs.Where(n => n.StartsWith("SessionRestore.Live", StringComparison.OrdinalIgnoreCase)).ToArray();
+        var core = refs.Contains("SessionRestore.Core", StringComparer.Ordinal);
+        return new Check(
+            "the window does not reference the assembly that acts",
+            live.Length == 0 && core,
+            live.Length == 0
+                ? $"{refs.Length} referenced assembl(ies), SessionRestore.Live not among them"
+                : "REFERENCES " + string.Join(", ", live));
     }
 
     private static Check Structure()

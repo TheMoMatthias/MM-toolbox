@@ -879,6 +879,7 @@ differences of the 2 -> 25 ms kind were treated as real.
 | 4.4c-b | The pane as lines - the split, the spans, the links | ✅ `read/spoken`, `read/prose-shapes`, `read/prose-live`, `read/doc-links`; 1,500 rows over 155 real bodies; 49 breaks, 48 red |
 | 4.4c-c | The pane's pixels - virtualized, the alignment harness | ✅ `--align` exit 0 over 1,475 rows with 25 containers realized; 14 breaks, 14 red; one defect found by LOOKING |
 | 4.4c-d | The selection, put back by hand | ✅ `--select` exit 0; 23 breaks, 23 red; two real defects found by strengthening the check |
+| 4.2e-1 | The acting assembly, and interrupt / send / key | ✅ `SessionRestore.Live`; 36 tests against the replica; 16 breaks, 16 red; the window provably cannot reference it |
 | 4.5 | Animation: transitions on the gestures that now have headroom | no gesture exceeds 16 ms while an animation is running |
 
 🪤 **4.4 last of the view work.** The typography was tuned against rendered
@@ -2077,6 +2078,58 @@ tests, **81 oracle cases**.
 39,1 ms against 10,3 earlier today - with the control's spin at **8,2 ms against
 3,0** and 15 rows drawn where there were 7. The gesture moved with the control
 and the registry grew; the pane is not in that path at all.
+
+
+---
+
+### 4.2e-1 - the implementation that acts: its own assembly, and the three console acts
+
+🔴 **The operator's recorded answer was "build it after the view is finished"; the
+view is finished.** This is the first tranche of the thing that can reach a live
+conversation, so it was written down before any of it was built:
+
+| | |
+|---|---|
+| **DONE-WHEN** | a separate assembly implements `IActs`; `Sessions2.dll` provably does not reference it; every act that writes is proven ONLY against `tests/term-replica.ps1`; every rule is broken once and goes red |
+| **DEFAULT** | any path that would touch a real session, registry or config in a test is a bug - stop the item, do not work around it |
+| **DEFAULT** | an act whose shipped path cannot be reproduced against a replica stays refusing BY NAME and is recorded, never tested live |
+
+🔑 **THE CONTRACT MOVED TO CORE.** `Act`, `ActRequest`, `ActResult` and `IActs`
+lived in the App - the WPF executable, which nothing may reference - so a
+separate implementation could not see them. They are in `Core.Acting` now; the
+App keeps `NoActs`, `IConfirms` and the sheet.
+
+🔑 **`SessionRestore.Live` is the implementation**, and it builds three acts, each
+ported from its shipped function: **Interrupt** (`Send-SRInterrupt` - one Esc),
+**Send** (`Send-SRSessionInput` - the refusal ladder, then the text, then **400 ms,
+then Enter as a key of its own**), and **Key** (`Send-SRTermKey` / `Send-SRTermChord`).
+The other seven refuse with what they are and which tranche owns them, so a window
+wired to this early says so on its status line instead of failing silently.
+
+🔴 **AND THE WINDOW CANNOT REFERENCE IT.** A new handler check reads
+`Sessions2.dll`'s own referenced assemblies; adding a reference to Live - with one
+use, so the compiler keeps it - turned `--handlers` red. **`--handlers` is 84 now.**
+
+**36 tests, 16 breaks, 16 red** - after three that were green the first time, and
+all three were the same thing this rebuild keeps finding: *the test could not reach
+the rule.*
+
+| break that stayed green | why the test could not see it |
+|---|---|
+| the Enter is never sent | the replica writes whatever it has when its OWN 30 s timeout runs out, so the text still arrived - thirty seconds later - and the test waited exactly thirty seconds. It waits ten now |
+| a dialog is honoured late | against a console the test owns the claude check always passes, so asking about the dialog AFTER it still refused with the same words. A test against a process that is NOT claude shows the order |
+| `Ctrl+1` accepted as a chord | not a gap in the test - **a real bug**. `Enum.TryParse` accepts an enum's NUMBERS as well as its names, and value 1 of `ForwardedChord` is **D** - the chord that can close a conversation outright. The letter must be an ASCII letter now |
+
+🪤 **THE ENTER IS TWO WRITES, AND THE GAP IS LOAD-BEARING.** A paste that arrives
+with its Enter in the same burst is read by claude as a paste: the newline becomes
+text and nothing is submitted. The shipped function types, sleeps 400 ms, then
+presses Enter as a key; the port does the same, and a test asserts the pause.
+
+**Next, 4.2e-2:** the registry and the configuration, written to scratch copies -
+`RegistryTarget` has no `Live()` on purpose, and giving it one is the decision that
+tranche is about. **Then 4.2e-3:** open, relaunch, close, go-to and sign-in, which
+start processes and have to be proven against a stub executable rather than
+`claude` or `wt`.
 
 ---
 

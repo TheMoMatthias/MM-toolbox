@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SessionRestore.Live - the implementation of IActs that really acts.
+
+    🔴 THE WINDOW MUST NEVER REFERENCE THIS PROJECT, and a check says so. The
+    operator runs about thirty live conversations he cannot relaunch; the App
+    is kept provably unable to touch one by owning no implementation of IActs
+    but the one that does nothing. Everything that launches, ends, types into
+    or saves lives HERE, and the only things that reference it are the tests -
+    which point it at a replica console this repo owns - and, at cutover (6.1),
+    the composition root that decides which implementation the window is given.
+
+    🔒 THE GUARDS ARE TYPES, NOT CALLS. Typing needs a ConsoleTarget, and the
+    only public way to get one is ConsoleTarget.ForSession, which refuses
+    anything that is not a live claude process. The test escape hatch is
+    internal to Core and visible to the test assembly alone.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <RootNamespace>SessionRestore.Live</RootNamespace>
+    <AssemblyName>SessionRestore.Live</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SessionRestore.Core\SessionRestore.Core.csproj" />
+  </ItemGroup>
+
+</Project>

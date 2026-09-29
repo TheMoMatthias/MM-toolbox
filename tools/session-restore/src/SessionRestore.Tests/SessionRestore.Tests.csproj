@@ -31,6 +31,7 @@
   <ItemGroup>
     <ProjectReference Include="..\SessionRestore.Core\SessionRestore.Core.csproj" />
     <ProjectReference Include="..\SessionRestore.Oracle\SessionRestore.Oracle.csproj" />
+    <ProjectReference Include="..\SessionRestore.Live\SessionRestore.Live.csproj" />
   </ItemGroup>
 
 </Project>

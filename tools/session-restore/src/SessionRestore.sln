@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SessionRestore.Tests", "Ses
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SessionRestore.Screen", "SessionRestore.Screen\SessionRestore.Screen.csproj", "{E596AA93-1DAD-4ADE-BEFE-5E84088655EA}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SessionRestore.Live", "SessionRestore.Live\SessionRestore.Live.csproj", "{64C6DEEB-AA8F-434F-8DDC-FBFC0B19E2FC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -42,5 +44,9 @@ Global
 		{E596AA93-1DAD-4ADE-BEFE-5E84088655EA}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E596AA93-1DAD-4ADE-BEFE-5E84088655EA}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E596AA93-1DAD-4ADE-BEFE-5E84088655EA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{64C6DEEB-AA8F-434F-8DDC-FBFC0B19E2FC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{64C6DEEB-AA8F-434F-8DDC-FBFC0B19E2FC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{64C6DEEB-AA8F-434F-8DDC-FBFC0B19E2FC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{64C6DEEB-AA8F-434F-8DDC-FBFC0B19E2FC}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
