@@ -108,6 +108,7 @@ concrete first task on top of the handover.
 | `-Local`          | (alias `-NoRemoteControl`) No Remote Control — local session only, no phone pairing.          |
 | `-RemoteControl`  | (alias `-Rc`) No-op affirmation — Remote Control is the default.                              |
 | `-Pwsh`           | Force a PowerShell window instead of Windows Terminal.                                        |
+| `-Wt`             | Open in Windows Terminal even when herdr runs (default: a running herdr wins, see below).     |
 | `-TurnTimeoutSec` | How long to wait for the first turn to land in the transcript (default 180).                  |
 | `-RetryHeadless`  | **F-226 hardening (chain/automation callers should pass this).** If the prompt produces no transcript turn inside `-TurnTimeoutSec` (the measured pre-transcript freeze: live pid, window open, zero turns), the frozen spawn is killed (our pid, by session id) and relaunched headless (`claude -p`, same env scrub, fresh session id, hidden window) with its own verify window of max(TurnTimeoutSec, 60)s. Measured working end-to-end 2026-08-28 (forced 2s window: kill + headless retry + verified turn). Exit codes are honest either way: 0 only when a turn was verified for the prompt given, 2 when every spawn path failed. |
 | `-AllowDuplicate` | Spawn even though a live session already holds this directory or this name. **Prints itself** — an override is a visible act. |
@@ -154,3 +155,13 @@ concrete first task on top of the handover.
 - **Independent session:** the spawned session inherits nothing from this conversation
   except what the handover file and opening prompt say.
 - **Windows-only launcher.** Outbound HTTPS:443 only; no inbound ports.
+
+## herdr
+
+When a herdr server is running, the session opens as a **named tab inside herdr** instead of a
+Windows Terminal tab: in the workspace already open on that folder (worktree workspaces count),
+else the repo's main workspace, else a new workspace. It runs the same `boot.ps1` (same name,
+session id, prompt, Remote Control and env scrub), so `claude --resume <id>` from any PowerShell
+works exactly as before. Because herdr is a background server, closing the herdr window does not
+end the session; run `herdr` again to find it, and the herdr Navigator lists, alerts on and
+controls it. No herdr running (or `-Wt`) means the old Windows Terminal launch.

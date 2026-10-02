@@ -89,6 +89,12 @@ param(
     # Force a plain PowerShell window instead of Windows Terminal.
     [switch]$Pwsh,
 
+    # Open in Windows Terminal even when a herdr server is running. By default a running
+    # herdr wins: the session opens as a named tab in its project's herdr workspace, so
+    # herdr (and the herdr Navigator) can see, alert on and control it, and it survives
+    # closing the herdr window (herdr is a background server). Resume works either way.
+    [switch]$Wt,
+
     # Seconds to wait for the transcript to appear with a real turn. With the env
     # scrub in place this normally lands in under 10s; the generous default only
     # covers a slow first turn.
@@ -311,10 +317,37 @@ if ($gc) {
 }
 $useWt = ($wtPath -ne $null) -and (-not $Pwsh)
 
+# --- herdr: open inside the running herdr server when there is one ---------------
+# The workspace is the one already open on this folder (a worktree workspace counts),
+# else the repo's main workspace, else a new one. Nothing here starts a herdr server.
+function Get-HerdrTarget([string]$dir) {
+    $hb = Get-Command herdr -ErrorAction SilentlyContinue
+    if (-not $hb) { return $null }
+    $json = & $hb.Source workspace list 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $json) { return $null }
+    try { $wss = (($json | Out-String) | ConvertFrom-Json).result.workspaces } catch { return $null }
+    $norm = { param($x) if (-not $x) { return "" }; ($x -replace '^\\\\\?\\', '' -replace '/', '\').TrimEnd('\').ToLowerInvariant() }
+    $want = & $norm $dir
+    $top = ""
+    try { $top = (& git -C $dir rev-parse --show-toplevel 2>$null | Out-String).Trim() } catch { }
+    $topN = & $norm $top
+    $ws = $wss | Where-Object { $_.worktree -and (& $norm $_.worktree.checkout_path) -eq $want } | Select-Object -First 1
+    if (-not $ws -and $topN) {
+        $ws = $wss | Where-Object { $_.worktree -and -not $_.worktree.is_linked_worktree -and (& $norm $_.worktree.repo_root) -eq $topN } | Select-Object -First 1
+    }
+    return @{ Bin = $hb.Source; Workspace = $ws }
+}
+$herdr = $null
+if (-not $Wt -and -not $Pwsh) { $herdr = Get-HerdrTarget $resolved }
+
 if ($DryRun) {
     if ($rcOn) { $modeStr = "LOCAL session + Remote Control (runs on this PC; also drivable from phone/claude.ai) - and locally resumable" }
     else       { $modeStr = "LOCAL only (-Local): no phone pairing" }
     if ($useWt) { $launcherStr = "Windows Terminal (wt.exe)" } else { $launcherStr = "PowerShell window" }
+    if ($herdr) {
+        if ($herdr.Workspace) { $launcherStr = "herdr: new tab in workspace '" + $herdr.Workspace.label + "'" }
+        else { $launcherStr = "herdr: new workspace for this folder" }
+    }
     Write-Host "Directory  : $resolved"
     Write-Host "Session    : $Name"
     Write-Host "Session id : $sessionId"
@@ -331,7 +364,36 @@ if ($DryRun) {
     exit 0
 }
 
-if ($useWt) {
+$launchedInHerdr = $false
+if ($herdr) {
+    # A named tab in herdr whose shell runs the same boot.ps1 (env scrub included). The
+    # herdr server is the parent, so closing the herdr window does not end the session.
+    try {
+        $wsId = $null
+        if ($herdr.Workspace) { $wsId = $herdr.Workspace.workspace_id }
+        else {
+            $label = Split-Path -Leaf $resolved
+            $wsJson = & $herdr.Bin workspace create --cwd "$resolved" --label "$label" --no-focus 2>$null
+            if ($LASTEXITCODE -eq 0) { $wsId = (($wsJson | Out-String) | ConvertFrom-Json).result.workspace.workspace_id }
+        }
+        if ($wsId) {
+            $tabJson = & $herdr.Bin tab create --workspace $wsId --cwd "$resolved" --label "$Name" --no-focus 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $paneId = (($tabJson | Out-String) | ConvertFrom-Json).result.root_pane.pane_id
+                $runLine = 'powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "' + $bootPath + '"'
+                & $herdr.Bin pane run $paneId $runLine 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    $launchedInHerdr = $true
+                    Write-Host "Opened in herdr: workspace $wsId, pane $paneId (Ctrl+B then g, or F3 in the Navigator)"
+                }
+            }
+        }
+    } catch { }
+    if (-not $launchedInHerdr) { Write-Warning "spawn-claude-session: herdr did not take the session - opening it in Windows Terminal instead." }
+}
+if ($launchedInHerdr) {
+    # done: the verify below finds the claude.exe and transcript exactly as for a wt tab
+} elseif ($useWt) {
     # New Windows Terminal window; -d sets the starting dir; -NoExit keeps the pane
     # open so the Remote Control pairing URL/QR stays readable.
     & $wtPath -w claude new-tab --title "$Name" -d "$resolved" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "$bootPath"
