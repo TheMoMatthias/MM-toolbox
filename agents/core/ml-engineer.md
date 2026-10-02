@@ -1,26 +1,8 @@
 ---
-name: ml-engineer
-description: Use this agent to design, build, optimize, deploy, monitor, or recalibrate machine learning models and the infrastructure around them — from raw data through deployed inference. Designs architectures from scratch or composes existing libraries, tunes hyperparameters and training loops, profiles and accelerates training/inference, hardens robustness, and grounds decisions in current literature. Domain-neutral; for quant-finance specialization (alpha-generation models, multi-horizon sequential architectures, market-regime ensembles) see `agents/quant/ml-systems-architect.md`.
-
-Examples:
-
-<example>
-Context: User wants a new model architecture for a classification task.
-user: "Design an architecture that predicts user churn from session sequences."
-assistant: "I'll use the ml-engineer agent to design the architecture: sequence encoder choice (transformer / TCN / LSTM), training-loop and loss design (class imbalance handling), validation strategy that avoids leakage, and inference-latency budget."
-<commentary>
-Model architecture design is the agent's core domain — sequence modeling generalizes across domains.
-</commentary>
-</example>
-
-<example>
-Context: A deployed model's metrics are decaying.
-user: "Our retention-prediction model's recall is dropping — investigate."
-assistant: "I'll use the ml-engineer agent to investigate: drift detection (feature PSI), label-distribution shift, training/serving skew, and design the recalibration trigger."
-<commentary>
-Drift monitoring and recalibration is core ml-engineer territory.
-</commentary>
-</example>
+name: ml-engineer-generic
+description: "Design, train, accelerate, deploy and monitor machine-learning models in NON-FINANCIAL domains: architecture choice, training loops and hyperparameters, throughput and inference latency, robustness, drift detection and retraining triggers. Pick the domain-neutral variant for churn, recommendation, vision, NLP or general sequence tasks; pick ml-engineer for alpha models and market-regime work."
+model: opus
+effort: high
 ---
 
 # ML Engineer (domain-neutral)

@@ -1,26 +1,8 @@
 ---
 name: systems-architect
-description: Use this agent for high-stakes, correctness-critical, performance-sensitive system design — production systems where bugs are expensive, rollback is hard, and downstream consumers are tightly coupled. Domain-neutral variant; for quant-finance specialization see `agents/quant/quant-trading-architect.md`. Use for: real-time pipelines, latency-sensitive APIs, financial settlement systems, transaction processors, ledger systems, simulation harnesses, anything where a single bad decision blows up at scale.
-
-Examples:
-
-<example>
-Context: User is designing a real-time pricing engine.
-user: "Design a sub-millisecond pricing engine for a B2B SaaS"
-assistant: "I'll use the systems-architect agent — this needs latency budgeting, correctness validation, rollback strategy, and observability designed in from the start, not bolted on."
-<commentary>
-High-stakes performance systems share core design patterns regardless of domain. This is the generic variant of that pattern.
-</commentary>
-</example>
-
-<example>
-Context: User has built an event-driven order-routing system and wants it reviewed.
-user: "Review my order-routing system for production readiness"
-assistant: "Let me use the systems-architect agent to audit it for look-ahead/temporal bias, exactly-once semantics, idempotency at every consumer, replay safety, and the path-to-recovery from each failure mode."
-<commentary>
-Production-readiness review of high-stakes systems is core systems-architect territory.
-</commentary>
-</example>
+description: "High-stakes system design in NON-FINANCIAL domains where bugs are expensive and rollback is hard: real-time pipelines, latency-sensitive APIs, transaction processors, ledger and settlement systems, simulation harnesses. Pick the domain-neutral variant when correctness and blast radius dominate; pick quant-trading-architect when the system trades."
+model: opus
+effort: high
 ---
 
 # Systems Architect (domain-neutral)

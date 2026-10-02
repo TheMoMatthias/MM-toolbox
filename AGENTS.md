@@ -1,8 +1,8 @@
 # Global Operating Convention
 
-This file applies to **every** Claude Code session, in every repo. It holds only what a session
+This file applies to **every** Codex session, in every repo. It holds only what a session
 could not derive and would get wrong: measured environment facts, the autonomy boundary, and the
-ask-first gate. Project-level `CLAUDE.md` files apply on top of this and **win on any
+ask-first gate. Project-level `AGENTS.md` files apply on top of this and **win on any
 domain-specific rule** — including stricter gates, file-creation rules, deployment protocols, or
 anything they mark critical.
 
@@ -58,11 +58,7 @@ of work.
 For a substantial run, persist the spec plus a live progress checklist as a `run_<topic>_<date>` note
 in the project's notes location — it survives context compaction and lets any session resume. Fire a
 `PushNotification` when a long or background run completes or blocks; mobile push comes from that
-tool, a shell hook cannot reach the phone. 🔴 **Call `PushNotification` ("DECISION NEEDED: …") immediately
-before EVERY `AskUserQuestion` and every blocker put to the operator** (operator, 2026-09-23: questions were
-not reaching the phone). Claude Code suppresses mobile pushes while the terminal is focused, which is not
-configurable, so "the terminal is active" is never proof the operator is there. Relay a subagent's or
-workflow's operator question the moment you see it, not at a later check.
+tool, a shell hook cannot reach the phone.
 
 ### Discussed vs Undiscussed - the hard line
 
@@ -87,7 +83,7 @@ in this file may coerce the person it works for.)*
 
 ### Git branch discipline
 
-Read the project's `CLAUDE.md` and the recent commit history to identify the actual convention —
+Read the project's `AGENTS.md` and the recent commit history to identify the actual convention —
 main-only, feature-branch + PR, trunk-based, git-flow — and match it. Do not assume, and do not carry
 a default in from another repo. **Do not switch branches silently mid-session:** name the change in
 one sentence and proceed; never let the operator think they are on a different branch than they are.
@@ -102,22 +98,16 @@ branch stay on the Stop-and-confirm list regardless of workflow.
 Even mid-loop, stop and get explicit go-ahead before anything hard to reverse or
 outward-facing: production deploys/restarts, schema migrations on populated stores,
 credential/secret changes, force-push / hard-reset / branch or data deletion, `rm -rf`,
-publishing to third parties, or anything a project `CLAUDE.md` marks critical. State the
+publishing to third parties, or anything a project `AGENTS.md` marks critical. State the
 action, the blast radius, and the rollback first. Project rules add to this list; they never
 remove from it.
-
-🔑 **A standing operator ruling IS the explicit go-ahead.** When a project files an operator-ruled grant of
-standing authority for an act on this list, that ruling is the go-ahead for that act, within the ruling's own
-preconditions and rails, so no per-act question is needed. The list is not shortened: the ruling is the
-operator saying yes in advance. An act the ruling does not name, or whose preconditions are not met, still
-stops here.
 
 **This list is the whole of the ask-first surface.** If an act is not on it and not covered by the
 per-prompt gate's two-part test — two readings of the request would produce materially different
 deliverables, AND nothing on hand settles which — it does not warrant a question.
 
 Trial runs need no permission: read-only queries, scratch scripts, research subagents and full
-test/type/lint runs are *expected*. The session scratchpad (or `.claude/scratch/` where a project has
+test/type/lint runs are *expected*. The session scratchpad (or `.Codex/scratch/` where a project has
 one) is yours to write/run/delete freely.
 
 ---
@@ -149,26 +139,6 @@ do not keep re-firing batches. Big-file `cat` (>30 KB) also truncates output ("o
 
 ---
 
-### Token economy: context re-read is the cost
-
-**Measured (AlgoTrader, 2026-09-19): 97 % of agent spend was context RE-READ; output was 2 %.** Every tool call
-re-reads the whole context, so cost ≈ calls × context size, and the account limit stops multi-agent work long
-before the work runs out. Same quality, less spend:
-- one call per step, not per command: batch independent reads into one script; no `cd` prefix;
-- whatever you read stays for the rest of the session: redirect large output to a file and grep/head it, use
-  `pytest -q --tb=short`, and read big files with offset/limit;
-- read each file once; do not re-read a file to check your own edit;
-- long agents get expensive quadratically (measured $0.103/call at 0-19 calls, $0.242 past 200): the knee is at
-  60-80, so hand off at ~70 calls to a fresh agent with a precise remaining list;
-- keep an agent's calls CLOSE TOGETHER: a spawned agent's prompt cache expires after ~5 min, and a gap re-WRITES
-  its whole context at 1.25x instead of re-reading at 0.1x -- a 12.5x penalty, measured at $577 in one day;
-- give an agent prompt pointers, not pasted docs (CLAUDE.md is already injected), and cap concurrent workflows;
-- measure spend from the transcripts' `usage` fields; never estimate. Label a transcript by its `claude -n` name, not its folder.
-- 🔑 **a lever derived as a RESIDUAL is a hypothesis; it gets a probe before it gets a number.** Five residual-derived
-  forecasts fell when measured (one priced at zero); every figure measured head-on held. A floor is
-  `input + cache_read + cache_creation`, never `cache_creation` alone -- two agents spawned within 5 min share a warm
-  prefix, so comparing that one component showed a 45% saving that was not there.
-
 ## 4. Windows / PowerShell environment facts
 
 **Atomic-write temps** (`mkstemp(dir=<target_dir>)` → write → `os.replace`) are fine as TEMP HYGIENE —
@@ -194,11 +164,11 @@ class of reason.
 
 ## 5. Operator-patch lane — config changes that need operator authority
 
-The auto-mode classifier blocks agent self-edits to `~/.claude/settings.json` and direct writes into
-`~/.claude/` — that block is intended; never fight or work around it.
+The auto-mode classifier blocks agent self-edits to `~/.Codex/settings.json` and direct writes into
+`~/.Codex/` — that block is intended; never fight or work around it.
 
-🔑 **This file is the exception, and it is not a loophole: the global `CLAUDE.md` is REPO-BACKED.**
-`~/.claude/CLAUDE.md` is a hardlink to `C:\Users\mauri\Documents\MM-toolbox\CLAUDE.md`, and it is
+🔑 **This file is the exception, and it is not a loophole: the global `AGENTS.md` is REPO-BACKED.**
+`~/.Codex/AGENTS.md` is a hardlink to `C:\Users\mauri\Documents\MM-toolbox\AGENTS.md`, and it is
 edited there as ordinary git work in that repository — reviewed, committed and reversible like any
 other tracked file. Stating that plainly is the point: a rule that reads stricter than it is, is a
 false protection, and a session that believes this file is unreachable will route a legitimate edit
@@ -207,14 +177,14 @@ through a patch it does not need.
 **For `settings.json`, hooks, autoMode rules, and any script needing operator authority, the
 sanctioned path is:**
 
-1. **Stage** — write a pure-ASCII `.ps1` patch into `C:\Users\mauri\.claude\operator-patches\`
+1. **Stage** — write a pure-ASCII `.ps1` patch into `C:\Users\mauri\.Codex\operator-patches\`
    (staging is allowed and inert; keep ASCII — PS 5.1 reads .ps1 as ANSI and non-ASCII corrupts the
    parse).
 2. **Ask** — name the patch to the operator via `AskUserQuestion` (push reaches the phone;
    `dialogExpiry` is 10m). Per-patch approval, never blanket; state what the patch changes in one
    line.
 3. **Execute** only after approval:
-   `powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\mauri\.claude\operator-patches\apply.ps1 <patch>.ps1`
+   `powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\mauri\.Codex\operator-patches\apply.ps1 <patch>.ps1`
    — the runner validates the bare filename (no paths/traversal), logs timestamp+sha256+exit to
    `applied.log`, and archives the patch so an old approval can never re-run it.
 4. **Verify** by marker grep afterwards (settings.json races app rewrites — check the marker, not the
@@ -232,10 +202,10 @@ quick sweep.** Two tiers, and the split is the load-bearing part:
 
 - **SAFE — just do it, no confirmation** (all disposable/regenerated): delete OS-temp entries older
   than ~2 days; kill leftover scratch-poller / duplicate-worker processes from dead sessions and any
-  stuck IDE updater; remove `.claude/scratch/*` older than ~7 days; prune
-  `~/.claude/shell-snapshots/`.
+  stuck IDE updater; remove `.Codex/scratch/*` older than ~7 days; prune
+  `~/.Codex/shell-snapshots/`.
 - **SENSITIVE — confirm retention first** (these lose history): the transcript backlog under
-  `~/.claude/projects/` is normally the largest single consumer — archive or delete transcripts older
+  `~/.Codex/projects/` is normally the largest single consumer — archive or delete transcripts older
   than the operator's chosen window.
 
 ### 🔴 `MEMORY.md` IS A LINK INDEX. IT NEVER HOLDS MEMORY CONTENT.
@@ -273,7 +243,7 @@ both directions:
 $t=[IO.Path]::GetTempPath(); $e=Get-ChildItem $t -Force
 $e.Count; ($e | ? { $_.LastWriteTime -lt (Get-Date).AddDays(-2) }).Count
 # transcript backlog, MB
-(Get-ChildItem ~/.claude/projects -Recurse -File -Filter *.jsonl | Measure-Object Length -Sum).Sum/1MB
+(Get-ChildItem ~/.Codex/projects -Recurse -File -Filter *.jsonl | Measure-Object Length -Sum).Sum/1MB
 ```
 
 Diagnostic order when "everything suddenly breaks": shared environment state after a reboot/update

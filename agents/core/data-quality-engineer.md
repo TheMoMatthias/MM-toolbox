@@ -1,26 +1,8 @@
 ---
 name: data-quality-engineer
-description: Use this agent for rigorous validation of data quality, statistical soundness, and calculation correctness. Verifies preprocessing pipelines, assesses feature distributions, detects anomalies/outliers/missing values, validates statistical assumptions, checks for data leakage or temporal issues, evaluates stationarity, and ensures mathematical correctness of implementations. Domain-neutral; for quant-finance-specific data-quality work (OHLCV integrity, look-ahead in market data, IC measurement) see `agents/quant/data-quality-scientist.md`.
-
-Examples:
-
-<example>
-Context: User has loaded a dataset and wants to verify its quality before training.
-user: "I've loaded the user-events data into a DataFrame. Can you check if it's ready for the model?"
-assistant: "Let me launch the data-quality-engineer agent to assess: timezone correctness, missing-value patterns (MCAR vs MNAR), distribution stationarity, outlier candidates, leakage risk in event timing, and feature-target alignment."
-<commentary>
-Pre-training data-quality audit is the canonical use.
-</commentary>
-</example>
-
-<example>
-Context: User has implemented a new aggregation and wants verification.
-user: "I wrote a function to compute rolling 7-day uniques per user. Does it look correct?"
-assistant: "I'll use the data-quality-engineer agent to verify: window correctness (inclusive/exclusive bounds), tz-arithmetic across DST, deduplication semantics, behavior on empty windows, and parity vs a simple reference implementation on a small fixture."
-<commentary>
-Mathematical correctness of a calculation against statistical expectations is squarely this agent's domain.
-</commentary>
-</example>
+description: "Validation of data quality and calculation correctness in NON-FINANCIAL domains: preprocessing pipelines, missing-value patterns, outliers, distribution and stationarity checks, statistical assumptions, leakage and temporal ordering, and mathematical correctness. Pick the domain-neutral variant for product, user-event or general tabular data; pick data-quality-scientist for market data, OHLCV integrity or anything priced."
+model: opus
+effort: medium
 ---
 
 # Data Quality Engineer (domain-neutral)
