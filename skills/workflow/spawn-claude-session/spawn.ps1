@@ -330,12 +330,27 @@ function Get-HerdrTarget([string]$dir) {
     $want = & $norm $dir
     $top = ""
     try { $top = (& git -C $dir rev-parse --show-toplevel 2>$null | Out-String).Trim() } catch { }
+    # In a linked worktree --show-toplevel is the worktree itself; the main checkout is the
+    # parent of the shared .git dir, and that is what herdr's main workspace records.
+    $common = ""
+    try { $common = (& git -C $dir rev-parse --path-format=absolute --git-common-dir 2>$null | Out-String).Trim() } catch { }
+    $main = ""
+    if ($common) { $main = Split-Path -Parent $common }
     $topN = & $norm $top
+    $mainN = & $norm $main
+    $linked = [bool]($topN -and $mainN -and $topN -ne $mainN)
     $ws = $wss | Where-Object { $_.worktree -and (& $norm $_.worktree.checkout_path) -eq $want } | Select-Object -First 1
     if (-not $ws -and $topN) {
-        $ws = $wss | Where-Object { $_.worktree -and -not $_.worktree.is_linked_worktree -and (& $norm $_.worktree.repo_root) -eq $topN } | Select-Object -First 1
+        $ws = $wss | Where-Object { $_.worktree -and (& $norm $_.worktree.checkout_path) -eq $topN } | Select-Object -First 1
     }
-    return @{ Bin = $hb.Source; Workspace = $ws }
+    $mainWs = $null
+    if ($mainN) {
+        $mainWs = $wss | Where-Object { $_.worktree -and -not $_.worktree.is_linked_worktree -and (& $norm $_.worktree.repo_root) -eq $mainN } | Select-Object -First 1
+    }
+    # A worktree with no Space of its own is opened as the repo's worktree Space (below), so
+    # herdr and the Navigator group it under the repo; it does not go into the main Space.
+    if (-not $ws -and -not $linked) { $ws = $mainWs }
+    return @{ Bin = $hb.Source; Workspace = $ws; MainWs = $mainWs; Linked = $linked; Top = $top }
 }
 $herdr = $null
 if (-not $Wt -and -not $Pwsh) { $herdr = Get-HerdrTarget $resolved }
@@ -370,16 +385,37 @@ if ($herdr) {
     # herdr server is the parent, so closing the herdr window does not end the session.
     try {
         $wsId = $null
+        $created = $false
         if ($herdr.Workspace) { $wsId = $herdr.Workspace.workspace_id }
-        else {
+        elseif ($herdr.Linked -and $herdr.MainWs) {
+            # herdr's own worktree Space, linked to the repo's main Space
+            $label = Split-Path -Leaf $herdr.Top
+            $wsJson = & $herdr.Bin worktree open --workspace $herdr.MainWs.workspace_id --path "$($herdr.Top)" --label "$label" --no-focus 2>$null
+            if ($LASTEXITCODE -eq 0) { $wsId = (($wsJson | Out-String) | ConvertFrom-Json).result.workspace.workspace_id; $created = [bool]$wsId }
+        }
+        if (-not $wsId) {
             $label = Split-Path -Leaf $resolved
             $wsJson = & $herdr.Bin workspace create --cwd "$resolved" --label "$label" --no-focus 2>$null
-            if ($LASTEXITCODE -eq 0) { $wsId = (($wsJson | Out-String) | ConvertFrom-Json).result.workspace.workspace_id }
+            if ($LASTEXITCODE -eq 0) { $wsId = (($wsJson | Out-String) | ConvertFrom-Json).result.workspace.workspace_id; $created = [bool]$wsId }
         }
         if ($wsId) {
-            $tabJson = & $herdr.Bin tab create --workspace $wsId --cwd "$resolved" --label "$Name" --no-focus 2>$null
-            if ($LASTEXITCODE -eq 0) {
-                $paneId = (($tabJson | Out-String) | ConvertFrom-Json).result.root_pane.pane_id
+            $paneId = $null
+            if ($created) {
+                # a new Space already has an idle root pane: run in it rather than adding a tab
+                $pl = & $herdr.Bin pane list --workspace $wsId 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                    $root = (($pl | Out-String) | ConvertFrom-Json).result.panes | Select-Object -First 1
+                    if ($root) {
+                        $paneId = $root.pane_id
+                        & $herdr.Bin tab rename $root.tab_id "$Name" 2>$null | Out-Null
+                    }
+                }
+            }
+            if (-not $paneId) {
+                $tabJson = & $herdr.Bin tab create --workspace $wsId --cwd "$resolved" --label "$Name" --no-focus 2>$null
+                if ($LASTEXITCODE -eq 0) { $paneId = (($tabJson | Out-String) | ConvertFrom-Json).result.root_pane.pane_id }
+            }
+            if ($paneId) {
                 $runLine = 'powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "' + $bootPath + '"'
                 & $herdr.Bin pane run $paneId $runLine 2>$null | Out-Null
                 if ($LASTEXITCODE -eq 0) {
