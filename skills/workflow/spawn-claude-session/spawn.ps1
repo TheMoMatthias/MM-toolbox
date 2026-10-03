@@ -391,7 +391,12 @@ if ($herdr) {
             # herdr's own worktree Space, linked to the repo's main Space
             $label = Split-Path -Leaf $herdr.Top
             $wsJson = & $herdr.Bin worktree open --workspace $herdr.MainWs.workspace_id --path "$($herdr.Top)" --label "$label" --no-focus 2>$null
-            if ($LASTEXITCODE -eq 0) { $wsId = (($wsJson | Out-String) | ConvertFrom-Json).result.workspace.workspace_id; $created = [bool]$wsId }
+            if ($LASTEXITCODE -eq 0) {
+                $wo = (($wsJson | Out-String) | ConvertFrom-Json).result
+                $wsId = $wo.workspace.workspace_id
+                # already_open: herdr linked a Space that was open on this folder; its panes are in use
+                $created = [bool]$wsId -and -not $wo.already_open
+            }
         }
         if (-not $wsId) {
             $label = Split-Path -Leaf $resolved
