@@ -2,7 +2,7 @@
 name: grill-with-a-loop
 description: Grill a plan to a signed autonomy contract, then automatically run its DONE-WHEN as a bounded self-verifying loop — proving the check CAN fail before trusting that it passed, and having independent agents try to demolish the result before anything is committed. Use when the user wants a plan stress-tested AND executed unattended to a machine-checkable finish.
 disable-model-invocation: true
-argument-hint: [what you want built] [--max-attempts N] [--max-minutes M]
+argument-hint: "[what you want built] [--max-attempts N] [--max-minutes M]"
 effort: max
 ---
 

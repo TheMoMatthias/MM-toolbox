@@ -2,7 +2,7 @@
 name: audit-loop-codebase
 description: Autonomously run a comprehensive audit across an entire repository (or a subtree / domain), fix every finding (Critical → High → Medium → Low), verify the fixes, and re-audit until two consecutive scans return zero issues. Project-agnostic — it grounds in the target repo's own CLAUDE.md, structure, and toolchain. Use when you want a hands-off, full-codebase cleanup pass — slower and broader than /audit-loop.
 disable-model-invocation: true
-argument-hint: [optional: <domain-keyword> | <subdirectory> | <glob>] [--max-iters N] [--include-low false] [--exclude path,path]
+argument-hint: "[optional: <domain-keyword> | <subdirectory> | <glob>] [--max-iters N] [--include-low false] [--exclude path,path]"
 effort: max
 ---
 

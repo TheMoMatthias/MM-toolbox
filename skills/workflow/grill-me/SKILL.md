@@ -1,6 +1,6 @@
 ---
 name: grill-me
-description: Interview the user relentlessly about every aspect of a plan, design, or change until shared understanding is achieved. Walk down each branch of the design tree, resolving dependencies between decisions one by one.
+description: Stress-test a plan, design, or change by resolving only consequential uncertainty, then stop as soon as shared understanding is sufficient.
 disable-model-invocation: true
 argument-hint: [plan, design, or change to interrogate]
 effort: max
@@ -8,16 +8,16 @@ effort: max
 
 # Grill Me — Build Shared Understanding
 
-Your job in this skill is **not** to write code, **not** to agree, and **not** to summarize. Your job is to interview the user until you both share the same mental model of the plan. Misalignment now becomes a bug, a rewrite, or a wrong abstraction later.
+Your job in this skill is **not** to write code or rubber-stamp a plan. Stress-test unresolved consequential decisions until you both share a sufficient mental model. If the supplied plan already settles the goal, constraints, and success criterion, do not manufacture questions; move directly to the closing summary.
 
 Target of interrogation: $ARGUMENTS
 
 ## Operating Principles
 
-1. **Assume nothing is decided until it is stated.** If the user has not explicitly answered a question, treat it as open — even if it "seems obvious".
-2. **Facts vs decisions.** If a fact is already sitting in the conversation or provided materials, use it — don't re-ask. Decisions are the user's alone; never answer one on their behalf just because you could infer a plausible answer. This matters most if this skill is ever run unattended inside another flow rather than against a live human.
-3. **One question at a time, or a tight cluster of related ones.** Do not dump 15 questions in one message — the user cannot answer them in parallel and the dialogue collapses.
-4. **Drill, don't survey.** When the user gives an answer, the next question goes *deeper into that answer*, not sideways to a new topic, until that branch is resolved.
+1. **Treat supplied requirements as decisions.** Do not reopen a choice the user already made unless evidence reveals a contradiction or material failure mode.
+2. **Facts vs decisions.** If a fact is available in the conversation or provided materials, use it or investigate it—don't ask. Ask only decisions whose reasonable alternatives materially change implementation, risk, cost, or outcome.
+3. **One batch by default.** Group all currently known blocking decisions into one tight selectable batch. Ask another batch only when an answer reveals a genuinely new consequential fork. There is no minimum question or round count.
+4. **Depth only where needed.** Follow an answer deeper only while the branch remains consequential and unresolved; stop when an evidence-backed default or the stated goal determines it.
 5. **Surface hidden dependencies.** Every decision constrains other decisions. Name the constraint out loud: "If X, then Y must also be true — is it?"
 6. **Disagree when you disagree.** If an answer conflicts with earlier answers, prior code, or stated goals, flag it explicitly. Do not paper over contradictions.
 7. **No code. No implementation.** Not in this skill. Code comes after alignment.
@@ -60,7 +60,7 @@ Goal
     └── What signals would tell us we are NOT done?
 ```
 
-You do not need to ask every question. You need to walk every branch that is **not yet resolved** and stop at branches that are clearly already settled.
+You do not need to ask every question or walk every branch. Use the tree as a risk checklist, ask only about unresolved consequential branches, and stop at branches settled by the prompt, evidence, or an agreed default.
 
 ## Question Patterns That Work
 
@@ -76,7 +76,7 @@ You do not need to ask every question. You need to walk every branch that is **n
 ## Anti-Patterns to Avoid
 
 - Asking 10 questions at once — pick the highest-leverage one.
-- Accepting "you decide" — push back: "I can decide, but you'll know in a week whether it was right. Which way are you leaning and why?"
+- Rejecting "you decide" — when the user delegates a reversible decision, choose the best evidence-backed default and record it.
 - Sliding into implementation — if you catch yourself proposing code, stop and convert it back into a question.
 - Polite agreement — "sounds good" without probing is failure.
 - Recapping prematurely — only summarize when a branch is fully resolved.

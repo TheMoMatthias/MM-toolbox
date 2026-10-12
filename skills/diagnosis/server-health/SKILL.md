@@ -2,7 +2,7 @@
 name: server-health
 description: Server Health Routine — a thorough, sequential, foundation-up health sweep of the live AlgoTrader server (network/reachability, host resources, Postgres+TimescaleDB, hub_daemon + data operations, data quality per provider, FastAPI backend, realtime_runner + data_daemon IPC bridge, frontend, git/deploy drift, GPU + scheduled tasks, log/process tracking, tests). Read-only by default; every issue it finds comes with a concrete fix proposal that is GATED — nothing is executed, restarted, or edited without explicit per-item go-ahead. Persists a machine-diffable snapshot + human report outside the repo. Supports `--watch N` to re-sweep every N minutes and surface only deltas. Use for a frequent, on-demand "is everything still healthy?" check.
 disable-model-invocation: true
-argument-hint: [optional: <section keyword(s)>] [--watch N] [--since <when>]
+argument-hint: "[optional: <section keyword(s)>] [--watch N] [--since <when>]"
 effort: max
 ---
 

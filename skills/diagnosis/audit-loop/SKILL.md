@@ -1,8 +1,8 @@
 ---
 name: audit-loop
-description: Autonomously audit a scope, fix every finding (Critical → High → Medium → Low), verify the fixes, and re-audit until two consecutive scans return zero issues. Scope defaults to the current branch's diff vs the main branch, but accepts explicit paths, globs, or a domain keyword (inferred from the repo's own structure) to audit an entire subsystem regardless of recent changes. Project-agnostic: it reads the target repo's own CLAUDE.md / conventions to decide critical surfaces, prohibitions, and toolchain. Use when you want a hands-off audit → fix → verify → re-audit pass over in-flight branch work or a chosen scope, in any repository.
+description: "Autonomously audit a scope, fix every finding (Critical → High → Medium → Low), verify the fixes, and re-audit until two consecutive scans return zero issues. Scope defaults to the current branch's diff vs the main branch, but accepts explicit paths, globs, or a domain keyword (inferred from the repo's own structure) to audit an entire subsystem regardless of recent changes. Project-agnostic: it reads the target repo's own CLAUDE.md / conventions to decide critical surfaces, prohibitions, and toolchain. Use when you want a hands-off audit → fix → verify → re-audit pass over in-flight branch work or a chosen scope, in any repository."
 disable-model-invocation: true
-argument-hint: [optional: <domain-keyword> | <path> | <glob>] [--max-iters N] [--include-low false]
+argument-hint: "[optional: <domain-keyword> | <path> | <glob>] [--max-iters N] [--include-low false]"
 effort: max
 ---
 

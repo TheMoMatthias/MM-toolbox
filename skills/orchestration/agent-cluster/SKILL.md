@@ -2,7 +2,7 @@
 name: agent-cluster
 description: Analyze any codebase (or a referenced file structure) and auto-partition it into an efficient cluster of coordinated agents with disjoint file ownership, then spawn the team after you approve the plan. Use when the user wants to parallelize work on an arbitrary project across an agent team, "divide this repo into agents", or invokes /agent-cluster.
 disable-model-invocation: true
-argument-hint: [optional path/repo/structure to analyze] [goal] [--auto] [--size coarse|medium|fine]
+argument-hint: "[optional path/repo/structure to analyze] [goal] [--auto] [--size coarse|medium|fine]"
 effort: max
 ---
 

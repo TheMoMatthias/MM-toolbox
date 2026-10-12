@@ -5,23 +5,23 @@ description: Grilling session that challenges your plan against the existing dom
 
 <what-to-do>
 
-Interview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
+Stress-test the plan until shared understanding is sufficient to act safely. Resolve only decisions whose alternatives materially change the implementation, risk, cost, or outcome. For each question, provide your recommended answer.
 
 **Required pre-grill flow:**
-1. **Skip-grill check:** if the work is <5 files + 1 subsystem + non-Critical-tier surface, skip the grill and execute. Otherwise continue.
-2. **Pre-grill Explore (MANDATORY):** spawn an `Explore` subagent to map the touched surface (files, subsystems, recurring concepts, related memory entries, prior decisions) BEFORE round 1. Calibrate question count from the actual map size — not from a pattern-match on the prompt phrasing.
-3. **Classify domain → required quality lenses** (see Quality lenses below). ≥1 question per round must hit each required lens.
+1. **Sufficiency check:** if the prompt and existing evidence already settle the objective, constraints, and success criterion, do not manufacture questions; summarize the understood contract and proceed to sign-off or execution as appropriate.
+2. **Explore when useful:** inspect the codebase, docs, history, and prior decisions before asking factual questions. Use a read-only scout only when the surface is broad or unfamiliar enough that it will materially improve the questions.
+3. **Classify domain → relevant quality lenses** (see Quality lenses below). Cover a lens only when it exposes a plausible consequential decision.
 
 **Delivery format (REQUIRED — overrides any "one at a time" default):**
 
 Ask in **batched, selectable `AskUserQuestion` rounds** — up to 4 per call, each with selectable options + free-text "Other" — firing successive rounds until aligned. **NOT** one free-text question at a time. The user strongly prefers clicking answers.
 
-**Scope-based question count:**
-- light-touch (clears the skip-grill check only narrowly — still 1 subsystem, non-Critical-tier, but the file count or shape pushes it just past trivial — AND the Explore map shows a well-precedented pattern to follow, genuinely low ambiguity): 3–6 questions in a single batched round
-- non-trivial change: 12–18 questions across ≥3 batched rounds
-- major refactor / new subsystem / Critical-tier surface: 25–35 questions across ≥6 batched rounds
-- top-tier scope (multi-subsystem refactor, new-from-scratch, deep research with >5 open unknowns): 30–50 questions across ≥8 batched rounds
-- When scope is ambiguous, default to asking MORE — light-touch requires low ambiguity as well as small size; size alone doesn't qualify for it.
+**Adaptive stopping rule:**
+- There is no minimum number of questions or rounds.
+- Ask all currently known consequential questions in one batch (up to 4).
+- Ask a later batch only when an answer reveals a new consequential fork that could not reasonably have been asked earlier.
+- Stop immediately when the remaining uncertainty can be resolved from evidence, handled by an agreed default, or does not materially affect the result.
+- Complexity increases the breadth of risks to inspect; it does not create a quota of questions.
 
 **Facts vs decisions:** if a *fact* can be found by exploring the codebase, look it up rather than asking. The *decisions*, though, are the user's alone — put each one to them and wait for their answer. "Explore instead of asking" is licence to skip asking for facts; it is never licence to answer a decision on the user's behalf. This matters most when this skill runs unattended inside another flow (e.g. `/wayfinder`, `/improve-codebase-architecture`) rather than directly against a live human — a grilling step that answers its own decisions has broken the human-in-the-loop contract by definition.
 
@@ -35,7 +35,7 @@ This skill actively builds and sharpens the project's domain model (`CONTEXT.md`
 
 ## Quality lenses (domain dispatch)
 
-After classifying the domain from the prompt + Explore map, every round MUST cover the required lenses. **≥1 question per round per required lens.** If the prompt spans multiple domains, take the union of lenses.
+After classifying the domain from the prompt and available evidence, use the applicable lenses as a review checklist. Ask about a lens only when it reveals a real unresolved decision. Do not force one question per lens or per round.
 
 - **DB / data-pipeline / infra / dev-tooling** → scalability + efficiency + production + long-term
 - **Business-logic / domain rules / data transforms / pricing** → production + long-term + temporal-correctness (ordering / look-ahead) + downstream-invalidation
@@ -49,7 +49,7 @@ Every question must reference a file:line, memory entry, skill, recent commit, o
 
 ## Contrarian framing rule
 
-In every round, **AT LEAST ONE question must CHALLENGE** the user's plan with a concrete failure mode — not just clarify it. The long-term / end-vision lens is what gets missed most often without this discipline. Templates:
+Challenge the user's plan with a concrete failure mode when a plausible failure mode is relevant. Do not add a contrarian question solely to satisfy the format. Templates:
 
 - "What breaks at 10× the current load?"
 - "Is this the wrong abstraction — what if we inverted it and did X instead?"
@@ -59,7 +59,7 @@ In every round, **AT LEAST ONE question must CHALLENGE** the user's plan with a 
 
 ## End-of-grill CONTEXT.md checkpoint
 
-Even though `/domain-modeling` should already be updating `CONTEXT.md` inline throughout (still preferred), the **final round must always include a question of the form**: "I used these novel terms in this grill: X, Y, Z — add to CONTEXT.md?" with selectable options.
+When the grill introduces durable project-domain terms that are novel, fuzzy, or overloaded, include a final selectable question offering to add them to `CONTEXT.md`. Skip this checkpoint when no such terms were introduced.
 
 This is a backstop against glossary debt accumulating across grills — the failure mode where many novel recurring terms are introduced in a session but none get canonicalized because each individually felt minor. Workflow / process terms (autonomy contract, DONE-WHEN, DEFAULTS, DEFERRED, skip-grill threshold) do **NOT** belong in the project's `CONTEXT.md` — they're meta-process, not codebase glossary. This checkpoint is this skill's own addition on top of `/domain-modeling` — the shared skill has no notion of "end of grill."
 

@@ -2,7 +2,7 @@
 name: algo-team
 description: Spin up a coordinated agent team for the AlgoTrader repo, with a pre-mapped 8-domain ownership split so teammates work in parallel without overwriting each other. Use when the user wants to parallelize AlgoTrader work across an agent team, or says "spin up the team", "/algo-team", or "split this across agents".
 disable-model-invocation: true
-argument-hint: [optional goal, e.g. "ship the IV-surface provider"] [--only domain,domain] [--auto]
+argument-hint: "[optional goal, e.g. 'ship the IV-surface provider'] [--only domain,domain] [--auto]"
 effort: max
 ---
 

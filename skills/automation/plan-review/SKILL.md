@@ -1,6 +1,6 @@
 ---
 name: plan-review
-description: The scheduled, read-only plan-conformance pass of the journal-and-queue framework — every four hours compare each open lane's landed tranches and stated NEXT against its plan row's DONE-WHEN, the wave order, tranche limits, ownership and the deletion classification; deliver deviations to the lane as to: entries and one report entry whose first five lines reach the operator. Use when spawned as PLAN-REVIEW by the dispatcher tick, or when the operator asks whether the sequences are advancing according to the plan's intent.
+description: "The scheduled, read-only plan-conformance pass of the journal-and-queue framework — every four hours compare each open lane's landed tranches and stated NEXT against its plan row's DONE-WHEN, the wave order, tranche limits, ownership and the deletion classification; deliver deviations to the lane as to: entries and one report entry whose first five lines reach the operator. Use when spawned as PLAN-REVIEW by the dispatcher tick, or when the operator asks whether the sequences are advancing according to the plan's intent."
 argument-hint: "(optional) lanes to review; default: every open lane"
 ---
 

@@ -177,16 +177,17 @@
     "autoTickPerDirectory":  3,
     "autoTickPerWorktree":  3,
     "autoTickLaneBudgets":  {
+                                "AlgoTrader/*":  0,
                                 "AlgoTrader/main":  3,
                                 "AlgoTrader/ORCH-REDESIGN":  3
                             },
     "includeWorktrees":  true,
     "registryWindowDays":  30,
-    "maxSessions":  30,
+    "maxSessions":  12,
     "transcriptTools":  "hidden",
     "textRendering":  "grayscale",
-    "readingWidth":  "full",
-    "zoom":  110,
+    "readingWidth":  "measured",
+    "zoom":  100,
     "//panelScanMaxAgeSeconds":  [
                                      "How fresh the registry has to be for the panel to skip its opening scan.",
                                      "Measured with 117 conversations: the scan is 679 ms cold, 329 ms warm, out",
@@ -207,5 +208,5 @@
     "foldProjects":  false,
     "foldSessions":  false,
     "oauthTokenUrl":  "",
-    "railBandsShut":  "month,older"
+    "railBandsShut":  "older"
 }
