@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "runtimes": {
+    "pi": {
+      "displayName": "Pi CLI (npm)",
+      "executable": "pi",
+      "interactiveLaunchArgs": ["--name", "{name}"],
+      "modelDiscoveryArgs": ["--list-models"],
+      "modelArgs": ["--model", "{model}"],
+      "defaultModelChoice": "runtime-default",
+      "resumeGuidance": "Use pi --session <id> from the target directory, or pi -r to choose the named session.",
+      "verificationLevel": "preassigned-id-prompt-correlation"
+    },
+    "claude": {
+      "displayName": "Claude Code",
+      "executable": "claude",
+      "interactiveLaunchArgs": ["-n", "{name}"],
+      "modelDiscoveryArgs": null,
+      "modelArgs": ["--model", "{model}"],
+      "defaultModelChoice": "claude-default",
+      "resumeGuidance": "The Claude adapter reports its verified claude --resume command.",
+      "verificationLevel": "adapter-verified"
+    }
+  }
+}

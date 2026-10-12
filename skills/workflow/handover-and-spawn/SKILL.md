@@ -1,13 +1,13 @@
 ---
 name: handover-and-spawn
-description: Write a handover document for the current work and immediately spawn a fresh Claude Code session that picks it up, optionally briefed with specific objectives or instructions. Use when the user wants to continue in a new session, hand the next phase or step to a fresh context, pass the baton, or start a session that carries on from here.
+description: Write a handover document for the current work and immediately spawn a fresh Pi CLI or Claude Code session that picks it up, optionally briefed with specific objectives or instructions. Use when the user wants to continue in a new session, hand the next phase or step to a fresh context, pass the baton, or start a session that carries on from here.
 argument-hint: "(optional) what the new session should work on - e.g. 'phase 3: the ingest spine'"
 ---
 
 # handover-and-spawn
 
 One move: **capture the state, then open a session that acts on it.** Composes the
-`handoff` skill with `spawn-claude-session`, so neither is duplicated here.
+`handoff` skill with `spawn-session`, so handover discipline and runtime adapters stay separate.
 
 Reach for it when this session has finished a phase, is running long, or is about to start
 work that deserves its own clean context.
@@ -44,16 +44,39 @@ work that deserves its own clean context.
 3. **Check the target directory** — same repo, or a worktree if the new session will
    touch the same files as this one. Two sessions in one working tree share a git index.
 
-4. **Spawn it** with the `spawn-claude-session` skill: `-HandoffFile <the handover>`,
-   `-Prompt` set to the concrete first action, `-Directory` the target, `-Name` after the
-   phase (e.g. `phase-3-ingest`). Read that skill before running it — the env-scrub, the
-   duplicate-lane refusal and the Windows Terminal requirement all live there.
+4. **Choose the session contract before launch.** Never infer it from prompt text.
+
+   - **Mode:** if the user did not explicitly choose, ask `analysis-only` or
+     `implementation`. Analysis-only can use a visible duplicate override when deliberate.
+     Implementation refuses a same-lane duplicate by default; use a separate worktree/lane,
+     not an override.
+   - **Runtime:** an explicit choice wins. Otherwise ask, recommending **Pi CLI (npm)** first
+     and as the default on this machine; Claude Code is the other registered adapter.
+   - **Model:** after the runtime is known, an explicit model wins. Otherwise ask that
+     runtime's model question only. For Pi, first run its read-only `pi --list-models`
+     inventory through `spawn-session` and offer runtime default first; do not ask for a
+     separate thinking setting. For Claude, offer Claude default or a typed override, not a
+     hard-coded inventory.
+
+5. **Spawn it** with the `spawn-session` skill: `-Runtime <pi|claude>`,
+   `-Mode <analysis|implementation>`, `-HandoffFile <the handover>`, `-Prompt` set to the
+   concrete first action, `-Directory` the target, and `-Name` after the phase (for example,
+   `phase-3-ingest`). Read that skill before running it. It validates inputs, opens the session
+   **inside herdr when a herdr server is running** (so herdr registers it, for Pi and Claude
+   alike), otherwise in Windows Terminal, and uses the selected adapter's honest verification
+   contract. Never start a handed-over session any other way (a plain terminal or a headless
+   `pi -p`): herdr would not see it.
 
    **Always pass `-Prompt`.** A session spawned with a handover but no first task reads
    its brief and then sits idle.
 
-5. **Report back**: the handover path, the session name and directory, the
-   `claude --resume <id>` command, and the first task it was given.
+6. **Report back**: handover path, runtime/model, session name, directory, and first task.
+   Report only the resume/verification information the selected adapter actually produced:
+   Claude may report its verified Remote Control/resume result; Pi only reports an actual
+   correlated session ID/path or an unverified recovery path. Always print Pi's direct
+   `pi --session <id>` command and original target directory when correlation succeeds. Explain
+   that `pi -r` is project-scoped; for cross-project recovery, use `spawn-session/recover.ps1`
+   by name or ID rather than looking in the parent session's picker.
 
 ## Judgment
 
