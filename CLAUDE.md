@@ -1,304 +1,53 @@
 # Global Operating Convention
 
-This file applies to **every** Claude Code session, in every repo. It holds only what a session
-could not derive and would get wrong: measured environment facts, the autonomy boundary, and the
-ask-first gate. Project-level `CLAUDE.md` files apply on top of this and **win on any
-domain-specific rule** — including stricter gates, file-creation rules, deployment protocols, or
-anything they mark critical.
+Applies to every session and repo. Project `CLAUDE.md` files win on domain-specific rules (stricter gates, file rules, deploy protocols, anything marked critical).
 
-*What is NOT here, deliberately: the per-prompt scope check (the `grill-gate` UserPromptSubmit hook
-states it on every prompt — this file used to carry a second, drifting copy), and the multi-session
-/ agent-team protocol (the `agent-coordination` skill).*
+## Tool discipline
+A parallel batch is cancelled when any member errors or hangs ("Cancelled: parallel tool call…", "Error writing file"). That is never a broken channel, so don't re-fire the batch. Isolate the failing call.
+- Dependent calls (write-then-run, create-then-read) go in separate turns.
+- Network/live-server calls run alone with a short timeout (`curl -m 6`).
+- Prefer Read/Grep/Glob over probe scripts. Use `Read` with offset/limit for files over 30 KB.
+- No `cd "path with spaces" && …`; no multiline `python -c` with embedded quotes. Use a scratch file.
 
----
+## Temp hygiene
+- Don't leak temps into the system temp dir. Use `TemporaryDirectory()` / pytest `tmp_path`, or remove in `finally`.
+- Atomic write (`mkstemp(dir=target)` + `os.replace`) is fine for hygiene. On Windows it is **not** a concurrency fix: it raises WinError 5 when a reader holds the file. Profile a race before fixing it.
+- Restore any env var/global a fixture mutates. Pytest suites get a session `conftest.py` guard that redirects `tempfile.tempdir` and sweeps known prefixes.
 
-## 1. Autonomy contract
+## Config changes to ~/.claude
+If the classifier blocks a self-edit to `~/.claude` (settings, hooks, this file), don't work around it. Stage a pure-ASCII `.ps1` patch in `~/.claude/operator-patches/`, name it to the operator via `AskUserQuestion` (approval per patch), run it after approval, and verify by grepping for a marker.
 
-**The default is to carry on.** When something is genuinely outstanding, finish it. Do not write a
-summary and hand back; do not ask whether to continue; do not treat "I have something worth saying"
-as a reason to stop saying it and stop working.
+## Model routing (cost/quality frontier, Oct 2026)
+Use only the settings on the frontier: **Haiku 5.5 max** (execution, search, mechanical edits) → **Sonnet 5.5 high** (routine engineering) → **Opus 5.5 medium** (default) → **Opus 5.5 high** (quant, security, systems, research) → **Opus 5.5 xhigh** (only when the user asks, or for genuinely hardest problems). Avoid Sonnet low/medium/xhigh/max and Opus low: a cheaper setting on the frontier beats each of them. When delegating, pick the cheapest tier that can do the job.
 
-🔴 **AND THE HONEST HALF: DO NOT MANUFACTURE WORK.** If nothing real is outstanding, say so, say
-what makes that true, and stop. This section asks you to finish what exists, never to invent reasons
-to keep going. *(A Stop hook enforcing exactly this was built and removed one day later, on operator
-instruction: it could only read a list the model itself wrote, so it could not tell "work remains"
-from "there is nothing left to do" and pushed to continue either way. Coercion is the wrong
-instrument for a judgement call. Do not re-register it.)*
+## How I work
+**Align before, autonomous during.** Question depth scales with risk and ambiguity, not file count.
+- If the request gives the goal, constraints and success criterion, act. Look up facts in code/docs/history yourself; ask only about decisions that would materially change the outcome.
+- **Grill gate** (the `grill-gate.ps1` hook prompts this every turn): for anything not obviously trivial, state your scope read (light-touch / non-trivial / major / top-tier) and effort estimate, then offer one selectable choice: proceed / light-touch questions / full grill. Skip it when the user already said to implement, or is answering a gate question.
+- Batch real blocking questions in `AskUserQuestion` (selectable options, up to 4 per call), and give your own recommendation. Use `grill-with-docs` for broad, high-blast-radius, or explicitly requested stress-tests, and stop once aligned. Include a challenge question when a concrete failure mode exists.
+- For non-trivial work, write a short spec (GOAL, CONTRACT, PLAN, TESTS, DONE-WHEN, DEFAULTS, DEFERRED, ROLLBACK, OUT OF SCOPE) and get sign-off. For long runs, persist it as `run_<topic>_<date>` in the project's notes location and update progress there.
+- **Discussed work → full autonomy:** implement, test, fix, commit per repo rules. **Bugs/regressions/cleanup → fix and list them.** **New capability or changed design → propose, don't do.**
+- Act, then report. Loop to DONE-WHEN with one-line milestone pings. Scratch work, read-only probes and test runs need no permission. On the first wall, switch approach once; re-engage after ~5 attempts / ~30 min.
+- Run relevant tests/lint/typecheck at the start and end of substantive tasks, scoped to the subsystem.
+- Don't silently reverse a prior verified decision. State what changed and why. Keep the project goal and `CONTEXT.md` glossary in view, and add terms only when genuinely new.
+- Long runs: background agents by default; `PushNotification` on done or blocked.
 
-**Hold the list in writing, not in your head** — a TodoWrite list, a scratch file, a run-file,
-whatever the project uses. It has three kinds of row and the middle one is the one that leaks:
+## Compact instructions
+On every compaction, manual or automatic, preserve: the current working state; all decisions (with rationale); findings; deviations from plan; plans; done tasks; open tasks; and active workflow instructions (user rules, agreed DEFAULTS/DONE-WHEN, run-file paths). Keep exact file paths, IDs, commands and the user's verbatim instructions. Drop raw tool output.
 
-- **Requested** — everything they asked for, including the clause inside a longer message.
-- **Discovered** — what you found on the way that a careful colleague would finish: a defect you
-  noticed, a doc your change just invalidated, a test you did not run, a claim of yours that turned
-  out wrong. **Append it the moment you find it.** A finding that appears only in the closing recap
-  is a finding that gets dropped.
-- **Deferred** — with the exact trigger that resurfaces it. No trigger means dropped, not deferred.
+## Stop and confirm
+Production deploys/restarts, migrations on populated stores, credential changes, force-push / hard-reset / branch or data deletion, `rm -rf`, publishing externally, anything a project marks critical. State the action, blast radius and rollback first.
 
-Give each row a **done-when** you could check: a command and its expected result, a `file:line`, an
-observable state. *"Improve the error handling"* is not a row. **Claim a row done only with
-evidence** — the command you ran and its summary line. A done flag with nothing behind it reads
-identically whether the work happened or not.
+## Git
+Match the repo's actual workflow (read its CLAUDE.md and log). Default for team repos is a feature branch + PR, with the spec as the PR body. Never switch branches silently. Surface an unexpected branch immediately.
 
-For anything with real blast radius, write the **DONE-WHEN** (the machine-checkable stop condition
-that tells you it is finished without asking) and the **DEFAULTS** (pre-authorized choices for
-foreseeable mid-run forks) before starting. Every fork carrying a pre-authorized default is a stop
-that never happens; when a deferred trigger fires mid-run, act on its recorded default and surface
-only if none was set.
+## Verify loop (opt-in)
+The `verify-loop.ps1` Stop hook is inert unless `.claude/verify-loop.active` exists (JSON: `verify_command`, `attempt`, `max_attempts:5`, `deadline`, `status`). Arm it only for agreed autonomous runs. On green, stage only the files the loop touched and ask before committing critical-tier files. Delete the sentinel when done or capped.
 
-**The budget cap is per ITEM, not per session.** On the first wall, diagnose and switch approach
-once; surface only if the *second* approach also fails, with a written account of what was tried and
-learned. Hard, slow, tedious, or "the first approach failed" are not blockers; a blocked row does not
-end a session, it moves you to the next row.
+## Environment hygiene
+When sessions feel slow: delete OS-temp entries older than 2 days, kill orphan pollers/stuck updaters, prune `.claude/scratch` (>7d) and `shell-snapshots` (keep ~20). Ask before deleting transcripts or trimming memory. When "everything breaks", check shared environment state (temp count, orphans, `SynSent` hangs, uptime) before the code.
 
-**Delegate rather than stop.** A side-quest, a broad search, a second opinion, a long verification:
-hand it to a subagent and carry on. Running out of your own attention is not the same as running out
-of work.
-
-For a substantial run, persist the spec plus a live progress checklist as a `run_<topic>_<date>` note
-in the project's notes location — it survives context compaction and lets any session resume. Fire a
-`PushNotification` when a long or background run completes or blocks; mobile push comes from that
-tool, a shell hook cannot reach the phone. 🔴 **Call `PushNotification` ("DECISION NEEDED: …") immediately
-before EVERY `AskUserQuestion` and every blocker put to the operator** (operator, 2026-09-23: questions were
-not reaching the phone). Claude Code suppresses mobile pushes while the terminal is focused, which is not
-configurable, so "the terminal is active" is never proof the operator is there. Relay a subagent's or
-workflow's operator question the moment you see it, not at a later check.
-
-### Discussed vs Undiscussed - the hard line
-
-- **Discussed / agreed work -> full autonomy.** Plan, implement, run tests, fix what breaks,
-  commit, push (per the project's git/deploy rules). Loop to the success criterion without
-  asking permission for routine steps.
-- **Bugs, regressions, anti-patterns, mechanical cleanup -> fix autonomously** when you meet
-  them, and add each as its own row on the list. Restoring correctness always serves the goal.
-  Verify each fix; list what you touched in the recap.
-- **New capability / changed approach / replaced design -> never unilaterally.** A good idea
-  that has not been cleared is a *proposal*, not a task: record it on the list as deferred,
-  finish the agreed work, and put it to the operator once at the end. Be as conservative on
-  the undiscussed as you are autonomous on the discussed.
-
-### The operator says stop
-
-🔴 **The operator says stop** — and this **outranks everything in this file, instantly**. Any
-instruction to stop, pause, park or wait ends the run on the spot: never negotiate with it, never
-finish one more item first, never re-raise it later as unfinished business. *(This clause is here
-because a mechanism briefly existed that did override it, and it was removed the same day. Nothing
-in this file may coerce the person it works for.)*
-
-### Git branch discipline
-
-Read the project's `CLAUDE.md` and the recent commit history to identify the actual convention —
-main-only, feature-branch + PR, trunk-based, git-flow — and match it. Do not assume, and do not carry
-a default in from another repo. **Do not switch branches silently mid-session:** name the change in
-one sentence and proceed; never let the operator think they are on a different branch than they are.
-If the repo is on an unexpected branch (inherited from a compacted session), surface it immediately
-and confirm before continuing. Branch deletion, force-push, hard-reset and dropping someone else's
-branch stay on the Stop-and-confirm list regardless of workflow.
-
----
-
-## 2. Stop and confirm - destructive & high-blast-radius ops
-
-Even mid-loop, stop and get explicit go-ahead before anything hard to reverse or
-outward-facing: production deploys/restarts, schema migrations on populated stores,
-credential/secret changes, force-push / hard-reset / branch or data deletion, `rm -rf`,
-publishing to third parties, or anything a project `CLAUDE.md` marks critical. State the
-action, the blast radius, and the rollback first. Project rules add to this list; they never
-remove from it.
-
-🔑 **A standing operator ruling IS the explicit go-ahead.** When a project files an operator-ruled grant of
-standing authority for an act on this list, that ruling is the go-ahead for that act, within the ruling's own
-preconditions and rails, so no per-act question is needed. The list is not shortened: the ruling is the
-operator saying yes in advance. An act the ruling does not name, or whose preconditions are not met, still
-stops here.
-
-**This list is the whole of the ask-first surface.** If an act is not on it and not covered by the
-per-prompt gate's two-part test — two readings of the request would produce materially different
-deliverables, AND nothing on hand settles which — it does not warrant a question.
-
-Trial runs need no permission: read-only queries, scratch scripts, research subagents and full
-test/type/lint runs are *expected*. The session scratchpad (or `.claude/scratch/` where a project has
-one) is yours to write/run/delete freely.
-
----
-
-## 3. Tool-driving discipline — the parallel-batch cascade
-
-**Read this first, every session.** Newer models batch tool calls aggressively for speed. The harness
-runs a turn's tool calls in parallel, and **if any one member of a parallel batch errors or hangs,
-the harness cancels every sibling in that batch** — surfacing as `Cancelled: parallel tool call
-Bash(...) errored` on Bash and `Error writing file` on Write. Those messages are *misleading*: they
-look like a broken file/Bash channel, so it's tempting to conclude "my channel is flaky" and re-fire
-the same batch → an infinite, self-masking cascade. **It is never a broken channel and never a
-context-length problem — it is one fragile call poisoning a parallel batch.**
-
-Two rules prevent it while keeping parallel performance:
-
-1. **Never put dependent calls in the same turn.** A `Write(script)` and the `Bash` that runs it are
-   NOT independent — the Bash needs the file. Same for create-then-read, fetch-then-parse.
-2. **Never batch a fragile/network call with anything.** A network call (`curl`, `requests.get`, any
-   `192.168.x.x` / live-server probe) that hangs poisons the whole batch. Run it **alone**, with a
-   short explicit timeout (`curl -m 6`, `requests.get(url, timeout=6)`). Probe reachability once,
-   alone, before any server work.
-
-**Recognising it mid-session:** repeated `Cancelled: parallel tool call ... errored`, `Error writing
-file` on a Write that should work, or a multi-minute "Ruminating" with huge token reads = you are in
-the cascade. **Stop, isolate the one fragile call, and run a single tool per turn** until it clears —
-do not keep re-firing batches. Big-file `cat` (>30 KB) also truncates output ("output cut off") — use
-`Read` with offset/limit or `grep` the lines instead.
-
----
-
-### Token economy: context re-read is the cost
-
-**Measured (AlgoTrader, 2026-09-19): 97 % of agent spend was context RE-READ; output was 2 %.** Every tool call
-re-reads the whole context, so cost ≈ calls × context size, and the account limit stops multi-agent work long
-before the work runs out. Same quality, less spend:
-- one call per step, not per command: batch independent reads into one script; no `cd` prefix;
-- whatever you read stays for the rest of the session: redirect large output to a file and grep/head it, use
-  `pytest -q --tb=short`, and read big files with offset/limit;
-- read each file once; do not re-read a file to check your own edit;
-- long agents get expensive quadratically (measured $0.103/call at 0-19 calls, $0.242 past 200): the knee is at
-  60-80, so hand off at ~70 calls to a fresh agent with a precise remaining list;
-- keep an agent's calls CLOSE TOGETHER: a spawned agent's prompt cache expires after ~5 min, and a gap re-WRITES
-  its whole context at 1.25x instead of re-reading at 0.1x -- a 12.5x penalty, measured at $577 in one day;
-- give an agent prompt pointers, not pasted docs (CLAUDE.md is already injected), and cap concurrent workflows;
-- measure spend from the transcripts' `usage` fields; never estimate. Label a transcript by its `claude -n` name, not its folder.
-- 🔑 **a lever derived as a RESIDUAL is a hypothesis; it gets a probe before it gets a number.** Five residual-derived
-  forecasts fell when measured (one priced at zero); every figure measured head-on held. A floor is
-  `input + cache_read + cache_creation`, never `cache_creation` alone -- two agents spawned within 5 min share a warm
-  prefix, so comparing that one component showed a 45% saving that was not there.
-
-## 4. Windows / PowerShell environment facts
-
-**Atomic-write temps** (`mkstemp(dir=<target_dir>)` → write → `os.replace`) are fine as TEMP HYGIENE —
-they live next to their target, not in the temp dir. 🔴 **But on Windows `os.replace` is NOT a safe
-concurrency fix, and that is the reason people reach for it.** If any other process has the
-destination open, it raises `PermissionError: [WinError 5]` — **measured 4 of 4 runs** against a file
-a sibling process was reading in a loop, because Python's `open` does not request
-`FILE_SHARE_DELETE`. So: use it to avoid leaking temps, and **never** to make a file safe for a
-concurrent reader; on that path it converts a rare torn read into a reproducible hard failure.
-🪤 The same measurement found the torn read it was "fixing" was not observable at all (0 partial
-reads in 8 rewrites of a 6 MB file), which is the other half of the lesson: **profile the race before
-fixing it.** *(AlgoTrader `FINDINGS.md` G10-6, 2026-08-21.)*
-
-**PowerShell 5.1 reads `.ps1` as ANSI** — non-ASCII in a script corrupts the parse. Keep any `.ps1`
-you write pure ASCII, and expect emoji in a file to defeat a plain `grep` under Git Bash for the same
-class of reason.
-
-**Temp files leak into the OS temp dir and degrade every session** — a bare `tempfile.mkdtemp` /
-`mkstemp` / `NamedTemporaryFile(delete=False)` needs a `finally` that removes it, or use
-`tempfile.TemporaryDirectory()` / pytest's `tmp_path`, which clean themselves.
-
----
-
-## 5. Operator-patch lane — config changes that need operator authority
-
-The auto-mode classifier blocks agent self-edits to `~/.claude/settings.json` and direct writes into
-`~/.claude/` — that block is intended; never fight or work around it.
-
-🔑 **This file is the exception, and it is not a loophole: the global `CLAUDE.md` is REPO-BACKED.**
-`~/.claude/CLAUDE.md` is a hardlink to `C:\Users\mauri\Documents\MM-toolbox\CLAUDE.md`, and it is
-edited there as ordinary git work in that repository — reviewed, committed and reversible like any
-other tracked file. Stating that plainly is the point: a rule that reads stricter than it is, is a
-false protection, and a session that believes this file is unreachable will route a legitimate edit
-through a patch it does not need.
-
-**For `settings.json`, hooks, autoMode rules, and any script needing operator authority, the
-sanctioned path is:**
-
-1. **Stage** — write a pure-ASCII `.ps1` patch into `C:\Users\mauri\.claude\operator-patches\`
-   (staging is allowed and inert; keep ASCII — PS 5.1 reads .ps1 as ANSI and non-ASCII corrupts the
-   parse).
-2. **Ask** — name the patch to the operator via `AskUserQuestion` (push reaches the phone;
-   `dialogExpiry` is 10m). Per-patch approval, never blanket; state what the patch changes in one
-   line.
-3. **Execute** only after approval:
-   `powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\mauri\.claude\operator-patches\apply.ps1 <patch>.ps1`
-   — the runner validates the bare filename (no paths/traversal), logs timestamp+sha256+exit to
-   `applied.log`, and archives the patch so an old approval can never re-run it.
-4. **Verify** by marker grep afterwards (settings.json races app rewrites — check the marker, not the
-   write's exit code).
-
-If the classifier blocks a step, surface it to the operator instead of improvising.
-
----
-
-## 6. Environment hygiene sweep
-
-Accumulated junk degrades every session and has broken tool execution outright. **At the start of a
-session that felt slow on resume, or when the operator mentions lag (especially on mobile), run a
-quick sweep.** Two tiers, and the split is the load-bearing part:
-
-- **SAFE — just do it, no confirmation** (all disposable/regenerated): delete OS-temp entries older
-  than ~2 days; kill leftover scratch-poller / duplicate-worker processes from dead sessions and any
-  stuck IDE updater; remove `.claude/scratch/*` older than ~7 days; prune
-  `~/.claude/shell-snapshots/`.
-- **SENSITIVE — confirm retention first** (these lose history): the transcript backlog under
-  `~/.claude/projects/` is normally the largest single consumer — archive or delete transcripts older
-  than the operator's chosen window.
-
-### 🔴 `MEMORY.md` IS A LINK INDEX. IT NEVER HOLDS MEMORY CONTENT.
-
-**`MEMORY.md` is auto-loaded into every session and SILENTLY TRUNCATES past a hard read limit.** No
-error, no gap, nothing the reader can see — the tail is simply not there. So a memory written into
-it is a memory that can vanish without anyone noticing, and the failure mode is the worst one
-available: 🪤 **the file still loads, still reads as complete, and the reader stops at the first
-match** — which may be a claim the cut-off tail retracted. *(Measured on AlgoTrader: it crossed the
-limit three separate times and was dropping its tail on every load each time. Each fix was a trim,
-so each fix expired.)*
-
-🔑 **Trimming is not the fix, because the thing that grows is the thing being trimmed.** The fix is
-structural — **content and index become different files:**
-
-1. 🔒 **`MEMORY.md` holds LINKS AND NOTHING ELSE.** No findings, no constraints, no figures, not even
-   one-line summaries a reader could act on. **If a line would be a loss to delete, it does not
-   belong in this file.** Keep it small enough that truncation is never reachable.
-2. 🔒 **ONE orchestrator file holds the working memory** — `ORCHESTRATOR.md`, or the project's
-   equivalent — **linked FIRST from `MEMORY.md`, above everything else.** It carries the live
-   findings, rulings, traps and hard constraints, one line each. **It is not size-limited**, because
-   nothing auto-loads it: a session opens it deliberately and gets all of it or an error.
-3. **Detail below that lives in per-topic files**, linked from the orchestrator, plus a generated
-   catalogue (`INDEX.md`) listing every file so none becomes unreachable.
-
-⇒ **To add a memory: create its file, then link it.** ⛔ **Never write the memory into `MEMORY.md`.**
-That is the act this section exists to prevent, and it is tempting precisely because it is one line
-and feels cheaper than a file.
-
-**Measure, do not quote a remembered figure** — every number this section used to carry went stale in
-both directions:
-
-```powershell
-# OS temp: total entries, and how many are stale
-$t=[IO.Path]::GetTempPath(); $e=Get-ChildItem $t -Force
-$e.Count; ($e | ? { $_.LastWriteTime -lt (Get-Date).AddDays(-2) }).Count
-# transcript backlog, MB
-(Get-ChildItem ~/.claude/projects -Recurse -File -Filter *.jsonl | Measure-Object Length -Sum).Sum/1MB
-```
-
-Diagnostic order when "everything suddenly breaks": shared environment state after a reboot/update
-first — stuck IDE updater, dead MCP OAuth bridge, temp bloat, orphan processes, ephemeral-port
-`SynSent` hangs — not the repo code. Probe `Get-NetTCPConnection -State SynSent`, system uptime, and
-the OS temp entry count before suspecting a code bug.
-
----
-
-## 7. Mode selection — solo by default
-
-- **Default = single conversation.** Work as one assistant **reporting to the user**. That is about
-  who reports, **not** about what you may delegate: sub-agents, forks and teammates are available at
-  all times, need no permission, and should be used whenever they do the job better — a solo session
-  that fans out an Explore or hands a side-quest to a sub-agent is still a solo session. What
-  agent-team mode adds is the lead protocol (ownership maps, frozen interfaces, integration duty),
-  not the licence to delegate. *(The one delegation that keeps its own gate is the **Workflow** tool
-  — a single call can spawn dozens of agents, so it stays explicit-opt-in per its own contract.)*
-- **Agent-team mode = on explicit intent.** If the user expresses — in any phrasing — the intent to
-  use a team of cooperating agents, or invokes `/algo-team` or `/agent-cluster`, operate as a team
-  lead. Match the intent, not exact words. "solo", "just you", "no team" forces single-conversation
-  mode even if team-ish words appear.
-- **Do not ask which mode.** Mode choice is reversible and is not on the Stop-and-confirm list: pick
-  the reading a careful colleague would pick and say which in one line.
-
-📎 **Multi-session and agent-team protocol — peer-message delegation, disjoint file ownership, frozen
-interfaces, lead integration duty — lives in the `agent-coordination` skill.** Load it when running
-teammates, when a peer session messages you, or before spawning a team.
+## Agents
+- Single conversation by default, but delegate freely to subagents and forks. Workflow tool only on explicit opt-in.
+- Team mode on any expressed intent ("team", "split across agents", `/agent-cluster`). "solo" / "no team" overrides it. As lead: disjoint file ownership, lead owns shared files, freeze interfaces before fanning out, lead integrates and verifies.
+- Peer-session messages: hand each exchange to one named delegate (message verbatim + the state it needs). The delegate escalates before writes, commits or promises, and returns a ~5-line digest. Exception: one-line answers you already know. Operator messages are always answered directly.
