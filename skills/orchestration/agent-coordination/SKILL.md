@@ -1,6 +1,6 @@
 ---
 name: agent-coordination
-description: Protocol for work spread across more than one Claude session — how to handle a message from a peer session without loading their subject matter into your context, and how to lead an agent team so teammates never overwrite each other (disjoint file ownership, lead-owned shared files, frozen interfaces, serialized overlaps, lead integration). Use when a peer session or teammate sends you a message, when you need something from another session, when about to spawn teammates or an agent team, when acting as team lead or splitting work across agents, when invoking /agent-cluster or /algo-team, or when several sessions are running in parallel on one repository.
+description: Protocol for work spread across more than one Claude session - handle a peer's message without loading their subject matter into your context, and lead an agent team so teammates never overwrite each other (disjoint file ownership, lead-owned shared files, frozen interfaces, serialized overlaps). Use when a peer session or teammate sends you a message, when you need something from another session, when about to spawn teammates or an agent team, when acting as team lead or splitting work across agents, when invoking /agent-cluster or /algo-team, or when several sessions are running in parallel on one repository.
 ---
 
 # Agent coordination

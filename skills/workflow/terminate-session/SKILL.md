@@ -1,6 +1,6 @@
 ---
 name: terminate-session
-description: End a local agent session (Claude Code or Pi) cleanly and verifiably, inside herdr or in a Windows Terminal / PowerShell window, keeping its transcript so it stays resumable. Use when a session has been handed over and is no longer needed, when retiring a lane after a successor took over, when closing idle or finished sessions to stay under a session cap, or when asked to close, kill, end, retire or terminate a session.
+description: End a local Claude Code or Pi session cleanly and verifiably (in herdr or a Windows Terminal / PowerShell window), keeping its transcript resumable. Use when a session has been handed over and is no longer needed, when retiring a lane after a successor took over, when closing idle or finished sessions to stay under a session cap, or when asked to close, kill, end, retire or terminate a session.
 argument-hint: "<session name or id> | -Self | -List"
 ---
 

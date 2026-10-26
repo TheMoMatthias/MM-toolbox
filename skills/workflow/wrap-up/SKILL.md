@@ -1,6 +1,6 @@
 ---
 name: wrap-up
-description: Produce an evidence-backed account of where a session actually stands - what was asked, what was delivered, what was NOT and why, what is blocked on a decision from the user, and what is still open. Reconstructs the requests from the session transcript (including messages typed mid-turn and unfinished business inherited from an earlier compacted context) rather than from recollection, then reconciles them against git, task state and test output. Project-agnostic. Use when the user asks what was done or achieved, wants a session summary, recap, report or status, asks where things stand or what is still open, says "wrap up", or before compacting or closing out a block of work.
+description: Evidence-backed account of where a session actually stands - what was asked, delivered, NOT delivered and why, blocked on a user decision, still open. Rebuilds the requests from the transcript (mid-turn messages, work inherited from a compacted context) rather than recollection and reconciles them with git, task state and test output. Project-agnostic. Use when the user asks what was done or achieved, wants a session summary, recap, report or status, asks where things stand or what is still open, says "wrap up", or before compacting or closing out a block of work.
 argument-hint: [optional scope, e.g. "just the migration work" or "since this morning"]
 ---
 

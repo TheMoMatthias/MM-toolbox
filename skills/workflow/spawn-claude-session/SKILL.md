@@ -1,6 +1,6 @@
 ---
 name: spawn-claude-session
-description: Spawn a brand-new Claude Code session in a separate terminal window, brief it with a handover file, and leave it BOTH locally resumable (`claude --resume`) and phone-drivable (Remote Control on by default). Critically, it SCRUBS the inherited CLAUDE_CODE_CHILD_SESSION / CLAUDE_CODE_SESSION_ID environment before starting claude - without that scrub a spawned session writes NO transcript and its whole history is lost. Pass -HandoffFile to hand over handover/plan/memory .md files. Opens in a directory you CHOOSE (-Directory) or the smart-detected cwd. Use when the user wants to start/launch/open an independent Claude session, hand work over to a fresh session, or open another Claude terminal.
+description: Spawn a brand-new Claude Code session in its own terminal window, briefed with handover files (-HandoffFile), locally resumable (`claude --resume`) and phone-drivable (Remote Control on by default), in a directory you choose (-Directory) or the detected cwd. It SCRUBS the inherited CLAUDE_CODE_CHILD_SESSION / CLAUDE_CODE_SESSION_ID environment first - without that a spawned session writes NO transcript. Use when the user wants to start/launch/open an independent Claude session, hand work over to a fresh session, or open another Claude terminal.
 ---
 
 # spawn-claude-session

@@ -1,6 +1,6 @@
 ---
 name: to-execution-plan
-description: Turn an idea, grill outcome, wayfinder map, spec or prototype into a granular two-layer execution plan. Establishes the vision and designs the optimal system FIRST - either by its own analysis or by ingesting a prior grill or spec - and only then derives phases sized for one session each, decomposed into atomic steps with machine-checkable DONE-WHEN conditions and an execution framework. Use when the user wants an idea turned into an actionable plan, wants a spec made executable, asks how to sequence or break down a build, or wants a plan agents can work through one item at a time.
+description: Turn an idea, grill outcome, wayfinder map, spec or prototype into a two-layer execution plan - design the target system first, then phases sized for one session each, split into atomic steps with machine-checkable DONE-WHEN conditions. Use when the user wants an idea turned into an actionable plan, wants a spec made executable, asks how to sequence or break down a build, or wants a plan agents can work through one item at a time.
 argument-hint: "(optional) the idea, or a path to the grill/spec/wayfinder output"
 ---
 
