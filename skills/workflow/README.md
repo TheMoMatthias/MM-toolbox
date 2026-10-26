@@ -10,6 +10,7 @@ Skills that drive the grill-spec-execute discipline and inter-session coordinati
 | [grilling/](grilling/) | The bare interview primitive — one question at a time, facts looked up vs decisions put to the human, a confirmation gate before enacting anything. Meant to be run *by other skills* (`triage`, `wayfinder`, `improve-codebase-architecture`) as an embedded step; `grill-me`/`grill-with-docs` are the richer, user-invoked front doors for a live session. |
 | [handoff/](handoff/) | Compact the current conversation into a handoff document for another session/agent to resume cleanly. Redacts secrets/PII before writing. |
 | [spawn-claude-session/](spawn-claude-session/) | Launch a new Claude Code session in a separate terminal (local + resumable, or cloud-driven via mobile). |
+| [terminate-session/](terminate-session/) | End a Claude Code or Pi session (herdr tab, Windows Terminal or PowerShell window) after checking for live background work; keeps the transcript resumable. Used by handover-and-spawn to retire the old session. |
 | [reevaluate/](reevaluate/) | Comprehensive deep-dive audit of the current state of a project or initiative. |
 | [writing-great-skills/](writing-great-skills/) | Reference for writing and editing skills well — the vocabulary and failure modes (no-op, sprawl, negation, negative space) that make a skill predictable. Consult before adding or editing anything under `skills/`. |
 | [teach/](teach/) | Teach the user a new skill or concept over multiple sessions, using the current directory as a stateful teaching workspace. |

@@ -1,6 +1,6 @@
 ---
 name: handover-and-spawn
-description: Write a handover document for the current work and immediately spawn a fresh Pi CLI or Claude Code session that picks it up, optionally briefed with specific objectives or instructions. Use when the user wants to continue in a new session, hand the next phase or step to a fresh context, pass the baton, or start a session that carries on from here.
+description: Write a handover document for the current work, spawn a fresh Pi CLI or Claude Code session that picks it up (optionally briefed with specific objectives or instructions), then retire the old session with terminate-session so one session per lane remains. Use when the user wants to continue in a new session, hand the next phase or step to a fresh context, pass the baton, or start a session that carries on from here.
 argument-hint: "(optional) what the new session should work on - e.g. 'phase 3: the ingest spine'"
 ---
 
@@ -70,7 +70,22 @@ work that deserves its own clean context.
    **Always pass `-Prompt`.** A session spawned with a handover but no first task reads
    its brief and then sits idle.
 
-6. **Report back**: handover path, runtime/model, session name, directory, and first task.
+6. **Retire the predecessor** with the `terminate-session` skill, once the new session is
+   verified (step 5 printed its VERIFIED lines) and has acknowledged the handover. This
+   leaves one live session per lane:
+
+   - **Before ending it, hand over or stop its background work** (queue-wait loops,
+     watchers, pushes in flight). A background task dies with its session; write in the
+     handover which ones the successor must re-arm, and stop them first.
+   - **Handing over yourself:** run `terminate.ps1 -Self -DelaySec 20` as the very last
+     action, after the report in step 7 is written. The session ends 20 s later.
+   - **A coordinator retiring a lane:** `terminate.ps1 -Name <old lane>` after the successor
+     reports it has taken over.
+   - **A `BLOCKER` line is a stop**, not a prompt for `-Force`. Resolve it, or leave the old
+     session open and say why.
+   - **Skip this step** only when the user said this session keeps going (see Judgment).
+
+7. **Report back**: handover path, runtime/model, session name, directory, and first task.
    Report only the resume/verification information the selected adapter actually produced:
    Claude may report its verified Remote Control/resume result; Pi only reports an actual
    correlated session ID/path or an unverified recovery path. Always print Pi's direct
@@ -87,8 +102,8 @@ work that deserves its own clean context.
 - **Do not hand over a decision the user should make.** If something is genuinely open,
   either settle it now (see the `realign` skill) or state it in the handover as an
   explicit open question with a pre-authorized default — never leave it implicit.
-- **This session keeps going or stops, deliberately.** Say which. Two live sessions on the
-  same work is the failure this is meant to avoid, not cause.
+- **This session keeps going or stops, deliberately.** The default is stop, through step 6.
+  Two live sessions on the same work is the failure this is meant to avoid, not cause.
 - **Split the work, not the context.** If the next phase has several independent lanes,
   spawn one session per lane with its own handover and its own worktree — not one session
   told to do everything.
